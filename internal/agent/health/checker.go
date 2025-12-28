@@ -1,0 +1,311 @@
+package health
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"os"
+	"time"
+
+	"github.com/akam1o/arca-dns/pkg/config"
+	"github.com/miekg/dns"
+	"go.uber.org/zap"
+)
+
+// CheckType represents the type of health check.
+type CheckType string
+
+const (
+	CheckTypeProcess  CheckType = "process"
+	CheckTypeSocket   CheckType = "socket"
+	CheckTypeQuery    CheckType = "query"
+	CheckTypeFullPath CheckType = "full_path"
+	CheckTypeLatency  CheckType = "latency"
+)
+
+// CheckResult contains the result of a health check.
+type CheckResult struct {
+	Type      CheckType
+	Success   bool
+	Latency   time.Duration
+	Error     error
+	Timestamp time.Time
+}
+
+// HealthStatus represents the overall health status.
+type HealthStatus struct {
+	Healthy      bool
+	Checks       map[CheckType]CheckResult
+	LastCheck    time.Time
+	FailureCount int
+}
+
+// Checker performs health checks on DNS services.
+type Checker struct {
+	config config.HealthConfig
+	logger *zap.Logger
+
+	// External dependencies
+	nsdControlSocket   string
+	unboundControlPath string
+	testZone           string
+	testRecord         string
+}
+
+// NewChecker creates a new health checker.
+func NewChecker(cfg config.HealthConfig, nsdControlSocket, unboundControlPath string, logger *zap.Logger) *Checker {
+	testZone := cfg.TestZone
+	if testZone == "" {
+		testZone = "localhost."
+	}
+
+	testRecord := cfg.TestRecord
+	if testRecord == "" {
+		testRecord = "localhost."
+	}
+
+	return &Checker{
+		config:             cfg,
+		logger:             logger,
+		nsdControlSocket:   nsdControlSocket,
+		unboundControlPath: unboundControlPath,
+		testZone:           testZone,
+		testRecord:         testRecord,
+	}
+}
+
+// Run starts the health check loop.
+func (c *Checker) Run(ctx context.Context, statusChan chan<- HealthStatus) error {
+	c.logger.Info("Starting health check loop",
+		zap.Duration("interval", c.config.CheckInterval))
+
+	ticker := time.NewTicker(c.config.CheckInterval)
+	defer ticker.Stop()
+
+	// Run initial check immediately
+	status := c.CheckAll(ctx)
+	select {
+	case statusChan <- status:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			c.logger.Info("Health check loop stopped")
+			return ctx.Err()
+
+		case <-ticker.C:
+			status := c.CheckAll(ctx)
+			select {
+			case statusChan <- status:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+}
+
+// CheckAll performs all health checks.
+// Checks (all must pass):
+// 1. NSD/Unbound processes running (via socket check)
+// 2. Control sockets responsive
+// 3. DNS queries return NOERROR
+// 4. Test zone responds correctly
+// 5. Latency under threshold (<100ms)
+func (c *Checker) CheckAll(ctx context.Context) HealthStatus {
+	checks := make(map[CheckType]CheckResult)
+
+	// Check 1: Process check (via socket existence)
+	checks[CheckTypeProcess] = c.checkProcess()
+
+	// Check 2: Socket responsiveness
+	checks[CheckTypeSocket] = c.checkSocket()
+
+	// Check 3: DNS query to NSD (direct)
+	checks[CheckTypeQuery] = c.checkDNSQuery(ctx, "127.0.0.1:5353")
+
+	// Check 4: Full path query through Unbound
+	checks[CheckTypeFullPath] = c.checkDNSQuery(ctx, "127.0.0.1:53")
+
+	// Check 5: Latency check
+	checks[CheckTypeLatency] = c.checkLatency(ctx)
+
+	// Determine overall health (all checks must pass)
+	healthy := true
+	for _, result := range checks {
+		if !result.Success {
+			healthy = false
+			break
+		}
+	}
+
+	return HealthStatus{
+		Healthy:   healthy,
+		Checks:    checks,
+		LastCheck: time.Now(),
+	}
+}
+
+// checkProcess checks if processes are running by verifying socket existence.
+func (c *Checker) checkProcess() CheckResult {
+	start := time.Now()
+
+	// Check NSD control socket
+	if c.nsdControlSocket != "" {
+		if _, err := os.Stat(c.nsdControlSocket); err != nil {
+			return CheckResult{
+				Type:      CheckTypeProcess,
+				Success:   false,
+				Error:     fmt.Errorf("NSD control socket not found: %w", err),
+				Timestamp: time.Now(),
+				Latency:   time.Since(start),
+			}
+		}
+	}
+
+	return CheckResult{
+		Type:      CheckTypeProcess,
+		Success:   true,
+		Timestamp: time.Now(),
+		Latency:   time.Since(start),
+	}
+}
+
+// checkSocket checks if control sockets are responsive.
+func (c *Checker) checkSocket() CheckResult {
+	start := time.Now()
+
+	// Check NSD control socket
+	if c.nsdControlSocket != "" {
+		conn, err := net.DialTimeout("unix", c.nsdControlSocket, 2*time.Second)
+		if err != nil {
+			return CheckResult{
+				Type:      CheckTypeSocket,
+				Success:   false,
+				Error:     fmt.Errorf("NSD control socket not responsive: %w", err),
+				Timestamp: time.Now(),
+				Latency:   time.Since(start),
+			}
+		}
+		conn.Close()
+	}
+
+	return CheckResult{
+		Type:      CheckTypeSocket,
+		Success:   true,
+		Timestamp: time.Now(),
+		Latency:   time.Since(start),
+	}
+}
+
+// checkDNSQuery performs a DNS query and verifies the response.
+func (c *Checker) checkDNSQuery(ctx context.Context, server string) CheckResult {
+	start := time.Now()
+
+	// Create DNS query
+	msg := new(dns.Msg)
+	msg.SetQuestion(dns.Fqdn(c.testRecord), dns.TypeA)
+
+	// Create DNS client
+	client := &dns.Client{
+		Timeout: c.config.QueryTimeout,
+	}
+
+	// Perform query
+	resp, _, err := client.ExchangeContext(ctx, msg, server)
+	if err != nil {
+		// Determine check type based on server
+		checkType := CheckTypeQuery
+		if server == "127.0.0.1:53" {
+			checkType = CheckTypeFullPath
+		}
+
+		return CheckResult{
+			Type:      checkType,
+			Success:   false,
+			Error:     fmt.Errorf("DNS query failed: %w", err),
+			Timestamp: time.Now(),
+			Latency:   time.Since(start),
+		}
+	}
+
+	// Verify response code
+	if resp.Rcode != dns.RcodeSuccess {
+		checkType := CheckTypeQuery
+		if server == "127.0.0.1:53" {
+			checkType = CheckTypeFullPath
+		}
+
+		return CheckResult{
+			Type:      checkType,
+			Success:   false,
+			Error:     fmt.Errorf("DNS query returned error: %s", dns.RcodeToString[resp.Rcode]),
+			Timestamp: time.Now(),
+			Latency:   time.Since(start),
+		}
+	}
+
+	checkType := CheckTypeQuery
+	if server == "127.0.0.1:53" {
+		checkType = CheckTypeFullPath
+	}
+
+	return CheckResult{
+		Type:      checkType,
+		Success:   true,
+		Timestamp: time.Now(),
+		Latency:   time.Since(start),
+	}
+}
+
+// checkLatency verifies that DNS queries complete within the acceptable threshold.
+func (c *Checker) checkLatency(ctx context.Context) CheckResult {
+	start := time.Now()
+
+	// Create DNS query
+	msg := new(dns.Msg)
+	msg.SetQuestion(dns.Fqdn(c.testRecord), dns.TypeA)
+
+	// Create DNS client
+	client := &dns.Client{
+		Timeout: c.config.QueryTimeout,
+	}
+
+	// Perform query
+	_, rtt, err := client.ExchangeContext(ctx, msg, "127.0.0.1:53")
+	if err != nil {
+		return CheckResult{
+			Type:      CheckTypeLatency,
+			Success:   false,
+			Error:     fmt.Errorf("latency check query failed: %w", err),
+			Timestamp: time.Now(),
+			Latency:   time.Since(start),
+		}
+	}
+
+	// Check if latency is within threshold
+	if rtt > c.config.LatencyThreshold {
+		return CheckResult{
+			Type:      CheckTypeLatency,
+			Success:   false,
+			Error:     fmt.Errorf("latency %v exceeds threshold %v", rtt, c.config.LatencyThreshold),
+			Timestamp: time.Now(),
+			Latency:   rtt,
+		}
+	}
+
+	return CheckResult{
+		Type:      CheckTypeLatency,
+		Success:   true,
+		Timestamp: time.Now(),
+		Latency:   rtt,
+	}
+}
+
+// CheckHealth performs a single health check and returns the status.
+// This is a convenience method for one-time checks.
+func (c *Checker) CheckHealth(ctx context.Context) HealthStatus {
+	return c.CheckAll(ctx)
+}

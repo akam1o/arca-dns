@@ -1,0 +1,1067 @@
+openapi: 3.0.3
+info:
+  title: arca-dns Controller API
+  description: |
+    REST API for arca-dns controller - BGP Anycast + ECMP DNS system with split control/data plane.
+
+    This API provides zone management in two modes:
+    - **JSON Mode**: Structured JSON for programmatic access
+    - **Raw Mode**: Accept raw BIND zone files for migration/compatibility
+
+    Key features:
+    - DNSSEC signing with central key management
+    - Zone versioning with ETag support for optimistic concurrency control
+    - Pluggable storage backends (Memory, MySQL, Git, etcd)
+    - Artifact distribution for agents with integrity verification
+  version: 1.0.0
+  contact:
+    name: arca-dns
+    url: https://github.com/akam1o/arca-dns
+  license:
+    name: See LICENSE file
+    url: https://github.com/akam1o/arca-dns/blob/main/LICENSE
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development server
+  - url: https://dns-controller.example.com/api/v1
+    description: Production server
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: zones
+    description: Zone management operations
+  - name: records
+    description: Record management operations
+  - name: dnssec
+    description: DNSSEC operations
+  - name: health
+    description: Health and status endpoints
+
+paths:
+  /zones:
+    get:
+      tags: [zones]
+      summary: List all zones
+      description: Returns a paginated list of all zones
+      operationId: listZones
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of zones to return
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          description: Number of zones to skip
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: filter
+          in: query
+          description: Filter expression (backend-specific)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  zones:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Zone'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [zones]
+      summary: Create a new zone (JSON mode)
+      description: Creates a new zone with structured JSON data
+      operationId: createZone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateZoneRequest'
+            examples:
+              basicZone:
+                summary: Basic zone with minimal records
+                value:
+                  name: "example.com."
+                  soa:
+                    mname: "ns1.example.com."
+                    rname: "admin.example.com."
+                    refresh: 3600
+                    retry: 1800
+                    expire: 604800
+                    minimum: 86400
+                  records:
+                    - name: "@"
+                      type: "NS"
+                      ttl: 3600
+                      value: "ns1.example.com."
+                    - name: "@"
+                      type: "A"
+                      ttl: 300
+                      value: "192.0.2.1"
+      responses:
+        '201':
+          description: Zone created successfully
+          headers:
+            ETag:
+              description: Zone version for optimistic concurrency control
+              schema:
+                type: string
+            Location:
+              description: URL of the created zone
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Zone already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/raw:
+    post:
+      tags: [zones]
+      summary: Create a new zone (Raw BIND mode)
+      description: |
+        Creates a new zone from a raw BIND zone file. Supports both text/plain and multipart/form-data formats.
+
+        **Unsupported features:**
+        - $GENERATE directive (explicitly rejected)
+        - Unknown RR types including DNSSEC records (explicitly rejected)
+        - $INCLUDE directive (disabled by default for security - prevents arbitrary file access)
+      operationId: createZoneRaw
+      parameters:
+        - name: origin
+          in: query
+          description: Zone origin (required for text/plain without $ORIGIN directive)
+          required: false
+          schema:
+            type: string
+            example: "example.com."
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+              example: |
+                $ORIGIN example.com.
+                $TTL 3600
+                @   IN  SOA ns1.example.com. admin.example.com. (
+                            2024122801 ; serial
+                            3600       ; refresh
+                            1800       ; retry
+                            604800     ; expire
+                            86400      ; minimum
+                        )
+                    IN  NS  ns1.example.com.
+                    IN  NS  ns2.example.com.
+                    IN  A   192.0.2.1
+                www IN  A   192.0.2.2
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                zonefile:
+                  type: string
+                  format: binary
+                  description: BIND zone file
+                origin:
+                  type: string
+                  description: Zone origin (optional, can be auto-detected from filename or $ORIGIN)
+                  example: "example.com."
+              required:
+                - zonefile
+      responses:
+        '201':
+          description: Zone created successfully
+          headers:
+            ETag:
+              description: Zone version
+              schema:
+                type: string
+                example: "v2024122801-a3f5c2e9"
+            Location:
+              description: URL of the created zone
+              schema:
+                type: string
+                example: "/api/v1/zones/example.com."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    example: "example.com."
+                  version:
+                    type: string
+                    example: "v2024122801-a3f5c2e9"
+                  soa:
+                    type: object
+                    properties:
+                      serial:
+                        type: integer
+                        format: int64
+                        example: 2024122801
+                      mname:
+                        type: string
+                        example: "ns1.example.com."
+                      rname:
+                        type: string
+                        example: "admin.example.com."
+                      refresh:
+                        type: integer
+                        format: int64
+                        example: 3600
+                      retry:
+                        type: integer
+                        format: int64
+                        example: 1800
+                      expire:
+                        type: integer
+                        format: int64
+                        example: 604800
+                      minimum:
+                        type: integer
+                        format: int64
+                        example: 86400
+                  records_count:
+                    type: integer
+                    example: 4
+                  message:
+                    type: string
+                    example: "zone successfully parsed and created from BIND format"
+        '400':
+          description: Bad request (parse error, unsupported directive, validation failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Zone already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '415':
+          description: Unsupported media type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        description: Fully qualified domain name of the zone
+        schema:
+          type: string
+          example: "example.com."
+
+    get:
+      tags: [zones]
+      summary: Get a specific zone
+      description: Returns detailed information about a zone
+      operationId: getZone
+      responses:
+        '200':
+          description: Successful response
+          headers:
+            ETag:
+              description: Zone version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '304':
+          description: Not modified (when If-None-Match matches current version)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      tags: [zones]
+      summary: Update a zone
+      description: Updates an existing zone (requires If-Match header for concurrency control)
+      operationId: updateZone
+      parameters:
+        - name: If-Match
+          in: header
+          description: Zone version for optimistic concurrency control
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateZoneRequest'
+      responses:
+        '200':
+          description: Zone updated successfully
+          headers:
+            ETag:
+              description: New zone version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict - zone has been modified (If-Match mismatch)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '412':
+          description: Precondition failed - If-Match header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [zones]
+      summary: Delete a zone
+      description: Deletes a zone and all its records
+      operationId: deleteZone
+      responses:
+        '204':
+          description: Zone deleted successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}/signed:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        description: Fully qualified domain name of the zone
+        schema:
+          type: string
+
+    get:
+      tags: [zones]
+      summary: Get signed zone file (for agents)
+      description: |
+        Returns the signed zone file artifact for agents to deploy.
+        Supports conditional requests with If-None-Match (ETag).
+      operationId: getSignedZone
+      parameters:
+        - name: If-None-Match
+          in: header
+          description: Zone version - returns 304 if version matches
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Signed zone file
+          headers:
+            ETag:
+              description: Zone version
+              schema:
+                type: string
+            X-Zone-Serial:
+              description: SOA serial number
+              schema:
+                type: integer
+            X-Zone-Hash:
+              description: SHA256 hash of zone content
+              schema:
+                type: string
+            X-Zone-Signature:
+              description: HMAC signature of the artifact (optional)
+              schema:
+                type: string
+          content:
+            text/plain:
+              schema:
+                type: string
+                description: DNSSEC-signed zone file in BIND format
+            application/json:
+              schema:
+                type: object
+                properties:
+                  zone:
+                    type: string
+                    description: Zone file content
+                  metadata:
+                    type: object
+                    properties:
+                      version:
+                        type: string
+                      serial:
+                        type: integer
+                      hash:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+        '304':
+          description: Not modified (zone version matches If-None-Match)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}/versions:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        schema:
+          type: string
+
+    get:
+      tags: [zones]
+      summary: List zone versions
+      description: Returns version history for a zone (requires RevisionStore backend)
+      operationId: listZoneVersions
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Version history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ZoneVersion'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          description: Not implemented (backend doesn't support versioning)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}/versions/{version}:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: string
+
+    get:
+      tags: [zones]
+      summary: Get a specific zone version
+      description: Returns a specific historical version of a zone
+      operationId: getZoneVersion
+      responses:
+        '200':
+          description: Zone version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          description: Not implemented (backend doesn't support versioning)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}/records:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        schema:
+          type: string
+
+    get:
+      tags: [records]
+      summary: List records in a zone
+      operationId: listRecords
+      parameters:
+        - name: type
+          in: query
+          description: Filter by record type
+          schema:
+            type: string
+            enum: [A, AAAA, CNAME, MX, NS, TXT, PTR, SRV, CAA]
+        - name: name
+          in: query
+          description: Filter by record name
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Record'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [records]
+      summary: Add a record to a zone
+      operationId: addRecord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRecordRequest'
+      responses:
+        '201':
+          description: Record added successfully
+          headers:
+            ETag:
+              description: New zone version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Record'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}/records/{recordId}:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: recordId
+        in: path
+        required: true
+        schema:
+          type: string
+
+    delete:
+      tags: [records]
+      summary: Delete a record
+      operationId: deleteRecord
+      responses:
+        '204':
+          description: Record deleted successfully
+          headers:
+            ETag:
+              description: New zone version
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}/dnssec/ds:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        schema:
+          type: string
+
+    get:
+      tags: [dnssec]
+      summary: Get DS records for parent zone
+      description: Returns DS records to be added to the parent zone
+      operationId: getDSRecords
+      responses:
+        '200':
+          description: DS records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ds_records:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key_tag:
+                          type: integer
+                        algorithm:
+                          type: integer
+                        digest_type:
+                          type: integer
+                        digest:
+                          type: string
+                  formatted:
+                    type: string
+                    description: DS records in BIND format
+            text/plain:
+              schema:
+                type: string
+                description: DS records in BIND format
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /health:
+    get:
+      tags: [health]
+      summary: Health check endpoint
+      description: Returns the health status of the controller
+      operationId: healthCheck
+      security: []  # No authentication required
+      responses:
+        '200':
+          description: Controller is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy, degraded, unhealthy]
+                  version:
+                    type: string
+                  uptime:
+                    type: string
+                  backend:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+        '503':
+          description: Controller is unhealthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  error:
+                    type: string
+
+  /status:
+    get:
+      tags: [health]
+      summary: Detailed status information
+      description: Returns detailed status information about the controller
+      operationId: getStatus
+      responses:
+        '200':
+          description: Status information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                  uptime:
+                    type: string
+                  backend:
+                    type: object
+                  dnssec:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                      algorithm:
+                        type: integer
+                  zones:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                      signed:
+                        type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication
+
+  schemas:
+    Zone:
+      type: object
+      required:
+        - name
+        - version
+        - soa
+        - records
+      properties:
+        name:
+          type: string
+          description: Fully qualified domain name
+          example: "example.com."
+        version:
+          type: string
+          description: Zone version identifier
+          example: "v2024122801-a3f5c2e9"
+        soa:
+          $ref: '#/components/schemas/SOARecord'
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/Record'
+        dnssec:
+          $ref: '#/components/schemas/DNSSECInfo'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SOARecord:
+      type: object
+      required:
+        - mname
+        - rname
+        - refresh
+        - retry
+        - expire
+        - minimum
+      properties:
+        mname:
+          type: string
+          description: Primary name server
+          example: "ns1.example.com."
+        rname:
+          type: string
+          description: Admin email (with @ replaced by .)
+          example: "admin.example.com."
+        serial:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 4294967295
+          description: Zone serial number (auto-generated)
+          example: 2024122801
+        refresh:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 4294967295
+          description: Refresh interval in seconds
+          example: 3600
+        retry:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 4294967295
+          description: Retry interval in seconds
+          example: 1800
+        expire:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 4294967295
+          description: Expiration time in seconds
+          example: 604800
+        minimum:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 4294967295
+          description: Minimum TTL in seconds
+          example: 86400
+
+    Record:
+      type: object
+      required:
+        - name
+        - type
+        - ttl
+        - value
+      properties:
+        id:
+          type: string
+          description: Record identifier (backend-specific)
+        name:
+          type: string
+          description: Record name (relative to zone)
+          example: "www"
+        type:
+          type: string
+          enum: [A, AAAA, CNAME, MX, NS, TXT, PTR, SRV, CAA]
+          example: "A"
+        ttl:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 4294967295
+          description: Time to live in seconds
+          example: 300
+        value:
+          type: string
+          description: Record value (format depends on type)
+          example: "192.0.2.1"
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 65535
+          description: Priority (for MX/SRV records)
+          nullable: true
+
+    DNSSECInfo:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        algorithm:
+          type: integer
+        ksk_key_tag:
+          type: integer
+        zsk_key_tag:
+          type: integer
+        nsec3_enabled:
+          type: boolean
+        signature_expiration:
+          type: string
+          format: date-time
+
+    ZoneVersion:
+      type: object
+      properties:
+        version:
+          type: string
+          example: "v2024122801-a3f5c2e9"
+        serial:
+          type: integer
+          example: 2024122801
+        timestamp:
+          type: string
+          format: date-time
+        hash:
+          type: string
+          description: SHA256 hash
+          example: "a3f5c2e9..."
+
+    CreateZoneRequest:
+      type: object
+      required:
+        - name
+        - soa
+      properties:
+        name:
+          type: string
+        soa:
+          $ref: '#/components/schemas/SOARecord'
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateRecordRequest'
+
+    UpdateZoneRequest:
+      type: object
+      properties:
+        soa:
+          $ref: '#/components/schemas/SOARecord'
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/Record'
+
+    CreateRecordRequest:
+      type: object
+      required:
+        - name
+        - type
+        - ttl
+        - value
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [A, AAAA, CNAME, MX, NS, TXT, PTR, SRV, CAA]
+        ttl:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 4294967295
+        value:
+          type: string
+
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+          description: Total number of items
+        limit:
+          type: integer
+          description: Maximum items per page
+        offset:
+          type: integer
+          description: Number of items skipped
+        has_more:
+          type: boolean
+          description: Whether more items are available
+
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          enum:
+            - NOT_FOUND
+            - ALREADY_EXISTS
+            - INVALID_INPUT
+            - CONFLICT
+            - INTERNAL_ERROR
+            - UNAVAILABLE
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - RATE_LIMIT_EXCEEDED
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
