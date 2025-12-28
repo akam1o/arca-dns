@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/akam1o/arca-dns/internal/controller/service"
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/akam1o/arca-dns/pkg/parser"
@@ -15,15 +16,17 @@ import (
 
 // Handler handles HTTP requests for the controller API.
 type Handler struct {
-	store  backend.ZoneStore
-	logger *zap.Logger
+	store          backend.ZoneStore
+	signingService *service.SigningService
+	logger         *zap.Logger
 }
 
 // NewHandler creates a new API handler.
-func NewHandler(store backend.ZoneStore, logger *zap.Logger) *Handler {
+func NewHandler(store backend.ZoneStore, signingService *service.SigningService, logger *zap.Logger) *Handler {
 	return &Handler{
-		store:  store,
-		logger: logger,
+		store:          store,
+		signingService: signingService,
+		logger:         logger,
 	}
 }
 
@@ -80,6 +83,16 @@ func (h *Handler) CreateZone(c *gin.Context) {
 			map[string]interface{}{"error": "internal error"},
 		))
 		return
+	}
+
+	// Sign zone automatically (M4.5: auto-signing after create)
+	if h.signingService != nil {
+		if err := h.signingService.SignAndStoreZone(c.Request.Context(), created); err != nil {
+			// Log error but don't fail the request - zone was created successfully
+			h.logger.Warn("Failed to sign zone after creation",
+				zap.String("zone", created.Name),
+				zap.Error(err))
+		}
 	}
 
 	// Set ETag header
@@ -248,6 +261,16 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
+	// Sign zone automatically (M4.5: auto-signing after update)
+	if h.signingService != nil {
+		if err := h.signingService.SignAndStoreZone(c.Request.Context(), updated); err != nil {
+			// Log error but don't fail the request - zone was updated successfully
+			h.logger.Warn("Failed to sign zone after update",
+				zap.String("zone", updated.Name),
+				zap.Error(err))
+		}
+	}
+
 	// Set ETag header
 	c.Header("ETag", updated.Version)
 
@@ -282,7 +305,7 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 }
 
 // GetSignedZone handles GET /api/v1/zones/:name/signed
-// Returns the zone file in BIND format (unsigned for M1, will be signed in M4)
+// Returns the DNSSEC-signed zone file in BIND format (M4.5)
 func (h *Handler) GetSignedZone(c *gin.Context) {
 	name := c.Param("name")
 
@@ -319,16 +342,32 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 		return
 	}
 
-	// Generate zone file
-	zoneFile, err := parser.GenerateBINDZoneFile(zone)
-	if err != nil {
-		h.logger.Error("Failed to generate zone file", zap.String("zone", name), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInternal,
-			"Failed to generate zone file",
-			map[string]interface{}{"error": "zone generation failed"},
-		))
-		return
+	// Get signed zone from signing service (M4.5)
+	var zoneFile string
+	if h.signingService != nil {
+		artifact, err := h.signingService.GetSignedZone(c.Request.Context(), name)
+		if err != nil {
+			h.logger.Error("Failed to get signed zone", zap.String("zone", name), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+				model.ErrorCodeInternal,
+				"Failed to retrieve signed zone",
+				map[string]interface{}{"error": "signing failed"},
+			))
+			return
+		}
+		zoneFile = artifact.SignedZone
+	} else {
+		// Fallback to unsigned zone if signing service is not available
+		zoneFile, err = parser.GenerateBINDZoneFile(zone)
+		if err != nil {
+			h.logger.Error("Failed to generate zone file", zap.String("zone", name), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+				model.ErrorCodeInternal,
+				"Failed to generate zone file",
+				map[string]interface{}{"error": "zone generation failed"},
+			))
+			return
+		}
 	}
 
 	// Set headers for successful response
@@ -340,8 +379,66 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 		c.Header("X-Zone-Hash", parts[1])
 	}
 	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone", strings.TrimSuffix(zone.Name, ".")))
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone.signed", strings.TrimSuffix(zone.Name, ".")))
 
-	h.logger.Info("Zone file generated", zap.String("zone", name), zap.String("version", zone.Version))
+	h.logger.Info("Signed zone file served", zap.String("zone", name), zap.String("version", zone.Version))
 	c.String(http.StatusOK, zoneFile)
+}
+
+// GetDSRecords handles GET /api/v1/zones/:name/ds
+// Returns DS records for parent zone delegation (M4.5)
+func (h *Handler) GetDSRecords(c *gin.Context) {
+	name := c.Param("name")
+
+	// Check if signing service is available
+	if h.signingService == nil {
+		c.JSON(http.StatusServiceUnavailable, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"DNSSEC signing service not available",
+			map[string]interface{}{"zone": name},
+		))
+		return
+	}
+
+	// Check if zone exists
+	zone, err := h.store.GetZone(c.Request.Context(), name)
+	if err != nil {
+		if err == model.ErrZoneNotFound {
+			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
+				model.ErrorCodeNotFound,
+				"Zone not found",
+				map[string]interface{}{"zone": name},
+			))
+			return
+		}
+		h.logger.Error("Failed to get zone", zap.String("zone", name), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to retrieve zone",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
+	// Get DS records from signing service
+	dsRecords, err := h.signingService.GetDSRecords(c.Request.Context(), name)
+	if err != nil {
+		h.logger.Error("Failed to get DS records", zap.String("zone", name), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to generate DS records",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
+	// Return DS records as plain text (one per line)
+	response := strings.Join(dsRecords, "\n") + "\n"
+
+	c.Header("Content-Type", "text/plain; charset=utf-8")
+	c.Header("X-Zone-Name", zone.Name)
+	c.Header("X-Zone-Version", zone.Version)
+
+	h.logger.Info("DS records served", zap.String("zone", name), zap.Int("count", len(dsRecords)))
+	c.String(http.StatusOK, response)
 }

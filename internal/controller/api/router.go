@@ -34,6 +34,7 @@ func SetupRouter(handler *Handler, logger *zap.Logger) *gin.Engine {
 
 		// Zone file download (for agents)
 		v1.GET("/zones/:name/signed", handler.GetSignedZone)
+		v1.GET("/zones/:name/ds", handler.GetDSRecords)
 	}
 
 	return router

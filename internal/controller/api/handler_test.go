@@ -18,7 +18,8 @@ import (
 func setupTest() (*Handler, *backend.MemoryBackend, *httptest.Server) {
 	logger, _ := zap.NewDevelopment()
 	store := backend.NewMemoryBackend()
-	handler := NewHandler(store, logger)
+	// Create handler without signing service for backward compatibility
+	handler := NewHandler(store, nil, logger)
 	router := SetupRouter(handler, logger)
 	server := httptest.NewServer(router)
 	return handler, store, server
