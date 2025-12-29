@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akam1o/arca-dns/internal/agent/bird"
 	"github.com/akam1o/arca-dns/internal/agent/health"
 	"github.com/akam1o/arca-dns/internal/agent/nsd"
 	zonesync "github.com/akam1o/arca-dns/internal/agent/sync"
@@ -67,11 +68,18 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		zap.String("commit", commit),
 		zap.String("date", date))
 
-	// Load configuration (use defaults for now)
-	cfg := config.DefaultAgentConfig()
+	// Load configuration
+	var cfg *config.AgentConfig
 	if configFile != "" {
-		logger.Info("Configuration file loading not yet implemented, using defaults",
-			zap.String("config_file", configFile))
+		loadedCfg, loadErr := config.LoadAgentConfig(configFile)
+		if loadErr != nil {
+			return fmt.Errorf("failed to load config: %w", loadErr)
+		}
+		cfg = loadedCfg
+		logger.Info("Configuration loaded from file", zap.String("config_file", configFile))
+	} else {
+		cfg = config.DefaultAgentConfig()
+		logger.Info("Using default configuration")
 	}
 
 	// Create controller client
@@ -111,6 +119,71 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	checker := health.NewChecker(cfg.Health, nsdSocket, cfg.Unbound.ControlPath, logger)
 	logger.Info("Health checker initialized")
 
+	// Create BIRD BGP control components (M5)
+	var birdClient bird.Client
+	var routeManager *bird.RouteManager
+	var stateMachine *bird.StateMachine
+	var healthEngine *health.Engine
+	var controlLoop *bird.ControlLoop
+
+	if cfg.BIRD.Enabled {
+		// Create BIRD client
+		var clientErr error
+		birdClient, clientErr = bird.NewClient(bird.ClientConfig{
+			SocketPath: cfg.BIRD.SocketPath,
+			Timeout:    cfg.BIRD.CommandTimeout,
+		})
+		if clientErr != nil {
+			logger.Warn("Failed to create BIRD client, BIRD control disabled",
+				zap.Error(clientErr))
+			cfg.BIRD.Enabled = false
+		} else {
+			logger.Info("BIRD client initialized", zap.String("socket", cfg.BIRD.SocketPath))
+		}
+	}
+
+	if cfg.BIRD.Enabled {
+
+		// Create route manager and reconcile state
+		routeManager = bird.NewRouteManager(birdClient, cfg.BIRD.ProtocolName)
+		reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := routeManager.Reconcile(reconcileCtx); err != nil {
+			reconcileCancel()
+			logger.Warn("Failed to reconcile BIRD state, assuming routes not announced",
+				zap.Error(err))
+		} else {
+			reconcileCancel()
+			logger.Info("BIRD route manager reconciled",
+				zap.Bool("announced", routeManager.IsAnnounced()))
+		}
+
+		// Create state machine with validation
+		// Note: State machine does the thresholding, so engine just passes through
+		smConfig := bird.StateMachineConfig{
+			FailureThreshold:  3,  // 3 consecutive failures before withdrawing routes
+			RecoveryThreshold: 3,  // 3 consecutive successes before announcing routes
+			MinStateDuration:  30 * time.Second, // 30s debounce to prevent flapping
+		}
+		stateMachine = bird.NewStateMachine(smConfig, logger)
+		logger.Info("BIRD state machine initialized",
+			zap.Int("failure_threshold", 3),
+			zap.Int("recovery_threshold", 3),
+			zap.Duration("min_state_duration", 30*time.Second))
+
+		// Create health engine
+		// Engine uses threshold=1 to pass through all state changes to state machine
+		engineConfig := health.EngineConfig{
+			FailureThreshold:  1,
+			RecoveryThreshold: 1,
+		}
+		healthEngine = health.NewEngine(checker, engineConfig, logger)
+		logger.Info("Health engine initialized")
+
+		// Create control loop
+		controlLoop = bird.NewControlLoop(stateMachine, routeManager, logger)
+		logger.Info("BGP control loop initialized")
+	}
+
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -145,6 +218,34 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		logger.Info("Health check loop stopped")
 	}()
 
+	// Start BIRD BGP control loop (M5)
+	if cfg.BIRD.Enabled && healthEngine != nil && controlLoop != nil {
+		healthSignalChan := make(chan bird.HealthSignal, 10)
+
+		// Start health engine
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(healthSignalChan) // Close signal channel on exit
+			logger.Info("Starting health engine")
+			if err := healthEngine.Run(ctx, healthSignalChan); err != nil && err != context.Canceled {
+				logger.Error("Health engine failed", zap.Error(err))
+			}
+			logger.Info("Health engine stopped")
+		}()
+
+		// Start BGP control loop
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			logger.Info("Starting BGP control loop")
+			if err := controlLoop.Run(ctx, healthSignalChan); err != nil && err != context.Canceled {
+				logger.Error("BGP control loop failed", zap.Error(err))
+			}
+			logger.Info("BGP control loop stopped")
+		}()
+	}
+
 	// Monitor health status and trigger reloads
 	wg.Add(1)
 	go func() {
@@ -154,7 +255,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			select {
 			case <-ctx.Done():
 				return
-			case status := <-healthStatusChan:
+			case status, ok := <-healthStatusChan:
+				if !ok {
+					return // Channel closed
+				}
 				logger.Debug("Health status update",
 					zap.Bool("healthy", status.Healthy),
 					zap.Int("checks", len(status.Checks)))
