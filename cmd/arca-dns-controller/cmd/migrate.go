@@ -1,0 +1,560 @@
+package cmd
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/akam1o/arca-dns/pkg/backend"
+	"github.com/akam1o/arca-dns/pkg/config"
+	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/spf13/cobra"
+)
+
+var (
+	migrateConfigFile  string
+	migrateBackendType string
+	migrateBackendDSN  string
+	migrateBackendPath string
+	migrateOutputDir   string
+	migrateInputDir    string
+	migrateFromBackend string
+	migrateToBackend   string
+	migrateFromDSN     string
+	migrateFromPath    string
+	migrateToDSN       string
+	migrateToPath      string
+	migrateDryRun      bool
+	migrateOverwrite   bool
+	migrateForce       bool
+)
+
+// NewMigrateCmd creates the migrate command with subcommands.
+func NewMigrateCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "migrate",
+		Short: "Data migration commands between backends",
+		Long:  "Commands for exporting, importing, and copying DNS zone data between different backend storage systems",
+	}
+
+	// Add subcommands
+	cmd.AddCommand(newExportCmd())
+	cmd.AddCommand(newImportCmd())
+	cmd.AddCommand(newCopyCmd())
+
+	return cmd
+}
+
+// newExportCmd creates the export subcommand.
+func newExportCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "export",
+		Short: "Export zones from backend to JSON files",
+		Long: `Export all zones from a backend to JSON files in a directory.
+Each zone is saved as a separate JSON file named <zone-name>.json.
+
+Example:
+  arca-dns-controller migrate export --backend=memory --output=./zones/
+  arca-dns-controller migrate export --backend=mysql --dsn="root:pass@/dns" --output=./backup/`,
+		RunE: runExport,
+	}
+
+	cmd.Flags().StringVarP(&migrateConfigFile, "config", "c", "", "Path to configuration file")
+	cmd.Flags().StringVar(&migrateBackendType, "backend", "", "Backend type (memory, mysql, git, etcd)")
+	cmd.Flags().StringVar(&migrateBackendDSN, "dsn", "", "Backend DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateBackendPath, "path", "", "Backend path (for Git)")
+	cmd.Flags().StringVarP(&migrateOutputDir, "output", "o", "./zones", "Output directory for JSON files")
+	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Preview export without writing files")
+
+	cmd.MarkFlagRequired("backend")
+
+	return cmd
+}
+
+// newImportCmd creates the import subcommand.
+func newImportCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "import",
+		Short: "Import zones from JSON files to backend",
+		Long: `Import zones from JSON files into a backend.
+Zone versions are recomputed during import to ensure consistency.
+
+Example:
+  arca-dns-controller migrate import --backend=mysql --dsn="root:pass@/dns" --input=./zones/
+  arca-dns-controller migrate import --backend=git --path=/var/dns/repo --input=./backup/`,
+		RunE: runImport,
+	}
+
+	cmd.Flags().StringVarP(&migrateConfigFile, "config", "c", "", "Path to configuration file")
+	cmd.Flags().StringVar(&migrateBackendType, "backend", "", "Backend type (memory, mysql, git, etcd)")
+	cmd.Flags().StringVar(&migrateBackendDSN, "dsn", "", "Backend DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateBackendPath, "path", "", "Backend path (for Git)")
+	cmd.Flags().StringVarP(&migrateInputDir, "input", "i", "./zones", "Input directory with JSON files")
+	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Validate files without importing")
+	cmd.Flags().BoolVar(&migrateOverwrite, "overwrite", false, "Overwrite existing zones")
+
+	cmd.MarkFlagRequired("backend")
+
+	return cmd
+}
+
+// newCopyCmd creates the copy subcommand.
+func newCopyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "copy",
+		Short: "Copy zones directly from one backend to another",
+		Long: `Copy zones directly between backends without intermediate JSON files.
+Zone versions are recomputed during the copy operation.
+
+Example:
+  arca-dns-controller migrate copy --from-backend=memory --to-backend=mysql --to-dsn="root:pass@/dns"
+  arca-dns-controller migrate copy --from-backend=git --from-path=/tmp/repo --to-backend=etcd`,
+		RunE: runCopy,
+	}
+
+	cmd.Flags().StringVarP(&migrateConfigFile, "config", "c", "", "Path to configuration file")
+	cmd.Flags().StringVar(&migrateFromBackend, "from-backend", "", "Source backend type")
+	cmd.Flags().StringVar(&migrateToBackend, "to-backend", "", "Destination backend type")
+	cmd.Flags().StringVar(&migrateFromDSN, "from-dsn", "", "Source DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateFromPath, "from-path", "", "Source path (for Git)")
+	cmd.Flags().StringVar(&migrateToDSN, "to-dsn", "", "Destination DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateToPath, "to-path", "", "Destination path (for Git)")
+	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Preview copy without writing")
+	cmd.Flags().BoolVar(&migrateOverwrite, "overwrite", false, "Overwrite existing zones")
+
+	cmd.MarkFlagRequired("from-backend")
+	cmd.MarkFlagRequired("to-backend")
+
+	return cmd
+}
+
+// runExport executes the export command.
+func runExport(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	// Load configuration if provided
+	var cfg *config.ControllerConfig
+	if migrateConfigFile != "" {
+		var err error
+		cfg, err = config.LoadControllerConfig(migrateConfigFile)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+	} else {
+		cfg = config.DefaultControllerConfig()
+	}
+
+	// Create backend
+	store, err := createBackend(migrateBackendType, cfg)
+	if err != nil {
+		return fmt.Errorf("create backend: %w", err)
+	}
+	defer store.Close()
+
+	// List all zones
+	zones, err := store.ListZones(ctx, backend.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list zones: %w", err)
+	}
+
+	fmt.Printf("Found %d zones to export\n", len(zones))
+
+	if migrateDryRun {
+		fmt.Println("\n[DRY RUN] Would export:")
+		for _, zone := range zones {
+			fmt.Printf("  - %s (version: %s)\n", zone.Name, zone.Version)
+		}
+		return nil
+	}
+
+	// Create output directory
+	if err := os.MkdirAll(migrateOutputDir, 0755); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
+	}
+
+	// Export each zone
+	exported := 0
+	for _, zone := range zones {
+		filename := filepath.Join(migrateOutputDir, sanitizeFilename(zone.Name)+".json")
+
+		data, err := json.MarshalIndent(zone, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal zone %s: %w", zone.Name, err)
+		}
+
+		if err := os.WriteFile(filename, data, 0644); err != nil {
+			return fmt.Errorf("write zone %s: %w", zone.Name, err)
+		}
+
+		exported++
+		fmt.Printf("Exported: %s -> %s\n", zone.Name, filename)
+	}
+
+	fmt.Printf("\nExport complete: %d zones exported to %s\n", exported, migrateOutputDir)
+	return nil
+}
+
+// runImport executes the import command.
+func runImport(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	// Load configuration if provided
+	var cfg *config.ControllerConfig
+	if migrateConfigFile != "" {
+		var err error
+		cfg, err = config.LoadControllerConfig(migrateConfigFile)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+	} else {
+		cfg = config.DefaultControllerConfig()
+	}
+
+	// Read zone files
+	files, err := filepath.Glob(filepath.Join(migrateInputDir, "*.json"))
+	if err != nil {
+		return fmt.Errorf("glob zone files: %w", err)
+	}
+
+	if len(files) == 0 {
+		return fmt.Errorf("no zone files found in %s", migrateInputDir)
+	}
+
+	fmt.Printf("Found %d zone files to import\n", len(files))
+
+	// Parse and validate zones
+	zones := make([]*model.Zone, 0, len(files))
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return fmt.Errorf("read file %s: %w", file, err)
+		}
+
+		var zone model.Zone
+		if err := json.Unmarshal(data, &zone); err != nil {
+			return fmt.Errorf("parse file %s: %w", file, err)
+		}
+
+		zones = append(zones, &zone)
+	}
+
+	if migrateDryRun {
+		fmt.Println("\n[DRY RUN] Would import:")
+		for _, zone := range zones {
+			// Recompute version to show what it would be
+			newVersion, err := backend.ComputeZoneVersion(zone)
+			if err != nil {
+				return fmt.Errorf("compute version for %s: %w", zone.Name, err)
+			}
+			fmt.Printf("  - %s (old version: %s, new version: %s)\n", zone.Name, zone.Version, newVersion)
+		}
+		return nil
+	}
+
+	// Create backend
+	store, err := createBackend(migrateBackendType, cfg)
+	if err != nil {
+		return fmt.Errorf("create backend: %w", err)
+	}
+	defer store.Close()
+
+	// Import zones
+	imported := 0
+	skipped := 0
+	for _, zone := range zones {
+		// Clear version - it will be recomputed during CreateZone
+		oldVersion := zone.Version
+		zone.Version = ""
+
+		if err := store.CreateZone(ctx, zone); err != nil {
+			// If zone exists, handle based on overwrite flag
+			if errors.Is(err, model.ErrZoneAlreadyExists) {
+				if migrateOverwrite {
+					// Delete and recreate to avoid serial increment
+					if err := store.DeleteZone(ctx, zone.Name); err != nil {
+						return fmt.Errorf("delete existing zone %s: %w", zone.Name, err)
+					}
+					if err := store.CreateZone(ctx, zone); err != nil {
+						return fmt.Errorf("recreate zone %s: %w", zone.Name, err)
+					}
+					fmt.Printf("Overwrote: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
+				} else {
+					fmt.Printf("Skipped (exists): %s\n", zone.Name)
+					skipped++
+					continue
+				}
+			} else {
+				return fmt.Errorf("create zone %s: %w", zone.Name, err)
+			}
+		} else {
+			fmt.Printf("Imported: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
+		}
+		imported++
+	}
+
+	if skipped > 0 {
+		fmt.Printf("\nImport complete: %d zones imported, %d skipped (use --overwrite to replace existing zones)\n", imported, skipped)
+	} else {
+		fmt.Printf("\nImport complete: %d zones imported to %s backend\n", imported, migrateBackendType)
+	}
+	return nil
+}
+
+// runCopy executes the copy command.
+func runCopy(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	// Load configuration if provided
+	var cfg *config.ControllerConfig
+	if migrateConfigFile != "" {
+		var err error
+		cfg, err = config.LoadControllerConfig(migrateConfigFile)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+	} else {
+		cfg = config.DefaultControllerConfig()
+	}
+
+	// Create source backend with from-* flags
+	sourceStore, err := createBackendForCopy(migrateFromBackend, migrateFromDSN, migrateFromPath, cfg)
+	if err != nil {
+		return fmt.Errorf("create source backend: %w", err)
+	}
+	defer sourceStore.Close()
+
+	// List all zones from source
+	zones, err := sourceStore.ListZones(ctx, backend.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list zones from source: %w", err)
+	}
+
+	fmt.Printf("Found %d zones to copy from %s to %s\n", len(zones), migrateFromBackend, migrateToBackend)
+
+	// Handle dry-run before creating destination backend to avoid side effects
+	if migrateDryRun {
+		fmt.Println("\n[DRY RUN] Would copy:")
+		for _, zone := range zones {
+			newVersion, err := backend.ComputeZoneVersion(zone)
+			if err != nil {
+				return fmt.Errorf("compute version for %s: %w", zone.Name, err)
+			}
+			fmt.Printf("  - %s (old version: %s, new version: %s)\n", zone.Name, zone.Version, newVersion)
+		}
+		return nil
+	}
+
+	// Create destination backend only after dry-run check
+	destStore, err := createBackendForCopy(migrateToBackend, migrateToDSN, migrateToPath, cfg)
+	if err != nil {
+		return fmt.Errorf("create destination backend: %w", err)
+	}
+	defer destStore.Close()
+
+	// Copy zones
+	copied := 0
+	skipped := 0
+	for _, zone := range zones {
+		oldVersion := zone.Version
+
+		// Clear version - it will be recomputed during CreateZone
+		zone.Version = ""
+
+		if err := destStore.CreateZone(ctx, zone); err != nil {
+			// If zone exists, handle based on overwrite flag
+			if errors.Is(err, model.ErrZoneAlreadyExists) {
+				if migrateOverwrite {
+					// Delete and recreate to avoid serial increment
+					if err := destStore.DeleteZone(ctx, zone.Name); err != nil {
+						return fmt.Errorf("delete existing zone %s: %w", zone.Name, err)
+					}
+					if err := destStore.CreateZone(ctx, zone); err != nil {
+						return fmt.Errorf("recreate zone %s: %w", zone.Name, err)
+					}
+					fmt.Printf("Overwrote: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
+				} else {
+					fmt.Printf("Skipped (exists): %s\n", zone.Name)
+					skipped++
+					continue
+				}
+			} else {
+				return fmt.Errorf("create zone %s in destination: %w", zone.Name, err)
+			}
+		} else {
+			fmt.Printf("Copied: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
+		}
+		copied++
+	}
+
+	if skipped > 0 {
+		fmt.Printf("\nCopy complete: %d zones copied, %d skipped (use --overwrite to replace existing zones)\n", copied, skipped)
+	} else {
+		fmt.Printf("\nCopy complete: %d zones copied from %s to %s\n", copied, migrateFromBackend, migrateToBackend)
+	}
+	return nil
+}
+
+// createBackendForCopy creates a backend with explicit DSN/path parameters.
+// This is used by the copy command to configure source and destination independently.
+func createBackendForCopy(backendType, dsn, path string, cfg *config.ControllerConfig) (backend.ZoneStore, error) {
+	configMap := make(map[string]interface{})
+
+	switch backendType {
+	case "memory":
+		return backend.NewBackend("memory", configMap)
+
+	case "mysql":
+		if dsn == "" && cfg != nil && cfg.Backend.Type == "mysql" {
+			dsn = cfg.Backend.MySQL.DSN
+		}
+		if dsn == "" {
+			return nil, fmt.Errorf("MySQL backend requires --from-dsn/--to-dsn flag or dsn in config")
+		}
+		configMap["dsn"] = dsn
+		return backend.NewBackend("mysql", configMap)
+
+	case "git":
+		if path == "" && cfg != nil && cfg.Backend.Type == "git" {
+			path = cfg.Backend.Git.RepositoryPath
+		}
+		if path == "" {
+			return nil, fmt.Errorf("Git backend requires --from-path/--to-path flag or repository_path in config")
+		}
+		configMap["repository_path"] = path
+		if cfg != nil && cfg.Backend.Type == "git" {
+			if cfg.Backend.Git.Branch != "" {
+				configMap["branch"] = cfg.Backend.Git.Branch
+			}
+			if cfg.Backend.Git.Author != "" {
+				configMap["author_name"] = cfg.Backend.Git.Author
+			}
+			if cfg.Backend.Git.Email != "" {
+				configMap["author_email"] = cfg.Backend.Git.Email
+			}
+			configMap["auto_sync"] = false
+		}
+		return backend.NewBackend("git", configMap)
+
+	case "etcd":
+		endpoints := []string{"localhost:2379"}
+		if cfg != nil && cfg.Backend.Type == "etcd" && len(cfg.Backend.Etcd.Endpoints) > 0 {
+			endpoints = cfg.Backend.Etcd.Endpoints
+		}
+		configMap["endpoints"] = endpoints
+		if cfg != nil && cfg.Backend.Type == "etcd" {
+			if cfg.Backend.Etcd.Prefix != "" {
+				configMap["prefix"] = cfg.Backend.Etcd.Prefix
+			}
+			if cfg.Backend.Etcd.Username != "" {
+				configMap["username"] = cfg.Backend.Etcd.Username
+			}
+			if cfg.Backend.Etcd.Password != "" {
+				configMap["password"] = cfg.Backend.Etcd.Password
+			}
+			if cfg.Backend.Etcd.DialTimeout > 0 {
+				configMap["dial_timeout"] = cfg.Backend.Etcd.DialTimeout
+			}
+			if cfg.Backend.Etcd.RequestTimeout > 0 {
+				configMap["request_timeout"] = cfg.Backend.Etcd.RequestTimeout
+			}
+		}
+		return backend.NewBackend("etcd", configMap)
+
+	default:
+		return nil, fmt.Errorf("unsupported backend type: %s", backendType)
+	}
+}
+
+// createBackend creates a backend instance based on type and configuration.
+func createBackend(backendType string, cfg *config.ControllerConfig) (backend.ZoneStore, error) {
+	// Build config map from flags and config file
+	configMap := make(map[string]interface{})
+
+	switch backendType {
+	case "memory":
+		// Memory backend needs no config
+		return backend.NewBackend("memory", configMap)
+
+	case "mysql":
+		dsn := migrateBackendDSN
+		if dsn == "" && cfg != nil && cfg.Backend.Type == "mysql" {
+			dsn = cfg.Backend.MySQL.DSN
+		}
+		if dsn == "" {
+			return nil, fmt.Errorf("MySQL backend requires --dsn flag or dsn in config")
+		}
+		configMap["dsn"] = dsn
+		return backend.NewBackend("mysql", configMap)
+
+	case "git":
+		path := migrateBackendPath
+		if path == "" && cfg != nil && cfg.Backend.Type == "git" {
+			path = cfg.Backend.Git.RepositoryPath
+		}
+		if path == "" {
+			return nil, fmt.Errorf("Git backend requires --path flag or repository_path in config")
+		}
+		configMap["repository_path"] = path
+
+		// Optional Git config
+		if cfg != nil && cfg.Backend.Type == "git" {
+			if cfg.Backend.Git.Branch != "" {
+				configMap["branch"] = cfg.Backend.Git.Branch
+			}
+			if cfg.Backend.Git.Author != "" {
+				configMap["author_name"] = cfg.Backend.Git.Author
+			}
+			if cfg.Backend.Git.Email != "" {
+				configMap["author_email"] = cfg.Backend.Git.Email
+			}
+			// For migration, we don't want auto push/pull
+			configMap["auto_sync"] = false
+		}
+		return backend.NewBackend("git", configMap)
+
+	case "etcd":
+		endpoints := []string{"localhost:2379"} // Default
+		if cfg != nil && cfg.Backend.Type == "etcd" {
+			if len(cfg.Backend.Etcd.Endpoints) > 0 {
+				endpoints = cfg.Backend.Etcd.Endpoints
+			}
+		}
+		configMap["endpoints"] = endpoints
+
+		// Optional etcd config
+		if cfg != nil && cfg.Backend.Type == "etcd" {
+			if cfg.Backend.Etcd.Prefix != "" {
+				configMap["prefix"] = cfg.Backend.Etcd.Prefix
+			}
+			if cfg.Backend.Etcd.Username != "" {
+				configMap["username"] = cfg.Backend.Etcd.Username
+			}
+			if cfg.Backend.Etcd.Password != "" {
+				configMap["password"] = cfg.Backend.Etcd.Password
+			}
+			if cfg.Backend.Etcd.DialTimeout > 0 {
+				configMap["dial_timeout"] = cfg.Backend.Etcd.DialTimeout
+			}
+			if cfg.Backend.Etcd.RequestTimeout > 0 {
+				configMap["request_timeout"] = cfg.Backend.Etcd.RequestTimeout
+			}
+		}
+		return backend.NewBackend("etcd", configMap)
+
+	default:
+		return nil, fmt.Errorf("unsupported backend type: %s (supported: memory, mysql, git, etcd)", backendType)
+	}
+}
+
+// sanitizeFilename converts a zone name to a safe filename.
+func sanitizeFilename(zoneName string) string {
+	// Remove trailing dot
+	name := strings.TrimSuffix(zoneName, ".")
+	// Replace any remaining dots with underscores
+	name = strings.ReplaceAll(name, ".", "_")
+	return name
+}

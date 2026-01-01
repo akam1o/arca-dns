@@ -1,0 +1,724 @@
+package backend
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func setupGitBackend(t *testing.T) (*GitBackend, func()) {
+	// Create temporary directory for test repository
+	tempDir := t.TempDir()
+
+	backend, err := NewGitBackend(
+		tempDir,
+		"main",
+		"test-author",
+		"test@example.com",
+		false, // autoSync disabled for tests
+	)
+	require.NoError(t, err, "Failed to create GitBackend")
+
+	cleanup := func() {
+		backend.Close()
+	}
+
+	return backend, cleanup
+}
+
+func TestGitBackend_CreateZone(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{
+			{
+				Name:  "example.com.",
+				Type:  "A",
+				TTL:   300,
+				Value: "192.0.2.1",
+			},
+		},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Verify zone was created
+	retrieved, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, "example.com.", retrieved.Name)
+	assert.Equal(t, uint32(2024010101), retrieved.SOA.Serial)
+	assert.Len(t, retrieved.Records, 1)
+	assert.NotEmpty(t, retrieved.Version)
+
+	// Verify zone file exists
+	zonePath := filepath.Join(backend.repoPath, "zones", "example.com..json")
+	_, err = os.Stat(zonePath)
+	assert.NoError(t, err, "Zone file should exist")
+}
+
+func TestGitBackend_CreateZone_AlreadyExists(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	// Create zone
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Try to create again
+	err = backend.CreateZone(ctx, zone)
+	assert.ErrorIs(t, err, model.ErrZoneAlreadyExists)
+}
+
+func TestGitBackend_GetZone_NotFound(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	_, err := backend.GetZone(ctx, "nonexistent.com.")
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+}
+
+func TestGitBackend_UpdateZone(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create initial zone
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{
+			{
+				Name:  "example.com.",
+				Type:  "A",
+				TTL:   300,
+				Value: "192.0.2.1",
+			},
+		},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Get current version
+	retrieved, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	originalVersion := retrieved.Version
+
+	// Update zone
+	time.Sleep(100 * time.Millisecond) // Ensure timestamp difference
+	zone.Records = append(zone.Records, model.Record{
+		Name:  "www.example.com.",
+		Type:  "A",
+		TTL:   300,
+		Value: "192.0.2.2",
+	})
+
+	err = backend.UpdateZone(ctx, zone, originalVersion)
+	require.NoError(t, err)
+
+	// Verify update
+	updated, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.Len(t, updated.Records, 2)
+	assert.NotEqual(t, originalVersion, updated.Version, "Version should change")
+}
+
+func TestGitBackend_UpdateZone_Conflict(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create zone
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Try to update with wrong version
+	err = backend.UpdateZone(ctx, zone, "wrong-version")
+	assert.ErrorIs(t, err, model.ErrConflict)
+}
+
+func TestGitBackend_DeleteZone(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create zone
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Delete zone
+	err = backend.DeleteZone(ctx, "example.com.")
+	require.NoError(t, err)
+
+	// Verify deletion
+	_, err = backend.GetZone(ctx, "example.com.")
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+
+	// Verify file was removed
+	zonePath := filepath.Join(backend.repoPath, "zones", "example.com..json")
+	_, err = os.Stat(zonePath)
+	assert.True(t, os.IsNotExist(err), "Zone file should not exist")
+}
+
+func TestGitBackend_ListZones(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create multiple zones
+	zones := []string{"aaa.com.", "bbb.com.", "ccc.com."}
+	for _, name := range zones {
+		zone := &model.Zone{
+			Name: name,
+			SOA: model.SOARecord{
+				MName:   "ns1." + name,
+				RName:   "admin." + name,
+				Serial:  2024010101,
+				Refresh: 3600,
+				Retry:   1800,
+				Expire:  604800,
+				Minimum: 86400,
+			},
+			Records: []model.Record{},
+		}
+		err := backend.CreateZone(ctx, zone)
+		require.NoError(t, err)
+	}
+
+	// List all zones
+	result, err := backend.ListZones(ctx, ListOptions{Limit: 100})
+	require.NoError(t, err)
+	assert.Len(t, result, 3)
+
+	// Verify ordering (should be alphabetical)
+	assert.Equal(t, "aaa.com.", result[0].Name)
+	assert.Equal(t, "bbb.com.", result[1].Name)
+	assert.Equal(t, "ccc.com.", result[2].Name)
+
+	// Test pagination
+	page1, err := backend.ListZones(ctx, ListOptions{Offset: 0, Limit: 2})
+	require.NoError(t, err)
+	assert.Len(t, page1, 2)
+	assert.Equal(t, "aaa.com.", page1[0].Name)
+
+	page2, err := backend.ListZones(ctx, ListOptions{Offset: 2, Limit: 2})
+	require.NoError(t, err)
+	assert.Len(t, page2, 1)
+	assert.Equal(t, "ccc.com.", page2[0].Name)
+}
+
+func TestGitBackend_ListZones_Empty(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	result, err := backend.ListZones(ctx, ListOptions{Limit: 100})
+	require.NoError(t, err)
+	assert.NotNil(t, result, "Should return empty slice, not nil")
+	assert.Len(t, result, 0)
+}
+
+func TestGitBackend_GetRevision(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create zone
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{
+			{
+				Name:  "example.com.",
+				Type:  "A",
+				TTL:   300,
+				Value: "192.0.2.1",
+			},
+		},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Get version
+	created, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	version1 := created.Version
+
+	// Update zone
+	time.Sleep(100 * time.Millisecond)
+	zone.Records = append(zone.Records, model.Record{
+		Name:  "www.example.com.",
+		Type:  "A",
+		TTL:   300,
+		Value: "192.0.2.2",
+	})
+	err = backend.UpdateZone(ctx, zone, version1)
+	require.NoError(t, err)
+
+	// Retrieve old version
+	oldVersion, err := backend.GetRevision(ctx, "example.com.", version1)
+	require.NoError(t, err)
+	assert.Equal(t, version1, oldVersion.Version)
+	assert.Len(t, oldVersion.Records, 1, "Old version should have 1 record")
+}
+
+func TestGitBackend_ListRevisions(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create zone
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Update zone multiple times
+	for i := 0; i < 3; i++ {
+		time.Sleep(100 * time.Millisecond)
+		retrieved, err := backend.GetZone(ctx, "example.com.")
+		require.NoError(t, err)
+
+		zone.Records = append(zone.Records, model.Record{
+			Name:  "example.com.",
+			Type:  "TXT",
+			TTL:   300,
+			Value: "update-" + string(rune('0'+i)),
+		})
+
+		err = backend.UpdateZone(ctx, zone, retrieved.Version)
+		require.NoError(t, err)
+	}
+
+	// List revisions
+	revisions, err := backend.ListRevisions(ctx, "example.com.", ListOptions{Limit: 100})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(revisions), 4, "Should have at least 4 revisions (1 create + 3 updates)")
+
+	// Verify revisions have versions
+	for _, rev := range revisions {
+		assert.NotEmpty(t, rev.Version)
+		assert.NotZero(t, rev.Timestamp)
+		assert.NotZero(t, rev.Serial)
+	}
+}
+
+func TestGitBackend_GetCurrentVersion(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create zone
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Get current version
+	version, err := backend.GetCurrentVersion(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.NotEmpty(t, version)
+
+	// Verify it matches GetZone
+	retrieved, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, retrieved.Version, version)
+}
+
+func TestGitBackend_ConcurrentWrites(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create initial zone
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Get version
+	retrieved, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	version := retrieved.Version
+
+	// Concurrent update attempts
+	errChan := make(chan error, 2)
+
+	// First update should succeed
+	go func() {
+		zone1 := *zone
+		zone1.Records = []model.Record{
+			{Name: "test1.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		}
+		errChan <- backend.UpdateZone(ctx, &zone1, version)
+	}()
+
+	// Second update should fail with conflict (same expectedVersion)
+	go func() {
+		time.Sleep(50 * time.Millisecond) // Slight delay to ensure first update starts
+		zone2 := *zone
+		zone2.Records = []model.Record{
+			{Name: "test2.example.com.", Type: "A", TTL: 300, Value: "192.0.2.2"},
+		}
+		errChan <- backend.UpdateZone(ctx, &zone2, version)
+	}()
+
+	// Collect results
+	err1 := <-errChan
+	err2 := <-errChan
+
+	// One should succeed, one should fail
+	if err1 == nil {
+		assert.ErrorIs(t, err2, model.ErrConflict, "Second update should fail with conflict")
+	} else {
+		assert.ErrorIs(t, err1, model.ErrConflict, "One update should fail with conflict")
+		assert.NoError(t, err2, "Other update should succeed")
+	}
+}
+
+func TestGitBackend_ZoneNameNormalization(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create zone with uppercase name
+	zone := &model.Zone{
+		Name: "Example.COM.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Retrieve with lowercase
+	retrieved, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, "example.com.", retrieved.Name, "Name should be normalized to lowercase")
+
+	// Retrieve with uppercase (should still work)
+	retrieved2, err := backend.GetZone(ctx, "EXAMPLE.COM.")
+	require.NoError(t, err)
+	assert.Equal(t, "example.com.", retrieved2.Name)
+}
+
+// TestGitBackend_ListZones_LimitZero tests that Limit==0 returns all zones
+func TestGitBackend_ListZones_LimitZero(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create 5 zones
+	for i := 0; i < 5; i++ {
+		zone := &model.Zone{
+			Name: fmt.Sprintf("zone%d.com.", i),
+			SOA: model.SOARecord{
+				MName:   "ns1.example.com.",
+				RName:   "admin.example.com.",
+				Serial:  2024010101,
+				Refresh: 3600,
+				Retry:   1800,
+				Expire:  604800,
+				Minimum: 86400,
+			},
+			Records: []model.Record{},
+		}
+		err := backend.CreateZone(ctx, zone)
+		require.NoError(t, err)
+	}
+
+	// List with Limit==0 (should return all)
+	zones, err := backend.ListZones(ctx, ListOptions{Offset: 0, Limit: 0})
+	require.NoError(t, err)
+	assert.Len(t, zones, 5, "Limit==0 should return all zones")
+}
+
+// TestGitBackend_SerialAutoGeneration tests SOA serial auto-generation when serial==0
+func TestGitBackend_SerialAutoGeneration(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create zone with serial=0
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  0, // Should be auto-generated
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Retrieve and verify serial was generated
+	retrieved, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.NotZero(t, retrieved.SOA.Serial, "Serial should be auto-generated")
+	assert.Greater(t, retrieved.SOA.Serial, uint32(2024000000), "Serial should be in YYYYMMDDnn format")
+}
+
+// TestGitBackend_TimestampHandling tests CreatedAt preservation and UpdatedAt changes
+func TestGitBackend_TimestampHandling(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create zone
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Get created zone
+	created, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.NotZero(t, created.CreatedAt, "CreatedAt should be set")
+	assert.NotZero(t, created.UpdatedAt, "UpdatedAt should be set")
+	originalCreatedAt := created.CreatedAt
+	originalUpdatedAt := created.UpdatedAt
+
+	// Wait to ensure timestamp difference
+	time.Sleep(100 * time.Millisecond)
+
+	// Update zone
+	zone.Records = []model.Record{
+		{Name: "test.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+	}
+	err = backend.UpdateZone(ctx, zone, created.Version)
+	require.NoError(t, err)
+
+	// Verify timestamps
+	updated, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, originalCreatedAt, updated.CreatedAt, "CreatedAt should be preserved")
+	assert.NotEqual(t, originalUpdatedAt, updated.UpdatedAt, "UpdatedAt should change")
+	assert.True(t, updated.UpdatedAt.After(originalUpdatedAt), "UpdatedAt should be newer")
+}
+
+// TestGitBackend_GetRevision_NotFound tests that GetRevision returns ErrVersionNotFound
+func TestGitBackend_GetRevision_NotFound(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create zone
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	err := backend.CreateZone(ctx, zone)
+	require.NoError(t, err)
+
+	// Try to get non-existent version
+	_, err = backend.GetRevision(ctx, "example.com.", "v2024010101-nonexist")
+	assert.ErrorIs(t, err, model.ErrVersionNotFound, "Should return ErrVersionNotFound for missing version")
+}
+
+// TestGitBackend_PathTraversal tests path traversal protection
+func TestGitBackend_PathTraversal(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	testCases := []struct {
+		name     string
+		zoneName string
+	}{
+		{"absolute path", "/tmp/evil.com."},
+		{"parent directory", "../evil.com."},
+		{"path separator", "sub/dir/evil.com."},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			zone := &model.Zone{
+				Name: tc.zoneName,
+				SOA: model.SOARecord{
+					MName:   "ns1.example.com.",
+					RName:   "admin.example.com.",
+					Serial:  2024010101,
+					Refresh: 3600,
+					Retry:   1800,
+					Expire:  604800,
+					Minimum: 86400,
+				},
+				Records: []model.Record{},
+			}
+
+			err := backend.CreateZone(ctx, zone)
+			assert.Error(t, err, "Should reject zone name with path traversal: %s", tc.zoneName)
+		})
+	}
+}

@@ -1,0 +1,635 @@
+package config
+
+import "time"
+
+// ControllerConfig is the configuration for the arca-dns-controller.
+type ControllerConfig struct {
+	// API configuration
+	API APIConfig `mapstructure:"api"`
+
+	// Backend configuration
+	Backend BackendConfig `mapstructure:"backend"`
+
+	// DNSSEC configuration
+	DNSSEC DNSSECConfig `mapstructure:"dnssec"`
+
+	// Storage configuration (artifacts, keys)
+	Storage StorageConfig `mapstructure:"storage"`
+
+	// Logging configuration
+	Logging LoggingConfig `mapstructure:"logging"`
+}
+
+// AgentConfig is the configuration for the arca-dns-agent.
+type AgentConfig struct {
+	// Controller configuration
+	Controller ControllerClientConfig `mapstructure:"controller"`
+
+	// NSD configuration
+	NSD NSDConfig `mapstructure:"nsd"`
+
+	// Unbound configuration
+	Unbound UnboundConfig `mapstructure:"unbound"`
+
+	// BIRD configuration
+	BIRD BIRDConfig `mapstructure:"bird"`
+
+	// DNSTap configuration
+	DNSTap DNSTapConfig `mapstructure:"dnstap"`
+
+	// Metrics configuration
+	Metrics MetricsConfig `mapstructure:"metrics"`
+
+	// Health check configuration
+	Health HealthConfig `mapstructure:"health"`
+
+	// Sync configuration
+	Sync SyncConfig `mapstructure:"sync"`
+
+	// Logging configuration
+	Logging LoggingConfig `mapstructure:"logging"`
+}
+
+// APIConfig configures the controller's REST API server.
+type APIConfig struct {
+	// Listen address (e.g., "0.0.0.0:8080")
+	Listen string `mapstructure:"listen"`
+
+	// TLS configuration
+	TLS TLSConfig `mapstructure:"tls"`
+
+	// Authentication configuration
+	Auth AuthConfig `mapstructure:"auth"`
+
+	// CORS configuration
+	CORS CORSConfig `mapstructure:"cors"`
+
+	// Rate limiting
+	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
+
+	// Request timeout
+	Timeout time.Duration `mapstructure:"timeout"`
+
+	// Enable audit logging
+	AuditLog bool `mapstructure:"audit_log"`
+}
+
+// TLSConfig configures TLS for API and agent communication.
+type TLSConfig struct {
+	// Enabled enables TLS
+	Enabled bool `mapstructure:"enabled"`
+
+	// CertFile is the path to the TLS certificate
+	CertFile string `mapstructure:"cert_file"`
+
+	// KeyFile is the path to the TLS private key
+	KeyFile string `mapstructure:"key_file"`
+
+	// CAFile is the path to the CA certificate (for mutual TLS)
+	CAFile string `mapstructure:"ca_file"`
+
+	// ClientAuth enables mutual TLS (require client certificates)
+	ClientAuth bool `mapstructure:"client_auth"`
+}
+
+// AuthConfig configures authentication for the API.
+type AuthConfig struct {
+	// Enabled enables authentication
+	Enabled bool `mapstructure:"enabled"`
+
+	// APIKeys is a map of API key name to hashed key
+	APIKeys map[string]string `mapstructure:"api_keys"`
+
+	// JWTSecret is the secret for JWT token validation
+	JWTSecret string `mapstructure:"jwt_secret"`
+
+	// JWTIssuer is the expected JWT issuer
+	JWTIssuer string `mapstructure:"jwt_issuer"`
+}
+
+// CORSConfig configures Cross-Origin Resource Sharing.
+type CORSConfig struct {
+	// Enabled enables CORS
+	Enabled bool `mapstructure:"enabled"`
+
+	// AllowedOrigins is the list of allowed origins
+	AllowedOrigins []string `mapstructure:"allowed_origins"`
+
+	// AllowedMethods is the list of allowed HTTP methods
+	AllowedMethods []string `mapstructure:"allowed_methods"`
+
+	// AllowedHeaders is the list of allowed headers
+	AllowedHeaders []string `mapstructure:"allowed_headers"`
+}
+
+// RateLimitConfig configures rate limiting.
+type RateLimitConfig struct {
+	// Enabled enables rate limiting
+	Enabled bool `mapstructure:"enabled"`
+
+	// RequestsPerSecond is the maximum requests per second per client
+	RequestsPerSecond int `mapstructure:"requests_per_second"`
+
+	// Burst is the maximum burst size
+	Burst int `mapstructure:"burst"`
+}
+
+// BackendConfig configures the zone storage backend.
+type BackendConfig struct {
+	// Type is the backend type (memory, mysql, git, etcd)
+	Type string `mapstructure:"type"`
+
+	// Memory backend config
+	Memory MemoryBackendConfig `mapstructure:"memory"`
+
+	// MySQL backend config
+	MySQL MySQLBackendConfig `mapstructure:"mysql"`
+
+	// Git backend config
+	Git GitBackendConfig `mapstructure:"git"`
+
+	// Etcd backend config
+	Etcd EtcdBackendConfig `mapstructure:"etcd"`
+}
+
+// MemoryBackendConfig configures the in-memory backend.
+type MemoryBackendConfig struct {
+	// InitialCapacity is the initial capacity for the zone map
+	InitialCapacity int `mapstructure:"initial_capacity"`
+}
+
+// MySQLBackendConfig configures the MySQL backend.
+type MySQLBackendConfig struct {
+	// DSN is the MySQL data source name
+	DSN string `mapstructure:"dsn"`
+
+	// MaxOpenConns is the maximum number of open connections
+	MaxOpenConns int `mapstructure:"max_open_conns"`
+
+	// MaxIdleConns is the maximum number of idle connections
+	MaxIdleConns int `mapstructure:"max_idle_conns"`
+
+	// ConnMaxLifetime is the maximum connection lifetime
+	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
+}
+
+// GitBackendConfig configures the Git backend.
+type GitBackendConfig struct {
+	// RepositoryPath is the path to the Git repository
+	RepositoryPath string `mapstructure:"repository_path"`
+
+	// RemoteURL is the URL of the remote repository (optional)
+	RemoteURL string `mapstructure:"remote_url"`
+
+	// Branch is the Git branch to use
+	Branch string `mapstructure:"branch"`
+
+	// Author is the Git author name
+	Author string `mapstructure:"author"`
+
+	// Email is the Git author email
+	Email string `mapstructure:"email"`
+
+	// AutoPush enables automatic pushing to remote
+	AutoPush bool `mapstructure:"auto_push"`
+
+	// AutoPull enables automatic pulling from remote
+	AutoPull bool `mapstructure:"auto_pull"`
+
+	// PullInterval is the interval for automatic pulling
+	PullInterval time.Duration `mapstructure:"pull_interval"`
+}
+
+// EtcdBackendConfig configures the etcd backend.
+type EtcdBackendConfig struct {
+	// Endpoints is the list of etcd endpoints
+	Endpoints []string `mapstructure:"endpoints"`
+
+	// Prefix is the key prefix for all zones
+	Prefix string `mapstructure:"prefix"`
+
+	// Username for authentication
+	Username string `mapstructure:"username"`
+
+	// Password for authentication
+	Password string `mapstructure:"password"`
+
+	// DialTimeout is the timeout for establishing connections
+	DialTimeout time.Duration `mapstructure:"dial_timeout"`
+
+	// RequestTimeout is the timeout for requests
+	RequestTimeout time.Duration `mapstructure:"request_timeout"`
+}
+
+// DNSSECConfig configures DNSSEC signing.
+type DNSSECConfig struct {
+	// Enabled enables DNSSEC signing
+	Enabled bool `mapstructure:"enabled"`
+
+	// Algorithm is the DNSSEC algorithm (8=RSA-SHA256, 13=ECDSA-P256)
+	Algorithm uint8 `mapstructure:"algorithm"`
+
+	// KeyDirectory is the directory where keys are stored
+	KeyDirectory string `mapstructure:"key_directory"`
+
+	// KSKKeySize is the KSK key size in bits (for RSA)
+	KSKKeySize int `mapstructure:"ksk_key_size"`
+
+	// ZSKKeySize is the ZSK key size in bits (for RSA)
+	ZSKKeySize int `mapstructure:"zsk_key_size"`
+
+	// SignatureValidity is how long signatures are valid
+	SignatureValidity time.Duration `mapstructure:"signature_validity"`
+
+	// SignatureInception is how far back signatures are valid
+	SignatureInception time.Duration `mapstructure:"signature_inception"`
+
+	// ResignThreshold is when to re-sign (before expiration)
+	ResignThreshold time.Duration `mapstructure:"resign_threshold"`
+
+	// NSEC3 enables NSEC3 instead of NSEC
+	NSEC3 bool `mapstructure:"nsec3"`
+
+	// NSEC3Iterations is the number of NSEC3 hash iterations
+	NSEC3Iterations uint16 `mapstructure:"nsec3_iterations"`
+
+	// NSEC3SaltLength is the length of the NSEC3 salt
+	NSEC3SaltLength int `mapstructure:"nsec3_salt_length"`
+
+	// VaultEnabled enables Vault integration for key storage
+	VaultEnabled bool `mapstructure:"vault_enabled"`
+
+	// VaultAddress is the Vault server address
+	VaultAddress string `mapstructure:"vault_address"`
+
+	// VaultToken is the Vault authentication token
+	VaultToken string `mapstructure:"vault_token"`
+
+	// VaultPath is the Vault path for keys
+	VaultPath string `mapstructure:"vault_path"`
+
+	// SchedulerEnabled enables automatic signature freshness checking
+	SchedulerEnabled bool `mapstructure:"scheduler_enabled"`
+
+	// SchedulerCheckInterval is how often to check for expiring signatures
+	SchedulerCheckInterval time.Duration `mapstructure:"scheduler_check_interval"`
+
+	// MasterKeyAutoGenerate allows automatic generation of master key (dev only)
+	MasterKeyAutoGenerate bool `mapstructure:"master_key_auto_generate"`
+}
+
+// StorageConfig configures artifact and key storage.
+type StorageConfig struct {
+	// ArtifactDirectory is where signed zone files are stored
+	ArtifactDirectory string `mapstructure:"artifact_directory"`
+
+	// KeyDirectory is where DNSSEC keys are stored
+	KeyDirectory string `mapstructure:"key_directory"`
+
+	// MaxVersionsPerZone is the maximum number of versions to keep
+	MaxVersionsPerZone int `mapstructure:"max_versions_per_zone"`
+}
+
+// ControllerClientConfig configures agent's connection to controller.
+type ControllerClientConfig struct {
+	// URL is the controller API URL
+	URL string `mapstructure:"url"`
+
+	// APIKey is the authentication API key
+	APIKey string `mapstructure:"api_key"`
+
+	// TLS configuration
+	TLS TLSConfig `mapstructure:"tls"`
+
+	// Timeout is the HTTP request timeout
+	Timeout time.Duration `mapstructure:"timeout"`
+
+	// RetryAttempts is the number of retry attempts
+	RetryAttempts int `mapstructure:"retry_attempts"`
+
+	// RetryDelay is the delay between retries
+	RetryDelay time.Duration `mapstructure:"retry_delay"`
+}
+
+// NSDConfig configures NSD integration.
+type NSDConfig struct {
+	// Enabled enables NSD management
+	Enabled bool `mapstructure:"enabled"`
+
+	// ConfigPath is the path to nsd.conf
+	ConfigPath string `mapstructure:"config_path"`
+
+	// ControlPath is the path to nsd-control binary
+	ControlPath string `mapstructure:"control_path"`
+
+	// ZoneDirectory is where zone files are stored
+	ZoneDirectory string `mapstructure:"zone_directory"`
+
+	// CheckzonePath is the path to nsd-checkzone binary
+	CheckzonePath string `mapstructure:"checkzone_path"`
+
+	// ReloadTimeout is the timeout for reload operations
+	ReloadTimeout time.Duration `mapstructure:"reload_timeout"`
+}
+
+// UnboundConfig configures Unbound integration.
+type UnboundConfig struct {
+	// Enabled enables Unbound management
+	Enabled bool `mapstructure:"enabled"`
+
+	// ConfigPath is the path to unbound.conf
+	ConfigPath string `mapstructure:"config_path"`
+
+	// ControlPath is the path to unbound-control binary
+	ControlPath string `mapstructure:"control_path"`
+
+	// CheckconfPath is the path to unbound-checkconf binary
+	CheckconfPath string `mapstructure:"checkconf_path"`
+
+	// EDNSBufferSize is the EDNS buffer size (1232 for ECMP safety)
+	EDNSBufferSize int `mapstructure:"edns_buffer_size"`
+
+	// StubZoneConfig is the stub-zone configuration for NSD
+	StubZoneConfig StubZoneConfig `mapstructure:"stub_zone"`
+
+	// ReloadTimeout is the timeout for reload operations
+	ReloadTimeout time.Duration `mapstructure:"reload_timeout"`
+}
+
+// StubZoneConfig configures Unbound's stub-zone for NSD.
+type StubZoneConfig struct {
+	// NSDAddress is the address of the local NSD instance
+	NSDAddress string `mapstructure:"nsd_address"`
+
+	// NSDPort is the port of the local NSD instance
+	NSDPort int `mapstructure:"nsd_port"`
+}
+
+// BIRDConfig configures BIRD BGP integration.
+type BIRDConfig struct {
+	// Enabled enables BIRD integration
+	Enabled bool `mapstructure:"enabled"`
+
+	// SocketPath is the path to BIRD control socket
+	SocketPath string `mapstructure:"socket_path"`
+
+	// AnycastPrefixes is the list of anycast IP prefixes to announce
+	AnycastPrefixes []string `mapstructure:"anycast_prefixes"`
+
+	// ProtocolName is the BIRD protocol name to control
+	ProtocolName string `mapstructure:"protocol_name"`
+
+	// CommandTimeout is the timeout for BIRD commands
+	CommandTimeout time.Duration `mapstructure:"command_timeout"`
+}
+
+// DNSTapConfig configures DNSTap logging.
+type DNSTapConfig struct {
+	// Enabled enables DNSTap receiver
+	Enabled bool `mapstructure:"enabled"`
+
+	// SocketPath is the path to DNSTap Unix socket
+	SocketPath string `mapstructure:"socket_path"`
+
+	// LogFile is the path to the DNSTap log file
+	LogFile string `mapstructure:"log_file"`
+
+	// LogRotation configures log rotation
+	LogRotation LogRotationConfig `mapstructure:"log_rotation"`
+
+	// SampleRate is the sampling rate (1/N) for normal queries
+	SampleRate int `mapstructure:"sample_rate"`
+
+	// AlwaysLogErrors enables logging all error responses
+	AlwaysLogErrors bool `mapstructure:"always_log_errors"`
+
+	// BufferSize is the size of the internal buffer
+	BufferSize int `mapstructure:"buffer_size"`
+}
+
+// LogRotationConfig configures log file rotation.
+type LogRotationConfig struct {
+	// MaxSize is the maximum size in megabytes before rotation
+	MaxSize int `mapstructure:"max_size"`
+
+	// MaxAge is the maximum age in days to retain log files
+	MaxAge int `mapstructure:"max_age"`
+
+	// MaxBackups is the maximum number of old log files to retain
+	MaxBackups int `mapstructure:"max_backups"`
+
+	// Compress enables gzip compression of rotated files
+	Compress bool `mapstructure:"compress"`
+}
+
+// MetricsConfig configures Prometheus metrics.
+type MetricsConfig struct {
+	// Enabled enables metrics endpoint
+	Enabled bool `mapstructure:"enabled"`
+
+	// Listen address for metrics endpoint
+	Listen string `mapstructure:"listen"`
+
+	// Path is the HTTP path for metrics (default: /metrics)
+	Path string `mapstructure:"path"`
+}
+
+// HealthConfig configures health checking.
+type HealthConfig struct {
+	// CheckInterval is how often to run health checks
+	CheckInterval time.Duration `mapstructure:"check_interval"`
+
+	// FailureThreshold is consecutive failures before unhealthy
+	FailureThreshold int `mapstructure:"failure_threshold"`
+
+	// RecoveryThreshold is consecutive successes before healthy
+	RecoveryThreshold int `mapstructure:"recovery_threshold"`
+
+	// MinStateDuration is minimum time between state changes (debounce)
+	MinStateDuration time.Duration `mapstructure:"min_state_duration"`
+
+	// QueryTimeout is the timeout for DNS query checks
+	QueryTimeout time.Duration `mapstructure:"query_timeout"`
+
+	// LatencyThreshold is the maximum acceptable query latency
+	LatencyThreshold time.Duration `mapstructure:"latency_threshold"`
+
+	// TestZone is the zone to query for health checks
+	TestZone string `mapstructure:"test_zone"`
+
+	// TestRecord is the record to query for health checks
+	TestRecord string `mapstructure:"test_record"`
+}
+
+// SyncConfig configures zone synchronization.
+type SyncConfig struct {
+	// SyncInterval is how often to check for zone updates
+	SyncInterval time.Duration `mapstructure:"sync_interval"`
+
+	// Jitter is the maximum random jitter added to sync interval
+	Jitter time.Duration `mapstructure:"jitter"`
+
+	// MaxStaleness is the maximum time without successful sync before alerting
+	MaxStaleness time.Duration `mapstructure:"max_staleness"`
+
+	// BackupVersions is the number of old zone versions to keep
+	BackupVersions int `mapstructure:"backup_versions"`
+
+	// VerifyChecksums enables SHA256 checksum verification
+	VerifyChecksums bool `mapstructure:"verify_checksums"`
+
+	// VerifySignatures enables artifact signature verification
+	VerifySignatures bool `mapstructure:"verify_signatures"`
+
+	// ControllerPublicKey is the controller's public key for verification
+	ControllerPublicKey string `mapstructure:"controller_public_key"`
+}
+
+// LoggingConfig configures structured logging.
+type LoggingConfig struct {
+	// Level is the log level (debug, info, warn, error)
+	Level string `mapstructure:"level"`
+
+	// Format is the log format (json, console)
+	Format string `mapstructure:"format"`
+
+	// Output is the log output (stdout, stderr, file path)
+	Output string `mapstructure:"output"`
+
+	// EnableCaller adds caller information to logs
+	EnableCaller bool `mapstructure:"enable_caller"`
+
+	// EnableStacktrace adds stack traces to error logs
+	EnableStacktrace bool `mapstructure:"enable_stacktrace"`
+}
+
+// DefaultControllerConfig returns the default controller configuration.
+func DefaultControllerConfig() *ControllerConfig {
+	return &ControllerConfig{
+		API: APIConfig{
+			Listen:  "0.0.0.0:8080",
+			Timeout: 30 * time.Second,
+			TLS: TLSConfig{
+				Enabled: false,
+			},
+			Auth: AuthConfig{
+				Enabled: true,
+			},
+			RateLimit: RateLimitConfig{
+				Enabled:           true,
+				RequestsPerSecond: 100,
+				Burst:             200,
+			},
+			AuditLog: true,
+		},
+		Backend: BackendConfig{
+			Type: "memory",
+		},
+		DNSSEC: DNSSECConfig{
+			Enabled:                true,
+			Algorithm:              13, // ECDSA-P256
+			KeyDirectory:           "/var/lib/arca-dns/keys",
+			SignatureValidity:      30 * 24 * time.Hour,
+			SignatureInception:     1 * time.Hour,
+			ResignThreshold:        7 * 24 * time.Hour,
+			NSEC3:                  true,
+			NSEC3Iterations:        1,
+			NSEC3SaltLength:        8,
+			SchedulerEnabled:       true,
+			SchedulerCheckInterval: 1 * time.Hour,
+			MasterKeyAutoGenerate:  false, // Disabled by default for production safety
+		},
+		Storage: StorageConfig{
+			ArtifactDirectory:  "/var/lib/arca-dns/artifacts",
+			KeyDirectory:       "/var/lib/arca-dns/keys",
+			MaxVersionsPerZone: 10,
+		},
+		Logging: LoggingConfig{
+			Level:            "info",
+			Format:           "json",
+			Output:           "stdout",
+			EnableCaller:     false,
+			EnableStacktrace: true,
+		},
+	}
+}
+
+// DefaultAgentConfig returns the default agent configuration.
+func DefaultAgentConfig() *AgentConfig {
+	return &AgentConfig{
+		Controller: ControllerClientConfig{
+			URL:           "http://localhost:8080",
+			Timeout:       30 * time.Second,
+			RetryAttempts: 3,
+			RetryDelay:    5 * time.Second,
+		},
+		NSD: NSDConfig{
+			Enabled:       true,
+			ConfigPath:    "/etc/nsd/nsd.conf",
+			ControlPath:   "/usr/sbin/nsd-control",
+			ZoneDirectory: "/var/lib/nsd/zones",
+			CheckzonePath: "/usr/sbin/nsd-checkzone",
+			ReloadTimeout: 10 * time.Second,
+		},
+		Unbound: UnboundConfig{
+			Enabled:        true,
+			ConfigPath:     "/etc/unbound/unbound.conf",
+			ControlPath:    "/usr/sbin/unbound-control",
+			CheckconfPath:  "/usr/sbin/unbound-checkconf",
+			EDNSBufferSize: 1232, // ECMP-safe value
+			StubZoneConfig: StubZoneConfig{
+				NSDAddress: "127.0.0.1",
+				NSDPort:    5353,
+			},
+			ReloadTimeout: 10 * time.Second,
+		},
+		BIRD: BIRDConfig{
+			Enabled:        false, // Disabled by default, must be configured
+			SocketPath:     "/var/run/bird/bird.ctl",
+			ProtocolName:   "anycast_dns",
+			CommandTimeout: 5 * time.Second,
+		},
+		DNSTap: DNSTapConfig{
+			Enabled:    true,
+			SocketPath: "/var/run/dnstap.sock",
+			LogFile:    "/var/log/arca-dns/dnstap.log",
+			LogRotation: LogRotationConfig{
+				MaxSize:    100, // 100 MB
+				MaxAge:     7,   // 7 days
+				MaxBackups: 10,
+				Compress:   true,
+			},
+			SampleRate:      1000, // 1/1000
+			AlwaysLogErrors: true,
+			BufferSize:      10000,
+		},
+		Metrics: MetricsConfig{
+			Enabled: true,
+			Listen:  "0.0.0.0:9090",
+			Path:    "/metrics",
+		},
+		Health: HealthConfig{
+			CheckInterval:     10 * time.Second,
+			FailureThreshold:  3,
+			RecoveryThreshold: 5,
+			MinStateDuration:  30 * time.Second,
+			QueryTimeout:      5 * time.Second,
+			LatencyThreshold:  100 * time.Millisecond,
+		},
+		Sync: SyncConfig{
+			SyncInterval:     30 * time.Second,
+			Jitter:           5 * time.Second,
+			MaxStaleness:     5 * time.Minute,
+			BackupVersions:   3,
+			VerifyChecksums:  true,
+			VerifySignatures: false, // Disabled by default
+		},
+		Logging: LoggingConfig{
+			Level:            "info",
+			Format:           "json",
+			Output:           "stdout",
+			EnableCaller:     false,
+			EnableStacktrace: true,
+		},
+	}
+}

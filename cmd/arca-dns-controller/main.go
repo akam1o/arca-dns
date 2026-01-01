@@ -52,6 +52,7 @@ performs DNSSEC signing, and distributes zone artifacts to agents.`,
 
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(cmd.NewDNSSECCmd())
+	rootCmd.AddCommand(cmd.NewMigrateCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

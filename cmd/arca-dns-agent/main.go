@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-dns/internal/agent/bird"
+	"github.com/akam1o/arca-dns/internal/agent/dnstap"
 	"github.com/akam1o/arca-dns/internal/agent/health"
 	"github.com/akam1o/arca-dns/internal/agent/nsd"
 	zonesync "github.com/akam1o/arca-dns/internal/agent/sync"
@@ -184,6 +185,34 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		logger.Info("BGP control loop initialized")
 	}
 
+	// Create DNSTap processor (M6)
+	var dnstapProcessor *dnstap.Processor
+	if cfg.DNSTap.Enabled {
+		processorConfig := dnstap.ProcessorConfig{
+			ReceiverConfig: dnstap.ReceiverConfig{
+				SocketPath: cfg.DNSTap.SocketPath,
+				BufferSize: cfg.DNSTap.BufferSize,
+			},
+			LoggerConfig: dnstap.LoggerConfig{
+				LogFile:    cfg.DNSTap.LogFile,
+				MaxSize:    cfg.DNSTap.LogRotation.MaxSize,
+				MaxBackups: cfg.DNSTap.LogRotation.MaxBackups,
+				MaxAge:     cfg.DNSTap.LogRotation.MaxAge,
+				Compress:   cfg.DNSTap.LogRotation.Compress,
+				QueueSize:  1000, // Default queue size
+			},
+			SamplerConfig: dnstap.SamplerConfig{
+				SampleRate: 1.0 / float64(cfg.DNSTap.SampleRate), // Convert 1/N to float
+			},
+			PrometheusEnabled: cfg.Metrics.Enabled,
+		}
+		dnstapProcessor = dnstap.NewProcessor(processorConfig, logger)
+		logger.Info("DNSTap processor initialized",
+			zap.String("socket", cfg.DNSTap.SocketPath),
+			zap.String("log_file", cfg.DNSTap.LogFile),
+			zap.Int("sample_rate", cfg.DNSTap.SampleRate))
+	}
+
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -246,6 +275,19 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
+	// Start DNSTap processor (M6)
+	if cfg.DNSTap.Enabled && dnstapProcessor != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			logger.Info("Starting DNSTap processor")
+			if err := dnstapProcessor.Run(ctx); err != nil && err != context.Canceled {
+				logger.Error("DNSTap processor failed", zap.Error(err))
+			}
+			logger.Info("DNSTap processor stopped")
+		}()
+	}
+
 	// Monitor health status and trigger reloads
 	wg.Add(1)
 	go func() {
@@ -277,7 +319,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Start HTTP status server
 	wg.Add(1)
-	statusServer := startStatusServer(cfg, syncer, checker, logger)
+	statusServer := startStatusServer(cfg, syncer, checker, dnstapProcessor, logger)
 	go func() {
 		defer wg.Done()
 		<-ctx.Done()
@@ -328,7 +370,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 }
 
 // startStatusServer starts an HTTP server for status and metrics.
-func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, logger *zap.Logger) *http.Server {
+func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -383,10 +425,20 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 		})
 	})
 
-	// Metrics endpoint (placeholder for Prometheus metrics)
+	// Metrics endpoint (Prometheus format)
 	router.GET("/metrics", func(c *gin.Context) {
-		// TODO: Implement Prometheus metrics in M6
-		c.String(http.StatusOK, "# Metrics not yet implemented\n")
+		// Return DNSTap Prometheus metrics if processor is available
+		if dnstapProcessor != nil {
+			metricsText, err := dnstapProcessor.GetPrometheusMetrics()
+			if err != nil {
+				logger.Error("Failed to get Prometheus metrics", zap.Error(err))
+				c.String(http.StatusInternalServerError, "# Error retrieving metrics\n")
+				return
+			}
+			c.String(http.StatusOK, metricsText)
+		} else {
+			c.String(http.StatusOK, "# DNSTap processor not enabled\n")
+		}
 	})
 
 	server := &http.Server{

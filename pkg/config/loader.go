@@ -1,0 +1,298 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/spf13/viper"
+)
+
+// LoadControllerConfig loads the controller configuration from the specified file.
+// Priority: defaults < YAML file < environment variables
+func LoadControllerConfig(path string) (*ControllerConfig, error) {
+	cfg := DefaultControllerConfig()
+
+	if path != "" {
+		v := viper.New()
+		v.SetConfigFile(path)
+		v.SetConfigType("yaml")
+
+		// Set environment variable prefix and enable automatic env binding
+		v.SetEnvPrefix("ARCA_DNS")
+		v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+		v.AutomaticEnv()
+
+		// Read config file
+		if err := v.ReadInConfig(); err != nil {
+			return nil, fmt.Errorf("load controller config: %w", err)
+		}
+
+		// Unmarshal into config struct
+		if err := v.Unmarshal(cfg); err != nil {
+			return nil, fmt.Errorf("unmarshal controller config: %w", err)
+		}
+	} else {
+		// No config file, only apply environment variables
+		v := viper.New()
+		v.SetEnvPrefix("ARCA_DNS")
+		v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+		v.AutomaticEnv()
+		
+		// Manually bind key environment variables
+		bindControllerEnvVars(v)
+		
+		if err := v.Unmarshal(cfg); err != nil {
+			return nil, fmt.Errorf("unmarshal controller config from env: %w", err)
+		}
+	}
+
+	// Validate configuration
+	if err := ValidateControllerConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// LoadAgentConfig loads the agent configuration from the specified file.
+// Priority: defaults < YAML file < environment variables
+func LoadAgentConfig(path string) (*AgentConfig, error) {
+	cfg := DefaultAgentConfig()
+
+	if path != "" {
+		v := viper.New()
+		v.SetConfigFile(path)
+		v.SetConfigType("yaml")
+
+		// Set environment variable prefix and enable automatic env binding
+		v.SetEnvPrefix("ARCA_DNS")
+		v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+		v.AutomaticEnv()
+
+		// Read config file
+		if err := v.ReadInConfig(); err != nil {
+			return nil, fmt.Errorf("load agent config: %w", err)
+		}
+
+		// Unmarshal into config struct
+		if err := v.Unmarshal(cfg); err != nil {
+			return nil, fmt.Errorf("unmarshal agent config: %w", err)
+		}
+	} else {
+		// No config file, only apply environment variables
+		v := viper.New()
+		v.SetEnvPrefix("ARCA_DNS")
+		v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+		v.AutomaticEnv()
+		
+		// Manually bind key environment variables
+		bindAgentEnvVars(v)
+		
+		if err := v.Unmarshal(cfg); err != nil {
+			return nil, fmt.Errorf("unmarshal agent config from env: %w", err)
+		}
+	}
+
+	// Validate configuration
+	if err := ValidateAgentConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// ValidateControllerConfig validates the controller configuration.
+func ValidateControllerConfig(cfg *ControllerConfig) error {
+	if cfg.API.Listen == "" {
+		return fmt.Errorf("invalid api.listen: empty")
+	}
+
+	if cfg.Backend.Type == "" {
+		return fmt.Errorf("invalid backend.type: empty")
+	}
+
+	validBackendTypes := map[string]bool{
+		"memory": true,
+		"mysql":  true,
+		"git":    true,
+		"etcd":   true,
+	}
+	if !validBackendTypes[cfg.Backend.Type] {
+		return fmt.Errorf("invalid backend.type: %s (must be one of: memory, mysql, git, etcd)", cfg.Backend.Type)
+	}
+
+	if cfg.DNSSEC.Enabled {
+		if cfg.DNSSEC.KeyDirectory == "" {
+			return fmt.Errorf("invalid dnssec.key_directory: empty when DNSSEC is enabled")
+		}
+
+		validAlgorithms := map[uint8]bool{
+			8:  true, // RSA-SHA256
+			13: true, // ECDSA-P256
+		}
+		if !validAlgorithms[cfg.DNSSEC.Algorithm] {
+			return fmt.Errorf("invalid dnssec.algorithm: %d (must be 8 or 13)", cfg.DNSSEC.Algorithm)
+		}
+
+		if cfg.DNSSEC.SignatureValidity <= 0 {
+			return fmt.Errorf("invalid dnssec.signature_validity: must be positive")
+		}
+
+		if cfg.DNSSEC.SignatureInception < 0 {
+			return fmt.Errorf("invalid dnssec.signature_inception: must be non-negative")
+		}
+
+		if cfg.DNSSEC.ResignThreshold <= 0 {
+			return fmt.Errorf("invalid dnssec.resign_threshold: must be positive")
+		}
+
+		if cfg.DNSSEC.ResignThreshold >= cfg.DNSSEC.SignatureValidity {
+			return fmt.Errorf("invalid dnssec.resign_threshold: must be less than signature_validity")
+		}
+
+		// Validate scheduler configuration if enabled
+		if cfg.DNSSEC.SchedulerEnabled {
+			if cfg.DNSSEC.SchedulerCheckInterval <= 0 {
+				return fmt.Errorf("invalid dnssec.scheduler_check_interval: must be positive when scheduler is enabled")
+			}
+		}
+	}
+
+	if cfg.Storage.ArtifactDirectory == "" {
+		return fmt.Errorf("invalid storage.artifact_directory: empty")
+	}
+
+	if cfg.Storage.KeyDirectory == "" {
+		return fmt.Errorf("invalid storage.key_directory: empty")
+	}
+
+	validLogLevels := map[string]bool{
+		"debug": true,
+		"info":  true,
+		"warn":  true,
+		"error": true,
+	}
+	if !validLogLevels[cfg.Logging.Level] {
+		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
+	}
+
+	return nil
+}
+
+// ValidateAgentConfig validates the agent configuration.
+func ValidateAgentConfig(cfg *AgentConfig) error {
+	if cfg.Controller.URL == "" {
+		return fmt.Errorf("invalid controller.url: empty")
+	}
+
+	if cfg.NSD.Enabled {
+		if cfg.NSD.ConfigPath == "" {
+			return fmt.Errorf("invalid nsd.config_path: empty when NSD is enabled")
+		}
+		if cfg.NSD.ControlPath == "" {
+			return fmt.Errorf("invalid nsd.control_path: empty when NSD is enabled")
+		}
+		if cfg.NSD.ZoneDirectory == "" {
+			return fmt.Errorf("invalid nsd.zone_directory: empty when NSD is enabled")
+		}
+	}
+
+	if cfg.Unbound.Enabled {
+		if cfg.Unbound.ConfigPath == "" {
+			return fmt.Errorf("invalid unbound.config_path: empty when Unbound is enabled")
+		}
+		if cfg.Unbound.ControlPath == "" {
+			return fmt.Errorf("invalid unbound.control_path: empty when Unbound is enabled")
+		}
+		if cfg.Unbound.EDNSBufferSize <= 0 {
+			return fmt.Errorf("invalid unbound.edns_buffer_size: must be positive")
+		}
+	}
+
+	if cfg.BIRD.Enabled {
+		if cfg.BIRD.SocketPath == "" {
+			return fmt.Errorf("invalid bird.socket_path: empty when BIRD is enabled")
+		}
+		if cfg.BIRD.ProtocolName == "" {
+			return fmt.Errorf("invalid bird.protocol_name: empty when BIRD is enabled")
+		}
+		// Note: AnycastPrefixes is optional - current implementation manages routes
+		// via protocol enable/disable. Individual prefix management would require
+		// more complex BIRD command generation.
+	}
+
+	if cfg.Sync.SyncInterval <= 0 {
+		return fmt.Errorf("invalid sync.sync_interval: must be positive")
+	}
+
+	if cfg.Health.CheckInterval <= 0 {
+		return fmt.Errorf("invalid health.check_interval: must be positive")
+	}
+
+	if cfg.Health.FailureThreshold <= 0 {
+		return fmt.Errorf("invalid health.failure_threshold: must be positive")
+	}
+
+	if cfg.Health.RecoveryThreshold <= 0 {
+		return fmt.Errorf("invalid health.recovery_threshold: must be positive")
+	}
+
+	validLogLevels := map[string]bool{
+		"debug": true,
+		"info":  true,
+		"warn":  true,
+		"error": true,
+	}
+	if !validLogLevels[cfg.Logging.Level] {
+		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
+	}
+
+	return nil
+}
+
+// bindControllerEnvVars manually binds key environment variables for controller.
+// This is needed when no config file is provided.
+func bindControllerEnvVars(v *viper.Viper) {
+	// Bind key environment variables
+	envVars := []string{
+		"api.listen",
+		"backend.type",
+		"dnssec.enabled",
+		"dnssec.key_directory",
+		"dnssec.algorithm",
+		"storage.artifact_directory",
+		"storage.key_directory",
+		"logging.level",
+	}
+	
+	for _, key := range envVars {
+		envKey := "ARCA_DNS_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
+		if val := os.Getenv(envKey); val != "" {
+			v.Set(key, val)
+		}
+	}
+}
+
+// bindAgentEnvVars manually binds key environment variables for agent.
+// This is needed when no config file is provided.
+func bindAgentEnvVars(v *viper.Viper) {
+	// Bind key environment variables
+	envVars := []string{
+		"controller.url",
+		"controller.api_key",
+		"nsd.enabled",
+		"nsd.zone_directory",
+		"unbound.enabled",
+		"bird.enabled",
+		"sync.sync_interval",
+		"logging.level",
+	}
+	
+	for _, key := range envVars {
+		envKey := "ARCA_DNS_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
+		if val := os.Getenv(envKey); val != "" {
+			v.Set(key, val)
+		}
+	}
+}
