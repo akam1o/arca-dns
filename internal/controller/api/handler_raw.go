@@ -185,7 +185,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 	}
 
 	// Set response headers
-	c.Header("ETag", createdZone.Version)
+	c.Header("ETag", formatETag(createdZone.Version))
 	c.Header("Location", "/api/v1/zones/"+createdZone.Name)
 
 	h.logger.Info("Zone created from raw BIND format", zap.String("zone", createdZone.Name), zap.String("version", createdZone.Version))

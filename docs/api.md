@@ -49,6 +49,7 @@ Error `code` values are defined in `pkg/model/errors.go` (e.g. `NOT_FOUND`, `ALR
 - Successful `POST /zones`, `GET /zones/:name`, and `PUT /zones/:name` return an `ETag` header (`ETag: <zone.version>`).
 - `PUT /zones/:name` requires `If-Match: <etag>`; if the zone was updated concurrently, the API returns `409 Conflict`.
 - `GET /zones/:name/signed` supports `If-None-Match: <etag>` and returns `304 Not Modified` (with `ETag` + metadata headers) when unchanged.
+  - Note: `ETag` values are returned as quoted strings (e.g. `ETag: "<zone.version>"`). Clients should send the value back in `If-Match`/`If-None-Match` (quoted or unquoted are accepted).
 
 For signed artifacts:
 - `X-Zone-Hash` is the full SHA256 (hex) of the returned zone file body.

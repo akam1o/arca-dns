@@ -179,7 +179,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 	}
 
 	// Set ETag header
-	c.Header("ETag", created.Version)
+	c.Header("ETag", formatETag(created.Version))
 	c.Header("Location", "/api/v1/zones/"+created.Name)
 
 	h.logger.Info("Zone created", zap.String("zone", created.Name), zap.String("version", created.Version))
@@ -210,7 +210,7 @@ func (h *Handler) GetZone(c *gin.Context) {
 	}
 
 	// Set ETag header
-	c.Header("ETag", zone.Version)
+	c.Header("ETag", formatETag(zone.Version))
 
 	// Conditional GET: return 304 when If-None-Match matches current version.
 	ifNoneMatch := c.GetHeader("If-None-Match")
@@ -231,12 +231,18 @@ func etagMatches(ifNoneMatch, current string) bool {
 	// If-None-Match can be a comma-separated list. We accept exact match with optional quotes.
 	for _, part := range strings.Split(ifNoneMatch, ",") {
 		tag := strings.TrimSpace(part)
+		tag = strings.TrimPrefix(tag, "W/")
 		tag = strings.Trim(tag, "\"")
 		if tag == current {
 			return true
 		}
 	}
 	return false
+}
+
+func formatETag(version string) string {
+	// Strong ETag with quoted-string. Versions are URL-safe, so no escaping needed.
+	return `"` + version + `"`
 }
 
 func sha256HexAndHash8(s string) (string, string) {
@@ -356,7 +362,7 @@ func (h *Handler) ListZoneVersions(c *gin.Context) {
 		return
 	}
 
-	c.Header("ETag", zone.Version)
+	c.Header("ETag", formatETag(zone.Version))
 	c.JSON(http.StatusOK, gin.H{
 		"versions": versions,
 		"pagination": gin.H{
@@ -422,7 +428,7 @@ func (h *Handler) GetZoneRevision(c *gin.Context) {
 		return
 	}
 
-	c.Header("ETag", rev.Version)
+	c.Header("ETag", formatETag(rev.Version))
 	c.JSON(http.StatusOK, rev)
 }
 
@@ -463,14 +469,48 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	}
 
 	// Get If-Match header for optimistic locking (required)
-	expectedVersion := c.GetHeader("If-Match")
-	if expectedVersion == "" {
+	ifMatch := c.GetHeader("If-Match")
+	if ifMatch == "" {
 		c.JSON(http.StatusPreconditionRequired, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"If-Match header is required for zone updates",
 			map[string]interface{}{"header": "If-Match"},
 		))
 		return
+	}
+
+	// Resolve If-Match into a concrete expected version (accepts quoted/unquoted, W/, and lists).
+	expectedVersion := ""
+	if strings.TrimSpace(ifMatch) != "*" {
+		current, err := h.store.GetZone(c.Request.Context(), zone.Name)
+		if err != nil {
+			if err == model.ErrZoneNotFound {
+				c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
+					model.ErrorCodeNotFound,
+					"Zone not found",
+					map[string]interface{}{"zone": name},
+				))
+				return
+			}
+			h.logger.Error("Failed to get zone for If-Match evaluation", zap.String("zone", zone.Name), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+				model.ErrorCodeInternal,
+				"Failed to update zone",
+				map[string]interface{}{"error": "internal error"},
+			))
+			return
+		}
+
+		if !etagMatches(ifMatch, current.Version) {
+			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
+				model.ErrorCodeConflict,
+				"Zone version mismatch (optimistic lock failure)",
+				map[string]interface{}{"expected_version": ifMatch},
+			))
+			return
+		}
+
+		expectedVersion = current.Version
 	}
 
 	// Issue a new version (controller-generated).
@@ -500,7 +540,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
 				"Zone version mismatch (optimistic lock failure)",
-				map[string]interface{}{"expected_version": expectedVersion},
+				map[string]interface{}{"expected_version": ifMatch},
 			))
 			return
 		}
@@ -536,7 +576,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	}
 
 	// Set ETag header
-	c.Header("ETag", updated.Version)
+	c.Header("ETag", formatETag(updated.Version))
 
 	h.logger.Info("Zone updated", zap.String("zone", updated.Name), zap.String("version", updated.Version))
 	c.JSON(http.StatusOK, updated)
@@ -593,9 +633,9 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 	}
 
 	// Check If-None-Match for conditional fetch BEFORE generating zone file (optimization)
-	if match := c.GetHeader("If-None-Match"); match == zone.Version {
+	if match := c.GetHeader("If-None-Match"); match != "" && etagMatches(match, zone.Version) {
 		// Set headers even on 304
-		c.Header("ETag", zone.Version)
+		c.Header("ETag", formatETag(zone.Version))
 		c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
 		c.Status(http.StatusNotModified)
 		return
@@ -631,7 +671,7 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 
 	// Set headers for successful response
 	hashHex, hash8 := sha256HexAndHash8(zoneFile)
-	c.Header("ETag", zone.Version)
+	c.Header("ETag", formatETag(zone.Version))
 	c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
 	c.Header("X-Zone-Hash", hashHex)
 	c.Header("X-Zone-Hash8", hash8)
@@ -667,7 +707,7 @@ func (h *Handler) GetSignedZoneMetadata(c *gin.Context) {
 	}
 
 	// Set headers (same metadata headers as /signed).
-	c.Header("ETag", zone.Version)
+	c.Header("ETag", formatETag(zone.Version))
 	c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
 
 	// Conditional GET: return 304 when If-None-Match matches current version.
