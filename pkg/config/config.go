@@ -347,11 +347,89 @@ type BIRDConfig struct {
 	// AnycastPrefixes is the list of anycast IP prefixes to announce
 	AnycastPrefixes []string `mapstructure:"anycast_prefixes"`
 
-	// ProtocolName is the BIRD protocol name to control
+	// Protocols is the list of BIRD protocols to control.
+	// When set, this is the preferred configuration surface for multi-neighbor setups.
+	Protocols []BIRDProtocolConfig `mapstructure:"protocols"`
+
+	// ProtocolName is the BIRD protocol name to control.
+	// Deprecated in favor of ProtocolNames for multi-neighbor setups, but still supported.
 	ProtocolName string `mapstructure:"protocol_name"`
+
+	// ProtocolNames is the list of BIRD protocol names to enable/disable together.
+	// If empty, ProtocolName is used.
+	ProtocolNames []string `mapstructure:"protocol_names"`
 
 	// CommandTimeout is the timeout for BIRD commands
 	CommandTimeout time.Duration `mapstructure:"command_timeout"`
+
+	// ConfigureOnStart generates a BIRD config snippet and runs "configure".
+	ConfigureOnStart BIRDConfigGenerationConfig `mapstructure:"config"`
+
+	// StateMachine configures how health signals are translated into route changes.
+	StateMachine BIRDStateMachineConfig `mapstructure:"state_machine"`
+}
+
+// BIRDStateMachineConfig configures the BIRD health-to-routing state machine.
+type BIRDStateMachineConfig struct {
+	// FailureThreshold is consecutive failures before withdrawing routes.
+	FailureThreshold int `mapstructure:"failure_threshold"`
+
+	// RecoveryThreshold is consecutive successes before announcing routes.
+	RecoveryThreshold int `mapstructure:"recovery_threshold"`
+
+	// MinStateDuration is minimum time between route changes (debounce).
+	MinStateDuration time.Duration `mapstructure:"min_state_duration"`
+}
+
+// BIRDConfigGenerationConfig configures generating a BIRD config file for anycast.
+// This is roughly comparable to ip-anycast-service's BGP config surface.
+type BIRDConfigGenerationConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+
+	// Path is where the generated config will be written.
+	// Your main bird.conf should include this file.
+	Path string `mapstructure:"path"`
+
+	// RouterID is the BIRD router id (e.g. "10.0.0.5").
+	RouterID string `mapstructure:"router_id"`
+
+	// LocalAS is the local ASN for BGP sessions.
+	LocalAS uint32 `mapstructure:"local_as"`
+
+	// SourceIP is the source address for BGP sessions.
+	SourceIP string `mapstructure:"source_ip"`
+
+	// Neighbors is a legacy list of upstream neighbors (address + ASN).
+	// Prefer BIRDConfig.Protocols for a single, explicit config surface.
+	Neighbors []BIRDNeighborConfig `mapstructure:"neighbors"`
+
+	// BFD config (optional).
+	BFD BIRDBFDConfig `mapstructure:"bfd"`
+}
+
+type BIRDNeighborConfig struct {
+	Address string `mapstructure:"address"`
+	ASN     uint32 `mapstructure:"asn"`
+}
+
+type BIRDProtocolConfig struct {
+	// Name is the protocol name in bird.conf (e.g. "anycast_1").
+	Name string `mapstructure:"name"`
+
+	// Neighbor address for this BGP session.
+	NeighborAddress string `mapstructure:"neighbor_address"`
+
+	// Neighbor ASN for this BGP session.
+	NeighborASN uint32 `mapstructure:"neighbor_asn"`
+}
+
+type BIRDBFDConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+
+	MinRx time.Duration `mapstructure:"min_rx"`
+	MinTx time.Duration `mapstructure:"min_tx"`
+
+	Multiplier int `mapstructure:"multiplier"`
 }
 
 // DNSTapConfig configures DNSTap logging.
@@ -554,6 +632,11 @@ func DefaultAgentConfig() *AgentConfig {
 			SocketPath:     "/var/run/bird/bird.ctl",
 			ProtocolName:   "anycast_dns",
 			CommandTimeout: 5 * time.Second,
+			StateMachine: BIRDStateMachineConfig{
+				FailureThreshold:  3,
+				RecoveryThreshold: 3,
+				MinStateDuration:  30 * time.Second,
+			},
 		},
 		DNSTap: DNSTapConfig{
 			Enabled:    true,

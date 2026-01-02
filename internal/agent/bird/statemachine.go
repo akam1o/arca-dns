@@ -20,10 +20,10 @@ const (
 
 // HealthSignal represents a health check signal from the engine.
 type HealthSignal struct {
-	HardFail         bool
-	LatencyDegraded  bool
-	Reason           string
-	ObservedAt       time.Time
+	HardFail        bool
+	LatencyDegraded bool
+	Reason          string
+	ObservedAt      time.Time
 }
 
 // StateMachineConfig configures the state machine.
@@ -199,12 +199,12 @@ func (sm *StateMachine) GetStats() map[string]interface{} {
 	defer sm.mu.Unlock()
 
 	return map[string]interface{}{
-		"state":              string(sm.state),
-		"consecutive_fails":  sm.consecutiveFails,
-		"consecutive_oks":    sm.consecutiveOKs,
-		"last_transition":    sm.lastTransition,
-		"last_route_change":  sm.lastRouteChange,
-		"time_since_change":  time.Since(sm.lastRouteChange),
+		"state":             string(sm.state),
+		"consecutive_fails": sm.consecutiveFails,
+		"consecutive_oks":   sm.consecutiveOKs,
+		"last_transition":   sm.lastTransition,
+		"last_route_change": sm.lastRouteChange,
+		"time_since_change": time.Since(sm.lastRouteChange),
 	}
 }
 

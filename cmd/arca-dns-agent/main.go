@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -168,8 +169,56 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	if cfg.BIRD.Enabled {
 
+		// Optionally generate BIRD config snippet and run "configure" once at startup.
+		if cfg.BIRD.ConfigureOnStart.Enabled {
+			configText, protocolNames, err := bird.RenderAnycastConfig(cfg.BIRD)
+			if err != nil {
+				logger.Warn("Failed to render BIRD anycast config, skipping configure",
+					zap.Error(err))
+			} else {
+				if err := os.MkdirAll(filepath.Dir(cfg.BIRD.ConfigureOnStart.Path), 0o755); err != nil {
+					logger.Warn("Failed to create BIRD config directory, skipping configure",
+						zap.String("path", cfg.BIRD.ConfigureOnStart.Path),
+						zap.Error(err))
+				} else if err := os.WriteFile(cfg.BIRD.ConfigureOnStart.Path, []byte(configText), 0o644); err != nil {
+					logger.Warn("Failed to write BIRD config snippet, skipping configure",
+						zap.String("path", cfg.BIRD.ConfigureOnStart.Path),
+						zap.Error(err))
+				} else {
+					// If protocol_names not set, use the generated list so enable/disable controls all neighbors.
+					if len(cfg.BIRD.ProtocolNames) == 0 && len(protocolNames) > 0 {
+						cfg.BIRD.ProtocolNames = protocolNames
+					}
+					cfgCtx, cfgCancel := context.WithTimeout(context.Background(), cfg.BIRD.CommandTimeout)
+					if resp, err := birdClient.Exec(cfgCtx, "configure"); err != nil {
+						logger.Warn("BIRD configure failed",
+							zap.Error(err))
+					} else if resp.IsError() {
+						logger.Warn("BIRD configure returned error",
+							zap.Int("code", resp.Code),
+							zap.String("response", resp.RawText))
+					} else {
+						logger.Info("BIRD configured from generated snippet",
+							zap.String("path", cfg.BIRD.ConfigureOnStart.Path))
+					}
+					cfgCancel()
+				}
+			}
+		}
+
 		// Create route manager and reconcile state
-		routeManager = bird.NewRouteManager(birdClient, cfg.BIRD.ProtocolName)
+		var protocolNames []string
+		if len(cfg.BIRD.Protocols) > 0 {
+			for _, p := range cfg.BIRD.Protocols {
+				protocolNames = append(protocolNames, p.Name)
+			}
+		} else {
+			protocolNames = cfg.BIRD.ProtocolNames
+			if len(protocolNames) == 0 && cfg.BIRD.ProtocolName != "" {
+				protocolNames = []string{cfg.BIRD.ProtocolName}
+			}
+		}
+		routeManager = bird.NewRouteManager(birdClient, protocolNames)
 		reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := routeManager.Reconcile(reconcileCtx); err != nil {
 			reconcileCancel()
@@ -184,15 +233,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		// Create state machine with validation
 		// Note: State machine does the thresholding, so engine just passes through
 		smConfig := bird.StateMachineConfig{
-			FailureThreshold:  3,                // 3 consecutive failures before withdrawing routes
-			RecoveryThreshold: 3,                // 3 consecutive successes before announcing routes
-			MinStateDuration:  30 * time.Second, // 30s debounce to prevent flapping
+			FailureThreshold:  cfg.BIRD.StateMachine.FailureThreshold,
+			RecoveryThreshold: cfg.BIRD.StateMachine.RecoveryThreshold,
+			MinStateDuration:  cfg.BIRD.StateMachine.MinStateDuration,
 		}
 		stateMachine = bird.NewStateMachine(smConfig, logger)
 		logger.Info("BIRD state machine initialized",
-			zap.Int("failure_threshold", 3),
-			zap.Int("recovery_threshold", 3),
-			zap.Duration("min_state_duration", 30*time.Second))
+			zap.Int("failure_threshold", smConfig.FailureThreshold),
+			zap.Int("recovery_threshold", smConfig.RecoveryThreshold),
+			zap.Duration("min_state_duration", smConfig.MinStateDuration))
 
 		// Create health engine
 		// Engine uses threshold=1 to pass through all state changes to state machine

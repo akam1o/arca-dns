@@ -44,8 +44,50 @@ unbound:
 bird:
   enabled: false
   socket_path: "/var/run/bird/bird.ctl"
-  protocol_name: "anycast"
   command_timeout: "5s"
+
+  # Protocols to control (enable/disable) based on health.
+  # This is the recommended config surface (explicit name + neighbor).
+  protocols:
+    - name: "anycast_1"
+      neighbor_address: "10.0.0.1"
+      neighbor_asn: 64512
+    - name: "anycast_2"
+      neighbor_address: "10.0.0.2"
+      neighbor_asn: 64512
+
+  # Legacy (still supported): protocol_name/protocol_names for enable/disable only.
+  # protocol_name: "anycast"
+  # protocol_names: ["anycast_1", "anycast_2"]
+
+  # Anycast prefixes to advertise (used for config generation below; optional if you manage bird.conf yourself)
+  anycast_prefixes:
+    - "192.0.2.53/32"
+    - "2001:db8::53/128"
+
+  # Health → route decision thresholds (defaults match current behavior)
+  state_machine:
+    failure_threshold: 3
+    recovery_threshold: 3
+    min_state_duration: "30s"
+
+  # Optional: generate a BIRD config snippet at startup and run "configure".
+  # This provides a config surface similar to ip-anycast-service (router_id/local_as/source_ip/neighbors/BFD).
+  # Your main bird.conf must include this file, e.g.:
+  #   include "/etc/bird/arca-dns-anycast.conf";
+  config:
+    enabled: false
+    path: "/etc/bird/arca-dns-anycast.conf"
+    router_id: "10.0.0.5"
+    local_as: 65001
+    source_ip: "10.0.0.5"
+    # Legacy (still supported): if bird.protocols is empty, neighbors are used to generate bgp protocols.
+    neighbors: []
+    bfd:
+      enabled: true
+      min_rx: "300ms"
+      min_tx: "300ms"
+      multiplier: 5
 
 dnstap:
   enabled: false

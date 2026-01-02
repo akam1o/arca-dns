@@ -3,26 +3,27 @@ package bird
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
 
 // RouteManager manages BGP route announcements.
 type RouteManager struct {
-	client       Client
-	protocolName string
-	mu           sync.Mutex
-	announced    bool
-	lastChange   time.Time
+	client        Client
+	protocolNames []string
+	mu            sync.Mutex
+	announced     bool
+	lastChange    time.Time
 }
 
 // NewRouteManager creates a new route manager.
 // Note: Call Reconcile() after creation to sync with BIRD's actual state.
-func NewRouteManager(client Client, protocolName string) *RouteManager {
+func NewRouteManager(client Client, protocolNames []string) *RouteManager {
 	return &RouteManager{
-		client:       client,
-		protocolName: protocolName,
-		announced:    false,
+		client:        client,
+		protocolNames: protocolNames,
+		announced:     false,
 	}
 }
 
@@ -46,38 +47,49 @@ func containsWord(s, word string) bool {
 	return false
 }
 
+func protocolEnabledFromShowProtocols(output string) bool {
+	// Heuristic based on BIRD "show protocols <name>" output:
+	// disabled protocols usually have "Disabled" in the info column.
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// If any line explicitly mentions Disabled, treat as disabled.
+		if containsWord(line, "Disabled") || containsWord(line, "disabled") {
+			return false
+		}
+	}
+	// If we didn't see "Disabled", assume enabled (even if session is down).
+	return true
+}
+
 // Reconcile queries BIRD to sync the manager's state with reality.
 // This should be called once during startup to avoid state drift.
 func (rm *RouteManager) Reconcile(ctx context.Context) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	cmd := fmt.Sprintf("show protocols %s", rm.protocolName)
-	resp, err := rm.client.Exec(ctx, cmd)
-	if err != nil {
-		return fmt.Errorf("reconcile: show protocols: %w", err)
+	if len(rm.protocolNames) == 0 {
+		return fmt.Errorf("reconcile: no protocols configured")
 	}
 
-	if resp.IsError() {
-		return fmt.Errorf("reconcile: BIRD error %d: %s", resp.Code, resp.RawText)
-	}
-
-	// Parse the protocol status from response
-	// BIRD protocol status line format: "protocol_name proto table state since info"
-	// We're looking for "up" state which means the protocol is enabled
-	isUp := false
-	for _, line := range resp.Lines {
-		if len(line) > 0 {
-			// Simple heuristic: if the status line contains "up", protocol is enabled
-			// More robust parsing would be better, but this is sufficient for reconciliation
-			if containsWord(line, "up") {
-				isUp = true
-				break
-			}
+	allEnabled := true
+	for _, name := range rm.protocolNames {
+		cmd := fmt.Sprintf("show protocols %s", name)
+		resp, err := rm.client.Exec(ctx, cmd)
+		if err != nil {
+			return fmt.Errorf("reconcile: show protocols %s: %w", name, err)
+		}
+		if resp.IsError() {
+			return fmt.Errorf("reconcile: BIRD error %d: %s", resp.Code, resp.RawText)
+		}
+		if !protocolEnabledFromShowProtocols(resp.RawText) {
+			allEnabled = false
 		}
 	}
 
-	rm.announced = isUp
+	rm.announced = allEnabled
 	return nil
 }
 
@@ -92,14 +104,15 @@ func (rm *RouteManager) AnnounceRoutes(ctx context.Context) error {
 		return nil
 	}
 
-	cmd := fmt.Sprintf("enable %s", rm.protocolName)
-	resp, err := rm.client.Exec(ctx, cmd)
-	if err != nil {
-		return fmt.Errorf("enable protocol: %w", err)
-	}
-
-	if resp.IsError() {
-		return fmt.Errorf("BIRD error %d: %s", resp.Code, resp.RawText)
+	for _, name := range rm.protocolNames {
+		cmd := fmt.Sprintf("enable %s", name)
+		resp, err := rm.client.Exec(ctx, cmd)
+		if err != nil {
+			return fmt.Errorf("enable protocol %s: %w", name, err)
+		}
+		if resp.IsError() {
+			return fmt.Errorf("BIRD error enabling %s (%d): %s", name, resp.Code, resp.RawText)
+		}
 	}
 
 	rm.announced = true
@@ -118,14 +131,15 @@ func (rm *RouteManager) WithdrawRoutes(ctx context.Context) error {
 		return nil
 	}
 
-	cmd := fmt.Sprintf("disable %s", rm.protocolName)
-	resp, err := rm.client.Exec(ctx, cmd)
-	if err != nil {
-		return fmt.Errorf("disable protocol: %w", err)
-	}
-
-	if resp.IsError() {
-		return fmt.Errorf("BIRD error %d: %s", resp.Code, resp.RawText)
+	for _, name := range rm.protocolNames {
+		cmd := fmt.Sprintf("disable %s", name)
+		resp, err := rm.client.Exec(ctx, cmd)
+		if err != nil {
+			return fmt.Errorf("disable protocol %s: %w", name, err)
+		}
+		if resp.IsError() {
+			return fmt.Errorf("BIRD error disabling %s (%d): %s", name, resp.Code, resp.RawText)
+		}
 	}
 
 	rm.announced = false
@@ -149,15 +163,17 @@ func (rm *RouteManager) LastChangeTime() time.Time {
 
 // GetStatus queries BIRD for the current protocol status.
 func (rm *RouteManager) GetStatus(ctx context.Context) (string, error) {
-	cmd := fmt.Sprintf("show protocols %s", rm.protocolName)
-	resp, err := rm.client.Exec(ctx, cmd)
-	if err != nil {
-		return "", fmt.Errorf("show protocols: %w", err)
+	var out []string
+	for _, name := range rm.protocolNames {
+		cmd := fmt.Sprintf("show protocols %s", name)
+		resp, err := rm.client.Exec(ctx, cmd)
+		if err != nil {
+			return "", fmt.Errorf("show protocols %s: %w", name, err)
+		}
+		if resp.IsError() {
+			return "", fmt.Errorf("BIRD error %s (%d): %s", name, resp.Code, resp.RawText)
+		}
+		out = append(out, resp.RawText)
 	}
-
-	if resp.IsError() {
-		return "", fmt.Errorf("BIRD error %d: %s", resp.Code, resp.RawText)
-	}
-
-	return resp.RawText, nil
+	return strings.Join(out, "\n"), nil
 }

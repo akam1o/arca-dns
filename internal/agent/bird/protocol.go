@@ -36,12 +36,14 @@ func (r *Response) IsError() bool {
 // - 9000-9999: Syntax errors
 //
 // Example:
-//   0001-BIRD 2.0.8 ready.
-//   0000
+//
+//	0001-BIRD 2.0.8 ready.
+//	0000
 //
 // Example error:
-//   9001 syntax error
-//   0000
+//
+//	9001 syntax error
+//	0000
 func ParseResponse(reader io.Reader) (*Response, error) {
 	scanner := bufio.NewScanner(reader)
 	var lines []string

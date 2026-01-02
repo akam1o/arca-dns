@@ -38,10 +38,10 @@ func LoadControllerConfig(path string) (*ControllerConfig, error) {
 		v.SetEnvPrefix("ARCA_DNS")
 		v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 		v.AutomaticEnv()
-		
+
 		// Manually bind key environment variables
 		bindControllerEnvVars(v)
-		
+
 		if err := v.Unmarshal(cfg); err != nil {
 			return nil, fmt.Errorf("unmarshal controller config from env: %w", err)
 		}
@@ -85,10 +85,10 @@ func LoadAgentConfig(path string) (*AgentConfig, error) {
 		v.SetEnvPrefix("ARCA_DNS")
 		v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 		v.AutomaticEnv()
-		
+
 		// Manually bind key environment variables
 		bindAgentEnvVars(v)
-		
+
 		if err := v.Unmarshal(cfg); err != nil {
 			return nil, fmt.Errorf("unmarshal agent config from env: %w", err)
 		}
@@ -214,12 +214,56 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		if cfg.BIRD.SocketPath == "" {
 			return fmt.Errorf("invalid bird.socket_path: empty when BIRD is enabled")
 		}
-		if cfg.BIRD.ProtocolName == "" {
-			return fmt.Errorf("invalid bird.protocol_name: empty when BIRD is enabled")
+		if len(cfg.BIRD.Protocols) == 0 && cfg.BIRD.ProtocolName == "" && len(cfg.BIRD.ProtocolNames) == 0 {
+			return fmt.Errorf("invalid bird.protocols: empty when BIRD is enabled (or set bird.protocol_names/protocol_name)")
 		}
 		// Note: AnycastPrefixes is optional - current implementation manages routes
 		// via protocol enable/disable. Individual prefix management would require
 		// more complex BIRD command generation.
+
+		if cfg.BIRD.StateMachine.FailureThreshold < 1 {
+			return fmt.Errorf("invalid bird.state_machine.failure_threshold: must be >= 1")
+		}
+		if cfg.BIRD.StateMachine.RecoveryThreshold < 1 {
+			return fmt.Errorf("invalid bird.state_machine.recovery_threshold: must be >= 1")
+		}
+		if cfg.BIRD.StateMachine.MinStateDuration < 0 {
+			return fmt.Errorf("invalid bird.state_machine.min_state_duration: must be >= 0")
+		}
+
+		if cfg.BIRD.ConfigureOnStart.Enabled {
+			if cfg.BIRD.ConfigureOnStart.Path == "" {
+				return fmt.Errorf("invalid bird.config.path: empty when bird.config.enabled is true")
+			}
+			if cfg.BIRD.ConfigureOnStart.RouterID == "" {
+				return fmt.Errorf("invalid bird.config.router_id: empty when bird.config.enabled is true")
+			}
+			if cfg.BIRD.ConfigureOnStart.LocalAS == 0 {
+				return fmt.Errorf("invalid bird.config.local_as: must be > 0 when bird.config.enabled is true")
+			}
+			if cfg.BIRD.ConfigureOnStart.SourceIP == "" {
+				return fmt.Errorf("invalid bird.config.source_ip: empty when bird.config.enabled is true")
+			}
+			if len(cfg.BIRD.Protocols) == 0 && len(cfg.BIRD.ConfigureOnStart.Neighbors) == 0 {
+				return fmt.Errorf("invalid bird.protocols: must be non-empty when bird.config.enabled is true (or set bird.config.neighbors for legacy config)")
+			}
+			for _, p := range cfg.BIRD.Protocols {
+				if p.Name == "" {
+					return fmt.Errorf("invalid bird.protocols.name: empty")
+				}
+				if p.NeighborAddress == "" {
+					return fmt.Errorf("invalid bird.protocols.neighbor_address: empty")
+				}
+				if p.NeighborASN == 0 {
+					return fmt.Errorf("invalid bird.protocols.neighbor_asn: must be > 0")
+				}
+			}
+			if cfg.BIRD.ConfigureOnStart.BFD.Enabled {
+				if cfg.BIRD.ConfigureOnStart.BFD.Multiplier < 1 {
+					return fmt.Errorf("invalid bird.config.bfd.multiplier: must be >= 1")
+				}
+			}
+		}
 	}
 
 	if cfg.Sync.SyncInterval <= 0 {
@@ -265,7 +309,7 @@ func bindControllerEnvVars(v *viper.Viper) {
 		"storage.key_directory",
 		"logging.level",
 	}
-	
+
 	for _, key := range envVars {
 		envKey := "ARCA_DNS_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
 		if val := os.Getenv(envKey); val != "" {
@@ -288,7 +332,7 @@ func bindAgentEnvVars(v *viper.Viper) {
 		"sync.sync_interval",
 		"logging.level",
 	}
-	
+
 	for _, key := range envVars {
 		envKey := "ARCA_DNS_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
 		if val := os.Getenv(envKey); val != "" {
