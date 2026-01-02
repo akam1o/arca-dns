@@ -133,6 +133,12 @@ Deploy the controller as a standard `Deployment` + `Service`:
 - (Recommended) PVC for `/var/lib/arca-dns` if you use DNSSEC key storage/artifacts
 - For Kubernetes, `etcd` is a good default backend (works well with a single controller instance).
 
+Kustomize entrypoints:
+- Base (external/HA etcd): `kubectl apply -k deployments/kubernetes/controller/base`
+- Demo-only (bundled single-node etcd): `kubectl apply -k deployments/kubernetes/controller/overlays/demo-etcd`
+
+Ingress example (TLS terminated at ingress): `deployments/kubernetes/controller/examples/ingress.yaml`
+
 Example (abridged):
 
 ```yaml

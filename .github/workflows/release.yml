@@ -83,7 +83,7 @@ jobs:
 
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
-            --file deployments/Dockerfile.controller \
+            --file deployments/docker/Dockerfile.controller \
             ${tags_controller} \
             --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}" \
             --label org.opencontainers.image.revision="${{ github.sha }}" \
@@ -94,7 +94,7 @@ jobs:
 
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
-            --file deployments/Dockerfile.agent \
+            --file deployments/docker/Dockerfile.agent \
             ${tags_agent} \
             --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}" \
             --label org.opencontainers.image.revision="${{ github.sha }}" \

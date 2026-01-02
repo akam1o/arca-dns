@@ -12,6 +12,8 @@ spec:
       labels:
         app: arca-dns-controller
     spec:
+      securityContext:
+        fsGroup: 65532
       containers:
         - name: controller
           image: ghcr.io/akam1o/arca-dns-controller:latest
@@ -36,4 +38,6 @@ spec:
           configMap:
             name: arca-dns-controller-config
         - name: data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: arca-dns-controller-data
+

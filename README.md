@@ -41,12 +41,14 @@ This project is operated as a split control/data plane:
 The controller is a standard HTTP API service; TLS is typically terminated by an ingress/reverse proxy.
 
 **Kubernetes (recommended backend: etcd)**:
-- Manifests are under `deployments/kubernetes/controller/` (includes a single-node etcd example).
+- Manifests are under `deployments/kubernetes/controller/` (base + overlays).
 - Apply:
-  - `kubectl apply -k deployments/kubernetes/controller`
+  - `kubectl apply -k deployments/kubernetes/controller/base` (external/HA etcd)
+  - `kubectl apply -k deployments/kubernetes/controller/overlays/demo-etcd` (demo-only; includes single-node etcd)
 - Replace in manifests:
-  - `deployments/kubernetes/controller/controller-secret.yaml` (`dnssec-master-key-b64`)
-  - `deployments/kubernetes/controller/controller-configmap.yaml` (`api.auth.api_keys`, etcd endpoints)
+  - `deployments/kubernetes/controller/base/controller-secret.yaml` (`dnssec-master-key-b64`)
+  - `deployments/kubernetes/controller/base/controller.yaml` (API keys, etcd endpoints)
+  - (Optional) `deployments/kubernetes/controller/examples/ingress.yaml` (ingress host/class; TLS at ingress)
 
 **Docker Compose (Controller + MySQL example)**:
 - Example compose file: `deployments/compose/controller-mysql/docker-compose.yaml`
