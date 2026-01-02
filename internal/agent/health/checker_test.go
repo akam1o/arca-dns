@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"os"
-	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -27,102 +25,6 @@ func skipIfBindNotPermitted(t *testing.T, err error) {
 	}
 }
 
-func TestChecker_checkProcess(t *testing.T) {
-	logger := zap.NewNop()
-
-	t.Run("socket exists", func(t *testing.T) {
-		// Create temp socket file
-		tmpDir := t.TempDir()
-		socketPath := filepath.Join(tmpDir, "test.sock")
-		f, err := os.Create(socketPath)
-		require.NoError(t, err)
-		f.Close()
-
-		checker := NewChecker(config.HealthConfig{}, socketPath, "", logger)
-		result := checker.checkProcess()
-
-		assert.True(t, result.Success)
-		assert.NoError(t, result.Error)
-		assert.Equal(t, CheckTypeProcess, result.Type)
-	})
-
-	t.Run("socket missing", func(t *testing.T) {
-		checker := NewChecker(config.HealthConfig{}, "/nonexistent/socket", "", logger)
-		result := checker.checkProcess()
-
-		assert.False(t, result.Success)
-		assert.Error(t, result.Error)
-		assert.Equal(t, CheckTypeProcess, result.Type)
-	})
-
-	t.Run("no socket configured", func(t *testing.T) {
-		checker := NewChecker(config.HealthConfig{}, "", "", logger)
-		result := checker.checkProcess()
-
-		assert.True(t, result.Success)
-		assert.NoError(t, result.Error)
-	})
-}
-
-func TestChecker_checkSocket(t *testing.T) {
-	logger := zap.NewNop()
-
-	t.Run("socket responsive", func(t *testing.T) {
-		// Skip this test on macOS due to path length limitations with t.TempDir()
-		tmpDir := os.TempDir()
-		socketPath := filepath.Join(tmpDir, "arca-dns-test.sock")
-
-		// Clean up any existing socket
-		os.Remove(socketPath)
-		defer os.Remove(socketPath)
-
-		listener, err := net.Listen("unix", socketPath)
-		if err != nil {
-			skipIfBindNotPermitted(t, err)
-		}
-		require.NoError(t, err)
-		defer listener.Close()
-
-		// Accept connections in background
-		go func() {
-			for {
-				conn, err := listener.Accept()
-				if err != nil {
-					return
-				}
-				conn.Close()
-			}
-		}()
-
-		// Give server time to start
-		time.Sleep(10 * time.Millisecond)
-
-		checker := NewChecker(config.HealthConfig{}, socketPath, "", logger)
-		result := checker.checkSocket()
-
-		assert.True(t, result.Success)
-		assert.NoError(t, result.Error)
-		assert.Equal(t, CheckTypeSocket, result.Type)
-	})
-
-	t.Run("socket not responsive", func(t *testing.T) {
-		checker := NewChecker(config.HealthConfig{}, "/nonexistent/socket", "", logger)
-		result := checker.checkSocket()
-
-		assert.False(t, result.Success)
-		assert.Error(t, result.Error)
-		assert.Equal(t, CheckTypeSocket, result.Type)
-	})
-
-	t.Run("no socket configured", func(t *testing.T) {
-		checker := NewChecker(config.HealthConfig{}, "", "", logger)
-		result := checker.checkSocket()
-
-		assert.True(t, result.Success)
-		assert.NoError(t, result.Error)
-	})
-}
-
 func TestChecker_checkDNSQuery(t *testing.T) {
 	logger := zap.NewNop()
 
@@ -133,7 +35,7 @@ func TestChecker_checkDNSQuery(t *testing.T) {
 	checker := NewChecker(config.HealthConfig{
 		QueryTimeout: 5 * time.Second,
 		TestRecord:   "example.com",
-	}, "", "", logger)
+	}, logger)
 
 	ctx := context.Background()
 	result := checker.checkDNSQuery(ctx, addr)
@@ -152,7 +54,7 @@ func TestChecker_checkDNSQuery_Failure(t *testing.T) {
 	checker := NewChecker(config.HealthConfig{
 		QueryTimeout: 5 * time.Second,
 		TestRecord:   "example.com",
-	}, "", "", logger)
+	}, logger)
 
 	ctx := context.Background()
 	result := checker.checkDNSQuery(ctx, addr)
@@ -173,7 +75,7 @@ func TestChecker_checkLatency(t *testing.T) {
 		QueryTimeout:     5 * time.Second,
 		LatencyThreshold: 100 * time.Millisecond,
 		TestRecord:       "example.com",
-	}, "", "", logger)
+	}, logger)
 
 	// Override server address for latency check
 	// (In real implementation, this would use localhost:53)
@@ -210,44 +112,11 @@ func TestChecker_checkLatency(t *testing.T) {
 func TestChecker_CheckAll(t *testing.T) {
 	logger := zap.NewNop()
 
-	// Create temp socket with shorter path
-	tmpDir := os.TempDir()
-	socketPath := filepath.Join(tmpDir, "arca-dns-test2.sock")
-
-	// Clean up any existing socket
-	os.Remove(socketPath)
-	defer os.Remove(socketPath)
-
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		skipIfBindNotPermitted(t, err)
-	}
-	require.NoError(t, err)
-	defer listener.Close()
-
-	// Accept connections in background
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			conn.Close()
-		}
-	}()
-
-	// Give server time to start
-	time.Sleep(10 * time.Millisecond)
-
-	// Start test DNS server
-	dnsServer, _ := startTestDNSServer(t, dns.RcodeSuccess)
-	defer func() { _ = dnsServer.Shutdown() }()
-
 	checker := NewChecker(config.HealthConfig{
 		QueryTimeout:     2 * time.Second,
 		LatencyThreshold: 100 * time.Millisecond,
 		TestRecord:       "example.com",
-	}, socketPath, "", logger)
+	}, logger)
 
 	// Note: CheckAll uses hardcoded localhost:53 and localhost:5353
 	// In this test, we can only verify the logic structure
@@ -255,15 +124,9 @@ func TestChecker_CheckAll(t *testing.T) {
 	status := checker.CheckAll(ctx)
 
 	// Check that all check types are present
-	assert.Contains(t, status.Checks, CheckTypeProcess)
-	assert.Contains(t, status.Checks, CheckTypeSocket)
 	assert.Contains(t, status.Checks, CheckTypeQuery)
 	assert.Contains(t, status.Checks, CheckTypeFullPath)
 	assert.Contains(t, status.Checks, CheckTypeLatency)
-
-	// Process and socket checks should pass
-	assert.True(t, status.Checks[CheckTypeProcess].Success)
-	assert.True(t, status.Checks[CheckTypeSocket].Success)
 
 	// DNS checks will fail (no DNS server on localhost:53/5353)
 	// This is expected in unit test environment
@@ -276,7 +139,7 @@ func TestChecker_Run(t *testing.T) {
 		CheckInterval:    50 * time.Millisecond,
 		QueryTimeout:     100 * time.Millisecond, // Short timeout for test
 		LatencyThreshold: 100 * time.Millisecond,
-	}, "", "", logger)
+	}, logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -290,7 +153,7 @@ func TestChecker_Run(t *testing.T) {
 	case status := <-statusChan:
 		// Check that we received a status
 		assert.NotNil(t, status.Checks)
-		assert.Contains(t, status.Checks, CheckTypeProcess)
+		assert.Contains(t, status.Checks, CheckTypeQuery)
 	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for initial status update")
 	}

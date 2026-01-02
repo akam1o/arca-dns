@@ -3,8 +3,6 @@ package health
 import (
 	"context"
 	"fmt"
-	"net"
-	"os"
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/config"
@@ -16,8 +14,6 @@ import (
 type CheckType string
 
 const (
-	CheckTypeProcess  CheckType = "process"
-	CheckTypeSocket   CheckType = "socket"
 	CheckTypeQuery    CheckType = "query"
 	CheckTypeFullPath CheckType = "full_path"
 	CheckTypeLatency  CheckType = "latency"
@@ -45,15 +41,12 @@ type Checker struct {
 	config config.HealthConfig
 	logger *zap.Logger
 
-	// External dependencies
-	nsdControlSocket   string
-	unboundControlPath string
 	testZone           string
 	testRecord         string
 }
 
 // NewChecker creates a new health checker.
-func NewChecker(cfg config.HealthConfig, nsdControlSocket, unboundControlPath string, logger *zap.Logger) *Checker {
+func NewChecker(cfg config.HealthConfig, logger *zap.Logger) *Checker {
 	testZone := cfg.TestZone
 	if testZone == "" {
 		testZone = "localhost."
@@ -65,12 +58,10 @@ func NewChecker(cfg config.HealthConfig, nsdControlSocket, unboundControlPath st
 	}
 
 	return &Checker{
-		config:             cfg,
-		logger:             logger,
-		nsdControlSocket:   nsdControlSocket,
-		unboundControlPath: unboundControlPath,
-		testZone:           testZone,
-		testRecord:         testRecord,
+		config:     cfg,
+		logger:     logger,
+		testZone:   testZone,
+		testRecord: testRecord,
 	}
 }
 
@@ -117,12 +108,6 @@ func (c *Checker) Run(ctx context.Context, statusChan chan<- HealthStatus) error
 func (c *Checker) CheckAll(ctx context.Context) HealthStatus {
 	checks := make(map[CheckType]CheckResult)
 
-	// Check 1: Process check (via socket existence)
-	checks[CheckTypeProcess] = c.checkProcess()
-
-	// Check 2: Socket responsiveness
-	checks[CheckTypeSocket] = c.checkSocket()
-
 	// Check 3: DNS query to NSD (direct)
 	checks[CheckTypeQuery] = c.checkDNSQuery(ctx, "127.0.0.1:5353")
 
@@ -132,71 +117,17 @@ func (c *Checker) CheckAll(ctx context.Context) HealthStatus {
 	// Check 5: Latency check
 	checks[CheckTypeLatency] = c.checkLatency(ctx)
 
-	// Determine overall health (all checks must pass)
-	healthy := true
-	for _, result := range checks {
-		if !result.Success {
-			healthy = false
-			break
-		}
-	}
+	// Determine overall health:
+	// DNS checks are the source of truth for routing decisions.
+	// Process/socket checks are best-effort diagnostics and should not flip overall health.
+	healthy := checks[CheckTypeQuery].Success &&
+		checks[CheckTypeFullPath].Success &&
+		checks[CheckTypeLatency].Success
 
 	return HealthStatus{
 		Healthy:   healthy,
 		Checks:    checks,
 		LastCheck: time.Now(),
-	}
-}
-
-// checkProcess checks if processes are running by verifying socket existence.
-func (c *Checker) checkProcess() CheckResult {
-	start := time.Now()
-
-	// Check NSD control socket
-	if c.nsdControlSocket != "" {
-		if _, err := os.Stat(c.nsdControlSocket); err != nil {
-			return CheckResult{
-				Type:      CheckTypeProcess,
-				Success:   false,
-				Error:     fmt.Errorf("NSD control socket not found: %w", err),
-				Timestamp: time.Now(),
-				Latency:   time.Since(start),
-			}
-		}
-	}
-
-	return CheckResult{
-		Type:      CheckTypeProcess,
-		Success:   true,
-		Timestamp: time.Now(),
-		Latency:   time.Since(start),
-	}
-}
-
-// checkSocket checks if control sockets are responsive.
-func (c *Checker) checkSocket() CheckResult {
-	start := time.Now()
-
-	// Check NSD control socket
-	if c.nsdControlSocket != "" {
-		conn, err := net.DialTimeout("unix", c.nsdControlSocket, 2*time.Second)
-		if err != nil {
-			return CheckResult{
-				Type:      CheckTypeSocket,
-				Success:   false,
-				Error:     fmt.Errorf("NSD control socket not responsive: %w", err),
-				Timestamp: time.Now(),
-				Latency:   time.Since(start),
-			}
-		}
-		conn.Close()
-	}
-
-	return CheckResult{
-		Type:      CheckTypeSocket,
-		Success:   true,
-		Timestamp: time.Now(),
-		Latency:   time.Since(start),
 	}
 }
 

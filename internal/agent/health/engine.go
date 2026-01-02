@@ -78,10 +78,10 @@ func (e *Engine) processHealthStatus(status HealthStatus) (bird.HealthSignal, bo
 	for name, check := range status.Checks {
 		if !check.Success {
 			// Determine if this is a hard failure or just latency
-			if name == "latency" {
+			if name == CheckTypeLatency {
 				hasLatencyIssue = true
 			} else {
-				// process, socket, query, full_path failures are hard failures
+				// query/full_path failures are hard failures (routing decisions are based on DNS behavior)
 				hasHardFailure = true
 				if check.Error != nil {
 					failureReason = check.Error.Error()
