@@ -105,12 +105,14 @@ func TestCreateZoneRaw_Duplicate(t *testing.T) {
 	_, _, server := setupTest(t)
 	defer server.Close()
 
-	zoneFile := `$TTL 3600
-dup.com. IN SOA ns1.dup.com. admin.dup.com. (
-    2024010101 3600 1800 604800 86400
-)
-	dup.com. IN NS ns1.dup.com.
-`
+	zoneFile := strings.Join([]string{
+		"$TTL 3600",
+		"dup.com. IN SOA ns1.dup.com. admin.dup.com. (",
+		"    2024010101 3600 1800 604800 86400",
+		")",
+		"dup.com. IN NS ns1.dup.com.",
+		"",
+	}, "\n")
 
 	// First request
 	req1, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=dup.com.", strings.NewReader(zoneFile))
