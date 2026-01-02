@@ -21,18 +21,8 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      - name: Cache go
-        uses: actions/cache@v4
-        with:
-          path: |
-            .cache/go-build
-            .cache/gomod
-            .cache/gopath
-          key: ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('**/go.sum') }}-build
-          restore-keys: |
-            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-
-            ${{ runner.os }}-go-
+          cache: true
+          cache-dependency-path: go.sum
 
       - name: Build
         run: |
