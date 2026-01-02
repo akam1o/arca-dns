@@ -38,20 +38,23 @@ builds:
 nfpms:
   - id: arca-dns
     package_name: arca-dns
+    ids:
+      - arca-dns-controller
+      - arca-dns-agent
     vendor: Arca Project
     homepage: https://github.com/akam1o/arca-dns
     maintainer: Arca Project <arca-project@ark-networks.net>
     description: BGP Anycast + ECMP authoritative DNS with split control/data plane
     license: Apache-2.0
-    depends:
+    dependencies:
       - nsd
       - unbound
     overrides:
       deb:
-        depends:
+        dependencies:
           - bird2
       rpm:
-        depends:
+        dependencies:
           - bird
     formats:
       - deb
@@ -60,11 +63,6 @@ nfpms:
     section: net
     priority: optional
     contents:
-      - src: ./dist/arca-dns-controller_linux_{{.Arch}}/arca-dns-controller
-        dst: /usr/bin/arca-dns-controller
-      - src: ./dist/arca-dns-agent_linux_{{.Arch}}/arca-dns-agent
-        dst: /usr/bin/arca-dns-agent
-
       - src: ./packaging/systemd/arca-dns-controller.service
         dst: /usr/lib/systemd/system/arca-dns-controller.service
       - src: ./packaging/systemd/arca-dns-agent.service
@@ -86,7 +84,8 @@ nfpms:
 
 archives:
   - id: default
-    format: tar.gz
+    formats:
+      - tar.gz
     files:
       - LICENSE
       - README.md
@@ -95,7 +94,7 @@ checksum:
   name_template: "checksums.txt"
 
 snapshot:
-  name_template: "{{ .Tag }}-next"
+  version_template: "{{ incpatch .Version }}-next"
 
 release:
   disable: false
