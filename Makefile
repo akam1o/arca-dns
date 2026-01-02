@@ -6,6 +6,8 @@ GOCACHE?=$(CURDIR)/.cache/go-build
 GOPATH?=$(CURDIR)/.cache/gopath
 GOMODCACHE?=$(CURDIR)/.cache/gomod
 GOLANGCI_LINT_CACHE?=$(CURDIR)/.cache/golangci-lint
+GOLANGCI_LINT_VERSION?=v1.64.8
+GOLANGCI_LINT_MODULE?=github.com/golangci/golangci-lint/cmd/golangci-lint
 export GOCACHE
 export GOPATH
 export GOMODCACHE
@@ -57,7 +59,7 @@ lint:
 install-tools:
 	@echo "Installing development tools..."
 	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(TOOLS_BIN)"
-	$(GOINSTALL) github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	$(GOINSTALL) $(GOLANGCI_LINT_MODULE)@$(GOLANGCI_LINT_VERSION)
 
 clean:
 	@echo "Cleaning..."

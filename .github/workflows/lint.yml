@@ -1,4 +1,4 @@
-name: ci
+name: lint
 
 on:
   push:
@@ -8,37 +8,6 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    env:
-      GOCACHE: ${{ github.workspace }}/.cache/go-build
-      GOPATH: ${{ github.workspace }}/.cache/gopath
-      GOMODCACHE: ${{ github.workspace }}/.cache/gomod
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: setup-go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Cache go builds/modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            .cache/go-build
-            .cache/gomod
-          key: ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-
-            ${{ runner.os }}-go-
-
-      - name: Test
-        run: |
-          mkdir -p "$GOCACHE"
-          make test
-
   lint:
     runs-on: ubuntu-latest
     env:
@@ -53,7 +22,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
 
       - name: Cache go + golangci-lint
         uses: actions/cache@v4
