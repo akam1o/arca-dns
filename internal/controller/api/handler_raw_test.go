@@ -118,8 +118,8 @@ dup.com. IN SOA ns1.dup.com. admin.dup.com. (
 	req1.Header.Set("Content-Type", "text/plain")
 	resp1, err := http.DefaultClient.Do(req1)
 	require.NoError(t, err)
-	defer resp1.Body.Close()
 	assert.Equal(t, http.StatusCreated, resp1.StatusCode)
+	require.NoError(t, resp1.Body.Close())
 
 	// Second request (duplicate)
 	req2, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=dup.com.", strings.NewReader(zoneFile))
