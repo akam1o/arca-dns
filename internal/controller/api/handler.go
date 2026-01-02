@@ -197,7 +197,31 @@ func (h *Handler) GetZone(c *gin.Context) {
 	// Set ETag header
 	c.Header("ETag", zone.Version)
 
+	// Conditional GET: return 304 when If-None-Match matches current version.
+	ifNoneMatch := c.GetHeader("If-None-Match")
+	if ifNoneMatch != "" && etagMatches(ifNoneMatch, zone.Version) {
+		c.Status(http.StatusNotModified)
+		return
+	}
+
 	c.JSON(http.StatusOK, zone)
+}
+
+func etagMatches(ifNoneMatch, current string) bool {
+	// Handle wildcard
+	if strings.TrimSpace(ifNoneMatch) == "*" {
+		return true
+	}
+
+	// If-None-Match can be a comma-separated list. We accept exact match with optional quotes.
+	for _, part := range strings.Split(ifNoneMatch, ",") {
+		tag := strings.TrimSpace(part)
+		tag = strings.Trim(tag, "\"")
+		if tag == current {
+			return true
+		}
+	}
+	return false
 }
 
 // ListZones handles GET /api/v1/zones
