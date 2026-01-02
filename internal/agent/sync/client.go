@@ -42,6 +42,24 @@ type SignedZoneResponse struct {
 	} `json:"metadata"`
 }
 
+func normalizeIfNoneMatch(etag string) string {
+	etag = strings.TrimSpace(etag)
+	if etag == "" {
+		return ""
+	}
+	if etag == "*" {
+		return "*"
+	}
+	etag = strings.TrimPrefix(etag, "W/")
+	etag = strings.TrimSpace(etag)
+	etag = strings.Trim(etag, "\"")
+	if etag == "" {
+		return ""
+	}
+	// Use a quoted strong ETag to match typical HTTP semantics and controller responses.
+	return `"` + etag + `"`
+}
+
 // NewClient creates a new controller client with retry logic and connection pooling.
 func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 	// Create TLS configuration if enabled
@@ -157,8 +175,8 @@ func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, s
 	}
 
 	// Add If-None-Match header for conditional fetch (ETag-based)
-	if currentETag != "" {
-		req.Header.Set("If-None-Match", currentETag)
+	if normalized := normalizeIfNoneMatch(currentETag); normalized != "" {
+		req.Header.Set("If-None-Match", normalized)
 	}
 
 	resp, err := c.doWithRetry(req)

@@ -181,8 +181,8 @@ func TestFetchSignedZone_NotModified(t *testing.T) {
 	requireTCPListener(t)
 	// Create mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("If-None-Match") != "v01ARZ3NDEKTSV4RRFFQ69G5FAV" {
-			t.Errorf("Expected If-None-Match header v01ARZ3NDEKTSV4RRFFQ69G5FAV, got %s", r.Header.Get("If-None-Match"))
+		if r.Header.Get("If-None-Match") != "\"v01ARZ3NDEKTSV4RRFFQ69G5FAV\"" {
+			t.Errorf("Expected If-None-Match header \"v01ARZ3NDEKTSV4RRFFQ69G5FAV\", got %s", r.Header.Get("If-None-Match"))
 		}
 
 		// Return 304 Not Modified

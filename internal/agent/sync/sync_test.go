@@ -105,7 +105,7 @@ func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
 
 			// Check If-None-Match header
 			ifNoneMatch := r.Header.Get("If-None-Match")
-			if ifNoneMatch == "v1-abc123" {
+			if ifNoneMatch == "\"v1-abc123\"" {
 				// Return 304 Not Modified
 				w.Header().Set("ETag", "v1-abc123")
 				w.Header().Set("X-Zone-Serial", "2024010101")
