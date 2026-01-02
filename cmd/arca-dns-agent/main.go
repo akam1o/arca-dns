@@ -14,7 +14,9 @@ import (
 	"github.com/akam1o/arca-dns/internal/agent/bird"
 	"github.com/akam1o/arca-dns/internal/agent/dnstap"
 	"github.com/akam1o/arca-dns/internal/agent/health"
+	"github.com/akam1o/arca-dns/internal/agent/nsd"
 	zonesync "github.com/akam1o/arca-dns/internal/agent/sync"
+	"github.com/akam1o/arca-dns/internal/agent/unbound"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
@@ -101,6 +103,38 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Create syncer
 	syncer := zonesync.NewSyncer(client, fileMgr, cfg.Sync, logger)
+
+	// Create NSD controller
+	var nsdCtrl *nsd.Controller
+	if cfg.NSD.Enabled {
+		nsdCtrl = nsd.NewController(cfg.NSD, logger)
+		logger.Info("NSD controller initialized")
+	}
+
+	// Create Unbound controller
+	var unboundCtrl *unbound.Controller
+	if cfg.Unbound.Enabled {
+		unboundCtrl = unbound.NewController(cfg.Unbound, logger)
+		logger.Info("Unbound controller initialized")
+	}
+
+	// Wire zone-apply hook: reload services after zone file write.
+	syncer.SetOnZoneApplied(func(ctx context.Context, zoneName string) error {
+		// Reload NSD zone immediately so updates become visible to DNS.
+		if nsdCtrl != nil {
+			if err := nsdCtrl.ReloadZone(zoneName); err != nil {
+				return err
+			}
+		}
+		// Unbound typically doesn't need a reload for zone changes (stub-zone points to NSD),
+		// but keep parity with "enabled" behavior by reloading when configured.
+		if unboundCtrl != nil {
+			if err := unboundCtrl.Reload(); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 
 	// Create health checker
 	nsdSocket := cfg.NSD.ConfigPath // Placeholder for actual socket path

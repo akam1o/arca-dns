@@ -29,6 +29,8 @@ type Syncer struct {
 	zoneStates  map[string]*ZoneSyncState // Track state per zone
 	lastSuccess time.Time                 // Last successful sync (any zone)
 	mu          sync.RWMutex              // Protects zoneStates and lastSuccess
+
+	onZoneApplied func(ctx context.Context, zoneName string) error
 }
 
 // NewSyncer creates a new zone syncer.
@@ -41,6 +43,12 @@ func NewSyncer(client *Client, fileMgr *FileManager, cfg config.SyncConfig, logg
 		zoneStates: make(map[string]*ZoneSyncState),
 		// lastSuccess is zero value (time.Time{}) to indicate no successful sync yet
 	}
+}
+
+// SetOnZoneApplied sets a hook to be called after a zone file is written successfully.
+// Returning an error will mark the sync for that zone as failed.
+func (s *Syncer) SetOnZoneApplied(fn func(ctx context.Context, zoneName string) error) {
+	s.onZoneApplied = fn
 }
 
 // Run starts the sync loop with configurable interval and jitter.
@@ -197,8 +205,12 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 		return fmt.Errorf("failed to write zone file: %w", err)
 	}
 
-	// Step 7: NSD/Unbound reload is handled by the caller (main agent loop)
-	// The agent will detect file changes and trigger reload
+	// Step 7: NSD/Unbound reload is handled by the caller (main agent loop) via hook.
+	if s.onZoneApplied != nil {
+		if err := s.onZoneApplied(ctx, zone.Name); err != nil {
+			return fmt.Errorf("post-apply hook failed: %w", err)
+		}
+	}
 
 	s.logger.Info("Zone synchronized successfully",
 		zap.String("zone", zone.Name),
