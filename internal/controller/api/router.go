@@ -49,21 +49,23 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 	}
 
 	// Health check endpoints
-	router.GET("/health", func(c *gin.Context) {
+	healthHandler := func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
-	})
-
-	router.GET("/ready", func(c *gin.Context) {
+	}
+	readyHandler := func(c *gin.Context) {
 		// TODO: Check backend connectivity
 		c.JSON(200, gin.H{"status": "ready"})
-	})
-
-	router.GET("/status", func(c *gin.Context) {
+	}
+	statusHandler := func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"status":  "operational",
 			"version": "v1.0.0",
 		})
-	})
+	}
+
+	router.GET("/health", healthHandler)
+	router.GET("/ready", readyHandler)
+	router.GET("/status", statusHandler)
 
 	// API v1 routes (with authentication if enabled)
 	v1 := router.Group("/api/v1")
@@ -76,6 +78,11 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 		v1.Use(authenticator.Middleware())
 	}
 	{
+		// Health endpoints (aliases under /api/v1 for OpenAPI server base compatibility)
+		v1.GET("/health", healthHandler)
+		v1.GET("/ready", readyHandler)
+		v1.GET("/status", statusHandler)
+
 		// Zone management
 		v1.POST("/zones", handler.CreateZone)
 		v1.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
@@ -87,6 +94,7 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 		// Zone file download (for agents)
 		v1.GET("/zones/:name/signed", handler.GetSignedZone)
 		v1.GET("/zones/:name/ds", handler.GetDSRecords)
+		v1.GET("/zones/:name/dnssec/ds", handler.GetDSRecords)
 	}
 
 	return router
