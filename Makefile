@@ -5,9 +5,11 @@ GOCMD=go
 GOCACHE?=$(CURDIR)/.cache/go-build
 GOPATH?=$(CURDIR)/.cache/gopath
 GOMODCACHE?=$(CURDIR)/.cache/gomod
+GOLANGCI_LINT_CACHE?=$(CURDIR)/.cache/golangci-lint
 export GOCACHE
 export GOPATH
 export GOMODCACHE
+export GOLANGCI_LINT_CACHE
 GOBUILD=$(GOCMD) build
 GOTEST=$(GOCMD) test
 GOINSTALL=$(GOCMD) install

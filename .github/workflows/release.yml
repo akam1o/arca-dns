@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GOCACHE: ${{ github.workspace }}/.cache/go-build
+      GOPATH: ${{ github.workspace }}/.cache/gopath
+      GOMODCACHE: ${{ github.workspace }}/.cache/gomod
       TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
       GHCR_OWNER: ${{ github.repository_owner }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -27,6 +29,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Cache go builds/modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/go-build
+            .cache/gomod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-release
+          restore-keys: |
+            ${{ runner.os }}-go-
 
       - name: Prepare
         run: |
@@ -85,6 +97,8 @@ jobs:
             --platform linux/amd64,linux/arm64 \
             --file deployments/docker/Dockerfile.controller \
             ${tags_controller} \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
             --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}" \
             --label org.opencontainers.image.revision="${{ github.sha }}" \
             --label org.opencontainers.image.version="${TAG}" \
@@ -96,6 +110,8 @@ jobs:
             --platform linux/amd64,linux/arm64 \
             --file deployments/docker/Dockerfile.agent \
             ${tags_agent} \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
             --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}" \
             --label org.opencontainers.image.revision="${{ github.sha }}" \
             --label org.opencontainers.image.version="${TAG}" \
