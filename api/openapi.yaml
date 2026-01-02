@@ -41,6 +41,52 @@ tags:
     description: Health and status endpoints
 
 paths:
+  /metrics:
+    get:
+      tags: [health]
+      summary: Prometheus metrics
+      description: Returns Prometheus metrics in text exposition format.
+      operationId: getMetrics
+      security: []  # No authentication required
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /ready:
+    get:
+      tags: [health]
+      summary: Readiness check endpoint
+      description: Returns readiness status of the controller (includes backend connectivity).
+      operationId: readyCheck
+      security: []  # No authentication required
+      responses:
+        '200':
+          description: Controller is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+        '503':
+          description: Controller is not ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: not_ready
+                  error:
+                    type: string
+
   /zones:
     get:
       tags: [zones]
@@ -722,18 +768,7 @@ paths:
                 properties:
                   status:
                     type: string
-                    enum: [healthy, degraded, unhealthy]
-                  version:
-                    type: string
-                  uptime:
-                    type: string
-                  backend:
-                    type: object
-                    properties:
-                      type:
-                        type: string
-                      status:
-                        type: string
+                    example: ok
         '503':
           description: Controller is unhealthy
           content:
@@ -760,26 +795,15 @@ paths:
               schema:
                 type: object
                 properties:
+                  status:
+                    type: string
+                    example: operational
                   version:
                     type: string
-                  uptime:
+                  commit:
                     type: string
-                  backend:
-                    type: object
-                  dnssec:
-                    type: object
-                    properties:
-                      enabled:
-                        type: boolean
-                      algorithm:
-                        type: integer
-                  zones:
-                    type: object
-                    properties:
-                      total:
-                        type: integer
-                      signed:
-                        type: integer
+                  date:
+                    type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':

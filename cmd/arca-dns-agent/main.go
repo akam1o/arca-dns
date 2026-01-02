@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -13,9 +14,7 @@ import (
 	"github.com/akam1o/arca-dns/internal/agent/bird"
 	"github.com/akam1o/arca-dns/internal/agent/dnstap"
 	"github.com/akam1o/arca-dns/internal/agent/health"
-	"github.com/akam1o/arca-dns/internal/agent/nsd"
 	zonesync "github.com/akam1o/arca-dns/internal/agent/sync"
-	"github.com/akam1o/arca-dns/internal/agent/unbound"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
@@ -29,6 +28,8 @@ var (
 
 	configFile string
 )
+
+var execFn = syscall.Exec
 
 func main() {
 	rootCmd := &cobra.Command{
@@ -100,20 +101,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Create syncer
 	syncer := zonesync.NewSyncer(client, fileMgr, cfg.Sync, logger)
-
-	// Create NSD controller
-	var nsdCtrl *nsd.Controller
-	if cfg.NSD.Enabled {
-		nsdCtrl = nsd.NewController(cfg.NSD, logger)
-		logger.Info("NSD controller initialized")
-	}
-
-	// Create Unbound controller
-	var unboundCtrl *unbound.Controller
-	if cfg.Unbound.Enabled {
-		unboundCtrl = unbound.NewController(cfg.Unbound, logger)
-		logger.Info("Unbound controller initialized")
-	}
 
 	// Create health checker
 	nsdSocket := cfg.NSD.ConfigPath // Placeholder for actual socket path
@@ -342,20 +329,19 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		case sig := <-sigChan:
 			switch sig {
 			case syscall.SIGHUP:
-				logger.Info("Received SIGHUP, reloading configuration")
-				// TODO: Implement configuration reload
-				if nsdCtrl != nil {
-					logger.Info("Reloading NSD")
-					if err := nsdCtrl.Reload(); err != nil {
-						logger.Error("NSD reload failed", zap.Error(err))
-					}
+				logger.Info("Received SIGHUP, reloading configuration via re-exec")
+
+				// Gracefully stop background loops, then re-exec the current binary with the same args.
+				cancel()
+				wg.Wait()
+				client.Close()
+				_ = logger.Sync()
+
+				if err := reexecSelf(); err != nil {
+					return fmt.Errorf("re-exec failed: %w", err)
 				}
-				if unboundCtrl != nil {
-					logger.Info("Reloading Unbound")
-					if err := unboundCtrl.Reload(); err != nil {
-						logger.Error("Unbound reload failed", zap.Error(err))
-					}
-				}
+				// If re-exec succeeds, this process image is replaced and code below is not executed.
+				return nil
 
 			case syscall.SIGINT, syscall.SIGTERM:
 				logger.Info("Received shutdown signal, gracefully shutting down",
@@ -367,6 +353,19 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+}
+
+func reexecSelf() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable: %w", err)
+	}
+	exe, err = exec.LookPath(exe)
+	if err != nil {
+		return fmt.Errorf("lookpath executable: %w", err)
+	}
+	argv := append([]string{exe}, os.Args[1:]...)
+	return execFn(exe, argv, os.Environ())
 }
 
 // startStatusServer starts an HTTP server for status and metrics.

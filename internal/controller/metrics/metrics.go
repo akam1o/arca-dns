@@ -42,6 +42,12 @@ type ControllerMetrics struct {
 	backendOps map[backendKey]uint64
 	signingDur map[signKey]*Histogram
 
+	// DNSSEC scheduler metrics
+	schedulerLastRun          time.Time
+	schedulerEarliestExpire   time.Time
+	schedulerSecondsRemaining float64
+	schedulerResign           map[string]uint64
+
 	requestLatencyBuckets []float64
 	signingLatencyBuckets []float64
 }
@@ -52,6 +58,7 @@ func NewControllerMetrics() *ControllerMetrics {
 		apiLatency:  make(map[apiDurKey]*Histogram),
 		backendOps:  make(map[backendKey]uint64),
 		signingDur:  make(map[signKey]*Histogram),
+		schedulerResign: make(map[string]uint64),
 		requestLatencyBuckets: []float64{
 			0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
 		},
@@ -114,6 +121,34 @@ func (m *ControllerMetrics) ObserveSigningDuration(status string, seconds float6
 	m.mu.Unlock()
 }
 
+// SchedulerMetrics (implements pkg/dnssec.SchedulerMetrics)
+func (m *ControllerMetrics) SetEarliestExpiration(t time.Time) {
+	m.mu.Lock()
+	m.schedulerEarliestExpire = t
+	m.mu.Unlock()
+}
+
+func (m *ControllerMetrics) IncResign(result string) {
+	if result == "" {
+		result = "unknown"
+	}
+	m.mu.Lock()
+	m.schedulerResign[result]++
+	m.mu.Unlock()
+}
+
+func (m *ControllerMetrics) SetLastRun(t time.Time) {
+	m.mu.Lock()
+	m.schedulerLastRun = t
+	m.mu.Unlock()
+}
+
+func (m *ControllerMetrics) SetSecondsRemaining(seconds float64) {
+	m.mu.Lock()
+	m.schedulerSecondsRemaining = seconds
+	m.mu.Unlock()
+}
+
 // CountZones counts all zones using ListZones pagination.
 func CountZones(ctx context.Context, store backend.ZoneStore) (int, error) {
 	const pageSize = 1000
@@ -152,6 +187,14 @@ func (m *ControllerMetrics) Render(zonesTotal int) string {
 	for k, v := range m.signingDur {
 		signingDur[k] = v
 	}
+
+	schedulerLastRun := m.schedulerLastRun
+	schedulerEarliestExpire := m.schedulerEarliestExpire
+	schedulerSecondsRemaining := m.schedulerSecondsRemaining
+	schedulerResign := make(map[string]uint64, len(m.schedulerResign))
+	for k, v := range m.schedulerResign {
+		schedulerResign[k] = v
+	}
 	m.mu.Unlock()
 
 	var b strings.Builder
@@ -185,6 +228,32 @@ func (m *ControllerMetrics) Render(zonesTotal int) string {
 	b.WriteString("# TYPE backend_operations_total counter\n")
 	for k, v := range backendOps {
 		b.WriteString(fmt.Sprintf("backend_operations_total{operation=%q,status=%q} %d\n", k.Operation, k.Status, v))
+	}
+
+	b.WriteString("# HELP dnssec_scheduler_last_run_timestamp_seconds Last DNSSEC scheduler run time.\n")
+	b.WriteString("# TYPE dnssec_scheduler_last_run_timestamp_seconds gauge\n")
+	if !schedulerLastRun.IsZero() {
+		b.WriteString(fmt.Sprintf("dnssec_scheduler_last_run_timestamp_seconds %d\n", schedulerLastRun.Unix()))
+	} else {
+		b.WriteString("dnssec_scheduler_last_run_timestamp_seconds 0\n")
+	}
+
+	b.WriteString("# HELP dnssec_scheduler_earliest_expiration_timestamp_seconds Earliest DNSSEC signature expiration across all zones.\n")
+	b.WriteString("# TYPE dnssec_scheduler_earliest_expiration_timestamp_seconds gauge\n")
+	if !schedulerEarliestExpire.IsZero() {
+		b.WriteString(fmt.Sprintf("dnssec_scheduler_earliest_expiration_timestamp_seconds %d\n", schedulerEarliestExpire.Unix()))
+	} else {
+		b.WriteString("dnssec_scheduler_earliest_expiration_timestamp_seconds 0\n")
+	}
+
+	b.WriteString("# HELP dnssec_scheduler_seconds_remaining Seconds remaining until earliest expiration.\n")
+	b.WriteString("# TYPE dnssec_scheduler_seconds_remaining gauge\n")
+	b.WriteString(fmt.Sprintf("dnssec_scheduler_seconds_remaining %g\n", schedulerSecondsRemaining))
+
+	b.WriteString("# HELP dnssec_scheduler_resign_total DNSSEC resign attempts.\n")
+	b.WriteString("# TYPE dnssec_scheduler_resign_total counter\n")
+	for k, v := range schedulerResign {
+		b.WriteString(fmt.Sprintf("dnssec_scheduler_resign_total{result=%q} %d\n", k, v))
 	}
 
 	return b.String()

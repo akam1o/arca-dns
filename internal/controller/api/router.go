@@ -74,6 +74,7 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 		v1.GET("/health", handler.Health)
 		v1.GET("/ready", handler.Ready)
 		v1.GET("/status", handler.Status)
+		v1.GET("/metrics", handler.Metrics)
 
 		// Zone management
 		v1.POST("/zones", handler.CreateZone)

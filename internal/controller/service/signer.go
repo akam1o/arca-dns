@@ -108,9 +108,29 @@ func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*Signe
 		KSKKeyTag:  ksk.ID.KeyTag,
 		ZSKKeyTag:  zsk.ID.KeyTag,
 		Algorithm:  ksk.ID.Algorithm,
-		Inception:  0, // TODO: Extract from RRSIG
-		Expiration: 0, // TODO: Extract from RRSIG
+		Inception:  0,
+		Expiration: 0,
 	}
+
+	// Extract inception/expiration from RRSIG records (best-effort).
+	// For expiration, we prefer the earliest (minimum) expiration across RRsets.
+	// For inception, we set the earliest inception (minimum) as a conservative start.
+	var inception uint32
+	var expiration uint32
+	for _, rr := range signedRRs {
+		rrsig, ok := rr.(*dns.RRSIG)
+		if !ok {
+			continue
+		}
+		if inception == 0 || rrsig.Inception < inception {
+			inception = rrsig.Inception
+		}
+		if expiration == 0 || rrsig.Expiration < expiration {
+			expiration = rrsig.Expiration
+		}
+	}
+	metadata.Inception = inception
+	metadata.Expiration = expiration
 
 	// Add NSEC3 metadata if enabled (M4.5 fix: null-safety check)
 	if signedZone.DNSSEC != nil && signedZone.DNSSEC.NSEC3Enabled {

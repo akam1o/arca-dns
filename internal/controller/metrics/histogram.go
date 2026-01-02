@@ -29,6 +29,7 @@ func (h *Histogram) Observe(v float64) {
 	for i, upper := range h.buckets {
 		if v <= upper {
 			h.counts[i]++
+			return
 		}
 	}
 }

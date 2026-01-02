@@ -151,15 +151,15 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 
 			ticker := dnssec.NewRealTicker(schedulerConfig.CheckInterval)
-			scheduler := dnssec.NewScheduler(
-				schedulerConfig,
-				store,          // ZoneLister
-				signingService, // Signer
-				&dnssec.RealClock{},
-				ticker,
-				nil, // metrics (TODO: implement)
-				logger,
-			)
+				scheduler := dnssec.NewScheduler(
+					schedulerConfig,
+					store,          // ZoneLister
+					signingService, // Signer
+					&dnssec.RealClock{},
+					ticker,
+					metrics,
+					logger,
+				)
 
 			// Start scheduler in background with proper lifecycle management
 			wg.Add(1)
