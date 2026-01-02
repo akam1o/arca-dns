@@ -38,8 +38,8 @@ func (rv *RequestValidator) Middleware() gin.HandlerFunc {
 		// Check request body size
 		if c.Request.ContentLength > rv.maxBodySize {
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
-				"error":   "request_too_large",
-				"message": "Request body exceeds maximum size limit",
+				"error":    "request_too_large",
+				"message":  "Request body exceeds maximum size limit",
 				"max_size": rv.maxBodySize,
 			})
 			c.Abort()
@@ -65,8 +65,8 @@ func (rv *RequestValidator) Middleware() gin.HandlerFunc {
 			// Check if we read more than the limit
 			if int64(len(body)) > rv.maxBodySize {
 				c.JSON(http.StatusRequestEntityTooLarge, gin.H{
-					"error":   "request_too_large",
-					"message": "Request body exceeds maximum size limit",
+					"error":    "request_too_large",
+					"message":  "Request body exceeds maximum size limit",
 					"max_size": rv.maxBodySize,
 				})
 				c.Abort()

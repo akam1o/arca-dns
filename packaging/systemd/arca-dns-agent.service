@@ -1,0 +1,14 @@
+[Unit]
+Description=arca-dns agent (data plane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/arca-dns-agent daemon --config /etc/arca-dns/agent.yaml
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,15 @@
+FROM golang:1.24 AS build
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/arca-dns-controller ./cmd/arca-dns-controller
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=build /out/arca-dns-controller /arca-dns-controller
+EXPOSE 8080
+ENTRYPOINT ["/arca-dns-controller"]
+CMD ["serve"]

@@ -1,0 +1,89 @@
+project_name: arca-dns
+
+builds:
+  - id: arca-dns-controller
+    main: ./cmd/arca-dns-controller
+    binary: arca-dns-controller
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+  - id: arca-dns-agent
+    main: ./cmd/arca-dns-agent
+    binary: arca-dns-agent
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+nfpms:
+  - id: arca-dns
+    package_name: arca-dns
+    vendor: Arca Project
+    homepage: https://github.com/akam1o/arca-dns
+    maintainer: Arca Project <arca-project@ark-networks.net>
+    description: BGP Anycast + ECMP authoritative DNS with split control/data plane
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    section: net
+    priority: optional
+    contents:
+      - src: ./dist/arca-dns-controller_linux_{{.Arch}}/arca-dns-controller
+        dst: /usr/bin/arca-dns-controller
+      - src: ./dist/arca-dns-agent_linux_{{.Arch}}/arca-dns-agent
+        dst: /usr/bin/arca-dns-agent
+
+      - src: ./packaging/systemd/arca-dns-controller.service
+        dst: /usr/lib/systemd/system/arca-dns-controller.service
+      - src: ./packaging/systemd/arca-dns-agent.service
+        dst: /usr/lib/systemd/system/arca-dns-agent.service
+
+      - src: ./configs/controller.example.yaml
+        dst: /etc/arca-dns/controller.yaml
+        type: config
+      - src: ./configs/agent.example.yaml
+        dst: /etc/arca-dns/agent.yaml
+        type: config
+
+      - src: ./packaging/tmpfiles.d/arca-dns.conf
+        dst: /usr/lib/tmpfiles.d/arca-dns.conf
+
+    scripts:
+      postinstall: ./packaging/scripts/postinstall.sh
+      postremove: ./packaging/scripts/postremove.sh
+
+archives:
+  - id: default
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  name_template: "{{ .Tag }}-next"
+
+release:
+  disable: false

@@ -1,0 +1,14 @@
+[Unit]
+Description=arca-dns controller (control plane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/arca-dns-controller serve --config /etc/arca-dns/controller.yaml
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+

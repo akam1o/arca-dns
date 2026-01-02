@@ -1,0 +1,15 @@
+FROM golang:1.24 AS build
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/arca-dns-agent ./cmd/arca-dns-agent
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=build /out/arca-dns-agent /arca-dns-agent
+EXPOSE 9090
+ENTRYPOINT ["/arca-dns-agent"]
+CMD ["daemon"]
