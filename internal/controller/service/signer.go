@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
+	ctrlmetrics "github.com/akam1o/arca-dns/internal/controller/metrics"
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/dnssec"
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -23,6 +25,7 @@ type SigningService struct {
 	logger      *zap.Logger
 	zoneLocks   sync.Map // map[string]*sync.Mutex - per-zone locks for concurrent signing safety
 	artifactDir string
+	metrics     *ctrlmetrics.ControllerMetrics
 }
 
 // SignedZoneArtifact represents a signed zone with metadata.
@@ -55,21 +58,31 @@ type NSEC3Metadata struct {
 }
 
 // NewSigningService creates a new signing service.
-func NewSigningService(store backend.ZoneStore, keyManager *dnssec.KeyManager, artifactDir string, logger *zap.Logger) *SigningService {
+func NewSigningService(store backend.ZoneStore, keyManager *dnssec.KeyManager, artifactDir string, metrics *ctrlmetrics.ControllerMetrics, logger *zap.Logger) *SigningService {
 	return &SigningService{
 		store:       store,
 		keyManager:  keyManager,
 		logger:      logger,
 		artifactDir: artifactDir,
+		metrics:     metrics,
 	}
 }
 
 // SignZone signs a zone and returns the signed artifact.
 // This is the single signing entrypoint used by both update hooks and the scheduler.
 func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*SignedZoneArtifact, error) {
+	start := time.Now()
+	status := "success"
+	defer func() {
+		if s.metrics != nil {
+			s.metrics.ObserveSigningDuration(status, time.Since(start).Seconds())
+		}
+	}()
+
 	// Ensure keys exist for the zone
 	ksk, zsk, err := s.keyManager.EnsureZoneKeys(zone.Name)
 	if err != nil {
+		status = "error"
 		return nil, fmt.Errorf("failed to ensure zone keys: %w", err)
 	}
 
@@ -79,12 +92,14 @@ func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*Signe
 	// Sign the zone
 	signedZone, signedRRs, err := signer.SignZone(zone)
 	if err != nil {
+		status = "error"
 		return nil, fmt.Errorf("failed to sign zone: %w", err)
 	}
 
 	// Generate BIND format zone file with DNSSEC records (M4.5 fix: use RRs directly)
 	signedZoneFile, err := parser.GenerateBINDZoneFileFromRRs(zone.Name, signedZone.Version, signedRRs)
 	if err != nil {
+		status = "error"
 		return nil, fmt.Errorf("failed to generate signed zone file: %w", err)
 	}
 

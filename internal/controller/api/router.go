@@ -17,6 +17,11 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 	// Core middleware
 	router.Use(gin.Recovery())
 
+	// Metrics middleware (should run early so aborted requests are still recorded).
+	if handler != nil && handler.metrics != nil {
+		router.Use(handler.metrics.Middleware())
+	}
+
 	// Configure trusted proxies for ClientIP().
 	// - If cfg.TrustedProxies is provided, trust only those.
 	// - Otherwise, trust none (disable forwarded headers).
@@ -48,24 +53,11 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 		router.Use(rateLimiter.Middleware())
 	}
 
-	// Health check endpoints
-	healthHandler := func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
-	}
-	readyHandler := func(c *gin.Context) {
-		// TODO: Check backend connectivity
-		c.JSON(200, gin.H{"status": "ready"})
-	}
-	statusHandler := func(c *gin.Context) {
-		c.JSON(200, gin.H{
-			"status":  "operational",
-			"version": "v1.0.0",
-		})
-	}
-
-	router.GET("/health", healthHandler)
-	router.GET("/ready", readyHandler)
-	router.GET("/status", statusHandler)
+	// Health/status endpoints (no auth).
+	router.GET("/health", handler.Health)
+	router.GET("/ready", handler.Ready)
+	router.GET("/status", handler.Status)
+	router.GET("/metrics", handler.Metrics)
 
 	// API v1 routes (with authentication if enabled)
 	v1 := router.Group("/api/v1")
@@ -79,9 +71,9 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 	}
 	{
 		// Health endpoints (aliases under /api/v1 for OpenAPI server base compatibility)
-		v1.GET("/health", healthHandler)
-		v1.GET("/ready", readyHandler)
-		v1.GET("/status", statusHandler)
+		v1.GET("/health", handler.Health)
+		v1.GET("/ready", handler.Ready)
+		v1.GET("/status", handler.Status)
 
 		// Zone management
 		v1.POST("/zones", handler.CreateZone)

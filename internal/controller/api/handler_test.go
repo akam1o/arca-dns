@@ -23,7 +23,7 @@ func setupTest(t *testing.T) (*Handler, *backend.MemoryBackend, *httptest.Server
 	logger, _ := zap.NewDevelopment()
 	store := backend.NewMemoryBackend()
 	// Create handler without signing service for backward compatibility
-	handler := NewHandler(store, nil, logger)
+	handler := NewHandler(store, nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
 	apiCfg := config.DefaultControllerConfig().API
 	apiCfg.Auth.Enabled = false
 	apiCfg.RateLimit.Enabled = false

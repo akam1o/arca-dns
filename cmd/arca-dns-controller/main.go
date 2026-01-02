@@ -12,6 +12,7 @@ import (
 
 	"github.com/akam1o/arca-dns/cmd/arca-dns-controller/cmd"
 	"github.com/akam1o/arca-dns/internal/controller/api"
+	ctrlmetrics "github.com/akam1o/arca-dns/internal/controller/metrics"
 	"github.com/akam1o/arca-dns/internal/controller/service"
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
@@ -92,6 +93,10 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	logger.Info("Backend initialized", zap.String("type", cfg.Backend.Type))
 
+	// Metrics (Prometheus text format).
+	metrics := ctrlmetrics.NewControllerMetrics()
+	store = ctrlmetrics.WrapZoneStore(store, metrics)
+
 	// Initialize DNSSEC signing service if enabled
 	var signingService *service.SigningService
 	var wg sync.WaitGroup
@@ -121,11 +126,11 @@ func runServe(cmd *cobra.Command, args []string) {
 		})
 		if err != nil {
 			logger.Fatal("Failed to create key manager", zap.Error(err))
-		}
+			}
 
-		// Create signing service (Note: SignerOptions are set per-zone in SigningService)
-		signingService = service.NewSigningService(store, keyManager, cfg.Storage.ArtifactDirectory, logger)
-		logger.Info("DNSSEC signing service initialized")
+			// Create signing service (Note: SignerOptions are set per-zone in SigningService)
+			signingService = service.NewSigningService(store, keyManager, cfg.Storage.ArtifactDirectory, metrics, logger)
+			logger.Info("DNSSEC signing service initialized")
 
 		// Initialize scheduler if enabled
 		if cfg.DNSSEC.SchedulerEnabled {
@@ -169,10 +174,14 @@ func runServe(cmd *cobra.Command, args []string) {
 				zap.Duration("check_interval", schedulerConfig.CheckInterval),
 				zap.Duration("resign_threshold", schedulerConfig.ResignThreshold))
 		}
-	}
+		}
 
 	// Initialize API handler
-	handler := api.NewHandler(store, signingService, logger)
+	handler := api.NewHandler(store, signingService, metrics, api.BuildInfo{
+		Version: version,
+		Commit:  commit,
+		Date:    date,
+	}, logger)
 
 	// Setup router
 	router := api.SetupRouter(handler, &cfg.API, logger)

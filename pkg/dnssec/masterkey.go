@@ -3,6 +3,7 @@ package dnssec
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +20,10 @@ const (
 	
 	// MasterKeyFileName is the default filename for the master key.
 	MasterKeyFileName = "_masterkey"
+
+	// LegacyMasterKeyFilePath is an additional file location supported for GA operations docs.
+	// If present, it is used after KeyDirectory/_masterkey.
+	LegacyMasterKeyFilePath = "/etc/arca-dns/master.key"
 )
 
 var (
@@ -56,7 +61,7 @@ type MasterKeyOptions struct {
 }
 
 // LoadMasterKey loads the master key from environment variable, file, or generates it.
-// Priority: ARCA_DNS_DNSSEC_MASTER_KEY_B64 > KeyDirectory/_masterkey > auto-generate (if allowed).
+// Priority: ARCA_DNS_DNSSEC_MASTER_KEY_B64 > KeyDirectory/_masterkey > /etc/arca-dns/master.key > auto-generate (if allowed).
 func LoadMasterKey(opts MasterKeyOptions) (key []byte, src MasterKeySource, err error) {
 	// Priority 1: Environment variable
 	if envKey := os.Getenv(MasterKeyEnvVar); envKey != "" {
@@ -81,14 +86,27 @@ func LoadMasterKey(opts MasterKeyOptions) (key []byte, src MasterKeySource, err 
 			return nil, "", fmt.Errorf("read master key file: %w", err)
 		}
 		
-		key, err := ParseMasterKeyB64(string(data))
+		key, err := ParseMasterKey(string(data))
 		if err != nil {
 			return nil, "", fmt.Errorf("parse master key from file: %w", err)
 		}
 		return key, MasterKeySourceFile, nil
 	}
+
+	// Priority 3: Legacy file path (for operational parity)
+	if _, err := os.Stat(LegacyMasterKeyFilePath); err == nil {
+		data, err := os.ReadFile(LegacyMasterKeyFilePath)
+		if err != nil {
+			return nil, "", fmt.Errorf("read legacy master key file: %w", err)
+		}
+		key, err := ParseMasterKey(string(data))
+		if err != nil {
+			return nil, "", fmt.Errorf("parse master key from legacy file: %w", err)
+		}
+		return key, MasterKeySourceFile, nil
+	}
 	
-	// Priority 3: Auto-generate (dev only)
+	// Priority 4: Auto-generate (dev only)
 	if opts.AllowAutoGenerate {
 		key, err := GenerateMasterKey()
 		if err != nil {
@@ -123,6 +141,31 @@ func ParseMasterKeyB64(s string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: expected %d bytes, got %d", ErrInvalidMasterKey, MasterKeySize, len(key))
 	}
 	
+	return key, nil
+}
+
+// ParseMasterKey parses a master key from either base64(32 bytes) or hex(32 bytes).
+func ParseMasterKey(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, fmt.Errorf("%w: empty key", ErrInvalidMasterKey)
+	}
+	if key, err := ParseMasterKeyB64(s); err == nil {
+		return key, nil
+	}
+	return ParseMasterKeyHex(s)
+}
+
+// ParseMasterKeyHex parses a hex-encoded master key (64 hex chars => 32 bytes).
+func ParseMasterKeyHex(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	key, err := hex.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid hex", ErrInvalidMasterKey)
+	}
+	if len(key) != MasterKeySize {
+		return nil, fmt.Errorf("%w: expected %d bytes, got %d", ErrInvalidMasterKey, MasterKeySize, len(key))
+	}
 	return key, nil
 }
 

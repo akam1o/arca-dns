@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	ctrlmetrics "github.com/akam1o/arca-dns/internal/controller/metrics"
 	"github.com/akam1o/arca-dns/internal/controller/service"
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -19,15 +22,80 @@ type Handler struct {
 	store          backend.ZoneStore
 	signingService *service.SigningService
 	logger         *zap.Logger
+	metrics        *ctrlmetrics.ControllerMetrics
+	buildInfo      BuildInfo
+}
+
+// BuildInfo is returned by /status.
+type BuildInfo struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Date    string `json:"date"`
 }
 
 // NewHandler creates a new API handler.
-func NewHandler(store backend.ZoneStore, signingService *service.SigningService, logger *zap.Logger) *Handler {
+func NewHandler(store backend.ZoneStore, signingService *service.SigningService, metrics *ctrlmetrics.ControllerMetrics, buildInfo BuildInfo, logger *zap.Logger) *Handler {
 	return &Handler{
 		store:          store,
 		signingService: signingService,
 		logger:         logger,
+		metrics:        metrics,
+		buildInfo:      buildInfo,
 	}
+}
+
+// Health handles GET /health (and /api/v1/health).
+func (h *Handler) Health(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// Ready handles GET /ready (and /api/v1/ready).
+// Readiness includes backend connectivity (best-effort) to match docs.
+func (h *Handler) Ready(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+	defer cancel()
+
+	_, err := h.store.ListZones(ctx, backend.ListOptions{Limit: 1, Offset: 0})
+	if err != nil {
+		h.logger.Warn("Readiness check failed", zap.Error(err))
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"status": "not_ready",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ready"})
+}
+
+// Status handles GET /status (and /api/v1/status).
+func (h *Handler) Status(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "operational",
+		"version": h.buildInfo.Version,
+		"commit":  h.buildInfo.Commit,
+		"date":    h.buildInfo.Date,
+	})
+}
+
+// Metrics handles GET /metrics.
+func (h *Handler) Metrics(c *gin.Context) {
+	if h.metrics == nil {
+		c.String(http.StatusNotImplemented, "# metrics disabled\n")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	zonesTotal, err := ctrlmetrics.CountZones(ctx, h.store)
+	if err != nil {
+		h.logger.Warn("Failed to count zones for metrics", zap.Error(err))
+		zonesTotal = 0
+	}
+
+	c.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	c.String(http.StatusOK, h.metrics.Render(zonesTotal))
 }
 
 // CreateZone handles POST /api/v1/zones

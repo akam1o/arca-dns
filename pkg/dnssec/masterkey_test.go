@@ -2,6 +2,7 @@ package dnssec
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,6 +39,19 @@ func TestParseMasterKeyB64_WrongLength(t *testing.T) {
 	key, err := ParseMasterKeyB64(encoded)
 	assert.ErrorIs(t, err, ErrInvalidMasterKey)
 	assert.Nil(t, key)
+}
+
+func TestParseMasterKey_HexValid(t *testing.T) {
+	// 32 bytes => 64 hex chars
+	keyBytes := make([]byte, 32)
+	for i := range keyBytes {
+		keyBytes[i] = byte(255 - i)
+	}
+	hexStr := hex.EncodeToString(keyBytes)
+
+	parsed, err := ParseMasterKey(hexStr)
+	require.NoError(t, err)
+	assert.Equal(t, keyBytes, parsed)
 }
 
 func TestGenerateMasterKey(t *testing.T) {
