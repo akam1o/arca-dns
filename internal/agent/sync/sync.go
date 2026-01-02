@@ -79,7 +79,7 @@ func (s *Syncer) Run(ctx context.Context) error {
 			lastSuccess := s.lastSuccess
 			s.mu.RUnlock()
 
-			if time.Since(lastSuccess) > s.config.MaxStaleness {
+			if !lastSuccess.IsZero() && time.Since(lastSuccess) > s.config.MaxStaleness {
 				s.logger.Error("Max staleness SLO violated",
 					zap.Duration("since_last_success", time.Since(lastSuccess)),
 					zap.Duration("max_staleness", s.config.MaxStaleness))
@@ -140,7 +140,6 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 			// Reset failure count and update state
 			s.mu.Lock()
 			state := s.getOrCreateStateLocked(zone.Name)
-			state.Version = zone.Version
 			state.LastSync = time.Now()
 			state.LastAttempt = time.Now()
 			state.FailCount = 0
@@ -189,6 +188,14 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 		s.logger.Debug("Zone not modified (304)",
 			zap.String("zone", zone.Name),
 			zap.String("etag", currentETag))
+
+		// Prefer the response ETag (may be quoted); keep our local state aligned.
+		if newETag != "" {
+			s.mu.Lock()
+			state := s.getOrCreateStateLocked(zone.Name)
+			state.Version = newETag
+			s.mu.Unlock()
+		}
 		return nil
 	}
 
@@ -215,6 +222,12 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 	s.logger.Info("Zone synchronized successfully",
 		zap.String("zone", zone.Name),
 		zap.String("version", newETag))
+
+	// Record the effective ETag/version returned by the controller.
+	s.mu.Lock()
+	state := s.getOrCreateStateLocked(zone.Name)
+	state.Version = newETag
+	s.mu.Unlock()
 
 	return nil
 }

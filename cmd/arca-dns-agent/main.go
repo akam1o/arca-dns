@@ -140,8 +140,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	})
 
 	// Create health checker
-	nsdSocket := cfg.NSD.ConfigPath // Placeholder for actual socket path
-	checker := health.NewChecker(cfg.Health, nsdSocket, cfg.Unbound.ControlPath, logger)
+	// NOTE: nsd-control uses a UNIX control socket, but the socket path is not directly exposed
+	// via our current config surface (we configure nsd-control binary path + nsd.conf path).
+	// Passing a non-socket path here would break health checks, so leave it unset.
+	checker := health.NewChecker(cfg.Health, "", cfg.Unbound.ControlPath, logger)
 	logger.Info("Health checker initialized")
 
 	// Create BIRD BGP control components (M5)
