@@ -85,6 +85,8 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 		protected.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
 		protected.GET("/zones", handler.ListZones)
 		protected.GET("/zones/:name", handler.GetZone)
+		protected.GET("/zones/:name/versions", handler.ListZoneVersions)
+		protected.GET("/zones/:name/versions/:version", handler.GetZoneRevision)
 		protected.PUT("/zones/:name", handler.UpdateZone)
 		protected.DELETE("/zones/:name", handler.DeleteZone)
 

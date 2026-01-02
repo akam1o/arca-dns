@@ -243,6 +243,156 @@ func (h *Handler) ListZones(c *gin.Context) {
 	})
 }
 
+func versionHash(version string) string {
+	parts := strings.Split(version, "-")
+	if len(parts) == 2 {
+		return parts[1]
+	}
+	return ""
+}
+
+// ListZoneVersions handles GET /api/v1/zones/:name/versions
+// Returns version history when the backend supports RevisionStore.
+func (h *Handler) ListZoneVersions(c *gin.Context) {
+	name := c.Param("name")
+
+	// Ensure zone exists (consistent 404 for all backends)
+	zone, err := h.store.GetZone(c.Request.Context(), name)
+	if err != nil {
+		if err == model.ErrZoneNotFound {
+			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
+				model.ErrorCodeNotFound,
+				"Zone not found",
+				map[string]interface{}{"zone": name},
+			))
+			return
+		}
+		h.logger.Error("Failed to get zone", zap.String("zone", name), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to retrieve zone",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
+	revisionStore, ok := h.store.(backend.RevisionStore)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, model.NewAPIErrorWithDetails(
+			model.ErrorCodeUnavailable,
+			"Zone version history is not supported by the configured backend",
+			map[string]interface{}{"backend": "current", "zone": name},
+		))
+		return
+	}
+
+	// Parse pagination parameters
+	offset := 0
+	limit := 10 // Default limit (matches OpenAPI)
+
+	if offsetStr := c.Query("offset"); offsetStr != "" {
+		if val, convErr := strconv.Atoi(offsetStr); convErr == nil && val >= 0 {
+			offset = val
+		}
+	}
+
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if val, convErr := strconv.Atoi(limitStr); convErr == nil && val > 0 && val <= 1000 {
+			limit = val
+		}
+	}
+
+	versions, err := revisionStore.ListRevisions(c.Request.Context(), name, backend.ListOptions{
+		Offset: offset,
+		Limit:  limit,
+	})
+	if err != nil {
+		h.logger.Error("Failed to list zone versions", zap.String("zone", name), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to list zone versions",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
+	for _, v := range versions {
+		if v == nil {
+			continue
+		}
+		v.Hash = versionHash(v.Version)
+	}
+
+	c.Header("ETag", zone.Version)
+	c.JSON(http.StatusOK, gin.H{
+		"versions": versions,
+		"pagination": gin.H{
+			"offset": offset,
+			"limit":  limit,
+			"count":  len(versions),
+		},
+	})
+}
+
+// GetZoneRevision handles GET /api/v1/zones/:name/versions/:version
+// Returns the zone content at the requested historical version when supported by the backend.
+func (h *Handler) GetZoneRevision(c *gin.Context) {
+	name := c.Param("name")
+	version := c.Param("version")
+
+	// Ensure zone exists (consistent 404 for all backends)
+	_, err := h.store.GetZone(c.Request.Context(), name)
+	if err != nil {
+		if err == model.ErrZoneNotFound {
+			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
+				model.ErrorCodeNotFound,
+				"Zone not found",
+				map[string]interface{}{"zone": name},
+			))
+			return
+		}
+		h.logger.Error("Failed to get zone", zap.String("zone", name), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to retrieve zone",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
+	revisionStore, ok := h.store.(backend.RevisionStore)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, model.NewAPIErrorWithDetails(
+			model.ErrorCodeUnavailable,
+			"Zone version history is not supported by the configured backend",
+			map[string]interface{}{"backend": "current", "zone": name},
+		))
+		return
+	}
+
+	rev, err := revisionStore.GetRevision(c.Request.Context(), name, version)
+	if err != nil {
+		if err == model.ErrVersionNotFound {
+			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
+				model.ErrorCodeNotFound,
+				"Zone version not found",
+				map[string]interface{}{"zone": name, "version": version},
+			))
+			return
+		}
+		h.logger.Error("Failed to get zone revision", zap.String("zone", name), zap.String("version", version), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to retrieve zone version",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
+	c.Header("ETag", rev.Version)
+	c.JSON(http.StatusOK, rev)
+}
+
 // UpdateZone handles PUT /api/v1/zones/:name
 func (h *Handler) UpdateZone(c *gin.Context) {
 	name := c.Param("name")
