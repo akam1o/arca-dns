@@ -14,7 +14,7 @@ Recommended production topology:
 
 ### Controller
 - One backend: `memory` (dev), `mysql`, `git`, or `etcd`
-- Storage: writable `storage.artifact_directory` and `storage.key_directory`
+- Storage: writable `storage.artifact_directory` and `storage.key_directory` (also set `dnssec.key_directory` when DNSSEC is enabled)
 - (If `dnssec.enabled: true`) DNSSEC master key configured (see below)
 
 ### Agent (edge node)
@@ -56,8 +56,11 @@ If `dnssec.enabled: true`, the controller encrypts DNSSEC private keys at rest w
 
 Load priority:
 1) `ARCA_DNS_DNSSEC_MASTER_KEY_B64` (base64; must decode to 32 bytes)
-2) `storage.key_directory/_masterkey` (base64; must decode to 32 bytes)
-3) auto-generate (only if `dnssec.master_key_auto_generate: true`)
+2) `dnssec.key_directory/_masterkey` (base64; must decode to 32 bytes)
+3) `/etc/arca-dns/master.key` (base64; must decode to 32 bytes)
+4) auto-generate (only if `dnssec.master_key_auto_generate: true`)
+
+Tip: In most deployments, set `storage.key_directory` and `dnssec.key_directory` to the same directory (e.g. `/var/lib/arca-dns/keys`).
 
 Example (env var):
 
