@@ -117,6 +117,10 @@ func TestSigningService_SignZone(t *testing.T) {
 		t.Error("SignedRRs is empty")
 	}
 
+	if len(artifact.UnsignedRRs) == 0 {
+		t.Error("UnsignedRRs is empty")
+	}
+
 	// Verify metadata
 	if artifact.Metadata.KSKKeyTag == 0 {
 		t.Error("KSKKeyTag is zero")
@@ -133,6 +137,7 @@ func TestSigningService_SignZone(t *testing.T) {
 	hasRRSIG := false
 	hasNSEC3 := false
 	hasNSEC3PARAM := false
+	unsignedHasDNSSEC := false
 
 	for _, rr := range artifact.SignedRRs {
 		switch rr.(type) {
@@ -147,6 +152,13 @@ func TestSigningService_SignZone(t *testing.T) {
 		}
 	}
 
+	for _, rr := range artifact.UnsignedRRs {
+		switch rr.(type) {
+		case *dns.DNSKEY, *dns.RRSIG, *dns.NSEC3, *dns.NSEC3PARAM:
+			unsignedHasDNSSEC = true
+		}
+	}
+
 	if !hasDNSKEY {
 		t.Error("No DNSKEY records found in signed zone")
 	}
@@ -158,6 +170,9 @@ func TestSigningService_SignZone(t *testing.T) {
 	}
 	if !hasNSEC3PARAM {
 		t.Error("No NSEC3PARAM record found in signed zone")
+	}
+	if unsignedHasDNSSEC {
+		t.Error("UnsignedRRs contains DNSSEC records unexpectedly")
 	}
 
 	// Verify NSEC3 metadata

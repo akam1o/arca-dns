@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,6 +80,13 @@ func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*Signe
 		}
 	}()
 
+	// Capture unsigned RR set for audit/troubleshooting purposes.
+	unsignedRRs, err := s.unsignedRRsFromZone(zone)
+	if err != nil {
+		status = "error"
+		return nil, fmt.Errorf("build unsigned RRs: %w", err)
+	}
+
 	// Ensure keys exist for the zone
 	ksk, zsk, err := s.keyManager.EnsureZoneKeys(zone.Name)
 	if err != nil {
@@ -147,12 +155,25 @@ func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*Signe
 		ZoneName:    zone.Name,
 		Version:     signedZone.Version,
 		SignedZone:  signedZoneFile,
-		UnsignedRRs: nil, // TODO: Store if needed for diffing
+		UnsignedRRs: unsignedRRs,
 		SignedRRs:   signedRRs,
 		Metadata:    metadata,
 	}
 
 	return artifact, nil
+}
+
+func (s *SigningService) unsignedRRsFromZone(zone *model.Zone) ([]dns.RR, error) {
+	zoneFile, err := parser.GenerateBINDZoneFile(zone)
+	if err != nil {
+		return nil, err
+	}
+
+	parsed, err := parser.ParseBINDZone(strings.NewReader(zoneFile), zone.Name, parser.DefaultParseOptions())
+	if err != nil {
+		return nil, err
+	}
+	return parsed.Records, nil
 }
 
 // SignAndStoreZone signs a zone and stores both unsigned and signed versions.
@@ -173,6 +194,8 @@ func (s *SigningService) SignAndStoreZone(ctx context.Context, zone *model.Zone)
 		return err
 	}
 
+	dnskeyAdded, rrsigAdded, nsec3Added, nsec3paramAdded := diffDNSSECTypes(artifact.UnsignedRRs, artifact.SignedRRs)
+
 	// Store signed artifact (implementation depends on backend)
 	if s.artifactDir != "" {
 		if err := s.storeArtifact(zone.Name, artifact.Version, []byte(artifact.SignedZone)); err != nil {
@@ -187,9 +210,53 @@ func (s *SigningService) SignAndStoreZone(ctx context.Context, zone *model.Zone)
 		zap.String("zone", zone.Name),
 		zap.String("version", artifact.Version),
 		zap.Uint16("ksk_keytag", artifact.Metadata.KSKKeyTag),
-		zap.Uint16("zsk_keytag", artifact.Metadata.ZSKKeyTag))
+		zap.Uint16("zsk_keytag", artifact.Metadata.ZSKKeyTag),
+		zap.Int("dnssec_added_dnskey", dnskeyAdded),
+		zap.Int("dnssec_added_rrsig", rrsigAdded),
+		zap.Int("dnssec_added_nsec3", nsec3Added),
+		zap.Int("dnssec_added_nsec3param", nsec3paramAdded))
 
 	return nil
+}
+
+func diffDNSSECTypes(unsignedRRs []dns.RR, signedRRs []dns.RR) (dnskeyAdded int, rrsigAdded int, nsec3Added int, nsec3paramAdded int) {
+	uc := countRRTypes(unsignedRRs)
+	sc := countRRTypes(signedRRs)
+
+	dnskeyAdded = sc[dns.TypeDNSKEY] - uc[dns.TypeDNSKEY]
+	rrsigAdded = sc[dns.TypeRRSIG] - uc[dns.TypeRRSIG]
+	nsec3Added = sc[dns.TypeNSEC3] - uc[dns.TypeNSEC3]
+	nsec3paramAdded = sc[dns.TypeNSEC3PARAM] - uc[dns.TypeNSEC3PARAM]
+
+	if dnskeyAdded < 0 {
+		dnskeyAdded = 0
+	}
+	if rrsigAdded < 0 {
+		rrsigAdded = 0
+	}
+	if nsec3Added < 0 {
+		nsec3Added = 0
+	}
+	if nsec3paramAdded < 0 {
+		nsec3paramAdded = 0
+	}
+
+	return dnskeyAdded, rrsigAdded, nsec3Added, nsec3paramAdded
+}
+
+func countRRTypes(rrs []dns.RR) map[uint16]int {
+	m := make(map[uint16]int)
+	for _, rr := range rrs {
+		if rr == nil {
+			continue
+		}
+		h := rr.Header()
+		if h == nil {
+			continue
+		}
+		m[h.Rrtype]++
+	}
+	return m
 }
 
 // GetSignedZone retrieves the signed version of a zone.
