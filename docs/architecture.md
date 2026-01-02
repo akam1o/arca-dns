@@ -218,14 +218,14 @@ type Zone struct {
 ## Security Model
 
 ### Controller Security
-1. **API Authentication**: API key-based (configurable JWT)
+1. **API Authentication**: API key-based
 2. **Rate Limiting**: Per-client, separate read/write limits
 3. **Input Validation**: Size limits, format checks
 4. **Audit Logging**: All API requests logged with request ID
 5. **DNSSEC Keys**: Encrypted at rest (AES-256-GCM)
 
 ### Agent Security
-1. **TLS**: Optional mutual TLS for controller communication
+1. **TLS**: Optional mutual TLS to the controller endpoint (typically a reverse proxy / ingress)
 2. **Least Privilege**: Read-only API access
 3. **File Permissions**: Restrictive permissions on zone files
 4. **Key Isolation**: Signing keys never leave controller

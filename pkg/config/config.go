@@ -55,14 +55,8 @@ type APIConfig struct {
 	// Listen address (e.g., "0.0.0.0:8080")
 	Listen string `mapstructure:"listen"`
 
-	// TLS configuration
-	TLS TLSConfig `mapstructure:"tls"`
-
 	// Authentication configuration
 	Auth AuthConfig `mapstructure:"auth"`
-
-	// CORS configuration
-	CORS CORSConfig `mapstructure:"cors"`
 
 	// TrustedProxies is a list of proxy IPs/CIDRs whose forwarded headers are trusted.
 	// If empty, forwarded headers are not trusted (ClientIP uses remote address).
@@ -70,15 +64,9 @@ type APIConfig struct {
 
 	// Rate limiting
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
-
-	// Request timeout
-	Timeout time.Duration `mapstructure:"timeout"`
-
-	// Enable audit logging
-	AuditLog bool `mapstructure:"audit_log"`
 }
 
-// TLSConfig configures TLS for API and agent communication.
+// TLSConfig configures TLS for agent -> controller communication (typically terminated by a reverse proxy).
 type TLSConfig struct {
 	// Enabled enables TLS
 	Enabled bool `mapstructure:"enabled"`
@@ -103,27 +91,6 @@ type AuthConfig struct {
 
 	// APIKeys is a map of API key name to hashed key
 	APIKeys map[string]string `mapstructure:"api_keys"`
-
-	// JWTSecret is the secret for JWT token validation
-	JWTSecret string `mapstructure:"jwt_secret"`
-
-	// JWTIssuer is the expected JWT issuer
-	JWTIssuer string `mapstructure:"jwt_issuer"`
-}
-
-// CORSConfig configures Cross-Origin Resource Sharing.
-type CORSConfig struct {
-	// Enabled enables CORS
-	Enabled bool `mapstructure:"enabled"`
-
-	// AllowedOrigins is the list of allowed origins
-	AllowedOrigins []string `mapstructure:"allowed_origins"`
-
-	// AllowedMethods is the list of allowed HTTP methods
-	AllowedMethods []string `mapstructure:"allowed_methods"`
-
-	// AllowedHeaders is the list of allowed headers
-	AllowedHeaders []string `mapstructure:"allowed_headers"`
 }
 
 // RateLimitConfig configures rate limiting.
@@ -511,11 +478,7 @@ type LoggingConfig struct {
 func DefaultControllerConfig() *ControllerConfig {
 	return &ControllerConfig{
 		API: APIConfig{
-			Listen:  "0.0.0.0:8080",
-			Timeout: 30 * time.Second,
-			TLS: TLSConfig{
-				Enabled: false,
-			},
+			Listen: "0.0.0.0:8080",
 			Auth: AuthConfig{
 				Enabled: true,
 			},
@@ -524,7 +487,6 @@ func DefaultControllerConfig() *ControllerConfig {
 				RequestsPerSecond: 100,
 				Burst:             200,
 			},
-			AuditLog: true,
 		},
 		Backend: BackendConfig{
 			Type: "memory",

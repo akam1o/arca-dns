@@ -497,17 +497,11 @@ systemctl restart arca-dns-controller
 ### Certificate Renewal
 
 ```bash
-# Let's Encrypt example
+# Let's Encrypt example (reverse proxy / ingress termination)
 certbot renew
 
-# Copy new certificates
-cp /etc/letsencrypt/live/controller.example.com/fullchain.pem \
-   /etc/arca-dns/tls/server.crt
-cp /etc/letsencrypt/live/controller.example.com/privkey.pem \
-   /etc/arca-dns/tls/server.key
-
-# Reload controller (zero-downtime)
-systemctl reload arca-dns-controller
+# Reload reverse proxy / ingress (example)
+systemctl reload nginx
 ```
 
 ## Scaling

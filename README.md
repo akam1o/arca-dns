@@ -100,8 +100,7 @@ See `configs/controller.example.yaml` and `configs/agent.example.yaml`, plus `do
 ```yaml
 api:
   listen: "0.0.0.0:8080"
-  tls:
-    enabled: false
+  # TLS is typically terminated by a reverse proxy / ingress.
 
 backend:
   type: "memory"  # Options: memory, mysql, git, etcd
