@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: arca-dns-controller-config
+data:
+  controller.yaml: |
+    api:
+      listen: "0.0.0.0:8080"
+      trusted_proxies: []
+      auth:
+        enabled: true
+        api_keys:
+          admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      rate_limit:
+        enabled: true
+        requests_per_second: 100
+        burst: 200
+
+    backend:
+      type: "etcd"
+      etcd:
+        endpoints: ["http://arca-dns-etcd:2379"]
+        prefix: "/arca-dns"
+        dial_timeout: "5s"
+        request_timeout: "10s"
+
+    storage:
+      artifact_directory: "/var/lib/arca-dns/artifacts"
+      key_directory: "/var/lib/arca-dns/keys"
+      max_versions_per_zone: 10
+
+    dnssec:
+      enabled: true
+      algorithm: 13
+      key_directory: "/var/lib/arca-dns/keys"
+      signature_validity: "720h"
+      signature_inception: "1h"
+      resign_threshold: "168h"
+      nsec3: true
+      nsec3_iterations: 1
+      nsec3_salt_length: 8
+      scheduler_enabled: true
+      scheduler_check_interval: "1h"
+      master_key_auto_generate: false
+
+    logging:
+      level: "info"
+      format: "json"
+      output: "stdout"

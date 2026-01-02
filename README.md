@@ -30,36 +30,44 @@ arca-dns is designed for large-scale DNS deployments with the following features
 
 ## Quick Start
 
-### Prerequisites
+This project is operated as a split control/data plane:
+- **Control plane (controller)**: Kubernetes / Docker Compose / packages
+- **Data plane (agent)**: packages on edge nodes (recommended)
 
-- Go (see `go.mod`)
-- NSD (authoritative DNS server)
-- Unbound (recursive resolver)
-- BIRD (BGP routing daemon)
+## Deploy
 
-Note: `arca-dns-controller` itself can be started without NSD/Unbound/BIRD, but a functional data plane node requires them.
+### Control Plane (Controller)
 
-### Build
+The controller is a standard HTTP API service; TLS is typically terminated by an ingress/reverse proxy.
 
-```bash
-make build
-```
+**Kubernetes (recommended backend: etcd)**:
+- Manifests are under `deployments/kubernetes/controller/` (includes a single-node etcd example).
+- Apply:
+  - `kubectl apply -k deployments/kubernetes/controller`
+- Replace in manifests:
+  - `deployments/kubernetes/controller/controller-secret.yaml` (`dnssec-master-key-b64`)
+  - `deployments/kubernetes/controller/controller-configmap.yaml` (`api.auth.api_keys`, etcd endpoints)
 
-This creates two binaries:
-- `bin/arca-dns-controller` - Control plane server
-- `bin/arca-dns-agent` - Data plane agent
+**Docker Compose (Controller + MySQL example)**:
+- Example compose file: `deployments/compose/controller-mysql/docker-compose.yaml`
+- Run:
+  - `docker compose -f deployments/compose/controller-mysql/docker-compose.yaml --project-directory . up -d`
 
-### Run Controller
+**DEB/RPM packages**:
+- Packaging assets live under `packaging/` and are built via `.goreleaser.yaml`.
+- See `docs/packaging.md` for how to build/install packages and `docs/deployment.md` for operational setup.
 
-```bash
-./bin/arca-dns-controller serve --config configs/controller.example.yaml
-```
+### Data Plane (Agent)
 
-### Run Agent
+The agent is designed to control NSD/Unbound/BIRD on the host and is typically deployed on edge nodes/VMs (not Kubernetes).
 
-```bash
-./bin/arca-dns-agent daemon --config configs/agent.example.yaml
-```
+**DEB/RPM packages (recommended)**:
+1. Install runtime deps: NSD, Unbound, BIRD (bird2 on Debian/Ubuntu).
+2. Install `arca-dns` package (agent + controller binaries).
+3. Configure `/etc/arca-dns/agent.yaml` (based on `configs/agent.example.yaml`).
+4. Start service: `systemctl enable --now arca-dns-agent`
+
+See `docs/deployment.md` and `docs/operations.md` for day-2 operations.
 
 ## Development
 
@@ -137,6 +145,26 @@ health:
   recovery_threshold: 5
 ```
 
+### Local Build / Run (dev)
+
+Prerequisites:
+- Go (see `go.mod`)
+
+Build:
+```bash
+make build
+```
+
+Run controller:
+```bash
+./bin/arca-dns-controller serve --config configs/controller.example.yaml
+```
+
+Run agent (requires NSD/Unbound/BIRD installed on the host if enabled in config):
+```bash
+./bin/arca-dns-agent daemon --config configs/agent.example.yaml
+```
+
 ## API Documentation
 
 API documentation is available in OpenAPI format: [api/openapi.yaml](api/openapi.yaml)
@@ -211,7 +239,6 @@ arca-dns/
 - [Operations Guide](docs/operations.md)
 - [DNSSEC Management](docs/dnssec.md)
 - [Packaging](docs/packaging.md)
-- API spec: `api/openapi.yaml`
 
 ## Contributing
 

@@ -80,8 +80,8 @@ run-agent:
 
 docker-build:
 	@echo "Building Docker images..."
-	docker build -t arca-dns-controller:latest -f deployments/Dockerfile.controller .
-	docker build -t arca-dns-agent:latest -f deployments/Dockerfile.agent .
+	docker build -t arca-dns-controller:latest -f deployments/docker/Dockerfile.controller .
+	docker build -t arca-dns-agent:latest -f deployments/docker/Dockerfile.agent .
 
 help:
 	@echo "Available targets:"

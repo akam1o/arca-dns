@@ -1,0 +1,30 @@
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: arca_dns
+      MYSQL_USER: dns_user
+      MYSQL_PASSWORD: dnspassword
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  controller:
+    image: ghcr.io/akam1o/arca-dns-controller:latest
+    ports:
+      - "8080:8080"
+    environment:
+      # base64(32 bytes); required if dnssec.enabled: true
+      ARCA_DNS_DNSSEC_MASTER_KEY_B64: "REPLACE_WITH_BASE64"
+    volumes:
+      # Run with: docker compose -f deployments/compose/controller-mysql/docker-compose.yaml --project-directory . up
+      - ./configs/controller.example.yaml:/etc/arca-dns/controller.yaml:ro
+      - controller_data:/var/lib/arca-dns
+    depends_on:
+      - mysql
+    command: ["serve", "--config", "/etc/arca-dns/controller.yaml"]
+
+volumes:
+  mysql_data: {}
+  controller_data: {}
+

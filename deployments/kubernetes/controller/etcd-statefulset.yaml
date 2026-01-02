@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: arca-dns-etcd
+spec:
+  serviceName: arca-dns-etcd
+  replicas: 1
+  selector:
+    matchLabels:
+      app: arca-dns-etcd
+  template:
+    metadata:
+      labels:
+        app: arca-dns-etcd
+    spec:
+      containers:
+        - name: etcd
+          image: quay.io/coreos/etcd:v3.5.17
+          ports:
+            - name: client
+              containerPort: 2379
+            - name: peer
+              containerPort: 2380
+          env:
+            - name: ETCD_NAME
+              value: "etcd0"
+            - name: ETCD_DATA_DIR
+              value: "/etcd-data"
+            - name: ETCD_LISTEN_CLIENT_URLS
+              value: "http://0.0.0.0:2379"
+            - name: ETCD_ADVERTISE_CLIENT_URLS
+              value: "http://arca-dns-etcd:2379"
+            - name: ETCD_LISTEN_PEER_URLS
+              value: "http://0.0.0.0:2380"
+            - name: ETCD_INITIAL_ADVERTISE_PEER_URLS
+              value: "http://arca-dns-etcd:2380"
+            - name: ETCD_INITIAL_CLUSTER
+              value: "etcd0=http://arca-dns-etcd:2380"
+            - name: ETCD_INITIAL_CLUSTER_STATE
+              value: "new"
+            - name: ETCD_INITIAL_CLUSTER_TOKEN
+              value: "arca-dns-etcd"
+          volumeMounts:
+            - name: data
+              mountPath: /etcd-data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+

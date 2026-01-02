@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arca-dns-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: arca-dns-controller
+  template:
+    metadata:
+      labels:
+        app: arca-dns-controller
+    spec:
+      containers:
+        - name: controller
+          image: ghcr.io/akam1o/arca-dns-controller:latest
+          args: ["serve", "--config", "/etc/arca-dns/controller.yaml"]
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: ARCA_DNS_DNSSEC_MASTER_KEY_B64
+              valueFrom:
+                secretKeyRef:
+                  name: arca-dns-secrets
+                  key: dnssec-master-key-b64
+          volumeMounts:
+            - name: config
+              mountPath: /etc/arca-dns/controller.yaml
+              subPath: controller.yaml
+            - name: data
+              mountPath: /var/lib/arca-dns
+      volumes:
+        - name: config
+          configMap:
+            name: arca-dns-controller-config
+        - name: data
+          emptyDir: {}

@@ -84,13 +84,13 @@ sudo systemctl status arca-dns-agent
 
 ## Docker Compose
 
-The published images are built from `deployments/Dockerfile.controller` and `deployments/Dockerfile.agent`.
+The published images are built from `deployments/docker/Dockerfile.controller` and `deployments/docker/Dockerfile.agent`.
 The controller works well in containers; the agent usually runs on the node OS (because it controls NSD/Unbound/BIRD).
 
 ### Controller + MySQL
 
 ```yaml
-# docker-compose.yml
+# docker-compose.yml (see also `deployments/compose/controller-mysql/docker-compose.yaml`)
 services:
   mysql:
     image: mysql:8.0
@@ -131,6 +131,7 @@ Deploy the controller as a standard `Deployment` + `Service`:
 - `ConfigMap` for `controller.yaml`
 - `Secret` for `ARCA_DNS_DNSSEC_MASTER_KEY_B64`
 - (Recommended) PVC for `/var/lib/arca-dns` if you use DNSSEC key storage/artifacts
+- For Kubernetes, `etcd` is a good default backend (works well with a single controller instance).
 
 Example (abridged):
 
