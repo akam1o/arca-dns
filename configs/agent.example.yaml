@@ -20,6 +20,9 @@ health:
   recovery_threshold: 5
   query_timeout: "2s"
   latency_threshold: "100ms"
+  # DNS check targets (host:port)
+  nsd_server: "127.0.0.1:5353"
+  unbound_server: "127.0.0.1:53"
   test_record: "example.com"
 
 nsd:

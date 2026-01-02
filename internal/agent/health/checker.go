@@ -43,10 +43,22 @@ type Checker struct {
 
 	testZone           string
 	testRecord         string
+	nsdServer          string
+	unboundServer      string
 }
 
 // NewChecker creates a new health checker.
 func NewChecker(cfg config.HealthConfig, logger *zap.Logger) *Checker {
+	nsdServer := cfg.NSDServer
+	if nsdServer == "" {
+		nsdServer = "127.0.0.1:5353"
+	}
+
+	unboundServer := cfg.UnboundServer
+	if unboundServer == "" {
+		unboundServer = "127.0.0.1:53"
+	}
+
 	testZone := cfg.TestZone
 	if testZone == "" {
 		testZone = "localhost."
@@ -58,10 +70,12 @@ func NewChecker(cfg config.HealthConfig, logger *zap.Logger) *Checker {
 	}
 
 	return &Checker{
-		config:     cfg,
-		logger:     logger,
-		testZone:   testZone,
-		testRecord: testRecord,
+		config:        cfg,
+		logger:        logger,
+		testZone:      testZone,
+		testRecord:    testRecord,
+		nsdServer:     nsdServer,
+		unboundServer: unboundServer,
 	}
 }
 
@@ -100,26 +114,23 @@ func (c *Checker) Run(ctx context.Context, statusChan chan<- HealthStatus) error
 
 // CheckAll performs all health checks.
 // Checks (all must pass):
-// 1. NSD/Unbound processes running (via socket check)
-// 2. Control sockets responsive
-// 3. DNS queries return NOERROR
-// 4. Test zone responds correctly
-// 5. Latency under threshold (<100ms)
+// 1. Direct authoritative DNS (NSD) responds
+// 2. Full-path DNS through Unbound responds
+// 3. Latency under threshold (<100ms)
 func (c *Checker) CheckAll(ctx context.Context) HealthStatus {
 	checks := make(map[CheckType]CheckResult)
 
-	// Check 3: DNS query to NSD (direct)
-	checks[CheckTypeQuery] = c.checkDNSQuery(ctx, "127.0.0.1:5353")
+	// Check 1: DNS query to NSD (direct)
+	checks[CheckTypeQuery] = c.checkDNSQuery(ctx, c.nsdServer, CheckTypeQuery)
 
-	// Check 4: Full path query through Unbound
-	checks[CheckTypeFullPath] = c.checkDNSQuery(ctx, "127.0.0.1:53")
+	// Check 2: Full path query through Unbound
+	checks[CheckTypeFullPath] = c.checkDNSQuery(ctx, c.unboundServer, CheckTypeFullPath)
 
-	// Check 5: Latency check
+	// Check 3: Latency check
 	checks[CheckTypeLatency] = c.checkLatency(ctx)
 
 	// Determine overall health:
 	// DNS checks are the source of truth for routing decisions.
-	// Process/socket checks are best-effort diagnostics and should not flip overall health.
 	healthy := checks[CheckTypeQuery].Success &&
 		checks[CheckTypeFullPath].Success &&
 		checks[CheckTypeLatency].Success
@@ -132,7 +143,7 @@ func (c *Checker) CheckAll(ctx context.Context) HealthStatus {
 }
 
 // checkDNSQuery performs a DNS query and verifies the response.
-func (c *Checker) checkDNSQuery(ctx context.Context, server string) CheckResult {
+func (c *Checker) checkDNSQuery(ctx context.Context, server string, checkType CheckType) CheckResult {
 	start := time.Now()
 
 	// Create DNS query
@@ -147,12 +158,6 @@ func (c *Checker) checkDNSQuery(ctx context.Context, server string) CheckResult 
 	// Perform query
 	resp, _, err := client.ExchangeContext(ctx, msg, server)
 	if err != nil {
-		// Determine check type based on server
-		checkType := CheckTypeQuery
-		if server == "127.0.0.1:53" {
-			checkType = CheckTypeFullPath
-		}
-
 		return CheckResult{
 			Type:      checkType,
 			Success:   false,
@@ -164,11 +169,6 @@ func (c *Checker) checkDNSQuery(ctx context.Context, server string) CheckResult 
 
 	// Verify response code
 	if resp.Rcode != dns.RcodeSuccess {
-		checkType := CheckTypeQuery
-		if server == "127.0.0.1:53" {
-			checkType = CheckTypeFullPath
-		}
-
 		return CheckResult{
 			Type:      checkType,
 			Success:   false,
@@ -176,11 +176,6 @@ func (c *Checker) checkDNSQuery(ctx context.Context, server string) CheckResult 
 			Timestamp: time.Now(),
 			Latency:   time.Since(start),
 		}
-	}
-
-	checkType := CheckTypeQuery
-	if server == "127.0.0.1:53" {
-		checkType = CheckTypeFullPath
 	}
 
 	return CheckResult{
@@ -205,7 +200,7 @@ func (c *Checker) checkLatency(ctx context.Context) CheckResult {
 	}
 
 	// Perform query
-	_, rtt, err := client.ExchangeContext(ctx, msg, "127.0.0.1:53")
+	_, rtt, err := client.ExchangeContext(ctx, msg, c.unboundServer)
 	if err != nil {
 		return CheckResult{
 			Type:      CheckTypeLatency,

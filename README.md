@@ -167,6 +167,8 @@ health:
   check_interval: "10s"
   failure_threshold: 3
   recovery_threshold: 5
+  nsd_server: "127.0.0.1:5353"
+  unbound_server: "127.0.0.1:53"
 ```
 
 ### Local Build / Run (dev)

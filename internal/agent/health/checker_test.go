@@ -38,7 +38,7 @@ func TestChecker_checkDNSQuery(t *testing.T) {
 	}, logger)
 
 	ctx := context.Background()
-	result := checker.checkDNSQuery(ctx, addr)
+	result := checker.checkDNSQuery(ctx, addr, CheckTypeQuery)
 
 	assert.True(t, result.Success)
 	assert.NoError(t, result.Error)
@@ -57,7 +57,7 @@ func TestChecker_checkDNSQuery_Failure(t *testing.T) {
 	}, logger)
 
 	ctx := context.Background()
-	result := checker.checkDNSQuery(ctx, addr)
+	result := checker.checkDNSQuery(ctx, addr, CheckTypeQuery)
 
 	assert.False(t, result.Success)
 	assert.Error(t, result.Error)
@@ -112,14 +112,17 @@ func TestChecker_checkLatency(t *testing.T) {
 func TestChecker_CheckAll(t *testing.T) {
 	logger := zap.NewNop()
 
+	server, addr := startTestDNSServer(t, dns.RcodeSuccess)
+	defer func() { _ = server.Shutdown() }()
+
 	checker := NewChecker(config.HealthConfig{
 		QueryTimeout:     2 * time.Second,
 		LatencyThreshold: 100 * time.Millisecond,
 		TestRecord:       "example.com",
+		NSDServer:        addr,
+		UnboundServer:    addr,
 	}, logger)
 
-	// Note: CheckAll uses hardcoded localhost:53 and localhost:5353
-	// In this test, we can only verify the logic structure
 	ctx := context.Background()
 	status := checker.CheckAll(ctx)
 
@@ -128,8 +131,10 @@ func TestChecker_CheckAll(t *testing.T) {
 	assert.Contains(t, status.Checks, CheckTypeFullPath)
 	assert.Contains(t, status.Checks, CheckTypeLatency)
 
-	// DNS checks will fail (no DNS server on localhost:53/5353)
-	// This is expected in unit test environment
+	assert.True(t, status.Healthy)
+	assert.True(t, status.Checks[CheckTypeQuery].Success)
+	assert.True(t, status.Checks[CheckTypeFullPath].Success)
+	assert.True(t, status.Checks[CheckTypeLatency].Success)
 }
 
 func TestChecker_Run(t *testing.T) {

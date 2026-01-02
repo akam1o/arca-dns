@@ -503,6 +503,14 @@ type HealthConfig struct {
 	// LatencyThreshold is the maximum acceptable query latency
 	LatencyThreshold time.Duration `mapstructure:"latency_threshold"`
 
+	// NSDServer is the address for direct authoritative checks (host:port).
+	// Default: 127.0.0.1:5353
+	NSDServer string `mapstructure:"nsd_server"`
+
+	// UnboundServer is the address for full-path checks through Unbound (host:port).
+	// Default: 127.0.0.1:53
+	UnboundServer string `mapstructure:"unbound_server"`
+
 	// TestZone is the zone to query for health checks
 	TestZone string `mapstructure:"test_zone"`
 
@@ -664,6 +672,8 @@ func DefaultAgentConfig() *AgentConfig {
 			MinStateDuration:  30 * time.Second,
 			QueryTimeout:      5 * time.Second,
 			LatencyThreshold:  100 * time.Millisecond,
+			NSDServer:         "127.0.0.1:5353",
+			UnboundServer:     "127.0.0.1:53",
 		},
 		Sync: SyncConfig{
 			SyncInterval:     30 * time.Second,
