@@ -627,6 +627,53 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 	c.String(http.StatusOK, zoneFile)
 }
 
+// GetSignedZoneMetadata handles GET /api/v1/zones/:name/signed/metadata
+// Returns machine-readable metadata for the signed zone artifact without returning the zone file content.
+func (h *Handler) GetSignedZoneMetadata(c *gin.Context) {
+	name := c.Param("name")
+
+	zone, err := h.store.GetZone(c.Request.Context(), name)
+	if err != nil {
+		if err == model.ErrZoneNotFound {
+			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
+				model.ErrorCodeNotFound,
+				"Zone not found",
+				map[string]interface{}{"zone": name},
+			))
+			return
+		}
+		h.logger.Error("Failed to get zone", zap.String("zone", name), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to retrieve zone",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
+	// Set headers (same metadata headers as /signed).
+	c.Header("ETag", zone.Version)
+	c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
+	if hash := versionHash(zone.Version); hash != "" {
+		c.Header("X-Zone-Hash", hash)
+	}
+
+	// Conditional GET: return 304 when If-None-Match matches current version.
+	ifNoneMatch := c.GetHeader("If-None-Match")
+	if ifNoneMatch != "" && etagMatches(ifNoneMatch, zone.Version) {
+		c.Status(http.StatusNotModified)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"zone":           zone.Name,
+		"version":        zone.Version,
+		"serial":         zone.SOA.Serial,
+		"hash":           versionHash(zone.Version),
+		"dnssec_enabled": zone.DNSSEC != nil && zone.DNSSEC.Enabled,
+	})
+}
+
 // GetDSRecords handles GET /api/v1/zones/:name/ds
 // Returns DS records for parent zone delegation (M4.5)
 func (h *Handler) GetDSRecords(c *gin.Context) {

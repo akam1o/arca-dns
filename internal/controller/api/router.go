@@ -92,6 +92,7 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 
 		// Zone file download (for agents)
 		protected.GET("/zones/:name/signed", handler.GetSignedZone)
+		protected.GET("/zones/:name/signed/metadata", handler.GetSignedZoneMetadata)
 		protected.GET("/zones/:name/ds", handler.GetDSRecords)
 		protected.GET("/zones/:name/dnssec/ds", handler.GetDSRecords)
 	}

@@ -508,6 +508,68 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /zones/{zoneName}/signed/metadata:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        description: Fully qualified domain name of the zone
+        schema:
+          type: string
+
+    get:
+      tags: [zones]
+      summary: Get signed zone metadata (for agents)
+      description: |
+        Returns machine-readable metadata for the signed zone artifact without returning the zone file content.
+        Supports conditional requests with If-None-Match (ETag).
+      operationId: getSignedZoneMetadata
+      parameters:
+        - name: If-None-Match
+          in: header
+          description: Zone version - returns 304 if version matches
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Signed zone metadata
+          headers:
+            ETag:
+              description: Zone version
+              schema:
+                type: string
+            X-Zone-Serial:
+              description: SOA serial number
+              schema:
+                type: integer
+            X-Zone-Hash:
+              description: SHA256 hash of zone content (hash8)
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  zone:
+                    type: string
+                  version:
+                    type: string
+                  serial:
+                    type: integer
+                  hash:
+                    type: string
+                  dnssec_enabled:
+                    type: boolean
+        '304':
+          description: Not modified (zone version matches If-None-Match)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /zones/{zoneName}/versions:
     parameters:
       - name: zoneName
