@@ -1,0 +1,70 @@
+# Example configuration for arca-dns-agent
+
+controller:
+  url: "http://controller:8080"
+  api_key: "REPLACE_WITH_RAW_API_KEY"
+  timeout: "5s"
+  retry_attempts: 3
+  retry_delay: "200ms"
+
+sync:
+  sync_interval: "30s"
+  jitter: "5s"
+  max_staleness: "5m"
+  backup_versions: 3
+  verify_checksums: true
+
+health:
+  check_interval: "10s"
+  failure_threshold: 3
+  recovery_threshold: 5
+  query_timeout: "2s"
+  latency_threshold: "100ms"
+  test_record: "example.com"
+
+nsd:
+  enabled: false
+  config_path: "/etc/nsd/nsd.conf"
+  control_path: "/usr/sbin/nsd-control"
+  zone_directory: "/var/lib/nsd/zones"
+  checkzone_path: "/usr/sbin/nsd-checkzone"
+  reload_timeout: "10s"
+
+unbound:
+  enabled: false
+  config_path: "/etc/unbound/unbound.conf"
+  control_path: "/usr/sbin/unbound-control"
+  checkconf_path: "/usr/sbin/unbound-checkconf"
+  edns_buffer_size: 1232
+  stub_zone:
+    nsd_address: "127.0.0.1"
+    nsd_port: 5353
+  reload_timeout: "10s"
+
+bird:
+  enabled: false
+  socket_path: "/var/run/bird/bird.ctl"
+  protocol_name: "anycast"
+  command_timeout: "5s"
+
+dnstap:
+  enabled: false
+  socket_path: "/var/run/dnstap.sock"
+  log_file: "/var/log/arca-dns/dnstap.jsonl"
+  sample_rate: 10
+  always_log_errors: true
+  buffer_size: 1000
+  log_rotation:
+    max_size: 100
+    max_age: 7
+    max_backups: 10
+    compress: true
+
+metrics:
+  enabled: true
+  listen: "0.0.0.0:9090"
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"

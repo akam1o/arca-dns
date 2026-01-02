@@ -59,26 +59,35 @@ func NewProcessor(config ProcessorConfig, logger *zap.Logger) *Processor {
 // Run starts the DNSTap processing pipeline.
 // It blocks until the context is canceled.
 func (p *Processor) Run(ctx context.Context) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// Create frame channel
 	frameChan := make(chan Frame, p.receiver.bufferSize)
 
 	// Start logger if configured
+	var wg sync.WaitGroup
 	if p.logger != nil {
-		go p.logger.Run(ctx)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = p.logger.Run(runCtx)
+		}()
 	}
 
 	// Start processor goroutine
-	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		p.processFrames(ctx, frameChan)
+		p.processFrames(runCtx, frameChan)
 	}()
 
 	// Start receiver (blocks until context is canceled)
-	err := p.receiver.Run(ctx, frameChan)
+	err := p.receiver.Run(runCtx, frameChan)
+	// Ensure all goroutines stop even if receiver exits early with an error.
+	cancel()
 
-	// Wait for processor to finish
+	// Wait for processor and logger to finish
 	close(frameChan)
 	wg.Wait()
 
@@ -133,10 +142,8 @@ func (p *Processor) processFrame(frame Frame) {
 		latency,
 	)
 
-	// Record DNSSEC validation
-	if query.DNSSECValid {
-		p.metrics.RecordDNSSEC(true)
-	}
+	// Record DNSSEC validation (both valid and invalid)
+	p.metrics.RecordDNSSEC(query.DNSSECValid)
 
 	// Log query (via sampler)
 	if p.logger != nil {

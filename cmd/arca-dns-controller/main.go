@@ -74,11 +74,10 @@ func runServe(cmd *cobra.Command, args []string) {
 		zap.String("commit", commit),
 		zap.String("listen", listenAddr))
 
-	// Load configuration (use defaults if no config file)
-	cfg := config.DefaultControllerConfig()
-	if configFile != "" {
-		// TODO: Implement config file loading
-		logger.Info("Config file loading not yet implemented, using defaults")
+	// Load configuration (defaults < YAML file < environment variables)
+	cfg, err := config.LoadControllerConfig(configFile)
+	if err != nil {
+		logger.Fatal("Failed to load configuration", zap.Error(err))
 	}
 
 	// Override listen address from flag if provided
@@ -86,9 +85,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		cfg.API.Listen = listenAddr
 	}
 
-	// Initialize backend (in-memory for now)
-	store := backend.NewMemoryBackend()
-	logger.Info("Backend initialized", zap.String("type", "memory"))
+	// Initialize backend from configuration
+	store, err := newStoreFromConfig(cfg)
+	if err != nil {
+		logger.Fatal("Failed to initialize backend", zap.Error(err))
+	}
+	logger.Info("Backend initialized", zap.String("type", cfg.Backend.Type))
 
 	// Initialize DNSSEC signing service if enabled
 	var signingService *service.SigningService
@@ -122,7 +124,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		}
 
 		// Create signing service (Note: SignerOptions are set per-zone in SigningService)
-		signingService = service.NewSigningService(store, keyManager, logger)
+		signingService = service.NewSigningService(store, keyManager, cfg.Storage.ArtifactDirectory, logger)
 		logger.Info("DNSSEC signing service initialized")
 
 		// Initialize scheduler if enabled
@@ -146,8 +148,8 @@ func runServe(cmd *cobra.Command, args []string) {
 			ticker := dnssec.NewRealTicker(schedulerConfig.CheckInterval)
 			scheduler := dnssec.NewScheduler(
 				schedulerConfig,
-				store,           // ZoneLister
-				signingService,  // Signer
+				store,          // ZoneLister
+				signingService, // Signer
 				&dnssec.RealClock{},
 				ticker,
 				nil, // metrics (TODO: implement)
@@ -173,7 +175,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	handler := api.NewHandler(store, signingService, logger)
 
 	// Setup router
-	router := api.SetupRouter(handler, logger)
+	router := api.SetupRouter(handler, &cfg.API, logger)
 
 	// Create HTTP server
 	srv := &http.Server{
@@ -231,4 +233,62 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	logger.Info("Server stopped")
+}
+
+func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error) {
+	configMap := make(map[string]interface{})
+
+	switch cfg.Backend.Type {
+	case "memory":
+		return backend.NewBackend("memory", configMap)
+
+	case "mysql":
+		if cfg.Backend.MySQL.DSN == "" {
+			return nil, fmt.Errorf("mysql backend requires backend.mysql.dsn")
+		}
+		configMap["dsn"] = cfg.Backend.MySQL.DSN
+		return backend.NewBackend("mysql", configMap)
+
+	case "git":
+		if cfg.Backend.Git.RepositoryPath == "" {
+			return nil, fmt.Errorf("git backend requires backend.git.repository_path")
+		}
+		configMap["repository_path"] = cfg.Backend.Git.RepositoryPath
+		if cfg.Backend.Git.Branch != "" {
+			configMap["branch"] = cfg.Backend.Git.Branch
+		}
+		if cfg.Backend.Git.Author != "" {
+			configMap["author"] = cfg.Backend.Git.Author
+		}
+		if cfg.Backend.Git.Email != "" {
+			configMap["email"] = cfg.Backend.Git.Email
+		}
+		configMap["auto_push"] = cfg.Backend.Git.AutoPush
+		return backend.NewBackend("git", configMap)
+
+	case "etcd":
+		if len(cfg.Backend.Etcd.Endpoints) == 0 {
+			return nil, fmt.Errorf("etcd backend requires backend.etcd.endpoints")
+		}
+		configMap["endpoints"] = cfg.Backend.Etcd.Endpoints
+		if cfg.Backend.Etcd.Prefix != "" {
+			configMap["prefix"] = cfg.Backend.Etcd.Prefix
+		}
+		if cfg.Backend.Etcd.Username != "" {
+			configMap["username"] = cfg.Backend.Etcd.Username
+		}
+		if cfg.Backend.Etcd.Password != "" {
+			configMap["password"] = cfg.Backend.Etcd.Password
+		}
+		if cfg.Backend.Etcd.DialTimeout > 0 {
+			configMap["dial_timeout"] = cfg.Backend.Etcd.DialTimeout
+		}
+		if cfg.Backend.Etcd.RequestTimeout > 0 {
+			configMap["request_timeout"] = cfg.Backend.Etcd.RequestTimeout
+		}
+		return backend.NewBackend("etcd", configMap)
+
+	default:
+		return nil, fmt.Errorf("unsupported backend type: %s", cfg.Backend.Type)
+	}
 }

@@ -155,47 +155,8 @@ func runExport(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	// List all zones
-	zones, err := store.ListZones(ctx, backend.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("list zones: %w", err)
-	}
-
-	fmt.Printf("Found %d zones to export\n", len(zones))
-
-	if migrateDryRun {
-		fmt.Println("\n[DRY RUN] Would export:")
-		for _, zone := range zones {
-			fmt.Printf("  - %s (version: %s)\n", zone.Name, zone.Version)
-		}
-		return nil
-	}
-
-	// Create output directory
-	if err := os.MkdirAll(migrateOutputDir, 0755); err != nil {
-		return fmt.Errorf("create output directory: %w", err)
-	}
-
-	// Export each zone
-	exported := 0
-	for _, zone := range zones {
-		filename := filepath.Join(migrateOutputDir, sanitizeFilename(zone.Name)+".json")
-
-		data, err := json.MarshalIndent(zone, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal zone %s: %w", zone.Name, err)
-		}
-
-		if err := os.WriteFile(filename, data, 0644); err != nil {
-			return fmt.Errorf("write zone %s: %w", zone.Name, err)
-		}
-
-		exported++
-		fmt.Printf("Exported: %s -> %s\n", zone.Name, filename)
-	}
-
-	fmt.Printf("\nExport complete: %d zones exported to %s\n", exported, migrateOutputDir)
-	return nil
+	_, err = exportFromStore(ctx, store, migrateOutputDir, migrateDryRun)
+	return err
 }
 
 // runImport executes the import command.
@@ -214,47 +175,6 @@ func runImport(cmd *cobra.Command, args []string) error {
 		cfg = config.DefaultControllerConfig()
 	}
 
-	// Read zone files
-	files, err := filepath.Glob(filepath.Join(migrateInputDir, "*.json"))
-	if err != nil {
-		return fmt.Errorf("glob zone files: %w", err)
-	}
-
-	if len(files) == 0 {
-		return fmt.Errorf("no zone files found in %s", migrateInputDir)
-	}
-
-	fmt.Printf("Found %d zone files to import\n", len(files))
-
-	// Parse and validate zones
-	zones := make([]*model.Zone, 0, len(files))
-	for _, file := range files {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			return fmt.Errorf("read file %s: %w", file, err)
-		}
-
-		var zone model.Zone
-		if err := json.Unmarshal(data, &zone); err != nil {
-			return fmt.Errorf("parse file %s: %w", file, err)
-		}
-
-		zones = append(zones, &zone)
-	}
-
-	if migrateDryRun {
-		fmt.Println("\n[DRY RUN] Would import:")
-		for _, zone := range zones {
-			// Recompute version to show what it would be
-			newVersion, err := backend.ComputeZoneVersion(zone)
-			if err != nil {
-				return fmt.Errorf("compute version for %s: %w", zone.Name, err)
-			}
-			fmt.Printf("  - %s (old version: %s, new version: %s)\n", zone.Name, zone.Version, newVersion)
-		}
-		return nil
-	}
-
 	// Create backend
 	store, err := createBackend(migrateBackendType, cfg)
 	if err != nil {
@@ -262,46 +182,8 @@ func runImport(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	// Import zones
-	imported := 0
-	skipped := 0
-	for _, zone := range zones {
-		// Clear version - it will be recomputed during CreateZone
-		oldVersion := zone.Version
-		zone.Version = ""
-
-		if err := store.CreateZone(ctx, zone); err != nil {
-			// If zone exists, handle based on overwrite flag
-			if errors.Is(err, model.ErrZoneAlreadyExists) {
-				if migrateOverwrite {
-					// Delete and recreate to avoid serial increment
-					if err := store.DeleteZone(ctx, zone.Name); err != nil {
-						return fmt.Errorf("delete existing zone %s: %w", zone.Name, err)
-					}
-					if err := store.CreateZone(ctx, zone); err != nil {
-						return fmt.Errorf("recreate zone %s: %w", zone.Name, err)
-					}
-					fmt.Printf("Overwrote: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
-				} else {
-					fmt.Printf("Skipped (exists): %s\n", zone.Name)
-					skipped++
-					continue
-				}
-			} else {
-				return fmt.Errorf("create zone %s: %w", zone.Name, err)
-			}
-		} else {
-			fmt.Printf("Imported: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
-		}
-		imported++
-	}
-
-	if skipped > 0 {
-		fmt.Printf("\nImport complete: %d zones imported, %d skipped (use --overwrite to replace existing zones)\n", imported, skipped)
-	} else {
-		fmt.Printf("\nImport complete: %d zones imported to %s backend\n", imported, migrateBackendType)
-	}
-	return nil
+	_, err = importToStore(ctx, store, migrateInputDir, migrateDryRun, migrateOverwrite)
+	return err
 }
 
 // runCopy executes the copy command.
@@ -396,6 +278,134 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\nCopy complete: %d zones copied from %s to %s\n", copied, migrateFromBackend, migrateToBackend)
 	}
 	return nil
+}
+
+func exportFromStore(ctx context.Context, store backend.ZoneStore, outputDir string, dryRun bool) (int, error) {
+	// List all zones
+	zones, err := store.ListZones(ctx, backend.ListOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("list zones: %w", err)
+	}
+
+	fmt.Printf("Found %d zones to export\n", len(zones))
+
+	if dryRun {
+		fmt.Println("\n[DRY RUN] Would export:")
+		for _, zone := range zones {
+			fmt.Printf("  - %s (version: %s)\n", zone.Name, zone.Version)
+		}
+		return 0, nil
+	}
+
+	// Create output directory
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return 0, fmt.Errorf("create output directory: %w", err)
+	}
+
+	// Export each zone
+	exported := 0
+	for _, zone := range zones {
+		filename := filepath.Join(outputDir, sanitizeFilename(zone.Name)+".json")
+
+		data, err := json.MarshalIndent(zone, "", "  ")
+		if err != nil {
+			return 0, fmt.Errorf("marshal zone %s: %w", zone.Name, err)
+		}
+
+		if err := os.WriteFile(filename, data, 0644); err != nil {
+			return 0, fmt.Errorf("write zone %s: %w", zone.Name, err)
+		}
+
+		exported++
+		fmt.Printf("Exported: %s -> %s\n", zone.Name, filename)
+	}
+
+	fmt.Printf("\nExport complete: %d zones exported to %s\n", exported, outputDir)
+	return exported, nil
+}
+
+func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string, dryRun bool, overwrite bool) (int, error) {
+	// Read zone files
+	files, err := filepath.Glob(filepath.Join(inputDir, "*.json"))
+	if err != nil {
+		return 0, fmt.Errorf("glob zone files: %w", err)
+	}
+
+	if len(files) == 0 {
+		return 0, fmt.Errorf("no zone files found in %s", inputDir)
+	}
+
+	fmt.Printf("Found %d zone files to import\n", len(files))
+
+	// Parse and validate zones
+	zones := make([]*model.Zone, 0, len(files))
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return 0, fmt.Errorf("read file %s: %w", file, err)
+		}
+
+		var zone model.Zone
+		if err := json.Unmarshal(data, &zone); err != nil {
+			return 0, fmt.Errorf("parse file %s: %w", file, err)
+		}
+
+		zones = append(zones, &zone)
+	}
+
+	if dryRun {
+		fmt.Println("\n[DRY RUN] Would import:")
+		for _, zone := range zones {
+			// Recompute version to show what it would be
+			newVersion, err := backend.ComputeZoneVersion(zone)
+			if err != nil {
+				return 0, fmt.Errorf("compute version for %s: %w", zone.Name, err)
+			}
+			fmt.Printf("  - %s (old version: %s, new version: %s)\n", zone.Name, zone.Version, newVersion)
+		}
+		return 0, nil
+	}
+
+	// Import zones
+	imported := 0
+	skipped := 0
+	for _, zone := range zones {
+		// Clear version - it will be recomputed during CreateZone
+		oldVersion := zone.Version
+		zone.Version = ""
+
+		if err := store.CreateZone(ctx, zone); err != nil {
+			// If zone exists, handle based on overwrite flag
+			if errors.Is(err, model.ErrZoneAlreadyExists) {
+				if overwrite {
+					// Delete and recreate to avoid serial increment
+					if err := store.DeleteZone(ctx, zone.Name); err != nil {
+						return 0, fmt.Errorf("delete existing zone %s: %w", zone.Name, err)
+					}
+					if err := store.CreateZone(ctx, zone); err != nil {
+						return 0, fmt.Errorf("recreate zone %s: %w", zone.Name, err)
+					}
+					fmt.Printf("Overwrote: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
+				} else {
+					fmt.Printf("Skipped (exists): %s\n", zone.Name)
+					skipped++
+					continue
+				}
+			} else {
+				return 0, fmt.Errorf("create zone %s: %w", zone.Name, err)
+			}
+		} else {
+			fmt.Printf("Imported: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
+		}
+		imported++
+	}
+
+	if skipped > 0 {
+		fmt.Printf("\nImport complete: %d zones imported, %d skipped (use --overwrite to replace existing zones)\n", imported, skipped)
+	} else {
+		fmt.Printf("\nImport complete: %d zones imported\n", imported)
+	}
+	return imported, nil
 }
 
 // createBackendForCopy creates a backend with explicit DSN/path parameters.

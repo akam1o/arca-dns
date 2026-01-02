@@ -51,7 +51,7 @@ func setupSigningService(t *testing.T) (*SigningService, func()) {
 	logger := zap.NewNop()
 
 	// Create signing service
-	service := NewSigningService(store, keyManager, logger)
+	service := NewSigningService(store, keyManager, filepath.Join(tmpDir, "artifacts"), logger)
 
 	return service, cleanup
 }

@@ -30,6 +30,7 @@ go.work.sum
 # Editor/IDE
 .idea/
 .vscode/
+.cache/
 
 # Local build outputs (project binaries)
 /arca-dns-agent

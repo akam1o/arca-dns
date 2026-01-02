@@ -47,7 +47,8 @@ func (rv *RequestValidator) Middleware() gin.HandlerFunc {
 		}
 
 		// For requests with body, enforce size limit by reading with LimitReader
-		if c.Request.Body != nil && c.Request.ContentLength > 0 {
+		// This handles both Content-Length and chunked/unknown-length bodies
+		if c.Request.Body != nil {
 			// Read body with size limit
 			body, err := io.ReadAll(io.LimitReader(c.Request.Body, rv.maxBodySize+1))
 			c.Request.Body.Close()

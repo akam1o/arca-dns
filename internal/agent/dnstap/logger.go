@@ -82,22 +82,27 @@ func (l *Logger) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			// Mark as closed to prevent new writes
+			l.mu.Lock()
+			l.closed = true
+			l.mu.Unlock()
+
 			// Drain remaining entries
-			close(l.queue)
-			for entry := range l.queue {
-				if err := encoder.Encode(entry); err != nil {
-					l.logger.Warn("Failed to write log entry", zap.Error(err))
+			for {
+				select {
+				case entry := <-l.queue:
+					if err := encoder.Encode(entry); err != nil {
+						l.logger.Warn("Failed to write log entry", zap.Error(err))
+					}
+				default:
+					// Queue drained
+					l.writer.Close()
+					l.logger.Info("DNSTap logger stopped")
+					return ctx.Err()
 				}
 			}
-			l.writer.Close()
-			l.logger.Info("DNSTap logger stopped")
-			return ctx.Err()
 
-		case entry, ok := <-l.queue:
-			if !ok {
-				return nil
-			}
-
+		case entry := <-l.queue:
 			if err := encoder.Encode(entry); err != nil {
 				l.logger.Warn("Failed to write log entry", zap.Error(err))
 				dropped++

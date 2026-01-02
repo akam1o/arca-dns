@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +12,16 @@ import (
 
 	"github.com/akam1o/arca-dns/pkg/config"
 )
+
+func requireTCPListener(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("tcp listen not permitted in this environment: %v", err)
+		return
+	}
+	_ = ln.Close()
+}
 
 func TestNewClient(t *testing.T) {
 	cfg := config.ControllerClientConfig{
@@ -35,6 +46,7 @@ func TestNewClient(t *testing.T) {
 }
 
 func TestListZones(t *testing.T) {
+	requireTCPListener(t)
 	// Create mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/zones" {
@@ -103,6 +115,7 @@ func TestListZones(t *testing.T) {
 }
 
 func TestFetchSignedZone_Success(t *testing.T) {
+	requireTCPListener(t)
 	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400
 example.com. 3600 IN NS ns1.example.com.
 www.example.com. 300 IN A 192.0.2.1
@@ -164,6 +177,7 @@ www.example.com. 300 IN A 192.0.2.1
 }
 
 func TestFetchSignedZone_NotModified(t *testing.T) {
+	requireTCPListener(t)
 	// Create mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("If-None-Match") != "v2024122801-a3f5c2e9" {
@@ -210,6 +224,7 @@ func TestFetchSignedZone_NotModified(t *testing.T) {
 }
 
 func TestFetchSignedZone_ChecksumVerification(t *testing.T) {
+	requireTCPListener(t)
 	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
 
 	// Create mock server with incorrect hash
@@ -249,6 +264,7 @@ func TestFetchSignedZone_ChecksumVerification(t *testing.T) {
 }
 
 func TestRetryLogic(t *testing.T) {
+	requireTCPListener(t)
 	attempts := 0
 
 	// Create mock server that fails twice then succeeds

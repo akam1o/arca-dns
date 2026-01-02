@@ -2,9 +2,11 @@ package health
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -14,6 +16,16 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
+
+func skipIfBindNotPermitted(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+	if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+		t.Skipf("bind not permitted in this environment: %v", err)
+	}
+}
 
 func TestChecker_checkProcess(t *testing.T) {
 	logger := zap.NewNop()
@@ -65,6 +77,9 @@ func TestChecker_checkSocket(t *testing.T) {
 		defer os.Remove(socketPath)
 
 		listener, err := net.Listen("unix", socketPath)
+		if err != nil {
+			skipIfBindNotPermitted(t, err)
+		}
 		require.NoError(t, err)
 		defer listener.Close()
 
@@ -204,6 +219,9 @@ func TestChecker_CheckAll(t *testing.T) {
 	defer os.Remove(socketPath)
 
 	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		skipIfBindNotPermitted(t, err)
+	}
 	require.NoError(t, err)
 	defer listener.Close()
 
@@ -324,6 +342,9 @@ func startTestDNSServer(t *testing.T, rcode int) (*dns.Server, string) {
 
 	// Start UDP server
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		skipIfBindNotPermitted(t, err)
+	}
 	require.NoError(t, err)
 
 	server := &dns.Server{

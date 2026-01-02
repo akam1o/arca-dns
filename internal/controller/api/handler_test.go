@@ -4,29 +4,43 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
+	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
 
-func setupTest() (*Handler, *backend.MemoryBackend, *httptest.Server) {
+func setupTest(t *testing.T) (*Handler, *backend.MemoryBackend, *httptest.Server) {
+	t.Helper()
+
 	logger, _ := zap.NewDevelopment()
 	store := backend.NewMemoryBackend()
 	// Create handler without signing service for backward compatibility
 	handler := NewHandler(store, nil, logger)
-	router := SetupRouter(handler, logger)
-	server := httptest.NewServer(router)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = false
+	apiCfg.RateLimit.Enabled = false
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("tcp listen not permitted in this environment: %v", err)
+	}
+	server := httptest.NewUnstartedServer(router)
+	server.Listener = ln
+	server.Start()
 	return handler, store, server
 }
 
 func TestCreateZone(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	zone := &model.Zone{
@@ -55,7 +69,7 @@ func TestCreateZone(t *testing.T) {
 }
 
 func TestCreateZone_Duplicate(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	zone := &model.Zone{
@@ -78,7 +92,7 @@ func TestCreateZone_Duplicate(t *testing.T) {
 }
 
 func TestGetZone(t *testing.T) {
-	_, store, server := setupTest()
+	_, store, server := setupTest(t)
 	defer server.Close()
 
 	// Create a zone first
@@ -103,7 +117,7 @@ func TestGetZone(t *testing.T) {
 }
 
 func TestGetZone_NotFound(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	resp, err := http.Get(server.URL + "/api/v1/zones/nonexistent.com.")
@@ -114,7 +128,7 @@ func TestGetZone_NotFound(t *testing.T) {
 }
 
 func TestListZones(t *testing.T) {
-	_, store, server := setupTest()
+	_, store, server := setupTest(t)
 	defer server.Close()
 
 	// Create multiple zones
@@ -149,7 +163,7 @@ func TestListZones(t *testing.T) {
 }
 
 func TestListZones_Pagination(t *testing.T) {
-	_, store, server := setupTest()
+	_, store, server := setupTest(t)
 	defer server.Close()
 
 	// Create 5 zones
@@ -177,7 +191,7 @@ func TestListZones_Pagination(t *testing.T) {
 }
 
 func TestUpdateZone(t *testing.T) {
-	_, store, server := setupTest()
+	_, store, server := setupTest(t)
 	defer server.Close()
 
 	// Create a zone first
@@ -221,7 +235,7 @@ func TestUpdateZone(t *testing.T) {
 }
 
 func TestUpdateZone_Conflict(t *testing.T) {
-	_, store, server := setupTest()
+	_, store, server := setupTest(t)
 	defer server.Close()
 
 	// Create a zone
@@ -246,7 +260,7 @@ func TestUpdateZone_Conflict(t *testing.T) {
 }
 
 func TestDeleteZone(t *testing.T) {
-	_, store, server := setupTest()
+	_, store, server := setupTest(t)
 	defer server.Close()
 
 	// Create a zone first
@@ -271,7 +285,7 @@ func TestDeleteZone(t *testing.T) {
 }
 
 func TestDeleteZone_NotFound(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/nonexistent.com.", nil)
@@ -284,7 +298,7 @@ func TestDeleteZone_NotFound(t *testing.T) {
 }
 
 func TestGetSignedZone(t *testing.T) {
-	_, store, server := setupTest()
+	_, store, server := setupTest(t)
 	defer server.Close()
 
 	// Create a zone first
@@ -317,7 +331,7 @@ func TestGetSignedZone(t *testing.T) {
 }
 
 func TestGetSignedZone_NotModified(t *testing.T) {
-	_, store, server := setupTest()
+	_, store, server := setupTest(t)
 	defer server.Close()
 
 	// Create a zone
@@ -351,7 +365,7 @@ func TestGetSignedZone_NotModified(t *testing.T) {
 }
 
 func TestGetSignedZone_NotFound(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	resp, err := http.Get(server.URL + "/api/v1/zones/nonexistent.com./signed")
@@ -362,7 +376,7 @@ func TestGetSignedZone_NotFound(t *testing.T) {
 }
 
 func TestUpdateZone_MissingIfMatch(t *testing.T) {
-	_, store, server := setupTest()
+	_, store, server := setupTest(t)
 	defer server.Close()
 
 	// Create a zone

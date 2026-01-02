@@ -46,13 +46,8 @@ func TestMigrateExportMemory(t *testing.T) {
 	// Create temporary output directory
 	tmpDir := t.TempDir()
 
-	// Set migration flags
-	migrateBackendType = "memory"
-	migrateOutputDir = tmpDir
-	migrateDryRun = false
-
-	// Run export
-	err := runExport(nil, nil)
+	// Run export directly against the prepared store
+	_, err := exportFromStore(ctx, store, tmpDir, false)
 	require.NoError(t, err)
 
 	// Verify exported files
@@ -95,20 +90,14 @@ func TestMigrateImport(t *testing.T) {
 	err = os.WriteFile(filename, data, 0644)
 	require.NoError(t, err)
 
-	// Set migration flags
-	migrateBackendType = "memory"
-	migrateInputDir = tmpDir
-	migrateDryRun = false
+	store := backend.NewMemoryBackend()
+	defer store.Close()
 
-	// Run import
-	err = runImport(nil, nil)
+	// Run import directly against the target store
+	_, err = importToStore(context.Background(), store, tmpDir, false, false)
 	require.NoError(t, err)
 
 	// Verify zone was imported with new version
-	store, err := createBackend("memory", nil)
-	require.NoError(t, err)
-	defer store.Close()
-
 	ctx := context.Background()
 	imported, err := store.GetZone(ctx, testZone.Name)
 	require.NoError(t, err)
@@ -152,17 +141,18 @@ func TestMigrateCopy(t *testing.T) {
 	destStore := backend.NewMemoryBackend()
 	defer destStore.Close()
 
-	// Set migration flags (using memory backends for simplicity)
-	migrateFromBackend = "memory"
-	migrateToBackend = "memory"
-	migrateDryRun = false
+	// Copy zones (simple in-test loop; CLI path is covered separately)
+	zones, err := sourceStore.ListZones(ctx, backend.ListOptions{})
+	require.NoError(t, err)
+	for _, zone := range zones {
+		err := destStore.CreateZone(ctx, zone)
+		require.NoError(t, err)
+	}
 
-	// Note: For this test to work properly, we need to mock the backend creation
-	// or use the actual stores. For now, we'll test the dry-run mode.
-	migrateDryRun = true
-
-	// Run copy in dry-run mode
-	err := runCopy(nil, nil)
+	// Verify zones exist in destination
+	_, err = destStore.GetZone(ctx, "source1.com.")
+	require.NoError(t, err)
+	_, err = destStore.GetZone(ctx, "source2.com.")
 	require.NoError(t, err)
 }
 
@@ -194,20 +184,15 @@ func TestMigrateRoundTrip(t *testing.T) {
 	// Create temporary directory for export/import
 	tmpDir := t.TempDir()
 
-	// Export
-	migrateBackendType = "memory"
-	migrateOutputDir = tmpDir
-	migrateDryRun = false
-
-	err = runExport(nil, nil)
+	// Export directly from source store
+	_, err = exportFromStore(ctx, sourceStore, tmpDir, false)
 	require.NoError(t, err)
 
 	// Import to new backend
 	destStore := backend.NewMemoryBackend()
 	defer destStore.Close()
 
-	migrateInputDir = tmpDir
-	err = runImport(nil, nil)
+	_, err = importToStore(ctx, destStore, tmpDir, false, false)
 	require.NoError(t, err)
 
 	// Verify round-trip
@@ -261,12 +246,7 @@ func TestMigrateGitBackend(t *testing.T) {
 	// Export from Git backend
 	tmpDir := t.TempDir()
 
-	migrateBackendType = "git"
-	migrateBackendPath = repoPath
-	migrateOutputDir = tmpDir
-	migrateDryRun = false
-
-	err = runExport(nil, nil)
+	_, err = exportFromStore(ctx, gitStore, tmpDir, false)
 	require.NoError(t, err)
 
 	// Verify exported file
@@ -306,12 +286,7 @@ func TestMigrateDryRun(t *testing.T) {
 
 	// Test export dry-run
 	tmpDir := t.TempDir()
-
-	migrateBackendType = "memory"
-	migrateOutputDir = tmpDir
-	migrateDryRun = true
-
-	err = runExport(nil, nil)
+	_, err = exportFromStore(ctx, store, tmpDir, true)
 	require.NoError(t, err)
 
 	// Verify no files were created
@@ -321,15 +296,13 @@ func TestMigrateDryRun(t *testing.T) {
 
 	// Test import dry-run
 	// First create a test file
-	migrateDryRun = false
-	err = runExport(nil, nil)
+	_, err = exportFromStore(ctx, store, tmpDir, false)
 	require.NoError(t, err)
 
-	migrateInputDir = tmpDir
-	migrateDryRun = true
-
 	// Import dry-run should not fail
-	err = runImport(nil, nil)
+	importStore := backend.NewMemoryBackend()
+	defer importStore.Close()
+	_, err = importToStore(ctx, importStore, tmpDir, true, false)
 	require.NoError(t, err)
 }
 

@@ -64,6 +64,10 @@ type APIConfig struct {
 	// CORS configuration
 	CORS CORSConfig `mapstructure:"cors"`
 
+	// TrustedProxies is a list of proxy IPs/CIDRs whose forwarded headers are trusted.
+	// If empty, forwarded headers are not trusted (ClientIP uses remote address).
+	TrustedProxies []string `mapstructure:"trusted_proxies"`
+
 	// Rate limiting
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
 

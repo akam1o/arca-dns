@@ -3,22 +3,26 @@ package service
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/dnssec"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/akam1o/arca-dns/pkg/parser"
+	"github.com/akam1o/arca-dns/pkg/util"
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 )
 
 // SigningService handles DNSSEC signing operations and signed zone storage.
 type SigningService struct {
-	store      backend.ZoneStore
-	keyManager *dnssec.KeyManager
-	logger     *zap.Logger
-	zoneLocks  sync.Map // map[string]*sync.Mutex - per-zone locks for concurrent signing safety
+	store       backend.ZoneStore
+	keyManager  *dnssec.KeyManager
+	logger      *zap.Logger
+	zoneLocks   sync.Map // map[string]*sync.Mutex - per-zone locks for concurrent signing safety
+	artifactDir string
 }
 
 // SignedZoneArtifact represents a signed zone with metadata.
@@ -33,11 +37,11 @@ type SignedZoneArtifact struct {
 
 // SigningMetadata tracks signing parameters and timing.
 type SigningMetadata struct {
-	KSKKeyTag  uint16
-	ZSKKeyTag  uint16
-	Algorithm  uint8
-	Inception  uint32
-	Expiration uint32
+	KSKKeyTag   uint16
+	ZSKKeyTag   uint16
+	Algorithm   uint8
+	Inception   uint32
+	Expiration  uint32
 	NSEC3Params *NSEC3Metadata
 }
 
@@ -51,11 +55,12 @@ type NSEC3Metadata struct {
 }
 
 // NewSigningService creates a new signing service.
-func NewSigningService(store backend.ZoneStore, keyManager *dnssec.KeyManager, logger *zap.Logger) *SigningService {
+func NewSigningService(store backend.ZoneStore, keyManager *dnssec.KeyManager, artifactDir string, logger *zap.Logger) *SigningService {
 	return &SigningService{
-		store:      store,
-		keyManager: keyManager,
-		logger:     logger,
+		store:       store,
+		keyManager:  keyManager,
+		logger:      logger,
+		artifactDir: artifactDir,
 	}
 }
 
@@ -134,8 +139,14 @@ func (s *SigningService) SignAndStoreZone(ctx context.Context, zone *model.Zone)
 	}
 
 	// Store signed artifact (implementation depends on backend)
-	// For now, we'll use the zone's DNSSEC metadata to mark it as signed
-	// TODO: Implement proper signed artifact storage when backend supports it
+	if s.artifactDir != "" {
+		if err := s.storeArtifact(zone.Name, artifact.Version, []byte(artifact.SignedZone)); err != nil {
+			s.logger.Warn("Failed to store signed artifact (continuing without cache)",
+				zap.String("zone", zone.Name),
+				zap.String("version", artifact.Version),
+				zap.Error(err))
+		}
+	}
 
 	s.logger.Info("Zone signed successfully",
 		zap.String("zone", zone.Name),
@@ -154,15 +165,50 @@ func (s *SigningService) GetSignedZone(ctx context.Context, zoneName string) (*S
 		return nil, err
 	}
 
+	// Fast path: serve cached signed artifact if available.
+	// Use the unsigned zone version as the cache key (must match the artifact version scheme).
+	if s.artifactDir != "" && zone.Version != "" {
+		if signed, err := s.loadArtifact(zone.Name, zone.Version); err == nil && signed != nil {
+			return &SignedZoneArtifact{
+				ZoneName:   zone.Name,
+				Version:    zone.Version,
+				SignedZone: string(signed),
+			}, nil
+		}
+	}
+
 	// Check if zone has been signed (M4.5 fix: null-safety check)
 	if zone.DNSSEC == nil || !zone.DNSSEC.Enabled {
 		// Sign it now if not already signed
-		return s.SignZone(ctx, zone)
+		artifact, err := s.SignZone(ctx, zone)
+		if err != nil {
+			return nil, err
+		}
+		if s.artifactDir != "" {
+			if err := s.storeArtifact(zone.Name, artifact.Version, []byte(artifact.SignedZone)); err != nil {
+				s.logger.Warn("Failed to store signed artifact (continuing without cache)",
+					zap.String("zone", zone.Name),
+					zap.String("version", artifact.Version),
+					zap.Error(err))
+			}
+		}
+		return artifact, nil
 	}
 
-	// TODO: Retrieve cached signed artifact if backend supports it
-	// For now, re-sign on every request (will be optimized with artifact storage)
-	return s.SignZone(ctx, zone)
+	// Fallback: re-sign on demand.
+	artifact, err := s.SignZone(ctx, zone)
+	if err != nil {
+		return nil, err
+	}
+	if s.artifactDir != "" {
+		if err := s.storeArtifact(zone.Name, artifact.Version, []byte(artifact.SignedZone)); err != nil {
+			s.logger.Warn("Failed to store signed artifact (continuing without cache)",
+				zap.String("zone", zone.Name),
+				zap.String("version", artifact.Version),
+				zap.Error(err))
+		}
+	}
+	return artifact, nil
 }
 
 // GetDSRecords returns DS records for the given zone (for parent zone delegation).
@@ -239,4 +285,42 @@ func (s *SigningService) ResignZone(ctx context.Context, zoneName string) error 
 func (s *SigningService) getZoneLock(zoneName string) *sync.Mutex {
 	actual, _ := s.zoneLocks.LoadOrStore(zoneName, &sync.Mutex{})
 	return actual.(*sync.Mutex)
+}
+
+func (s *SigningService) artifactPath(zoneName, version string) string {
+	zoneDir := filepath.Join(s.artifactDir, util.SafeZoneFilename(zoneName))
+	return filepath.Join(zoneDir, fmt.Sprintf("%s.zone.signed", version))
+}
+
+func (s *SigningService) storeArtifact(zoneName, version string, contents []byte) error {
+	if s.artifactDir == "" {
+		return nil
+	}
+
+	path := s.artifactPath(zoneName, version)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir artifact dir: %w", err)
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, contents, 0o644); err != nil {
+		return fmt.Errorf("write temp artifact: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename artifact: %w", err)
+	}
+	return nil
+}
+
+func (s *SigningService) loadArtifact(zoneName, version string) ([]byte, error) {
+	if s.artifactDir == "" {
+		return nil, fmt.Errorf("artifact cache disabled")
+	}
+	path := s.artifactPath(zoneName, version)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }

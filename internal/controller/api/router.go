@@ -1,28 +1,80 @@
 package api
 
 import (
+	"github.com/akam1o/arca-dns/pkg/config"
+	"github.com/akam1o/arca-dns/pkg/middleware"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
 
 // SetupRouter configures the Gin router with all routes.
-func SetupRouter(handler *Handler, logger *zap.Logger) *gin.Engine {
+func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *gin.Engine {
 	// Set Gin mode based on environment
 	gin.SetMode(gin.ReleaseMode)
 
 	router := gin.New()
 
-	// Middleware
+	// Core middleware
 	router.Use(gin.Recovery())
-	router.Use(LoggerMiddleware(logger))
 
-	// Health check endpoint
+	// Configure trusted proxies for ClientIP().
+	// - If cfg.TrustedProxies is provided, trust only those.
+	// - Otherwise, trust none (disable forwarded headers).
+	if cfg != nil && len(cfg.TrustedProxies) > 0 {
+		if err := router.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+			logger.Warn("Failed to set trusted proxies", zap.Error(err))
+		}
+	} else {
+		if err := router.SetTrustedProxies(nil); err != nil {
+			logger.Warn("Failed to disable trusted proxies", zap.Error(err))
+		}
+	}
+
+	// Security middleware
+	auditLogger := middleware.NewAuditLogger(logger)
+	router.Use(auditLogger.Middleware())
+
+	requestValidator := middleware.NewRequestValidator()
+	router.Use(requestValidator.Middleware())
+
+	// Rate limiting
+	if cfg != nil && cfg.RateLimit.Enabled {
+		rateLimiterConfig := middleware.DefaultRateLimiterConfig()
+		rateLimiterConfig.ReadRPS = cfg.RateLimit.RequestsPerSecond
+		rateLimiterConfig.WriteRPS = cfg.RateLimit.RequestsPerSecond / 10
+		rateLimiterConfig.Burst = cfg.RateLimit.Burst
+
+		rateLimiter := middleware.NewRateLimiter(rateLimiterConfig)
+		router.Use(rateLimiter.Middleware())
+	}
+
+	// Health check endpoints
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	// API v1 routes
+	router.GET("/ready", func(c *gin.Context) {
+		// TODO: Check backend connectivity
+		c.JSON(200, gin.H{"status": "ready"})
+	})
+
+	router.GET("/status", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"status":  "operational",
+			"version": "v1.0.0",
+		})
+	})
+
+	// API v1 routes (with authentication if enabled)
 	v1 := router.Group("/api/v1")
+	if cfg != nil && cfg.Auth.Enabled && len(cfg.Auth.APIKeys) > 0 {
+		authConfig := middleware.AuthConfig{
+			APIKeys:    cfg.Auth.APIKeys,
+			HeaderName: "X-API-Key",
+		}
+		authenticator := middleware.NewAuthenticator(authConfig)
+		v1.Use(authenticator.Middleware())
+	}
 	{
 		// Zone management
 		v1.POST("/zones", handler.CreateZone)
@@ -38,20 +90,4 @@ func SetupRouter(handler *Handler, logger *zap.Logger) *gin.Engine {
 	}
 
 	return router
-}
-
-// LoggerMiddleware is a Gin middleware that logs requests using zap.
-func LoggerMiddleware(logger *zap.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Process request
-		c.Next()
-
-		// Log request
-		logger.Info("Request",
-			zap.String("method", c.Request.Method),
-			zap.String("path", c.Request.URL.Path),
-			zap.Int("status", c.Writer.Status()),
-			zap.String("client_ip", c.ClientIP()),
-		)
-	}
 }

@@ -29,12 +29,12 @@ type EtcdBackend struct {
 }
 
 const (
-	defaultEtcdPrefix         = "/arca-dns"
-	defaultEtcdTimeout        = 10 * time.Second
-	defaultHistoryRetention   = 100
-	etcdZonesPrefix          = "zones"
-	etcdVersionsPrefix       = "versions"
-	etcdHistoryPrefix        = "history"
+	defaultEtcdPrefix       = "/arca-dns"
+	defaultEtcdTimeout      = 10 * time.Second
+	defaultHistoryRetention = 100
+	etcdZonesPrefix         = "zones"
+	etcdVersionsPrefix      = "versions"
+	etcdHistoryPrefix       = "history"
 )
 
 // NewEtcdBackend creates a new etcd backend.
@@ -407,6 +407,9 @@ func (e *EtcdBackend) DeleteZone(ctx context.Context, name string) error {
 // Close releases resources.
 func (e *EtcdBackend) Close() error {
 	// Close the client first to cancel all watches
+	if e == nil || e.client == nil {
+		return nil
+	}
 	err := e.client.Close()
 
 	// Note: Watch channels are closed by their respective runWatch goroutines

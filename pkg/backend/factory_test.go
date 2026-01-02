@@ -102,12 +102,13 @@ func TestNewBackend_Etcd(t *testing.T) {
 		{
 			name: "[]string endpoints (from config.EtcdBackendConfig)",
 			config: map[string]interface{}{
-				"endpoints":       []string{"localhost:2379"},
-				"prefix":          "/test",
-				"username":        "",
-				"password":        "",
-				"dial_timeout":    5 * time.Second,
-				"request_timeout": 10 * time.Second,
+				"endpoints": []string{"localhost:2379"},
+				"prefix":    "/test",
+				"username":  "",
+				"password":  "",
+				// Keep timeouts low so tests don't stall when etcd isn't running.
+				"dial_timeout":    200 * time.Millisecond,
+				"request_timeout": 300 * time.Millisecond,
 			},
 			expectError: false, // Will fail to connect but factory should work
 		},

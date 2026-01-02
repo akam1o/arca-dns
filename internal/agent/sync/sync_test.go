@@ -17,6 +17,7 @@ import (
 )
 
 func TestSyncer_SyncAll(t *testing.T) {
+	requireTCPListener(t)
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -87,6 +88,7 @@ func TestSyncer_SyncAll(t *testing.T) {
 }
 
 func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
+	requireTCPListener(t)
 	requestCount := 0
 
 	// Create test server
@@ -169,6 +171,7 @@ func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
 }
 
 func TestSyncer_SyncZone(t *testing.T) {
+	requireTCPListener(t)
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

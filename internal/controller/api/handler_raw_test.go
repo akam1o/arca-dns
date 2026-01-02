@@ -12,7 +12,7 @@ import (
 )
 
 func TestCreateZoneRaw_TextPlain(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	zoneFile := `$TTL 3600
@@ -43,7 +43,7 @@ www.example.com. IN A 192.0.2.2
 }
 
 func TestCreateZoneRaw_MultipartForm(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	zoneFile := `$TTL 3600
@@ -78,7 +78,7 @@ test.com. IN A 192.0.2.1
 }
 
 func TestCreateZoneRaw_WithOriginDirective(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	zoneFile := `$ORIGIN origin-test.com.
@@ -102,7 +102,7 @@ www IN A 192.0.2.2
 }
 
 func TestCreateZoneRaw_Duplicate(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	zoneFile := `$TTL 3600
@@ -130,7 +130,7 @@ dup.com. IN NS ns1.dup.com.
 }
 
 func TestCreateZoneRaw_InvalidZone_NoSOA(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	zoneFile := `$TTL 3600
@@ -151,7 +151,7 @@ invalid.com. IN A 192.0.2.1
 }
 
 func TestCreateZoneRaw_EmptyContent(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=empty.com.",
@@ -167,7 +167,7 @@ func TestCreateZoneRaw_EmptyContent(t *testing.T) {
 }
 
 func TestCreateZoneRaw_UnsupportedContentType(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw",
@@ -183,7 +183,7 @@ func TestCreateZoneRaw_UnsupportedContentType(t *testing.T) {
 }
 
 func TestCreateZoneRaw_NoOrigin(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	zoneFile := `$TTL 3600
@@ -205,7 +205,7 @@ func TestCreateZoneRaw_NoOrigin(t *testing.T) {
 }
 
 func TestCreateZoneRaw_AllRecordTypes(t *testing.T) {
-	_, _, server := setupTest()
+	_, _, server := setupTest(t)
 	defer server.Close()
 
 	zoneFile := `$TTL 3600

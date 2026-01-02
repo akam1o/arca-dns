@@ -1,0 +1,55 @@
+# Example configuration for arca-dns-controller
+
+api:
+  listen: "0.0.0.0:8080"
+  trusted_proxies: [] # e.g. ["10.0.0.0/8", "192.168.0.0/16"]
+  auth:
+    enabled: true
+    api_keys:
+      # Generate: echo -n 'your-api-key' | sha256sum
+      # Then prefix with "sha256:".
+      admin: "sha256:REPLACE_WITH_SHA256_HEX"
+  rate_limit:
+    enabled: true
+    requests_per_second: 100
+    burst: 200
+
+backend:
+  type: "memory" # memory|mysql|git|etcd
+  mysql:
+    dsn: "root:pass@tcp(mysql:3306)/arca_dns?parseTime=true"
+  git:
+    repository_path: "/var/lib/arca-dns/git"
+    branch: "main"
+    author: "arca-dns-controller"
+    email: "noreply@arca-dns"
+    auto_push: false
+  etcd:
+    endpoints: ["etcd:2379"]
+    prefix: "/arca-dns"
+    dial_timeout: "5s"
+    request_timeout: "10s"
+
+storage:
+  artifact_directory: "/var/lib/arca-dns/artifacts"
+  key_directory: "/var/lib/arca-dns/keys"
+  max_versions_per_zone: 10
+
+dnssec:
+  enabled: true
+  algorithm: 13 # 13=ECDSA-P256, 8=RSA-SHA256
+  key_directory: "/var/lib/arca-dns/keys"
+  signature_validity: "720h" # 30d
+  signature_inception: "1h"
+  resign_threshold: "168h" # 7d
+  nsec3: true
+  nsec3_iterations: 1
+  nsec3_salt_length: 8
+  scheduler_enabled: true
+  scheduler_check_interval: "1h"
+  master_key_auto_generate: false
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
