@@ -510,12 +510,14 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
 
-	// Compute version
-	version, err := ComputeZoneVersion(zone)
-	if err != nil {
-		return fmt.Errorf("failed to compute zone version: %w", err)
+	// Ensure version is set (normally issued by controller).
+	if zone.Version == "" {
+		version, err := model.NewZoneVersion()
+		if err != nil {
+			return fmt.Errorf("generate zone version: %w", err)
+		}
+		zone.Version = version
 	}
-	zone.Version = version
 
 	zoneMu, err := g.acquireLock(ctx, normalized)
 	if err != nil {
@@ -586,12 +588,14 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
 
-	// Compute new version
-	newVersion, err := ComputeZoneVersion(zone)
-	if err != nil {
-		return fmt.Errorf("failed to compute zone version: %w", err)
+	// Ensure version changes on update (normally issued by controller).
+	if zone.Version == "" || zone.Version == currentZone.Version {
+		newVersion, err := model.NewZoneVersion()
+		if err != nil {
+			return fmt.Errorf("generate zone version: %w", err)
+		}
+		zone.Version = newVersion
 	}
-	zone.Version = newVersion
 
 	// Write updated zone file
 	if err := g.writeZone(normalized, zone); err != nil {
@@ -771,10 +775,21 @@ func (g *GitBackend) ListRevisions(ctx context.Context, zoneName string, opts Li
 			return nil // Skip on error
 		}
 
+		hashHex, err := ComputeZoneHash(&zone)
+		if err != nil {
+			hashHex = ""
+		}
+		hash8 := ""
+		if len(hashHex) >= 8 {
+			hash8 = hashHex[:8]
+		}
+
 		versions = append(versions, &model.ZoneVersion{
 			Version:   version,
 			Timestamp: c.Author.When,
 			Serial:    zone.SOA.Serial,
+			Hash:      hashHex,
+			Hash8:     hash8,
 		})
 
 		return nil

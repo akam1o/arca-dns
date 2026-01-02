@@ -109,12 +109,14 @@ func TestGetSignedZoneMetadata_BodyAndHeaders(t *testing.T) {
 	assert.NotEmpty(t, resp.Header.Get("ETag"))
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Serial"))
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash"))
+	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash8"))
 
 	var payload struct {
 		Zone          string `json:"zone"`
 		Version       string `json:"version"`
 		Serial        uint32 `json:"serial"`
 		Hash          string `json:"hash"`
+		Hash8         string `json:"hash8"`
 		DNSSECEnabled bool   `json:"dnssec_enabled"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&payload))
@@ -122,5 +124,6 @@ func TestGetSignedZoneMetadata_BodyAndHeaders(t *testing.T) {
 	assert.NotEmpty(t, payload.Version)
 	assert.NotZero(t, payload.Serial)
 	assert.NotEmpty(t, payload.Hash)
+	assert.NotEmpty(t, payload.Hash8)
 	assert.False(t, payload.DNSSECEnabled)
 }

@@ -8,7 +8,7 @@ type Zone struct {
 	Name string `json:"name"`
 
 	// Version is the unique version identifier for this zone state
-	// Format: v{serial}-{8-char-hash} (e.g., "v2024122801-a3f5c2e9")
+	// Format: v{ULID} (e.g., "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
 	Version string `json:"version"`
 
 	// SOA contains the Start of Authority record
@@ -119,8 +119,11 @@ type ZoneVersion struct {
 	// Timestamp is when this version was created
 	Timestamp time.Time `json:"timestamp"`
 
-	// Hash is the SHA256 hash of the zone content
+	// Hash is the SHA256 hash of the zone content (hex)
 	Hash string `json:"hash"`
+
+	// Hash8 is the first 8 characters of Hash.
+	Hash8 string `json:"hash8,omitempty"`
 
 	// SignedArtifactPath is the path to the signed zone file artifact
 	SignedArtifactPath string `json:"signed_artifact_path,omitempty"`

@@ -253,10 +253,10 @@ paths:
           description: Zone created successfully
           headers:
             ETag:
-              description: Zone version
+              description: Zone version (ETag)
               schema:
                 type: string
-                example: "v2024122801-a3f5c2e9"
+                example: "v01ARZ3NDEKTSV4RRFFQ69G5FAV"
             Location:
               description: URL of the created zone
               schema:
@@ -272,7 +272,7 @@ paths:
                     example: "example.com."
                   version:
                     type: string
-                    example: "v2024122801-a3f5c2e9"
+                    example: "v01ARZ3NDEKTSV4RRFFQ69G5FAV"
                   soa:
                     type: object
                     properties:
@@ -468,7 +468,11 @@ paths:
               schema:
                 type: integer
             X-Zone-Hash:
-              description: SHA256 hash of zone content
+              description: SHA256 hash of signed zone file (hex)
+              schema:
+                type: string
+            X-Zone-Hash8:
+              description: First 8 characters of X-Zone-Hash
               schema:
                 type: string
             X-Zone-Signature:
@@ -543,7 +547,11 @@ paths:
               schema:
                 type: integer
             X-Zone-Hash:
-              description: SHA256 hash of zone content (hash8)
+              description: SHA256 hash of signed zone file (hex)
+              schema:
+                type: string
+            X-Zone-Hash8:
+              description: First 8 characters of X-Zone-Hash
               schema:
                 type: string
           content:
@@ -558,6 +566,8 @@ paths:
                   serial:
                     type: integer
                   hash:
+                    type: string
+                  hash8:
                     type: string
                   dnssec_enabled:
                     type: boolean
@@ -894,8 +904,8 @@ components:
           example: "example.com."
         version:
           type: string
-          description: Zone version identifier
-          example: "v2024122801-a3f5c2e9"
+          description: Zone version identifier (controller-issued)
+          example: "v01ARZ3NDEKTSV4RRFFQ69G5FAV"
         soa:
           $ref: '#/components/schemas/SOARecord'
         records:
@@ -1025,7 +1035,7 @@ components:
       properties:
         version:
           type: string
-          example: "v2024122801-a3f5c2e9"
+          example: "v01ARZ3NDEKTSV4RRFFQ69G5FAV"
         serial:
           type: integer
           example: 2024122801
@@ -1034,8 +1044,12 @@ components:
           format: date-time
         hash:
           type: string
-          description: SHA256 hash
-          example: "a3f5c2e9..."
+          description: SHA256 hash of zone content (hex)
+          example: "7f2b8d1c2d2c2d1e0c6c4b6a9a0d1f1e2c3b4a59687766554433221100ffeeddcc"
+        hash8:
+          type: string
+          description: First 8 characters of hash
+          example: "7f2b8d1c"
 
     CreateZoneRequest:
       type: object

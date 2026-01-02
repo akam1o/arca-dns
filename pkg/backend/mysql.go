@@ -283,11 +283,13 @@ func (m *MySQLBackend) createZone(ctx context.Context, zone *model.Zone) error {
 		zone.SOA.Serial = generateSerial(0)
 	}
 
-	// Compute version
-	var err error
-	zone.Version, err = ComputeZoneVersion(zone)
-	if err != nil {
-		return fmt.Errorf("failed to compute version: %w", err)
+	// Ensure version is set (normally issued by controller).
+	if zone.Version == "" {
+		version, err := model.NewZoneVersion()
+		if err != nil {
+			return fmt.Errorf("generate zone version: %w", err)
+		}
+		zone.Version = version
 	}
 
 	// Set timestamps
@@ -374,11 +376,13 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 	// Auto-increment serial
 	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
 
-	// Compute new version
-	var err error
-	zone.Version, err = ComputeZoneVersion(zone)
-	if err != nil {
-		return fmt.Errorf("failed to compute version: %w", err)
+	// Ensure version changes on update (normally issued by controller).
+	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
+		newVersion, err := model.NewZoneVersion()
+		if err != nil {
+			return fmt.Errorf("generate zone version: %w", err)
+		}
+		zone.Version = newVersion
 	}
 
 	// Update timestamp
@@ -724,11 +728,13 @@ func (t *MySQLTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 		zone.SOA.Serial = generateSerial(0)
 	}
 
-	// Compute version
-	var err error
-	zone.Version, err = ComputeZoneVersion(zone)
-	if err != nil {
-		return fmt.Errorf("failed to compute version: %w", err)
+	// Ensure version is set (normally issued by controller).
+	if zone.Version == "" {
+		version, err := model.NewZoneVersion()
+		if err != nil {
+			return fmt.Errorf("generate zone version: %w", err)
+		}
+		zone.Version = version
 	}
 
 	// Set timestamps
@@ -798,11 +804,13 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 	// Auto-increment serial
 	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
 
-	// Compute new version
-	var err error
-	zone.Version, err = ComputeZoneVersion(zone)
-	if err != nil {
-		return fmt.Errorf("failed to compute version: %w", err)
+	// Ensure version changes on update (normally issued by controller).
+	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
+		newVersion, err := model.NewZoneVersion()
+		if err != nil {
+			return fmt.Errorf("generate zone version: %w", err)
+		}
+		zone.Version = newVersion
 	}
 
 	// Update timestamp

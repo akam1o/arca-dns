@@ -20,16 +20,34 @@ import (
 //
 // Returns an error if zone normalization fails.
 func ComputeZoneVersion(zone *model.Zone) (string, error) {
+	hash8, err := ComputeZoneHash8(zone)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("v%d-%s", zone.SOA.Serial, hash8), nil
+}
+
+// ComputeZoneHash returns the SHA256 hash (hex) of the normalized zone content.
+func ComputeZoneHash(zone *model.Zone) (string, error) {
 	normalized, err := NormalizeZoneForHashing(zone)
 	if err != nil {
 		return "", fmt.Errorf("failed to normalize zone for hashing: %w", err)
 	}
-
 	hash := sha256.Sum256(normalized)
-	hashHex := hex.EncodeToString(hash[:])
-	hash8 := hashHex[:8] // First 8 chars (32 bits collision resistance)
+	return hex.EncodeToString(hash[:]), nil
+}
 
-	return fmt.Sprintf("v%d-%s", zone.SOA.Serial, hash8), nil
+// ComputeZoneHash8 returns the first 8 hex chars of ComputeZoneHash (hash8).
+func ComputeZoneHash8(zone *model.Zone) (string, error) {
+	hashHex, err := ComputeZoneHash(zone)
+	if err != nil {
+		return "", err
+	}
+	if len(hashHex) < 8 {
+		return "", fmt.Errorf("unexpected hash length: %d", len(hashHex))
+	}
+	return hashHex[:8], nil
 }
 
 // NormalizeZoneForHashing produces a deterministic byte representation of zone content.

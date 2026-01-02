@@ -17,19 +17,21 @@ This document describes the version scheme, how versions are generated, and how 
 ### Scheme
 
 ```
-v{serial}-{hash}
+v{ULID}
 ```
 
 Where:
-- **serial**: SOA serial number (10 digits, format: `YYYYMMDDnn`)
-- **hash**: First 8 characters of SHA256 hash of zone content
+- **ULID**: controller-issued ULID (time-sortable, 26 chars)
+
+Additionally, arca-dns exposes a separate content hash:
+- **hash**: First 8 characters of SHA256 hash of canonical zone content (returned as `X-Zone-Hash` and in metadata APIs)
 
 ### Examples
 
 ```
-v2024122801-a3f5c2e9
-v2024122802-7f2b8d1c
-v2024122901-4e9c1a6f
+v01ARZ3NDEKTSV4RRFFQ69G5FAV
+v01ARZ3NDEKTSV4RRFFQ69G5FB0
+v01ARZ3NDEKTSV4RRFFQ69G5FB1
 ```
 
 ### Components

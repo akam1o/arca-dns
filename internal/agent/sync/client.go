@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/config"
@@ -193,14 +194,41 @@ func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, s
 	// Extract integrity metadata from headers
 	zoneSerial := resp.Header.Get("X-Zone-Serial")
 	zoneHash := resp.Header.Get("X-Zone-Hash")
+	zoneHash8 := resp.Header.Get("X-Zone-Hash8")
 
 	// Verify SHA256 checksum if provided
-	if zoneHash != "" {
+	if zoneHash != "" || zoneHash8 != "" {
 		computedHash := sha256.Sum256(body)
-		computedHashHex := hex.EncodeToString(computedHash[:])[:8] // First 8 chars
+		computedHashHex := hex.EncodeToString(computedHash[:])
+		computedHash8 := computedHashHex
+		if len(computedHash8) > 8 {
+			computedHash8 = computedHash8[:8]
+		}
 
-		if computedHashHex != zoneHash {
-			return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash, computedHashHex)
+		// Backward/forward compatible verification:
+		// - If X-Zone-Hash is 64 hex chars: treat as full SHA256.
+		// - If X-Zone-Hash is 8 chars: treat as hash8.
+		// - If X-Zone-Hash8 is present: treat as hash8.
+		if zoneHash != "" {
+			switch len(zoneHash) {
+			case 64:
+				if computedHashHex != zoneHash {
+					return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash, computedHashHex)
+				}
+			case 8:
+				if computedHash8 != zoneHash {
+					return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash, computedHash8)
+				}
+			default:
+				// Unknown length; best-effort: compare prefix.
+				if !strings.HasPrefix(computedHashHex, zoneHash) {
+					return "", "", false, fmt.Errorf("checksum verification failed: expected prefix %s, got %s", zoneHash, computedHashHex)
+				}
+			}
+		}
+
+		if zoneHash8 != "" && computedHash8 != zoneHash8 {
+			return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash8, computedHash8)
 		}
 	}
 

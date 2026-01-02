@@ -33,6 +33,7 @@ func TestSyncer_SyncAll(t *testing.T) {
 			w.Header().Set("ETag", "v1-abc123")
 			w.Header().Set("X-Zone-Serial", "2024010101")
 			w.Header().Set("X-Zone-Hash", "717fd058")
+			w.Header().Set("X-Zone-Hash8", "717fd058")
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintf(w, "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n")
 
@@ -109,6 +110,7 @@ func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
 				w.Header().Set("ETag", "v1-abc123")
 				w.Header().Set("X-Zone-Serial", "2024010101")
 				w.Header().Set("X-Zone-Hash", "717fd058")
+				w.Header().Set("X-Zone-Hash8", "717fd058")
 				w.WriteHeader(http.StatusNotModified)
 				return
 			}
@@ -118,6 +120,7 @@ func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
 			w.Header().Set("ETag", "v1-abc123")
 			w.Header().Set("X-Zone-Serial", "2024010101")
 			w.Header().Set("X-Zone-Hash", "717fd058")
+			w.Header().Set("X-Zone-Hash8", "717fd058")
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintf(w, "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n")
 
@@ -185,6 +188,7 @@ func TestSyncer_SyncZone(t *testing.T) {
 			w.Header().Set("ETag", "v1-abc123")
 			w.Header().Set("X-Zone-Serial", "2024010101")
 			w.Header().Set("X-Zone-Hash", "717fd058")
+			w.Header().Set("X-Zone-Hash8", "717fd058")
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintf(w, "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n")
 

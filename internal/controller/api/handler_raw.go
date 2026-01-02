@@ -140,6 +140,18 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		return
 	}
 
+	version, err := model.NewZoneVersion()
+	if err != nil {
+		h.logger.Error("Failed to generate zone version", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to generate zone version",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+	modelZone.Version = version
+
 	// Create zone in backend (same pattern as CreateZone)
 	if err := h.store.CreateZone(c.Request.Context(), modelZone); err != nil {
 		if err == model.ErrZoneAlreadyExists {

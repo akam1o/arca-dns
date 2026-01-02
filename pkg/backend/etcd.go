@@ -237,12 +237,14 @@ func (e *EtcdBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
 
-	// Compute version
-	version, err := ComputeZoneVersion(zone)
-	if err != nil {
-		return fmt.Errorf("failed to compute zone version: %w", err)
+	// Ensure version is set (normally issued by controller).
+	if zone.Version == "" {
+		version, err := model.NewZoneVersion()
+		if err != nil {
+			return fmt.Errorf("generate zone version: %w", err)
+		}
+		zone.Version = version
 	}
-	zone.Version = version
 
 	// Acquire zone lock
 	zoneMu := e.acquireZoneLock(normalized)
@@ -260,13 +262,13 @@ func (e *EtcdBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	// Transaction: create zone + version metadata + history snapshot
 	zoneKey := e.zoneKey(normalized)
 	versionKey := e.versionKey(normalized)
-	historyKey := e.historyKey(normalized, version)
+	historyKey := e.historyKey(normalized, zone.Version)
 
 	txn := e.client.Txn(ctx).
 		If(clientv3.Compare(clientv3.CreateRevision(zoneKey), "=", 0)).
 		Then(
 			clientv3.OpPut(zoneKey, string(zoneData)),
-			clientv3.OpPut(versionKey, version),
+			clientv3.OpPut(versionKey, zone.Version),
 			clientv3.OpPut(historyKey, string(zoneData)),
 		)
 
@@ -317,12 +319,14 @@ func (e *EtcdBackend) UpdateZone(ctx context.Context, zone *model.Zone, expected
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
 
-	// Compute new version
-	newVersion, err := ComputeZoneVersion(zone)
-	if err != nil {
-		return fmt.Errorf("failed to compute zone version: %w", err)
+	// Ensure version changes on update (normally issued by controller).
+	if zone.Version == "" || zone.Version == currentZone.Version {
+		newVersion, err := model.NewZoneVersion()
+		if err != nil {
+			return fmt.Errorf("generate zone version: %w", err)
+		}
+		zone.Version = newVersion
 	}
-	zone.Version = newVersion
 
 	// Marshal zone data
 	zoneData, err := json.Marshal(zone)
@@ -332,7 +336,7 @@ func (e *EtcdBackend) UpdateZone(ctx context.Context, zone *model.Zone, expected
 
 	// Transaction: update zone + version metadata + history snapshot
 	zoneKey := e.zoneKey(normalized)
-	historyKey := e.historyKey(normalized, newVersion)
+	historyKey := e.historyKey(normalized, zone.Version)
 
 	txn := e.client.Txn(ctx)
 
@@ -343,7 +347,7 @@ func (e *EtcdBackend) UpdateZone(ctx context.Context, zone *model.Zone, expected
 
 	txn = txn.Then(
 		clientv3.OpPut(zoneKey, string(zoneData)),
-		clientv3.OpPut(versionKey, newVersion),
+		clientv3.OpPut(versionKey, zone.Version),
 		clientv3.OpPut(historyKey, string(zoneData)),
 	)
 
@@ -467,11 +471,21 @@ func (e *EtcdBackend) ListRevisions(ctx context.Context, zoneName string, opts L
 			continue
 		}
 
+		hashHex, err := ComputeZoneHash(&zone)
+		if err != nil {
+			hashHex = ""
+		}
+		hash8 := ""
+		if len(hashHex) >= 8 {
+			hash8 = hashHex[:8]
+		}
+
 		versions = append(versions, &model.ZoneVersion{
 			Version:   zone.Version,
 			Serial:    zone.SOA.Serial,
 			Timestamp: zone.UpdatedAt,
-			Hash:      zone.Version, // Version already includes hash
+			Hash:      hashHex,
+			Hash8:     hash8,
 		})
 	}
 

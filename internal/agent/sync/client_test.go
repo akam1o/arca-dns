@@ -64,7 +64,7 @@ func TestListZones(t *testing.T) {
 			"zones": [
 				{
 					"name": "example.com.",
-					"version": "v2024122801-a3f5c2e9",
+					"version": "v01ARZ3NDEKTSV4RRFFQ69G5FAV",
 					"soa": {
 						"mname": "ns1.example.com.",
 						"rname": "admin.example.com.",
@@ -109,8 +109,8 @@ func TestListZones(t *testing.T) {
 		t.Errorf("Expected zone name example.com., got %s", zones[0].Name)
 	}
 
-	if zones[0].Version != "v2024122801-a3f5c2e9" {
-		t.Errorf("Expected version v2024122801-a3f5c2e9, got %s", zones[0].Version)
+	if zones[0].Version != "v01ARZ3NDEKTSV4RRFFQ69G5FAV" {
+		t.Errorf("Expected version v01ARZ3NDEKTSV4RRFFQ69G5FAV, got %s", zones[0].Version)
 	}
 }
 
@@ -136,9 +136,10 @@ www.example.com. 300 IN A 192.0.2.1
 		}
 
 		// Return zone file with headers
-		w.Header().Set("ETag", "v2024122801-a3f5c2e9")
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
 		w.Header().Set("X-Zone-Serial", "2024122801")
-		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Hash", hex.EncodeToString(hash[:]))
+		w.Header().Set("X-Zone-Hash8", hashHex)
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, zoneContent)
@@ -167,8 +168,8 @@ www.example.com. 300 IN A 192.0.2.1
 		t.Error("Expected notModified to be false")
 	}
 
-	if etag != "v2024122801-a3f5c2e9" {
-		t.Errorf("Expected ETag v2024122801-a3f5c2e9, got %s", etag)
+	if etag != "v01ARZ3NDEKTSV4RRFFQ69G5FAV" {
+		t.Errorf("Expected ETag v01ARZ3NDEKTSV4RRFFQ69G5FAV, got %s", etag)
 	}
 
 	if content != zoneContent {
@@ -180,12 +181,12 @@ func TestFetchSignedZone_NotModified(t *testing.T) {
 	requireTCPListener(t)
 	// Create mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("If-None-Match") != "v2024122801-a3f5c2e9" {
-			t.Errorf("Expected If-None-Match header v2024122801-a3f5c2e9, got %s", r.Header.Get("If-None-Match"))
+		if r.Header.Get("If-None-Match") != "v01ARZ3NDEKTSV4RRFFQ69G5FAV" {
+			t.Errorf("Expected If-None-Match header v01ARZ3NDEKTSV4RRFFQ69G5FAV, got %s", r.Header.Get("If-None-Match"))
 		}
 
 		// Return 304 Not Modified
-		w.Header().Set("ETag", "v2024122801-a3f5c2e9")
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
 		w.Header().Set("X-Zone-Serial", "2024122801")
 		w.Header().Set("X-Zone-Hash", "a3f5c2e9")
 		w.WriteHeader(http.StatusNotModified)
@@ -205,7 +206,7 @@ func TestFetchSignedZone_NotModified(t *testing.T) {
 	}
 	defer client.Close()
 
-	content, etag, notModified, err := client.FetchSignedZone("example.com.", "v2024122801-a3f5c2e9")
+	content, etag, notModified, err := client.FetchSignedZone("example.com.", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
 	if err != nil {
 		t.Fatalf("FetchSignedZone failed: %v", err)
 	}
@@ -218,8 +219,8 @@ func TestFetchSignedZone_NotModified(t *testing.T) {
 		t.Error("Expected empty content for 304 response")
 	}
 
-	if etag != "v2024122801-a3f5c2e9" {
-		t.Errorf("Expected ETag v2024122801-a3f5c2e9, got %s", etag)
+	if etag != "v01ARZ3NDEKTSV4RRFFQ69G5FAV" {
+		t.Errorf("Expected ETag v01ARZ3NDEKTSV4RRFFQ69G5FAV, got %s", etag)
 	}
 }
 
@@ -229,9 +230,9 @@ func TestFetchSignedZone_ChecksumVerification(t *testing.T) {
 
 	// Create mock server with incorrect hash
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("ETag", "v2024122801-a3f5c2e9")
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
 		w.Header().Set("X-Zone-Serial", "2024122801")
-		w.Header().Set("X-Zone-Hash", "badhash1") // Incorrect hash
+		w.Header().Set("X-Zone-Hash8", "badhash1") // Incorrect hash
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, zoneContent)

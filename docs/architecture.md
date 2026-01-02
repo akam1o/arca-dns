@@ -192,7 +192,7 @@ Degraded: High latency but functional (routes stay up)
 ```go
 type Zone struct {
     Name        string          // example.com.
-    Version     string          // v2024122801-a3f5c2e9
+    Version     string          // v01ARZ3NDEKTSV4RRFFQ69G5FAV
     SOA         SOARecord
     Records     []Record        // A, AAAA, MX, TXT, etc.
     DNSSEC      DNSSECConfig    // KSK/ZSK IDs, NSEC3 params
@@ -201,18 +201,17 @@ type Zone struct {
 ```
 
 ### Version System
-- Format: `v{serial}-{hash}`
-- Serial: SOA serial (YYYYMMDDnn)
-- Hash: First 8 chars of SHA256(zone data)
-- Used for: ETag, artifact filenames, rollback
+- Version (ETag): `v{ULID}` (controller-issued)
+- Hash: First 8 chars of SHA256(normalized zone content), exposed as `X-Zone-Hash`
+- Used for: ETag, conditional GET, artifact filenames, rollback
 
 ### Artifact Structure
 ```
 /var/lib/arca-dns/artifacts/
 ├── example.com/
-│   ├── v2024122801-a3f5c2e9.zone.signed  # BIND format
-│   ├── v2024122801-a3f5c2e9.json         # Metadata
-│   └── latest -> v2024122801-a3f5c2e9.zone.signed
+│   ├── v01ARZ3NDEKTSV4RRFFQ69G5FAV.zone.signed  # BIND format
+│   ├── v01ARZ3NDEKTSV4RRFFQ69G5FAV.json         # Metadata (optional)
+│   └── latest -> v01ARZ3NDEKTSV4RRFFQ69G5FAV.zone.signed
 ```
 
 ## Security Model

@@ -97,9 +97,13 @@ func (m *MemoryBackend) CreateZone(ctx context.Context, zone *model.Zone) error 
 		zone.SOA.Serial = generateSerial(0)
 	}
 
-	// Generate version if not set
+	// Ensure version is set (normally issued by controller).
 	if zone.Version == "" {
-		zone.Version = generateVersion(zone)
+		version, err := model.NewZoneVersion()
+		if err != nil {
+			return fmt.Errorf("generate zone version: %w", err)
+		}
+		zone.Version = version
 	}
 
 	// Assign IDs to records
@@ -138,8 +142,14 @@ func (m *MemoryBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 	zone.UpdatedAt = time.Now()
 	zone.CreatedAt = existing.CreatedAt // Preserve creation time
 
-	// Generate new version
-	zone.Version = generateVersion(zone)
+	// Ensure version changes on update (normally issued by controller).
+	if zone.Version == "" || zone.Version == existing.Version {
+		newVersion, err := model.NewZoneVersion()
+		if err != nil {
+			return fmt.Errorf("generate zone version: %w", err)
+		}
+		zone.Version = newVersion
+	}
 
 	// Assign IDs to new records
 	for i := range zone.Records {
@@ -230,17 +240,6 @@ func generateSerial(currentSerial uint32) uint32 {
 
 	// New day or counter maxed out, reset to today01
 	return today*100 + 1
-}
-
-// generateVersion generates a version identifier using the canonical version computation.
-// This ensures memory backend uses the same version semantics as other backends.
-func generateVersion(zone *model.Zone) string {
-	version, err := ComputeZoneVersion(zone)
-	if err != nil {
-		// Fallback to simple version if computation fails (should never happen)
-		return fmt.Sprintf("v%d-error", zone.SOA.Serial)
-	}
-	return version
 }
 
 // memoryBackendFactory is the factory function for memory backend.

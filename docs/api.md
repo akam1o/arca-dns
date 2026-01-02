@@ -22,7 +22,7 @@ Health endpoints (`/health`, `/ready`, `/status`, `/metrics`) do not require aut
 `Zone` JSON fields (see `pkg/model/zone.go`):
 
 - `name` (string): zone FQDN (typically ends with a trailing dot, e.g. `example.com.`).
-- `version` (string): unique version identifier (format `v{serial}-{8-char-hash}`), also used as `ETag`.
+- `version` (string): unique version identifier (format `v{ULID}`), also used as `ETag`.
 - `soa` (object): SOA fields (`mname`, `rname`, `serial`, `refresh`, `retry`, `expire`, `minimum`).
 - `records` (array): resource records; each record has `name`, `type`, `ttl`, `value` (`id`/`priority` may appear depending on backend/type).
 - `dnssec` (object, optional): DNSSEC configuration and signature expiration (when enabled).
@@ -49,6 +49,10 @@ Error `code` values are defined in `pkg/model/errors.go` (e.g. `NOT_FOUND`, `ALR
 - Successful `POST /zones`, `GET /zones/:name`, and `PUT /zones/:name` return an `ETag` header (`ETag: <zone.version>`).
 - `PUT /zones/:name` requires `If-Match: <etag>`; if the zone was updated concurrently, the API returns `409 Conflict`.
 - `GET /zones/:name/signed` supports `If-None-Match: <etag>` and returns `304 Not Modified` (with `ETag` + metadata headers) when unchanged.
+
+For signed artifacts:
+- `X-Zone-Hash` is the full SHA256 (hex) of the returned zone file body.
+- `X-Zone-Hash8` is the first 8 characters of `X-Zone-Hash` (short form).
 
 ## Endpoints
 

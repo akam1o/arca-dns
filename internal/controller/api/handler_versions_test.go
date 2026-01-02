@@ -139,6 +139,7 @@ func TestZoneVersions_GitBackend(t *testing.T) {
 	assert.Equal(t, len(listResp.Versions), listResp.Pagination.Count)
 	assert.Equal(t, currentVersion, listResp.Versions[0].Version)
 	assert.NotEmpty(t, listResp.Versions[0].Hash)
+	assert.NotEmpty(t, listResp.Versions[0].Hash8)
 
 	// Fetch an older revision.
 	oldest := listResp.Versions[len(listResp.Versions)-1].Version

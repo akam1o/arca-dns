@@ -205,12 +205,9 @@ func TestMigrateRoundTrip(t *testing.T) {
 	assert.Equal(t, stored.SOA.RName, imported.SOA.RName)
 	assert.Equal(t, len(stored.Records), len(imported.Records))
 
-	// Version should be recomputed and match the content-derived version
+	// Version should be regenerated on import.
 	assert.NotEmpty(t, imported.Version)
-	// The version should be deterministic based on content
-	expectedVersion, err := backend.ComputeZoneVersion(imported)
-	require.NoError(t, err)
-	assert.Equal(t, expectedVersion, imported.Version)
+	assert.NotEqual(t, stored.Version, imported.Version)
 }
 
 // TestMigrateGitBackend tests export/import with Git backend.

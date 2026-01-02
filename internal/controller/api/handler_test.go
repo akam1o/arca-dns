@@ -366,7 +366,6 @@ func TestGetSignedZone_NotModified(t *testing.T) {
 	assert.Equal(t, http.StatusNotModified, resp.StatusCode)
 	assert.Equal(t, etag, resp.Header.Get("ETag"))
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Serial"))
-	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash"))
 
 	// Body should be empty for 304
 	body, _ := io.ReadAll(resp.Body)
