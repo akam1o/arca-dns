@@ -123,6 +123,7 @@ func TestProcessor_GetPrometheusMetrics(t *testing.T) {
 	assert.Contains(t, metricsText, "udp_queries_total")
 	assert.Contains(t, metricsText, "tcp_queries_total")
 	assert.Contains(t, metricsText, "dns_query_duration_seconds")
+	assert.Contains(t, metricsText, "dns_query_duration_seconds_sum 0.015000")
 }
 
 // TestProcessor_InvalidFrame tests handling of invalid frames.

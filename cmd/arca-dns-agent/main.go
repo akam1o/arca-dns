@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -182,8 +184,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		// Create state machine with validation
 		// Note: State machine does the thresholding, so engine just passes through
 		smConfig := bird.StateMachineConfig{
-			FailureThreshold:  3,  // 3 consecutive failures before withdrawing routes
-			RecoveryThreshold: 3,  // 3 consecutive successes before announcing routes
+			FailureThreshold:  3,                // 3 consecutive failures before withdrawing routes
+			RecoveryThreshold: 3,                // 3 consecutive successes before announcing routes
 			MinStateDuration:  30 * time.Second, // 30s debounce to prevent flapping
 		}
 		stateMachine = bird.NewStateMachine(smConfig, logger)
@@ -340,7 +342,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Start HTTP status server
 	wg.Add(1)
-	statusServer := startStatusServer(cfg, syncer, checker, dnstapProcessor, logger)
+	statusServer := startStatusServer(cfg, syncer, checker, routeManager, dnstapProcessor, logger)
 	go func() {
 		defer wg.Done()
 		<-ctx.Done()
@@ -403,7 +405,7 @@ func reexecSelf() error {
 }
 
 // startStatusServer starts an HTTP server for status and metrics.
-func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
+func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeManager *bird.RouteManager, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -414,15 +416,21 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 		healthStatus := checker.CheckHealth(c.Request.Context())
 
 		c.JSON(http.StatusOK, gin.H{
-			"status":          "running",
-			"version":         version,
-			"zone_count":      len(zoneStates),
-			"zones":           zoneStates,
-			"last_sync":       syncer.GetLastSuccessTime(),
-			"is_stale":        syncer.IsStale(),
-			"health":          healthStatus.Healthy,
-			"health_checks":   len(healthStatus.Checks),
+			"status":            "running",
+			"version":           version,
+			"zone_count":        len(zoneStates),
+			"zones":             zoneStates,
+			"last_sync":         syncer.GetLastSuccessTime(),
+			"is_stale":          syncer.IsStale(),
+			"health":            healthStatus.Healthy,
+			"health_checks":     len(healthStatus.Checks),
 			"last_health_check": healthStatus.LastCheck,
+			"bgp_announced": func() bool {
+				if routeManager == nil {
+					return false
+				}
+				return routeManager.IsAnnounced()
+			}(),
 		})
 	})
 
@@ -460,18 +468,83 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 
 	// Metrics endpoint (Prometheus format)
 	router.GET("/metrics", func(c *gin.Context) {
-		// Return DNSTap Prometheus metrics if processor is available
+		var sb strings.Builder
+
+		sb.WriteString("# arca-dns agent metrics\n")
+		sb.WriteString("# HELP arca_dns_agent_sync_has_success Whether the agent has ever completed a successful sync (1/0).\n")
+		sb.WriteString("# TYPE arca_dns_agent_sync_has_success gauge\n")
+		sb.WriteString(fmt.Sprintf("arca_dns_agent_sync_has_success %d\n", boolToInt(!syncer.GetLastSuccessTime().IsZero())))
+
+		sb.WriteString("\n# HELP arca_dns_agent_sync_stale Whether sync is currently considered stale (1/0).\n")
+		sb.WriteString("# TYPE arca_dns_agent_sync_stale gauge\n")
+		sb.WriteString(fmt.Sprintf("arca_dns_agent_sync_stale %d\n", boolToInt(syncer.IsStale())))
+
+		lastSuccess := syncer.GetLastSuccessTime()
+		sb.WriteString("\n# HELP arca_dns_agent_sync_last_success_timestamp_seconds Unix timestamp of the last successful sync (0 if none).\n")
+		sb.WriteString("# TYPE arca_dns_agent_sync_last_success_timestamp_seconds gauge\n")
+		if lastSuccess.IsZero() {
+			sb.WriteString("arca_dns_agent_sync_last_success_timestamp_seconds 0\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_sync_last_success_timestamp_seconds %d\n", lastSuccess.Unix()))
+		}
+
+		healthStatus := checker.CheckHealth(c.Request.Context())
+		sb.WriteString("\n# HELP arca_dns_agent_health_status Overall health status (1=healthy, 0=unhealthy).\n")
+		sb.WriteString("# TYPE arca_dns_agent_health_status gauge\n")
+		sb.WriteString(fmt.Sprintf("arca_dns_agent_health_status %d\n", boolToInt(healthStatus.Healthy)))
+
+		sb.WriteString("\n# HELP arca_dns_agent_health_check_status Per-check health status (1=success, 0=failure).\n")
+		sb.WriteString("# TYPE arca_dns_agent_health_check_status gauge\n")
+		checkTypes := make([]string, 0, len(healthStatus.Checks))
+		for checkType := range healthStatus.Checks {
+			checkTypes = append(checkTypes, string(checkType))
+		}
+		sort.Strings(checkTypes)
+		for _, checkType := range checkTypes {
+			result := healthStatus.Checks[health.CheckType(checkType)]
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_health_check_status{type=%q} %d\n", checkType, boolToInt(result.Success)))
+		}
+
+		if routeManager != nil {
+			sb.WriteString("\n# HELP arca_dns_agent_bgp_enabled Whether BGP control is enabled (1/0).\n")
+			sb.WriteString("# TYPE arca_dns_agent_bgp_enabled gauge\n")
+			sb.WriteString("arca_dns_agent_bgp_enabled 1\n")
+
+			sb.WriteString("\n# HELP arca_dns_agent_bgp_routes_announced Whether routes are currently announced (1/0).\n")
+			sb.WriteString("# TYPE arca_dns_agent_bgp_routes_announced gauge\n")
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_routes_announced %d\n", boolToInt(routeManager.IsAnnounced())))
+
+			if ts := routeManager.LastChangeTime(); !ts.IsZero() {
+				sb.WriteString("\n# HELP arca_dns_agent_bgp_last_change_timestamp_seconds Unix timestamp of the last successful route state change.\n")
+				sb.WriteString("# TYPE arca_dns_agent_bgp_last_change_timestamp_seconds gauge\n")
+				sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_last_change_timestamp_seconds %d\n", ts.Unix()))
+			}
+		} else {
+			sb.WriteString("\n# HELP arca_dns_agent_bgp_enabled Whether BGP control is enabled (1/0).\n")
+			sb.WriteString("# TYPE arca_dns_agent_bgp_enabled gauge\n")
+			sb.WriteString("arca_dns_agent_bgp_enabled 0\n")
+
+			sb.WriteString("\n# HELP arca_dns_agent_bgp_routes_announced Whether routes are currently announced (1/0).\n")
+			sb.WriteString("# TYPE arca_dns_agent_bgp_routes_announced gauge\n")
+			sb.WriteString("arca_dns_agent_bgp_routes_announced 0\n")
+		}
+
+		// Append DNSTap Prometheus metrics if processor is available
 		if dnstapProcessor != nil {
 			metricsText, err := dnstapProcessor.GetPrometheusMetrics()
 			if err != nil {
-				logger.Error("Failed to get Prometheus metrics", zap.Error(err))
+				logger.Error("Failed to get DNSTap Prometheus metrics", zap.Error(err))
 				c.String(http.StatusInternalServerError, "# Error retrieving metrics\n")
 				return
 			}
-			c.String(http.StatusOK, metricsText)
-		} else {
-			c.String(http.StatusOK, "# DNSTap processor not enabled\n")
+			if metricsText != "" {
+				sb.WriteString("\n")
+				sb.WriteString(metricsText)
+			}
 		}
+
+		c.Header("Content-Type", "text/plain; version=0.0.4")
+		c.String(http.StatusOK, sb.String())
 	})
 
 	server := &http.Server{
@@ -487,4 +560,11 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 	}()
 
 	return server
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }

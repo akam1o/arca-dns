@@ -18,6 +18,7 @@ type MetricsAggregator struct {
 	udpQueriesTotal int64
 	latencyBuckets  []float64 // Histogram buckets
 	latencyCounts   map[float64]int64
+	latencySumSec   float64 // Total latency sum (seconds)
 
 	// DNSSEC validation stats
 	dnssecValid   int64
@@ -33,6 +34,7 @@ type MetricsSnapshot struct {
 	TCPQueriesTotal int64
 	UDPQueriesTotal int64
 	LatencyCounts   map[float64]int64
+	LatencySumSec   float64
 	DNSSECValid     int64
 	DNSSECInvalid   int64
 	Timestamp       time.Time
@@ -69,6 +71,7 @@ func (m *MetricsAggregator) RecordQuery(qtype, rcode string, isTCP bool, latency
 
 	// Record latency histogram (non-cumulative counts per bucket)
 	latencySec := latency.Seconds()
+	m.latencySumSec += latencySec
 	recorded := false
 	for _, bucket := range m.latencyBuckets {
 		if !recorded && latencySec <= bucket {
@@ -121,6 +124,7 @@ func (m *MetricsAggregator) GetSnapshot() MetricsSnapshot {
 		TCPQueriesTotal: m.tcpQueriesTotal,
 		UDPQueriesTotal: m.udpQueriesTotal,
 		LatencyCounts:   latency,
+		LatencySumSec:   m.latencySumSec,
 		DNSSECValid:     m.dnssecValid,
 		DNSSECInvalid:   m.dnssecInvalid,
 		Timestamp:       time.Now(),
@@ -136,6 +140,7 @@ func (m *MetricsAggregator) Reset() {
 	m.tcpQueriesTotal = 0
 	m.udpQueriesTotal = 0
 	m.latencyCounts = make(map[float64]int64)
+	m.latencySumSec = 0
 	m.dnssecValid = 0
 	m.dnssecInvalid = 0
 	m.lastReset = time.Now()

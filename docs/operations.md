@@ -44,11 +44,16 @@ curl http://agent:9090/status
 **Agent metrics** (`http://agent:9090/metrics`):
 - `dns_queries_total`: DNS query count by type, rcode
 - `dns_query_duration_seconds`: Query latency histogram
-- `udp_queries_total`, `tcp_queries_total`: Transport breakdown
-- `zone_sync_status`: Last sync success (1) or failure (0)
-- `zone_sync_duration_seconds`: Sync operation latency
-- `health_check_status`: Health check results by type
-- `bgp_route_announced`: Route announcement status (1=up, 0=down)
+- `dns_udp_queries_total`, `dns_tcp_queries_total`: Transport breakdown
+- `dns_queries_per_second`: Current QPS gauge
+- `arca_dns_agent_sync_has_success`: Whether the agent has ever synced successfully (1/0)
+- `arca_dns_agent_sync_stale`: Whether sync is currently stale (1/0)
+- `arca_dns_agent_sync_last_success_timestamp_seconds`: Last successful sync time (unix timestamp; 0 if none)
+- `arca_dns_agent_health_status`: Overall health status (1/0)
+- `arca_dns_agent_health_check_status{type=...}`: Per-check health status (1/0)
+- `arca_dns_agent_bgp_enabled`: Whether BGP control is enabled (1/0)
+- `arca_dns_agent_bgp_routes_announced`: Whether routes are currently announced (1/0)
+- `arca_dns_agent_bgp_last_change_timestamp_seconds`: Last successful route state change (unix timestamp; omitted if never)
 
 ### Log Monitoring
 
@@ -553,15 +558,15 @@ groups:
 
   # Agent alerts
   - alert: ZoneSyncFailed
-    expr: zone_sync_status == 0
+    expr: arca_dns_agent_sync_has_success == 0
     for: 5m
 
   - alert: HealthCheckFailing
-    expr: health_check_status{type="overall"} == 0
+    expr: arca_dns_agent_health_status == 0
     for: 2m
 
   - alert: BGPRouteDown
-    expr: bgp_route_announced == 0
+    expr: arca_dns_agent_bgp_enabled == 1 and arca_dns_agent_bgp_routes_announced == 0
     for: 1m
 
   - alert: HighDNSLatency

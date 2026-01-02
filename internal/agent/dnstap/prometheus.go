@@ -79,7 +79,7 @@ func (e *PrometheusExporter) Export() string {
 			bucket, cumulativeCount))
 	}
 	sb.WriteString(fmt.Sprintf(`dns_query_duration_seconds_bucket{le="+Inf"} %d`+"\n", cumulativeCount))
-	sb.WriteString(fmt.Sprintf("dns_query_duration_seconds_sum 0\n"))   // Simplified: actual sum not tracked
+	sb.WriteString(fmt.Sprintf("dns_query_duration_seconds_sum %.6f\n", snapshot.LatencySumSec))
 	sb.WriteString(fmt.Sprintf("dns_query_duration_seconds_count %d\n", cumulativeCount))
 
 	// DNSSEC stats
