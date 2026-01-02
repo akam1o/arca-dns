@@ -40,5 +40,4 @@ jobs:
       - name: golangci-lint
         run: |
           mkdir -p "$GOCACHE"
-          make install-tools
-          golangci-lint run --timeout=5m ./...
+          make install-tools lint

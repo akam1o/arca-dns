@@ -3,11 +3,17 @@
 # Go parameters
 GOCMD=go
 GOCACHE?=$(CURDIR)/.cache/go-build
+GOPATH?=$(CURDIR)/.cache/gopath
+GOMODCACHE?=$(CURDIR)/.cache/gomod
 export GOCACHE
+export GOPATH
+export GOMODCACHE
 GOBUILD=$(GOCMD) build
 GOTEST=$(GOCMD) test
 GOINSTALL=$(GOCMD) install
 GOMOD=$(GOCMD) mod
+TOOLS_BIN=$(GOPATH)/bin
+GOLANGCI_LINT_FLAGS?=--timeout=5m
 BINARY_CONTROLLER=bin/arca-dns-controller
 BINARY_AGENT=bin/arca-dns-agent
 
@@ -20,34 +26,35 @@ build: build-controller build-agent
 
 build-controller:
 	@echo "Building controller..."
-	@mkdir -p "$(GOCACHE)"
+	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(TOOLS_BIN)"
 	@mkdir -p bin
 	$(GOBUILD) $(LDFLAGS) -o $(BINARY_CONTROLLER) ./cmd/arca-dns-controller
 
 build-agent:
 	@echo "Building agent..."
-	@mkdir -p "$(GOCACHE)"
+	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(TOOLS_BIN)"
 	@mkdir -p bin
 	$(GOBUILD) $(LDFLAGS) -o $(BINARY_AGENT) ./cmd/arca-dns-agent
 
 test:
 	@echo "Running tests..."
-	@mkdir -p "$(GOCACHE)"
+	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(TOOLS_BIN)"
 	$(GOTEST) -v -race -coverprofile=coverage.out ./...
 
 test-coverage:
 	@echo "Generating coverage report..."
-	@mkdir -p "$(GOCACHE)"
+	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(TOOLS_BIN)"
 	$(GOTEST) -v -race -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
 
 lint:
 	@echo "Running linters..."
-	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not installed. Run: make install-tools"; exit 1; }
-	golangci-lint run ./...
+	@test -x "$(TOOLS_BIN)/golangci-lint" || { echo "golangci-lint not installed. Run: make install-tools"; exit 1; }
+	$(TOOLS_BIN)/golangci-lint run $(GOLANGCI_LINT_FLAGS) ./...
 
 install-tools:
 	@echo "Installing development tools..."
+	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(TOOLS_BIN)"
 	$(GOINSTALL) github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 clean:
