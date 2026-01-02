@@ -137,6 +137,12 @@ func (m *fakeMetrics) SetLastRun(t time.Time) {
 	m.lastRun = t
 }
 
+func (m *fakeMetrics) GetLastRun() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastRun
+}
+
 func (m *fakeMetrics) SetSecondsRemaining(seconds float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -174,7 +180,7 @@ func TestScheduler_NoZones(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Check that last run was updated
-	if metrics.lastRun.IsZero() {
+	if metrics.GetLastRun().IsZero() {
 		t.Error("lastRun not updated")
 	}
 

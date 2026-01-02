@@ -61,33 +61,37 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 
 	// API v1 routes (with authentication if enabled)
 	v1 := router.Group("/api/v1")
-	if cfg != nil && cfg.Auth.Enabled && len(cfg.Auth.APIKeys) > 0 {
-		authConfig := middleware.AuthConfig{
-			APIKeys:    cfg.Auth.APIKeys,
-			HeaderName: "X-API-Key",
-		}
-		authenticator := middleware.NewAuthenticator(authConfig)
-		v1.Use(authenticator.Middleware())
-	}
 	{
 		// Health endpoints (aliases under /api/v1 for OpenAPI server base compatibility)
 		v1.GET("/health", handler.Health)
 		v1.GET("/ready", handler.Ready)
 		v1.GET("/status", handler.Status)
 		v1.GET("/metrics", handler.Metrics)
+	}
 
+	protected := v1
+	if cfg != nil && cfg.Auth.Enabled && len(cfg.Auth.APIKeys) > 0 {
+		authConfig := middleware.AuthConfig{
+			APIKeys:    cfg.Auth.APIKeys,
+			HeaderName: "X-API-Key",
+		}
+		authenticator := middleware.NewAuthenticator(authConfig)
+		protected = v1.Group("")
+		protected.Use(authenticator.Middleware())
+	}
+	{
 		// Zone management
-		v1.POST("/zones", handler.CreateZone)
-		v1.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
-		v1.GET("/zones", handler.ListZones)
-		v1.GET("/zones/:name", handler.GetZone)
-		v1.PUT("/zones/:name", handler.UpdateZone)
-		v1.DELETE("/zones/:name", handler.DeleteZone)
+		protected.POST("/zones", handler.CreateZone)
+		protected.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
+		protected.GET("/zones", handler.ListZones)
+		protected.GET("/zones/:name", handler.GetZone)
+		protected.PUT("/zones/:name", handler.UpdateZone)
+		protected.DELETE("/zones/:name", handler.DeleteZone)
 
 		// Zone file download (for agents)
-		v1.GET("/zones/:name/signed", handler.GetSignedZone)
-		v1.GET("/zones/:name/ds", handler.GetDSRecords)
-		v1.GET("/zones/:name/dnssec/ds", handler.GetDSRecords)
+		protected.GET("/zones/:name/signed", handler.GetSignedZone)
+		protected.GET("/zones/:name/ds", handler.GetDSRecords)
+		protected.GET("/zones/:name/dnssec/ds", handler.GetDSRecords)
 	}
 
 	return router

@@ -2,6 +2,8 @@
 
 # Go parameters
 GOCMD=go
+GOCACHE?=$(CURDIR)/.cache/go-build
+export GOCACHE
 GOBUILD=$(GOCMD) build
 GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
@@ -18,20 +20,24 @@ build: build-controller build-agent
 
 build-controller:
 	@echo "Building controller..."
+	@mkdir -p "$(GOCACHE)"
 	@mkdir -p bin
 	$(GOBUILD) $(LDFLAGS) -o $(BINARY_CONTROLLER) ./cmd/arca-dns-controller
 
 build-agent:
 	@echo "Building agent..."
+	@mkdir -p "$(GOCACHE)"
 	@mkdir -p bin
 	$(GOBUILD) $(LDFLAGS) -o $(BINARY_AGENT) ./cmd/arca-dns-agent
 
 test:
 	@echo "Running tests..."
+	@mkdir -p "$(GOCACHE)"
 	$(GOTEST) -v -race -coverprofile=coverage.out ./...
 
 test-coverage:
 	@echo "Generating coverage report..."
+	@mkdir -p "$(GOCACHE)"
 	$(GOTEST) -v -race -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
 
