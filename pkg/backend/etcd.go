@@ -659,7 +659,7 @@ func (e *EtcdBackend) cleanupHistory(ctx context.Context, zoneName string) {
 	// Keep only last N versions
 	if int(resp.Count) > defaultHistoryRetention {
 		for i := defaultHistoryRetention; i < len(resp.Kvs); i++ {
-			e.client.Delete(ctx, string(resp.Kvs[i].Key))
+			_, _ = e.client.Delete(ctx, string(resp.Kvs[i].Key))
 		}
 	}
 }

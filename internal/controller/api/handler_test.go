@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -20,7 +21,8 @@ import (
 func setupTest(t *testing.T) (*Handler, *backend.MemoryBackend, *httptest.Server) {
 	t.Helper()
 
-	logger, _ := zap.NewDevelopment()
+	logger, err := zap.NewDevelopment()
+	require.NoError(t, err)
 	store := backend.NewMemoryBackend()
 	// Create handler without signing service for backward compatibility
 	handler := NewHandler(store, nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
@@ -51,7 +53,8 @@ func TestCreateZone(t *testing.T) {
 		},
 	}
 
-	body, _ := json.Marshal(zone)
+	body, err := json.Marshal(zone)
+	require.NoError(t, err)
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -77,16 +80,20 @@ func TestCreateZone_Duplicate(t *testing.T) {
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 	}
 
-	body, _ := json.Marshal(zone)
+	body, err := json.Marshal(zone)
+	require.NoError(t, err)
 
 	// First create should succeed
-	resp, _ := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
-	resp.Body.Close()
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	// Second create should fail with conflict
-	body, _ = json.Marshal(zone)
-	resp, _ = http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	body, err = json.Marshal(zone)
+	require.NoError(t, err)
+	resp, err = http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusConflict, resp.StatusCode)
 }
@@ -100,7 +107,7 @@ func TestGetZone(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 	}
-	store.CreateZone(nil, zone)
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	// Get the zone
 	resp, err := http.Get(server.URL + "/api/v1/zones/example.com.")
@@ -138,7 +145,7 @@ func TestListZones(t *testing.T) {
 			Name: name,
 			SOA:  model.DefaultSOA("ns1."+name, "admin."+name),
 		}
-		store.CreateZone(nil, zone)
+		require.NoError(t, store.CreateZone(context.TODO(), zone))
 	}
 
 	// List zones
@@ -172,7 +179,7 @@ func TestListZones_Pagination(t *testing.T) {
 			Name: "zone" + string(rune('a'+i-1)) + ".com.",
 			SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		}
-		store.CreateZone(nil, zone)
+		require.NoError(t, store.CreateZone(context.TODO(), zone))
 	}
 
 	// List with limit
@@ -186,7 +193,7 @@ func TestListZones_Pagination(t *testing.T) {
 			Count int `json:"count"`
 		} `json:"pagination"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
 	assert.Equal(t, 2, result.Pagination.Count)
 }
 
@@ -202,10 +209,11 @@ func TestUpdateZone(t *testing.T) {
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
-	store.CreateZone(nil, zone)
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	// Get current version
-	retrieved, _ := store.GetZone(nil, "example.com.")
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
 	originalVersion := retrieved.Version
 
 	// Update the zone
@@ -229,7 +237,7 @@ func TestUpdateZone(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var updated model.Zone
-	json.NewDecoder(resp.Body).Decode(&updated)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
 	assert.NotEqual(t, originalVersion, updated.Version)
 	assert.Len(t, updated.Records, 2)
 }
@@ -243,7 +251,7 @@ func TestUpdateZone_Conflict(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 	}
-	store.CreateZone(nil, zone)
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	// Try to update with wrong version
 	body, _ := json.Marshal(zone)
@@ -268,7 +276,7 @@ func TestDeleteZone(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 	}
-	store.CreateZone(nil, zone)
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	// Delete the zone
 	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
@@ -280,7 +288,7 @@ func TestDeleteZone(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 
 	// Verify it's deleted
-	_, err = store.GetZone(nil, "example.com.")
+	_, err = store.GetZone(context.TODO(), "example.com.")
 	assert.ErrorIs(t, err, model.ErrZoneNotFound)
 }
 
@@ -309,7 +317,7 @@ func TestGetSignedZone(t *testing.T) {
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
-	store.CreateZone(nil, zone)
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	// Get the signed zone file
 	resp, err := http.Get(server.URL + "/api/v1/zones/example.com./signed")
@@ -339,10 +347,11 @@ func TestGetSignedZone_NotModified(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 	}
-	store.CreateZone(nil, zone)
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	// Get zone to retrieve ETag
-	retrieved, _ := store.GetZone(nil, "example.com.")
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
 	etag := retrieved.Version
 
 	// Request with If-None-Match
@@ -384,7 +393,7 @@ func TestUpdateZone_MissingIfMatch(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 	}
-	store.CreateZone(nil, zone)
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	// Try to update without If-Match header
 	body, _ := json.Marshal(zone)

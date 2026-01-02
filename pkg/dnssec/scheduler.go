@@ -11,11 +11,6 @@ import (
 	"go.uber.org/zap"
 )
 
-func init() {
-	// Seed random number generator for jitter (M4.4 fix)
-	rand.Seed(time.Now().UnixNano())
-}
-
 // Clock provides the current time (injectable for testing).
 type Clock interface {
 	Now() time.Time

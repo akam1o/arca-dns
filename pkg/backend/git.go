@@ -147,9 +147,8 @@ func openOrInitRepo(path, branch string) (*git.Repository, error) {
 				if err != nil {
 					return nil, fmt.Errorf("failed to create branch %s: %w", branch, err)
 				}
-			} else {
-				// Empty repository, will create branch on first commit
 			}
+			// If HEAD doesn't exist, the repository is empty; the branch will be created on first commit.
 		} else if err != nil {
 			return nil, err
 		} else {
@@ -218,7 +217,7 @@ func (g *GitBackend) releaseLock(zoneMu *sync.Mutex) {
 	if zoneMu != nil {
 		zoneMu.Unlock()
 	}
-	g.fileLock.Unlock()
+	_ = g.fileLock.Unlock()
 }
 
 // zoneFilePath returns the path to the zone JSON file
@@ -647,7 +646,7 @@ func (g *GitBackend) DeleteZone(ctx context.Context, name string) error {
 // Close closes the backend
 func (g *GitBackend) Close() error {
 	// Release file lock if held
-	g.fileLock.Unlock()
+	_ = g.fileLock.Unlock()
 	return nil
 }
 

@@ -554,15 +554,6 @@ func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
 
-func containsMiddle(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
 // TestZoneSigner_CanonicalOrdering verifies that RRSIG verification succeeds
 // regardless of RRset order, proving that miekg/dns handles canonical sorting.
 func TestZoneSigner_CanonicalOrdering(t *testing.T) {

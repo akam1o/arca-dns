@@ -6,7 +6,7 @@ GOCACHE?=$(CURDIR)/.cache/go-build
 export GOCACHE
 GOBUILD=$(GOCMD) build
 GOTEST=$(GOCMD) test
-GOGET=$(GOCMD) get
+GOINSTALL=$(GOCMD) install
 GOMOD=$(GOCMD) mod
 BINARY_CONTROLLER=bin/arca-dns-controller
 BINARY_AGENT=bin/arca-dns-agent
@@ -48,7 +48,7 @@ lint:
 
 install-tools:
 	@echo "Installing development tools..."
-	$(GOGET) github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	$(GOINSTALL) github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 clean:
 	@echo "Cleaning..."

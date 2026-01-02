@@ -300,7 +300,7 @@ func (m *MySQLBackend) createZone(ctx context.Context, zone *model.Zone) error {
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Insert zone
 	zoneQuery := `
@@ -389,7 +389,7 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// CAS update on zone
 	zoneQuery := `

@@ -442,7 +442,7 @@ func (s *ZoneSigner) GenerateSignedZoneFile(signedZone *model.Zone, signedRRs []
 
 	// Write zone header
 	buf.WriteString(fmt.Sprintf("; Zone: %s\n", signedZone.Name))
-	buf.WriteString(fmt.Sprintf("; Signed by arca-dns\n"))
+	buf.WriteString("; Signed by arca-dns\n")
 	buf.WriteString(fmt.Sprintf("; Version: %s\n", signedZone.Version))
 	if signedZone.DNSSEC != nil && signedZone.DNSSEC.SignatureExpiration != nil {
 		buf.WriteString(fmt.Sprintf("; Signatures valid until: %s\n", signedZone.DNSSEC.SignatureExpiration.Format(time.RFC3339)))

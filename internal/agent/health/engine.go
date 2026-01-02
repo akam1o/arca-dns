@@ -41,7 +41,7 @@ func (e *Engine) Run(ctx context.Context, signalChan chan<- bird.HealthSignal) e
 	statusChan := make(chan HealthStatus, 1)
 
 	// Start the checker
-	go e.checker.Run(ctx, statusChan)
+	go func() { _ = e.checker.Run(ctx, statusChan) }()
 
 	for {
 		select {

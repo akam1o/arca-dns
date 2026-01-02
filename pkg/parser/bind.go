@@ -149,18 +149,3 @@ func validateDirectives(content string, opts ParseOptions) error {
 
 	return nil
 }
-
-// lineNumber extracts line number from miekg/dns error message
-// Error format: "dns: bad SOA zone parameter: \"example.com\" at line: 5:10"
-func lineNumber(errStr string) int {
-	// Try to extract line number from error message
-	parts := strings.Split(errStr, "line:")
-	if len(parts) < 2 {
-		return 0
-	}
-
-	linePart := strings.TrimSpace(parts[1])
-	var line int
-	fmt.Sscanf(linePart, "%d", &line)
-	return line
-}

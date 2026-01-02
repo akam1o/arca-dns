@@ -63,7 +63,7 @@ test.com. IN A 192.0.2.1
 	_, err = part.Write([]byte(zoneFile))
 	require.NoError(t, err)
 
-	writer.Close()
+	require.NoError(t, writer.Close())
 
 	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw", body)
 	require.NoError(t, err)
@@ -109,22 +109,24 @@ func TestCreateZoneRaw_Duplicate(t *testing.T) {
 dup.com. IN SOA ns1.dup.com. admin.dup.com. (
     2024010101 3600 1800 604800 86400
 )
-dup.com. IN NS ns1.dup.com.
+	dup.com. IN NS ns1.dup.com.
 `
 
 	// First request
-	req1, _ := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=dup.com.",
-		strings.NewReader(zoneFile))
+	req1, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=dup.com.", strings.NewReader(zoneFile))
+	require.NoError(t, err)
 	req1.Header.Set("Content-Type", "text/plain")
-	resp1, _ := http.DefaultClient.Do(req1)
-	resp1.Body.Close()
+	resp1, err := http.DefaultClient.Do(req1)
+	require.NoError(t, err)
+	defer resp1.Body.Close()
 	assert.Equal(t, http.StatusCreated, resp1.StatusCode)
 
 	// Second request (duplicate)
-	req2, _ := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=dup.com.",
-		strings.NewReader(zoneFile))
+	req2, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=dup.com.", strings.NewReader(zoneFile))
+	require.NoError(t, err)
 	req2.Header.Set("Content-Type", "text/plain")
-	resp2, _ := http.DefaultClient.Do(req2)
+	resp2, err := http.DefaultClient.Do(req2)
+	require.NoError(t, err)
 	defer resp2.Body.Close()
 	assert.Equal(t, http.StatusConflict, resp2.StatusCode)
 }

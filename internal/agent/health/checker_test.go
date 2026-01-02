@@ -128,7 +128,7 @@ func TestChecker_checkDNSQuery(t *testing.T) {
 
 	// Start test DNS server
 	server, addr := startTestDNSServer(t, dns.RcodeSuccess)
-	defer server.Shutdown()
+	defer func() { _ = server.Shutdown() }()
 
 	checker := NewChecker(config.HealthConfig{
 		QueryTimeout: 5 * time.Second,
@@ -147,7 +147,7 @@ func TestChecker_checkDNSQuery_Failure(t *testing.T) {
 
 	// Start test DNS server that returns SERVFAIL
 	server, addr := startTestDNSServer(t, dns.RcodeServerFailure)
-	defer server.Shutdown()
+	defer func() { _ = server.Shutdown() }()
 
 	checker := NewChecker(config.HealthConfig{
 		QueryTimeout: 5 * time.Second,
@@ -167,7 +167,7 @@ func TestChecker_checkLatency(t *testing.T) {
 
 	// Start test DNS server
 	server, addr := startTestDNSServer(t, dns.RcodeSuccess)
-	defer server.Shutdown()
+	defer func() { _ = server.Shutdown() }()
 
 	checker := NewChecker(config.HealthConfig{
 		QueryTimeout:     5 * time.Second,
@@ -241,7 +241,7 @@ func TestChecker_CheckAll(t *testing.T) {
 
 	// Start test DNS server
 	dnsServer, _ := startTestDNSServer(t, dns.RcodeSuccess)
-	defer dnsServer.Shutdown()
+	defer func() { _ = dnsServer.Shutdown() }()
 
 	checker := NewChecker(config.HealthConfig{
 		QueryTimeout:     2 * time.Second,
@@ -283,7 +283,7 @@ func TestChecker_Run(t *testing.T) {
 
 	statusChan := make(chan HealthStatus, 10)
 
-	go checker.Run(ctx, statusChan)
+	go func() { _ = checker.Run(ctx, statusChan) }()
 
 	// Wait for at least one status update
 	select {
@@ -337,7 +337,7 @@ func startTestDNSServer(t *testing.T, rcode int) (*dns.Server, string) {
 			})
 		}
 
-		w.WriteMsg(msg)
+		_ = w.WriteMsg(msg)
 	})
 
 	// Start UDP server
@@ -352,7 +352,7 @@ func startTestDNSServer(t *testing.T, rcode int) (*dns.Server, string) {
 		Handler:    handler,
 	}
 
-	go server.ActivateAndServe()
+	go func() { _ = server.ActivateAndServe() }()
 
 	// Wait for server to start
 	time.Sleep(10 * time.Millisecond)

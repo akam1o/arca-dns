@@ -67,7 +67,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	logger.Info("arca-dns-agent starting",
 		zap.String("version", version),
@@ -360,35 +360,34 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		zap.String("zone_directory", cfg.NSD.ZoneDirectory))
 
 	// Wait for signals
-	for {
-		select {
-		case sig := <-sigChan:
-			switch sig {
-			case syscall.SIGHUP:
-				logger.Info("Received SIGHUP, reloading configuration via re-exec")
+	for sig := range sigChan {
+		switch sig {
+		case syscall.SIGHUP:
+			logger.Info("Received SIGHUP, reloading configuration via re-exec")
 
-				// Gracefully stop background loops, then re-exec the current binary with the same args.
-				cancel()
-				wg.Wait()
-				client.Close()
-				_ = logger.Sync()
+			// Gracefully stop background loops, then re-exec the current binary with the same args.
+			cancel()
+			wg.Wait()
+			client.Close()
+			_ = logger.Sync()
 
-				if err := reexecSelf(); err != nil {
-					return fmt.Errorf("re-exec failed: %w", err)
-				}
-				// If re-exec succeeds, this process image is replaced and code below is not executed.
-				return nil
-
-			case syscall.SIGINT, syscall.SIGTERM:
-				logger.Info("Received shutdown signal, gracefully shutting down",
-					zap.String("signal", sig.String()))
-				cancel()
-				wg.Wait()
-				logger.Info("Agent shutdown complete")
-				return nil
+			if err := reexecSelf(); err != nil {
+				return fmt.Errorf("re-exec failed: %w", err)
 			}
+			// If re-exec succeeds, this process image is replaced and code below is not executed.
+			return nil
+
+		case syscall.SIGINT, syscall.SIGTERM:
+			logger.Info("Received shutdown signal, gracefully shutting down",
+				zap.String("signal", sig.String()))
+			cancel()
+			wg.Wait()
+			logger.Info("Agent shutdown complete")
+			return nil
 		}
 	}
+
+	return nil
 }
 
 func reexecSelf() error {

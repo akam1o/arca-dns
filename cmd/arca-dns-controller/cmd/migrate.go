@@ -30,7 +30,6 @@ var (
 	migrateToPath      string
 	migrateDryRun      bool
 	migrateOverwrite   bool
-	migrateForce       bool
 )
 
 // NewMigrateCmd creates the migrate command with subcommands.
@@ -70,7 +69,7 @@ Example:
 	cmd.Flags().StringVarP(&migrateOutputDir, "output", "o", "./zones", "Output directory for JSON files")
 	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Preview export without writing files")
 
-	cmd.MarkFlagRequired("backend")
+	cobra.CheckErr(cmd.MarkFlagRequired("backend"))
 
 	return cmd
 }
@@ -97,7 +96,7 @@ Example:
 	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Validate files without importing")
 	cmd.Flags().BoolVar(&migrateOverwrite, "overwrite", false, "Overwrite existing zones")
 
-	cmd.MarkFlagRequired("backend")
+	cobra.CheckErr(cmd.MarkFlagRequired("backend"))
 
 	return cmd
 }
@@ -126,8 +125,8 @@ Example:
 	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Preview copy without writing")
 	cmd.Flags().BoolVar(&migrateOverwrite, "overwrite", false, "Overwrite existing zones")
 
-	cmd.MarkFlagRequired("from-backend")
-	cmd.MarkFlagRequired("to-backend")
+	cobra.CheckErr(cmd.MarkFlagRequired("from-backend"))
+	cobra.CheckErr(cmd.MarkFlagRequired("to-backend"))
 
 	return cmd
 }
