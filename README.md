@@ -79,6 +79,24 @@ See `docs/deployment.md` and `docs/operations.md` for day-2 operations.
 make install-tools
 ```
 
+### Makefile Targets
+
+```bash
+make help          # Show available targets
+make install-tools # Install development tools (golangci-lint)
+make deps          # Download dependencies (go mod download/tidy)
+make build         # Build controller + agent binaries
+make test          # Run tests (-race + coverage.out)
+make test-coverage # Generate coverage.html
+make lint          # Run linters
+make fmt           # Format code
+make vet           # Run go vet
+make run-controller# Build + run controller (serve)
+make run-agent     # Build + run agent (daemon)
+make docker-build  # Build Docker images
+make clean         # Remove build artifacts
+```
+
 ### Packaging (DEB/RPM)
 
 See `docs/packaging.md`.
@@ -170,6 +188,7 @@ Run agent (requires NSD/Unbound/BIRD installed on the host if enabled in config)
 ## API Documentation
 
 API documentation is available in OpenAPI format: [api/openapi.yaml](api/openapi.yaml)
+Contributing guide: [docs/contributing.md](docs/contributing.md)
 
 ### Zone Management Examples
 
@@ -248,7 +267,7 @@ Contributions are welcome — please open an issue/PR and include a clear descri
 
 ## License
 
-See [LICENSE](LICENSE) file for details.
+Apache License 2.0
 
 ## Roadmap
 
