@@ -1,5 +1,7 @@
 # Packaging (DEB/RPM)
 
+English | [日本語](packaging.ja.md)
+
 arca-dns supports building DEB and RPM packages for:
 - EL9 (RPM)
 - Debian (DEB)

@@ -4,6 +4,8 @@
 [![Lint](https://github.com/akam1o/arca-dns/actions/workflows/lint.yml/badge.svg)](https://github.com/akam1o/arca-dns/actions/workflows/lint.yml)
 [![Build](https://github.com/akam1o/arca-dns/actions/workflows/build.yml/badge.svg)](https://github.com/akam1o/arca-dns/actions/workflows/build.yml)
 
+English | [日本語](README.ja.md)
+
 arca-dns is a high-availability, scalable authoritative DNS system with BGP Anycast + ECMP and a split control/data plane architecture.
 
 ## Overview

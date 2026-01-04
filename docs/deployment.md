@@ -1,5 +1,7 @@
 # arca-dns Deployment Guide
 
+English | [日本語](deployment.ja.md)
+
 ## Overview
 
 arca-dns consists of:

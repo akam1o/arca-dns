@@ -1,5 +1,7 @@
 # arca-dns Architecture
 
+English | [日本語](architecture.ja.md)
+
 ## Overview
 
 arca-dns is a BGP Anycast DNS system with split control/data plane architecture designed for high availability, security, and operational simplicity.

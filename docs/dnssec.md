@@ -1,5 +1,7 @@
 # DNSSEC Key Management Guide
 
+English | [日本語](dnssec.ja.md)
+
 This document describes how to manage DNSSEC keys for arca-dns, including key generation, rotation, backup, and recovery procedures.
 
 ## Table of Contents

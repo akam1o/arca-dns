@@ -1,14 +1,14 @@
-# arca-dns Operations Guide
+# arca-dns 運用ガイド
 
-English | [日本語](operations.ja.md)
+[English](operations.md) | 日本語
 
-## Day-2 Operations
+## Day-2 運用
 
-This guide covers common operational tasks for maintaining arca-dns in production.
+このガイドは、本番環境で arca-dns を運用するための一般的な作業をまとめます。
 
-## Monitoring
+## 監視
 
-### Health Checks
+### ヘルスチェック
 
 **Controller**:
 ```bash
@@ -34,32 +34,32 @@ curl http://agent:9090/ready
 curl http://agent:9090/status
 ```
 
-### Prometheus Metrics
+### Prometheus メトリクス
 
-**Controller metrics** (`http://controller:8080/metrics`):
-- `api_requests_total`: API request count by method, path, status
-- `api_request_duration_seconds`: API latency histogram
-- `zones_total`: Current number of zones
-- `dnssec_signing_duration_seconds`: DNSSEC signing latency
-- `backend_operations_total`: Backend operation count by type, status
+**Controller metrics**（`http://controller:8080/metrics`）:
+- `api_requests_total`: method/path/status 別の API リクエスト数
+- `api_request_duration_seconds`: API レイテンシのヒストグラム
+- `zones_total`: 現在のゾーン数
+- `dnssec_signing_duration_seconds`: DNSSEC 署名のレイテンシ
+- `backend_operations_total`: backend 操作数（type/status 別）
 
-**Agent metrics** (`http://agent:9090/metrics`):
-- `dns_queries_total`: DNS query count by type, rcode
-- `dns_query_duration_seconds`: Query latency histogram
-- `dns_udp_queries_total`, `dns_tcp_queries_total`: Transport breakdown
-- `dns_queries_per_second`: Current QPS gauge
-- `arca_dns_agent_sync_has_success`: Whether the agent has ever synced successfully (1/0)
-- `arca_dns_agent_sync_stale`: Whether sync is currently stale (1/0)
-- `arca_dns_agent_sync_last_success_timestamp_seconds`: Last successful sync time (unix timestamp; 0 if none)
-- `arca_dns_agent_health_status`: Overall health status (1/0)
-- `arca_dns_agent_health_check_status{type=...}`: Per-check health status (1/0)
-- `arca_dns_agent_bgp_enabled`: Whether BGP control is enabled (1/0)
-- `arca_dns_agent_bgp_routes_announced`: Whether routes are currently announced (1/0)
-- `arca_dns_agent_bgp_last_change_timestamp_seconds`: Last successful route state change (unix timestamp; omitted if never)
+**Agent metrics**（`http://agent:9090/metrics`）:
+- `dns_queries_total`: type/rcode 別のクエリ数
+- `dns_query_duration_seconds`: クエリレイテンシのヒストグラム
+- `dns_udp_queries_total`, `dns_tcp_queries_total`: transport 別
+- `dns_queries_per_second`: 現在の QPS gauge
+- `arca_dns_agent_sync_has_success`: これまでに同期成功したことがあるか（1/0）
+- `arca_dns_agent_sync_stale`: 同期が stale かどうか（1/0）
+- `arca_dns_agent_sync_last_success_timestamp_seconds`: 最終同期成功時刻（unix; 無ければ 0）
+- `arca_dns_agent_health_status`: 全体ヘルス（1/0）
+- `arca_dns_agent_health_check_status{type=...}`: チェック種別ごとのヘルス（1/0）
+- `arca_dns_agent_bgp_enabled`: BGP 制御が有効か（1/0）
+- `arca_dns_agent_bgp_routes_announced`: 現在 announce 中か（1/0）
+- `arca_dns_agent_bgp_last_change_timestamp_seconds`: 最終ルート状態変更時刻（unix; 無ければ省略）
 
-### Log Monitoring
+### ログ監視
 
-**Key log patterns**:
+**よく見るログパターン**:
 ```bash
 # Controller: Zone updates
 journalctl -u arca-dns-controller | grep "zone_updated"
@@ -77,9 +77,9 @@ journalctl -u arca-dns-agent | grep "route_"
 journalctl -u arca-dns-agent | grep "health_check_failed"
 ```
 
-## Zone Management
+## ゾーン管理
 
-### Adding a New Zone
+### ゾーンを追加する
 
 ```bash
 # Via API (JSON format)
@@ -110,7 +110,7 @@ curl -X POST http://controller:8080/api/v1/zones/raw \
   --data-binary @example.com.zone
 ```
 
-### Updating a Zone
+### ゾーンを更新する
 
 ```bash
 # Update specific records
@@ -125,14 +125,14 @@ curl -X PUT http://controller:8080/api/v1/zones/example.com. \
   }'
 ```
 
-### Deleting a Zone
+### ゾーンを削除する
 
 ```bash
 curl -X DELETE http://controller:8080/api/v1/zones/example.com. \
   -H "X-API-Key: your-api-key"
 ```
 
-### Viewing Zone Status
+### ゾーン状態を確認する
 
 ```bash
 # List all zones
@@ -148,9 +148,9 @@ curl http://controller:8080/api/v1/zones/example.com./signed \
   -H "X-API-Key: your-api-key"
 ```
 
-## DNSSEC Operations
+## DNSSEC 運用
 
-### Generating Keys for a Zone
+### ゾーンの鍵を生成する
 
 ```bash
 # Keys are auto-generated on first zone creation if DNSSEC enabled
@@ -158,7 +158,7 @@ curl http://controller:8080/api/v1/zones/example.com./signed \
 arca-dns-controller dnssec generate-keys --zone example.com.
 ```
 
-### Exporting DS Records
+### DS レコードをエクスポートする
 
 ```bash
 # BIND format (for parent zone file)
@@ -171,14 +171,14 @@ arca-dns-controller dnssec export-ds --zone example.com. --format json
 # example.com. IN DS 12345 13 2 ABC123...
 ```
 
-### Key Rotation
+### 鍵ローテーション
 
-**Automated rotation** (recommended):
-1. Keys auto-rotate based on config (e.g., every 90 days)
-2. Scheduler maintains old+new keys during rollover
-3. Update DS at parent after new KSK published
+**自動ローテーション**（推奨）:
+1. 設定に応じて自動的にローテート（例: 90 日）
+2. スケジューラがロールオーバー期間は旧+新鍵を維持
+3. 新しい KSK を公開後、親ゾーンの DS を更新
 
-**Manual rotation**:
+**手動ローテーション**:
 ```bash
 # Generate new keys
 arca-dns-controller dnssec generate-keys --zone example.com. --rotate
@@ -193,7 +193,7 @@ arca-dns-controller dnssec export-ds --zone example.com.
 arca-dns-controller dnssec remove-old-keys --zone example.com.
 ```
 
-### Verifying DNSSEC
+### DNSSEC を検証する
 
 ```bash
 # Check DNSKEY records
@@ -209,9 +209,9 @@ delv example.com. @agent-ip
 unbound-host -C /etc/unbound/unbound.conf -v example.com
 ```
 
-## Backup and Recovery
+## バックアップと復旧
 
-### Controller Backup
+### Controller のバックアップ
 
 **MySQL Backend**:
 ```bash
@@ -246,7 +246,7 @@ tar -czf keys_backup_$(date +%Y%m%d).tar.gz \
   /etc/arca-dns/master.key
 ```
 
-### Controller Recovery
+### Controller の復旧
 
 **MySQL Backend**:
 ```bash
@@ -262,22 +262,22 @@ sudo chmod 700 /var/lib/arca-dns/keys
 sudo systemctl restart arca-dns-controller
 ```
 
-### Agent Recovery
+### Agent の復旧
 
-**Automatic**: Agents are stateless and re-sync from controller on restart.
+**自動**: agent は stateless で、再起動時に controller から再同期します。
 
-**Manual zone restoration**:
+**手動でゾーンを復元**:
 ```bash
 # If controller is down, restore from backup
 cp /backup/zones/*.zone.signed /var/lib/nsd/zones/
 nsd-control reload
 ```
 
-## Troubleshooting
+## トラブルシューティング
 
-### Controller Issues
+### Controller の問題
 
-**Issue**: API not responding
+**症状**: API が応答しない
 ```bash
 # Check service status
 systemctl status arca-dns-controller
@@ -296,7 +296,7 @@ mysql -u dns_user -p -h localhost -e "SELECT 1"
 ls -la /var/lib/arca-dns/repo/.git
 ```
 
-**Issue**: DNSSEC signing failures
+**症状**: DNSSEC 署名に失敗する
 ```bash
 # Check keys exist
 ls -la /var/lib/arca-dns/keys/
@@ -311,9 +311,9 @@ stat /var/lib/arca-dns/keys/
 journalctl -u arca-dns-controller | grep "dnssec_error"
 ```
 
-### Agent Issues
+### Agent の問題
 
-**Issue**: Zone sync failing
+**症状**: ゾーン同期が失敗する
 ```bash
 # Check controller connectivity
 curl -I https://controller:8080/health
@@ -328,7 +328,7 @@ curl http://localhost:9090/status | jq '.zones'
 systemctl restart arca-dns-agent
 ```
 
-**Issue**: BGP routes not announced
+**症状**: BGP ルートが announce されない
 ```bash
 # Check health status
 curl http://localhost:9090/status | jq '.health'
@@ -347,7 +347,7 @@ unbound-control status
 journalctl -u arca-dns-agent | grep -E '(health|bgp|route)'
 ```
 
-**Issue**: High DNS latency
+**症状**: DNS レイテンシが高い
 ```bash
 # Check DNSTap metrics
 curl http://localhost:9090/metrics | grep dns_query_duration
@@ -366,20 +366,20 @@ iostat -x 1 10
 tcpdump -i any -c 1000 'port 53' | wc -l
 ```
 
-### Common Error Patterns
+### 代表的なエラーパターン
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `backend connection failed` | DB/Git/etcd unreachable | Check backend service, credentials |
-| `zone sync stale` | Controller unreachable >5min | Check network, controller status |
-| `dnssec verification failed` | Invalid signature | Re-sign zone, check keys |
-| `health check failed: nsd` | NSD crashed/not responding | Restart NSD, check config |
-| `route not announced` | Health checks failing | Fix DNS issues, wait for recovery |
-| `master key not found` | Missing ARCA_DNS_DNSSEC_MASTER_KEY_B64 (and no `_masterkey` file) | Set env var or enable auto-generate |
+| `backend connection failed` | DB/Git/etcd に到達不能 | backend サービス/認証情報を確認 |
+| `zone sync stale` | controller 到達不能が 5 分超 | ネットワーク、controller 状態を確認 |
+| `dnssec verification failed` | 署名が無効 | 再署名、鍵を確認 |
+| `health check failed: nsd` | NSD がクラッシュ/応答なし | NSD 再起動、設定確認 |
+| `route not announced` | ヘルスチェック不合格 | DNS 側を修正し回復を待つ |
+| `master key not found` | `ARCA_DNS_DNSSEC_MASTER_KEY_B64` が無く `_masterkey` も無い | env 設定または自動生成を有効化 |
 
-## Performance Tuning
+## 性能チューニング
 
-### Controller Optimization
+### Controller 最適化
 
 **MySQL backend**:
 ```sql
@@ -401,30 +401,30 @@ api:
     burst: 50
 ```
 
-### Agent Optimization
+### Agent 最適化
 
-**Zone sync interval**:
+**ゾーン同期間隔**:
 ```yaml
 # Reduce sync interval for faster updates (uses more bandwidth)
 sync:
   sync_interval: 10s  # Default: 30s
 ```
 
-**Health check frequency**:
+**ヘルスチェック頻度**:
 ```yaml
 # Adjust based on failover requirements
 health:
   check_interval: 5s  # Default: 10s
 ```
 
-**DNSTap sampling**:
+**DNSTap サンプリング**:
 ```yaml
 # Reduce log volume
 dnstap:
   sample_rate: 10000  # Log 1/10000 queries (default: 1/1000)
 ```
 
-### NSD Tuning
+### NSD チューニング
 
 ```bash
 # /etc/nsd/nsd.conf
@@ -437,7 +437,7 @@ server:
     ipv6-edns-size: 1232
 ```
 
-### Unbound Tuning
+### Unbound チューニング
 
 ```bash
 # /etc/unbound/unbound.conf
@@ -450,9 +450,9 @@ server:
     jostle-timeout: 200      # Drop slow queries
 ```
 
-## Security Maintenance
+## セキュリティメンテナンス
 
-### API Key Rotation
+### API キーのローテーション
 
 ```bash
 # Generate new key
@@ -477,7 +477,7 @@ curl -H "X-API-Key: $NEW_KEY" https://controller:8080/api/v1/zones
 # Remove old key from config after migration
 ```
 
-### Master Key Rotation
+### マスターキーのローテーション
 
 ```bash
 # Generate new master key
@@ -496,7 +496,7 @@ mv /etc/arca-dns/master.key.new /etc/arca-dns/master.key
 systemctl restart arca-dns-controller
 ```
 
-### Certificate Renewal
+### 証明書更新
 
 ```bash
 # Let's Encrypt example (reverse proxy / ingress termination)
@@ -506,9 +506,9 @@ certbot renew
 systemctl reload nginx
 ```
 
-## Scaling
+## スケーリング
 
-### Adding More Agents
+### agent を追加する
 
 ```bash
 # Deploy new agent to additional site
@@ -522,7 +522,7 @@ curl -H "X-API-Key: $API_KEY" \
   https://controller:8080/api/v1/agents
 ```
 
-### Scaling Controller (Active-Passive)
+### controller のスケール（Active-Passive）
 
 ```bash
 # Setup secondary controller with same config
@@ -535,9 +535,9 @@ curl -H "X-API-Key: $API_KEY" \
 # Set scheduler_enabled: false on standby
 ```
 
-## Monitoring Alerts
+## 監視アラート
 
-### Recommended Prometheus Alerts
+### 推奨 Prometheus アラート
 
 ```yaml
 groups:
@@ -560,18 +560,5 @@ groups:
   - alert: HealthCheckFailing
     expr: arca_dns_agent_health_status == 0
     for: 2m
-
-  - alert: BGPRouteDown
-    expr: arca_dns_agent_bgp_enabled == 1 and arca_dns_agent_bgp_routes_announced == 0
-    for: 1m
-
-  - alert: HighDNSLatency
-    expr: histogram_quantile(0.95, dns_query_duration_seconds) > 0.1
-    for: 5m
 ```
 
-## Next Steps
-
-- [Architecture](architecture.md): System design details
-- [Deployment](deployment.md): Deployment procedures
-- [API Reference](api.md): API documentation

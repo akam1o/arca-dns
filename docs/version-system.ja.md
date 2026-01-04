@@ -1,34 +1,34 @@
-# Zone Version System
+# ゾーンバージョンシステム
 
-English | [日本語](version-system.ja.md)
+[English](version-system.md) | 日本語
 
-## Overview
+## 概要
 
-The arca-dns zone version system provides a consistent, immutable identifier that ties together:
+arca-dns のゾーンバージョンシステムは、以下を一貫した不変の識別子で結びつけます。
 
-1. **API ETag**: Used for optimistic concurrency control in HTTP requests
-2. **Artifact Filename**: Used by agents to track deployed zones
-3. **Agent Applied State**: Used for rollback and audit purposes
+1. **API ETag**: HTTP リクエストの楽観的同時更新制御に使用
+2. **アーティファクトファイル名**: agent がデプロイ済みゾーンを追跡するために使用
+3. **agent 適用状態**: ロールバックや監査のために使用
 
-This document describes the version scheme, how versions are generated, and how they're used throughout the system.
+本ドキュメントは、バージョンスキーム、生成方法、システム内での利用方法を説明します。
 
 ---
 
-## Version Identifier Format
+## バージョン識別子の形式
 
-### Scheme
+### スキーム
 
 ```
 v{ULID}
 ```
 
-Where:
-- **ULID**: controller-issued ULID (time-sortable, 26 chars)
+ここで:
+- **ULID**: controller が発行する ULID（時系列ソート可能、26 文字）
 
-Additionally, arca-dns exposes a separate content hash:
-- **hash**: First 8 characters of SHA256 hash of canonical zone content (returned as `X-Zone-Hash` and in metadata APIs)
+また、arca-dns はコンテンツハッシュも別途公開します。
+- **hash**: 正規化されたゾーン内容の SHA256 の先頭 8 文字（`X-Zone-Hash` およびメタデータ API で返されます）
 
-### Examples
+### 例
 
 ```
 v01ARZ3NDEKTSV4RRFFQ69G5FAV
@@ -36,51 +36,51 @@ v01ARZ3NDEKTSV4RRFFQ69G5FB0
 v01ARZ3NDEKTSV4RRFFQ69G5FB1
 ```
 
-### Components
+### 構成要素
 
 #### Serial Number
 
-The serial is a 10-digit number following the format `YYYYMMDDnn`:
+serial は `YYYYMMDDnn`（10 桁）形式です。
 
-- **YYYY**: 4-digit year
-- **MM**: 2-digit month (01-12)
-- **DD**: 2-digit day (01-31)
-- **nn**: 2-digit counter (00-99)
+- **YYYY**: 年（4 桁）
+- **MM**: 月（01-12）
+- **DD**: 日（01-31）
+- **nn**: カウンタ（00-99）
 
-**Auto-increment behavior:**
-- If the current date matches the date in the existing serial, increment `nn`
-- If the current date is newer, reset to `{newdate}01`
-- Maximum 100 updates per day per zone
-- Serial wraps at 4294967295 (2^32 - 1) per RFC 1982
+**自動インクリメントの挙動**:
+- 既存 serial の日付が今日と一致する場合、`nn` をインクリメント
+- 今日の方が新しい場合、`{newdate}01` にリセット
+- 1 日あたりゾーンごとに最大 100 更新
+- RFC 1982 に従い、serial は 4294967295（2^32 - 1）で wrap
 
 #### Hash
 
-The hash is computed as follows:
+hash は次のように計算されます。
 
 ```
 hash = SHA256(canonical_zone_content)[:8]
 ```
 
-Where `canonical_zone_content` is:
-1. Zone name (lowercase)
-2. SOA record (normalized)
-3. All records sorted by:
-   - Record name (alphabetically)
-   - Record type (alphabetically)
-   - Record value (alphabetically)
-4. DNSSEC configuration (if enabled)
+`canonical_zone_content` は以下を正規化して組み立てます。
+1. ゾーン名（小文字化）
+2. SOA（正規化）
+3. すべてのレコードを次でソート:
+   - レコード名（辞書順）
+   - レコード type（辞書順）
+   - レコード value（辞書順）
+4. DNSSEC 設定（有効時）
 
-**Important**: The hash is computed BEFORE DNSSEC signing, ensuring consistent hashes across unsigned and signed versions.
+**重要**: hash は DNSSEC 署名前に計算します。これにより、未署名/署名済みの状態に依存しない一貫した hash になります。
 
 ---
 
-## Version Generation
+## バージョン生成
 
-### Controller Process
+### Controller の処理
 
-When a zone is created or updated:
+ゾーンを作成/更新するとき:
 
-1. **Compute Serial**
+1. **serial を計算**
    ```go
    currentSerial := zone.SOA.Serial
    today := time.Now().Format("20060102")
@@ -94,23 +94,23 @@ When a zone is created or updated:
    }
    ```
 
-2. **Canonicalize Zone**
+2. **ゾーンを正規化**
    ```go
    canonical := canonicalizeZone(zone)
    ```
 
-3. **Compute Hash**
+3. **hash を計算**
    ```go
    h := sha256.Sum256([]byte(canonical))
    hash := hex.EncodeToString(h[:])[:8]
    ```
 
-4. **Create Version**
+4. **version を作成**
    ```go
    version := fmt.Sprintf("v%d-%s", newSerial, hash)
    ```
 
-5. **Store Version**
+5. **version を保存**
    ```go
    zone.Version = version
    versionMap[version] = {
@@ -122,7 +122,7 @@ When a zone is created or updated:
    }
    ```
 
-### Example Code
+### 例（コード）
 
 ```go
 package model
@@ -205,11 +205,11 @@ func canonicalizeZone(zone *Zone) string {
 
 ---
 
-## Version Usage
+## バージョンの利用
 
 ### API ETag
 
-The version is returned as an ETag header in HTTP responses:
+version は HTTP レスポンスの ETag として返されます。
 
 **Response:**
 ```http
@@ -231,15 +231,15 @@ If-Match: "v2024122801-a3f5c2e9"
 Content-Type: application/json
 ```
 
-### Artifact Filename
+### アーティファクトファイル名
 
-Signed zone files are stored with the version in the filename:
+署名済みゾーンファイルは、ファイル名に version を含めて保存されます。
 
 ```
 /var/lib/arca-dns/artifacts/example.com/v2024122801-a3f5c2e9.zone.signed
 ```
 
-Metadata is stored alongside:
+メタデータも隣接して保存されます。
 
 ```json
 {
@@ -254,7 +254,7 @@ Metadata is stored alongside:
 
 ### Agent State
 
-Agents track applied versions in local state:
+agent はローカル状態として適用済み version を保持します。
 
 ```json
 {
@@ -275,9 +275,9 @@ Agents track applied versions in local state:
 
 ---
 
-## Concurrency Control
+## 同時更新制御
 
-### Optimistic Locking with ETag
+### ETag による楽観ロック
 
 **Read Zone:**
 ```
@@ -291,7 +291,7 @@ Client                    Controller
   |<--------------------------|
 ```
 
-**Update Zone (Success):**
+**Update Zone（成功）:**
 ```
 Client                    Controller
   |                           |
@@ -304,7 +304,7 @@ Client                    Controller
   |<--------------------------|
 ```
 
-**Update Zone (Conflict):**
+**Update Zone（競合）:**
 ```
 Client                    Controller
   |                           |
@@ -321,9 +321,9 @@ Client                    Controller
   | (update with new ETag)    |
 ```
 
-### Preventing Lost Updates
+### ロストアップデートの防止
 
-Without If-Match, updates may overwrite concurrent changes:
+If-Match を使わないと、並行更新で上書きが起こり得ます。
 
 ```
 Time   Client A               Controller              Client B
@@ -335,7 +335,7 @@ T4                                                    PUT zone -> v3
                                                       (overwrites A's change!)
 ```
 
-With If-Match, conflicts are detected:
+If-Match を使えば競合を検出できます。
 
 ```
 Time   Client A               Controller              Client B
@@ -351,18 +351,18 @@ T4                                                    -> 409 Conflict!
 
 ---
 
-## Version History and Rollback
+## バージョン履歴とロールバック
 
-### Backend Support
+### backend の対応状況
 
 | Backend | Versioning | Mechanism |
 |---------|-----------|-----------|
-| Memory  | ❌ No     | Single current version only |
-| MySQL   | ⚠️ Optional | Separate `zone_versions` table |
-| Git     | ✅ Yes    | Git commits (native versioning) |
-| etcd    | ✅ Yes    | Revision-based history |
+| Memory  | ❌ No     | 現在の 1 バージョンのみ |
+| MySQL   | ⚠️ Optional | `zone_versions` テーブル |
+| Git     | ✅ Yes    | Git commit（ネイティブ） |
+| etcd    | ✅ Yes    | revision ベース履歴 |
 
-### Rollback Process
+### ロールバック手順
 
 **List Versions:**
 ```bash
@@ -411,13 +411,13 @@ Content-Type: application/json
 }
 ```
 
-**Note**: Rollback creates a NEW version with incremented serial, not a reversion to the old serial. This follows DNS best practices.
+**Note**: ロールバックは「serial を巻き戻す」のではなく、serial をインクリメントした新バージョンを作成します（DNS のベストプラクティス）。
 
 ---
 
-## Agent Synchronization
+## Agent 同期
 
-### Conditional Fetch Flow
+### 条件付き取得（If-None-Match）
 
 ```
 Agent                         Controller
@@ -432,9 +432,9 @@ Agent                         Controller
   | (no download, no reload)      |
 ```
 
-Bandwidth saved: ~10KB per zone per sync interval
+帯域削減: ゾーンあたり同期間隔ごとに ~10KB
 
-### Update Detection Flow
+### 更新検知フロー
 
 ```
 Agent                         Controller
@@ -460,11 +460,11 @@ Agent                         Controller
 
 ---
 
-## Integrity Verification
+## 整合性検証
 
-### Checksum Verification
+### チェックサム検証
 
-The agent verifies the SHA256 checksum of downloaded zones:
+agent はダウンロードしたゾーンの SHA256 を検証します。
 
 ```go
 func verifyChecksum(data []byte, expectedHash string) error {
@@ -480,9 +480,9 @@ func verifyChecksum(data []byte, expectedHash string) error {
 }
 ```
 
-### Signature Verification (Optional)
+### 署名検証（任意）
 
-When enabled, the controller signs artifacts with HMAC:
+有効化している場合、controller は HMAC でアーティファクト署名を行います。
 
 ```go
 func signArtifact(data []byte, secret string) string {
@@ -502,21 +502,21 @@ func verifySignature(data []byte, signature string, secret string) error {
 
 ---
 
-## Monitoring and Alerting
+## 監視とアラート
 
-### Metrics
+### メトリクス
 
 **Controller:**
-- `arca_zone_version_created_total{zone}` - Total versions created
-- `arca_zone_version_rollback_total{zone}` - Total rollbacks performed
-- `arca_zone_version_conflict_total{zone}` - Total ETag conflicts
+- `arca_zone_version_created_total{zone}` - 生成されたバージョン総数
+- `arca_zone_version_rollback_total{zone}` - ロールバック回数
+- `arca_zone_version_conflict_total{zone}` - ETag 競合数
 
 **Agent:**
-- `arca_zone_version_current{zone,version}` - Current version per zone (gauge)
-- `arca_zone_version_synced_total{zone}` - Total successful syncs
-- `arca_zone_version_age_seconds{zone}` - Age of current version
+- `arca_zone_version_current{zone,version}` - ゾーンごとの現在バージョン（gauge）
+- `arca_zone_version_synced_total{zone}` - 同期成功回数
+- `arca_zone_version_age_seconds{zone}` - 現在バージョンの経過時間
 
-### Alerts
+### アラート例
 
 **Version Drift:**
 ```yaml
@@ -540,52 +540,53 @@ annotations:
 
 ---
 
-## Best Practices
+## ベストプラクティス
 
 ### Do:
 
-✅ Always use If-Match for updates
-✅ Store version in agent state for rollback
-✅ Monitor version drift across agents
-✅ Keep version history (backend permitting)
-✅ Verify checksums on agent
-✅ Use conditional fetch (If-None-Match) to save bandwidth
+✅ 更新には常に If-Match を使う  
+✅ ロールバックのために agent 状態に version を保持する  
+✅ agent 間の version drift を監視する  
+✅（backend が許すなら）履歴を保持する  
+✅ agent 側でチェックサム検証を行う  
+✅ If-None-Match による条件付き取得で帯域を節約する
 
 ### Don't:
 
-❌ Update zones without If-Match (risk of lost updates)
-❌ Manually modify serial numbers (let controller auto-increment)
-❌ Reuse old serial numbers (breaks RFC 1982)
-❌ Skip checksum verification (risk of corruption)
-❌ Delete all version history (keep rollback capability)
+❌ If-Match なしで更新しない（ロストアップデートのリスク）  
+❌ serial を手動でいじらない（controller に任せる）  
+❌ 古い serial を再利用しない（RFC 1982 的に問題）  
+❌ チェックサム検証を省略しない（破損検知できない）  
+❌ 履歴を全削除しない（ロールバック不能）
 
 ---
 
-## Troubleshooting
+## トラブルシューティング
 
-### Symptoms and Solutions
+### 症状と対処
 
-**Problem**: ETag conflicts on every update
-- **Cause**: Multiple clients updating same zone
-- **Solution**: Implement retry with exponential backoff
+**問題**: 更新のたびに ETag 競合が発生する  
+- **原因**: 複数クライアントが同一ゾーンを同時更新  
+- **対処**: 指数バックオフ付きリトライを実装する
 
-**Problem**: Agent stuck on old version
-- **Cause**: Sync failures, controller unreachable
-- **Solution**: Check agent logs, controller connectivity
+**問題**: agent が古い version のまま  
+- **原因**: 同期失敗、controller 到達不能  
+- **対処**: agent ログと controller 到達性を確認する
 
-**Problem**: Version hash changes unexpectedly
-- **Cause**: Record order changed (non-canonical)
-- **Solution**: Ensure canonicalization before hashing
+**問題**: version hash が予期せず変わる  
+- **原因**: レコード順序が変わっている（非 canonical）  
+- **対処**: hash 計算前に正規化を徹底する
 
-**Problem**: Serial number jumps forward unexpectedly
-- **Cause**: Clock skew, date changed
-- **Solution**: Verify system time, check NTP sync
+**問題**: serial が不自然に進む  
+- **原因**: クロックスキュー、日付変更  
+- **対処**: システム時刻、NTP 同期を確認する
 
 ---
 
-## References
+## 参考
 
 - RFC 1982: Serial Number Arithmetic
 - RFC 7719: DNS Terminology
-- HTTP ETag specification: RFC 7232
+- HTTP ETag: RFC 7232
 - SHA-256: FIPS 180-4
+

@@ -1,5 +1,7 @@
 # API Reference (Controller)
 
+English | [日本語](api.ja.md)
+
 The source of truth for the Controller API is `api/openapi.yaml` (OpenAPI 3.0). This document is a practical, human-friendly guide with common workflows and HTTP details.
 
 ## Base URL

@@ -1,5 +1,7 @@
 # arca-dns Contribution Guide
 
+English | [日本語](contributing.ja.md)
+
 This document explains how to contribute to the arca-dns project.
 
 ## Ways to Contribute

@@ -1,0 +1,232 @@
+# API リファレンス（Controller）
+
+[English](api.md) | 日本語
+
+Controller API の source of truth は `api/openapi.yaml`（OpenAPI 3.0）です。本ドキュメントは、一般的なワークフローと HTTP の要点に焦点を当てた、人が読みやすいガイドです。
+
+## Base URL
+
+- API base: `http://<controller-host>:8080/api/v1`
+- Health/metrics base（`/api/v1/*` でも alias あり）: `http://<controller-host>:8080`
+
+## 認証
+
+controller 設定で API 認証を有効にしている場合、*保護された* エンドポイントには API キーのヘッダを付与してください。
+
+```http
+X-API-Key: <api-key>
+```
+
+ヘルスエンドポイント（`/health`, `/ready`, `/status`, `/metrics`）は認証不要です。
+
+## データモデル（Zone）
+
+`Zone` の JSON フィールド（`pkg/model/zone.go` 参照）:
+
+- `name`（string）: ゾーン FQDN（通常は末尾にドットを付ける。例: `example.com.`）
+- `version`（string）: 一意なバージョン識別子（`v{ULID}` 形式）。`ETag` としても使用
+- `soa`（object）: SOA（`mname`, `rname`, `serial`, `refresh`, `retry`, `expire`, `minimum`）
+- `records`（array）: RR。各レコードは `name`, `type`, `ttl`, `value`（backend/type により `id` / `priority` が付くことがあります）
+- `dnssec`（object, optional）: DNSSEC 設定と署名の有効期限（有効時）
+- `created_at`, `updated_at`（RFC3339 timestamps）
+
+対応 RR type: `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `PTR`, `SRV`, `CAA`
+
+## エラー応答形式
+
+多くの API エラーは JSON で返されます。
+
+```json
+{
+  "code": "INVALID_INPUT",
+  "message": "Zone validation failed",
+  "details": { "zone": "example.com." }
+}
+```
+
+`code` は `pkg/model/errors.go` に定義されています（例: `NOT_FOUND`, `ALREADY_EXISTS`, `INVALID_INPUT`, `CONFLICT`, `UNAUTHORIZED`, `RATE_LIMIT_EXCEEDED`）。
+
+## 同時更新制御（ETag / If-Match）
+
+- `POST /zones`, `GET /zones/:name`, `PUT /zones/:name` の成功レスポンスには `ETag` ヘッダ（`ETag: <zone.version>`）が含まれます。
+- `PUT /zones/:name` は `If-Match: <etag>` が必須です。並行更新があると `409 Conflict` を返します。
+- `GET /zones/:name/signed` は `If-None-Match: <etag>` をサポートし、変更が無い場合は `304 Not Modified`（`ETag` + メタデータヘッダ付き）を返します。
+  - Note: `ETag` は引用符付き（例: `ETag: "<zone.version>"`）で返されます。クライアントは `If-Match` / `If-None-Match` に同値を返してください（引用符付き/なしどちらも受理します）。
+
+署名済みアーティファクトについて:
+- `X-Zone-Hash` は返却ボディ（ゾーンファイル）の SHA256（hex）全体
+- `X-Zone-Hash8` は `X-Zone-Hash` の先頭 8 文字（短縮）
+
+## エンドポイント
+
+### Health / Status / Metrics（認証不要）
+
+- `GET /health`（および `GET /api/v1/health`）: liveness（`{"status":"ok"}`）
+- `GET /ready`（および `GET /api/v1/ready`）: readiness（`{"status":"ready"}` または `503 {"status":"not_ready","error":"..."}`）
+- `GET /status`（および `GET /api/v1/status`）: ビルド情報（`status`, `version`, `commit`, `date`）
+- `GET /metrics`（および `GET /api/v1/metrics`）: Prometheus メトリクス（メトリクス無効時は `501` になることがあります）
+
+### Zones（JSON モード）
+
+- `GET /zones?limit=<n>&offset=<n>`: ゾーン一覧（ページング）
+- `POST /zones`: ゾーン作成
+- `GET /zones/:name`: ゾーン取得
+- `PUT /zones/:name`: ゾーン更新（`If-Match` 必須）
+- `DELETE /zones/:name`: ゾーン削除
+
+Notes:
+- `PUT` では JSON ボディ内の `name` がパスパラメータ `:name` と一致している必要があります。
+- 作成/更新後、controller は非同期に DNSSEC 署名を試みます（署名に失敗してもリクエスト自体は成功し、ログに記録されます）。
+
+#### レコード操作（records をどう更新するか）
+
+現状の controller router には、専用の `/records/*` CRUD API はありません。`PUT /zones/:name` に `Zone` 全体を送ってレコードを管理します。
+
+ワークフロー:
+
+1. `GET /zones/:name` で現在のゾーンと `ETag` を取得
+2. `records` 配列を編集（追加/削除/変更）
+3. `PUT /zones/:name` に `If-Match: <etag>` と更新済み JSON を送信
+
+レコードフィールド:
+
+- `name`（string）: ゾーン origin からの相対名（例: `"@"`, `"www"`, `"mail.sub"`）。現在は「非空」のみをチェックしますが、DNS らしい値にしてください。
+- `type`（string）: 対応 type のいずれか（後述）
+- `ttl`（number）: `> 0` かつ `<= 2147483647`
+- `value`（string）: `type` に依存（検証あり。後述）
+- `id`（string, optional）: backend 依存。存在/安定性に依存しないでください。
+
+典型的な削除は、`PUT` する `records` 配列から当該レコードを「除外する」ことで行います。
+
+#### レコード value の形式（検証ルール）
+
+controller は `record.type` に応じて `record.value` を検証します（`pkg/model/validation.go` 参照）。
+
+- `A`: IPv4（例: `"192.0.2.1"`）
+- `AAAA`: IPv6（例: `"2001:db8::1"`）
+- `CNAME`, `NS`, `PTR`: ドメイン名（例: `"target.example.com."`）
+- `MX`: `"priority domain"`（例: `"10 mail.example.com."`）
+- `SRV`: `"priority weight port target"`（例: `"10 5 443 svc.example.com."`）
+- `TXT`: 1〜65535 文字の任意文字列（例: `"v=spf1 -all"`）
+- `CAA`: `"flags tag value"`（例: `"0 issue letsencrypt.org"`）
+
+ドメイン名は末尾ドットあり/なしのどちらも現在は有効として扱います。混乱を避けるため、`value` では末尾ドット付き FQDN を推奨します。
+
+### Zones（Raw BIND モード）
+
+- `POST /zones/raw`: BIND ゾーンファイルをアップロードしてゾーン作成
+
+対応 Content-Type:
+- `text/plain`: リクエストボディがゾーンファイル。ファイルに `$ORIGIN` が無い場合は `origin=<zone>` を query に指定します。
+- `multipart/form-data`: `zonefile` フィールドとしてファイルをアップロード。origin はフォームフィールド `origin` で指定するか、`<filename>.zone` から推定される場合があります。
+
+非対応/拒否される機能（`400`）:
+- `$GENERATE` directive
+- `$INCLUDE` directive（セキュリティ上の理由で既定無効）
+- 未知の RR type（Raw アップロードにおける DNSSEC RR type も含む）
+
+### Zone Artifacts（agent 向け）
+
+- `GET /zones/:name/signed`: 署名済みゾーンファイル（BIND 形式）をダウンロード
+  - レスポンスヘッダに `ETag`, `X-Zone-Serial`, `X-Zone-Hash`, `Content-Disposition` を含みます。
+  - 署名サービスが利用できない場合、controller は未署名の生成ゾーンへフォールバックします。
+
+### DNSSEC
+
+- `GET /zones/:name/ds`（alias: `GET /zones/:name/dnssec/ds`）: DS レコード（plain text; 1 行 1 レコード）
+  - 署名サービスが利用できない場合は `503`
+  - レスポンスヘッダに `X-Zone-Name`, `X-Zone-Version` を含みます。
+
+## 例（curl）
+
+共通変数:
+
+```bash
+BASE="http://localhost:8080/api/v1"
+API_KEY="your-api-key" # 認証を有効にしている場合のみ
+AUTH=(-H "X-API-Key: ${API_KEY}")
+```
+
+ゾーン作成（JSON）:
+
+```bash
+curl -i -X POST "${BASE}/zones" \
+  "${AUTH[@]}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name":"example.com.",
+    "soa":{"mname":"ns1.example.com.","rname":"admin.example.com.","refresh":3600,"retry":1800,"expire":604800,"minimum":86400},
+    "records":[
+      {"name":"@","type":"NS","ttl":3600,"value":"ns1.example.com."},
+      {"name":"@","type":"A","ttl":300,"value":"192.0.2.1"}
+    ]
+  }'
+```
+
+ゾーン一覧:
+
+```bash
+curl -s "${BASE}/zones?limit=100&offset=0" "${AUTH[@]}"
+```
+
+楽観ロック付きの更新:
+
+```bash
+etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+curl -i -X PUT "${BASE}/zones/example.com." \
+  "${AUTH[@]}" \
+  -H 'Content-Type: application/json' \
+  -H "If-Match: ${etag}" \
+  -d '{
+    "name":"example.com.",
+    "soa":{"mname":"ns1.example.com.","rname":"admin.example.com.","serial":0,"refresh":3600,"retry":1800,"expire":604800,"minimum":86400},
+    "records":[
+      {"name":"@","type":"NS","ttl":3600,"value":"ns1.example.com."},
+      {"name":"@","type":"A","ttl":300,"value":"192.0.2.1"},
+      {"name":"www","type":"A","ttl":300,"value":"192.0.2.2"}
+    ]
+  }'
+```
+
+`jq` を使ってレコード 1 件追加（例: `www A`）:
+
+```bash
+zone_json="$(curl -s "${BASE}/zones/example.com." "${AUTH[@]}")"
+etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+updated="$(printf '%s' "${zone_json}" | jq '.records += [{"name":"www","type":"A","ttl":300,"value":"192.0.2.2"}]')"
+
+curl -i -X PUT "${BASE}/zones/example.com." \
+  "${AUTH[@]}" \
+  -H 'Content-Type: application/json' \
+  -H "If-Match: ${etag}" \
+  --data-binary "${updated}"
+```
+
+複数レコードをまとめて追加:
+
+```bash
+zone_json="$(curl -s "${BASE}/zones/example.com." "${AUTH[@]}")"
+etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+updated="$(printf '%s' "${zone_json}" | jq '.records += [
+  {"name":"www","type":"A","ttl":300,"value":"192.0.2.2"},
+  {"name":"api","type":"AAAA","ttl":300,"value":"2001:db8::1"},
+  {"name":"@","type":"MX","ttl":3600,"value":"10 mail.example.com."}
+]')"
+
+curl -i -X PUT "${BASE}/zones/example.com." \
+  "${AUTH[@]}" \
+  -H 'Content-Type: application/json' \
+  -H "If-Match: ${etag}" \
+  --data-binary "${updated}"
+```
+
+条件付きリクエストで署名済みゾーンを取得:
+
+```bash
+etag="$(curl -sI "${BASE}/zones/example.com./signed" "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+curl -i "${BASE}/zones/example.com./signed" "${AUTH[@]}" -H "If-None-Match: ${etag}"
+```
+
