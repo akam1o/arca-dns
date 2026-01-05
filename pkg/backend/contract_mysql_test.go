@@ -51,6 +51,11 @@ func TestMySQLBackend_Contract(t *testing.T) {
 	t.Run("ZoneStoreCRUD", func(t *testing.T) {
 		RunZoneStoreCRUDSuite(t, backend)
 	})
+
+	// Run TransactionalStore contract tests
+	t.Run("TransactionalStore", func(t *testing.T) {
+		RunTransactionalStoreSuite(t, backend)
+	})
 }
 
 // TestMySQLBackend_Setup verifies the setup helper works correctly

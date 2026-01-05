@@ -7,9 +7,9 @@ This directory contains contract tests that verify all backend implementations c
 Contract tests are organized into reusable test suites that validate specific interface behaviors:
 
 1. **RunZoneStoreCRUDSuite** - Core CRUD operations, pagination, case-insensitivity, version changes
-2. **RunTransactionalStoreSuite** (TODO) - Commit/rollback, isolation
-3. **RunRevisionStoreSuite** (TODO) - History retrieval, version ordering
-4. **RunWatchableStoreSuite** (TODO) - Watch events, cancellation, resync
+2. **RunTransactionalStoreSuite** - Commit/rollback, read-your-writes, dirty read prevention
+3. **RunRevisionStoreSuite** - History retrieval, newest-first ordering, immutability, pagination
+4. **RunWatchableStoreSuite** - Watch events (create/update/delete), zone filtering, cancellation, no history
 
 ## Running Contract Tests
 
@@ -101,9 +101,9 @@ go test -v -tags=integration -run Contract ./pkg/backend/
 | Backend | Status | Pass Rate | Notes |
 |---------|--------|-----------|-------|
 | Memory  | ✅ PASS | 13/13 (100%) | Pure Go, no external deps |
-| Git     | ✅ PASS | 13/13 (100%) | Uses temp directory |
-| MySQL   | ⚠️ INTEGRATION | - | Requires MySQL running |
-| etcd    | ⚠️ INTEGRATION | - | Requires etcd running |
+| Git     | ✅ PASS | - | Uses temp directory (ZoneStoreCRUD + RevisionStore) |
+| MySQL   | ⚠️ INTEGRATION | - | Requires MySQL running (ZoneStoreCRUD + TransactionalStore) |
+| etcd    | ⚠️ INTEGRATION | - | Requires etcd running (ZoneStoreCRUD + RevisionStore + WatchableStore) |
 
 ## Adding New Contract Tests
 
@@ -140,7 +140,5 @@ func TestNewBackend_Contract(t *testing.T) {
 
 ## Future Work
 
-- Implement `RunRevisionStoreSuite` for Git/etcd backends
-- Implement `RunWatchableStoreSuite` for etcd backend
 - Add performance benchmarks for each backend
 - Add concurrent access stress tests

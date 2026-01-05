@@ -14,4 +14,9 @@ func TestGitBackend_Contract(t *testing.T) {
 	t.Run("ZoneStoreCRUD", func(t *testing.T) {
 		RunZoneStoreCRUDSuite(t, backend)
 	})
+
+	// Run RevisionStore contract tests
+	t.Run("RevisionStore", func(t *testing.T) {
+		RunRevisionStoreSuite(t, backend)
+	})
 }
