@@ -72,7 +72,7 @@ func RunTransactionalStoreSuite(t *testing.T, store ZoneStore) {
 	t.Run("CreateAndCommitPersists", func(t *testing.T) {
 		tx, err := txStore.BeginTx(ctx)
 		require.NoError(t, err)
-		defer tx.Rollback(ctx) // best-effort cleanup if commit fails
+		defer func() { _ = tx.Rollback(ctx) }() // best-effort cleanup if commit fails
 
 		zone := newTestZone("tx-commit.example.com.")
 		require.NoError(t, tx.CreateZone(ctx, zone))
@@ -316,4 +316,3 @@ func RunWatchableStoreSuite(t *testing.T, store ZoneStore) {
 		}
 	})
 }
-
