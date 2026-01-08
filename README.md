@@ -309,7 +309,11 @@ arca-dns/
 
 ## Contributing
 
-Contributions are welcome — please open an issue/PR and include a clear description and reproduction steps (if applicable).
+Contributions are welcome! See [docs/contributing.md](docs/contributing.md).
+
+## Contact
+
+For inquiries, open an issue on [GitHub Issues](https://github.com/akam1o/arca-dns/issues). For security reports, use [GitHub Security Advisories](https://github.com/akam1o/arca-dns/security/advisories).
 
 ## License
 

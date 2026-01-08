@@ -309,7 +309,11 @@ arca-dns/
 
 ## コントリビュート
 
-コントリビューション歓迎です。Issue/PR を作成し、（必要に応じて）再現手順を含めた明確な説明を添えてください。
+コントリビューション歓迎です！詳細は [docs/contributing.md](docs/contributing.md) を参照してください。
+
+## 連絡先
+
+問い合わせは [GitHub Issues](https://github.com/akam1o/arca-dns/issues) にて受け付けています。セキュリティ報告は [GitHub Security Advisories](https://github.com/akam1o/arca-dns/security/advisories) を利用してください。
 
 ## ライセンス
 
