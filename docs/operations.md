@@ -213,6 +213,28 @@ unbound-host -C /etc/unbound/unbound.conf -v example.com
 
 ### Controller Backup
 
+**SQLite Backend** (default):
+```bash
+# Backup database file
+cp /var/lib/arca-dns/arca-dns.db arca_dns_backup_$(date +%Y%m%d).db
+
+# Backup DNSSEC keys (encrypted)
+tar -czf keys_backup_$(date +%Y%m%d).tar.gz \
+  /var/lib/arca-dns/keys/ \
+  /etc/arca-dns/master.key
+```
+
+**PostgreSQL Backend**:
+```bash
+# Backup database
+pg_dump -U dns_user arca_dns > arca_dns_backup_$(date +%Y%m%d).sql
+
+# Backup DNSSEC keys (encrypted)
+tar -czf keys_backup_$(date +%Y%m%d).tar.gz \
+  /var/lib/arca-dns/keys/ \
+  /etc/arca-dns/master.key
+```
+
 **MySQL Backend**:
 ```bash
 # Backup database
@@ -247,6 +269,34 @@ tar -czf keys_backup_$(date +%Y%m%d).tar.gz \
 ```
 
 ### Controller Recovery
+
+**SQLite Backend** (default):
+```bash
+# Restore database file
+cp arca_dns_backup_20241228.db /var/lib/arca-dns/arca-dns.db
+
+# Restore keys
+tar -xzf keys_backup_20241228.tar.gz -C /
+sudo chown -R arca-dns:arca-dns /var/lib/arca-dns/keys
+sudo chmod 700 /var/lib/arca-dns/keys
+
+# Restart controller
+sudo systemctl restart arca-dns-controller
+```
+
+**PostgreSQL Backend**:
+```bash
+# Restore database
+psql -U dns_user arca_dns < arca_dns_backup_20241228.sql
+
+# Restore keys
+tar -xzf keys_backup_20241228.tar.gz -C /
+sudo chown -R arca-dns:arca-dns /var/lib/arca-dns/keys
+sudo chmod 700 /var/lib/arca-dns/keys
+
+# Restart controller
+sudo systemctl restart arca-dns-controller
+```
 
 **MySQL Backend**:
 ```bash
@@ -289,6 +339,12 @@ journalctl -u arca-dns-controller -n 100
 netstat -tlnp | grep 8080
 
 # Test backend connectivity
+# SQLite:
+ls -la /var/lib/arca-dns/arca-dns.db
+
+# PostgreSQL:
+psql -U dns_user -h localhost -c "SELECT 1"
+
 # MySQL:
 mysql -u dns_user -p -h localhost -e "SELECT 1"
 

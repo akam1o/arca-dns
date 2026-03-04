@@ -17,7 +17,7 @@ arca-dns is a BGP Anycast DNS system with split control/data plane architecture 
 │  │                                                        │   │
 │  │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │   │
 │  │  │ REST API │  │  DNSSEC   │  │ Backend Storage   │  │   │
-│  │  │          │  │  Signing  │  │ (Git/MySQL/etcd)  │  │   │
+│  │  │          │  │  Signing  │  │(SQLite/PG/MySQL/..)│  │   │
 │  │  └────┬─────┘  └─────┬────┘  └─────────┬─────────┘  │   │
 │  │       │              │                  │             │   │
 │  │       └──────────────┴──────────────────┘             │   │
@@ -64,9 +64,10 @@ arca-dns is a BGP Anycast DNS system with split control/data plane architecture 
    - DS record export for parent zones
 
 3. **Backend Storage** (`pkg/backend/`)
-   - Pluggable storage: Memory, MySQL, Git, etcd
-   - Capability-based interfaces
-   - Transaction support (MySQL), versioning (Git), watch (etcd)
+   - Pluggable storage: SQLite (default), PostgreSQL, MySQL, Git, etcd
+   - Capability-based interfaces (ZoneStore, TransactionalStore, RevisionStore, WatchableStore)
+   - Transaction support (SQLite, PostgreSQL, MySQL), versioning (Git), watch (etcd)
+   - Memory backend available for testing (deprecated for production)
 
 **Data Flow**:
 ```
@@ -90,25 +91,32 @@ User → REST API → Validation → Backend Storage
    - Checksum verification
    - Graceful degradation (serves stale zones if controller unreachable)
 
-2. **NSD Controller** (`internal/agent/nsd/`)
+2. **Plugin Interfaces** (`internal/agent/plugin/`)
+   - `AuthoritativeServer`: Interface for authoritative DNS (NSD, Knot DNS)
+   - `Resolver`: Interface for recursive DNS (Unbound)
+   - `RouteController`: Interface for BGP route control (BIRD, FRRouting)
+   - Noop implementations for disabled components
+   - Enables swapping DNS server implementations without changing agent core
+
+3. **NSD Controller** (`internal/agent/nsd/`)
    - Authoritative DNS server orchestration
    - Zone file generation and validation
    - Atomic reload (checkzone before reload)
-   - Health checking via control socket
+   - Implements `AuthoritativeServer` plugin interface via adapter
 
-3. **Unbound Controller** (`internal/agent/unbound/`)
+4. **Unbound Controller** (`internal/agent/unbound/`)
    - Recursive DNS resolver orchestration
    - Stub-zone configuration for local NSD
    - EDNS buffer size enforcement (1232 for ECMP safety)
-   - Health checking and reload management
+   - Implements `Resolver` plugin interface via adapter
 
-4. **BIRD BGP Control** (`internal/agent/bird/`)
+5. **BIRD BGP Control** (`internal/agent/bird/`)
    - Health-driven route announcement/withdrawal
    - State machine with debounce (prevents flapping)
    - Graceful degradation (latency vs hard failure)
-   - Protocol-based route management
+   - Implements `RouteController` plugin interface via adapter
 
-5. **DNSTap Observability** (`internal/agent/dnstap/`)
+6. **DNSTap Observability** (`internal/agent/dnstap/`)
    - Binary query logging via Unix socket
    - Prometheus metrics export
    - Sampled logging (configurable rate)
@@ -317,7 +325,7 @@ type Zone struct {
 - **API Latency**: <50ms (p95) for zone CRUD
 - **Signing Latency**: ~100ms per zone (ECDSA P-256)
 - **Throughput**: 1000+ zones (limited by backend)
-- **Backend**: Git (100s zones), MySQL (10k+ zones), etcd (1k+ zones)
+- **Backend**: SQLite (1k+ zones), PostgreSQL (10k+ zones), MySQL (10k+ zones), Git (100s zones), etcd (1k+ zones)
 
 ### Agent
 - **Sync Latency**: 30s default (configurable)
@@ -328,7 +336,7 @@ type Zone struct {
 ### Scaling
 - **Horizontal**: Add agents (no controller changes)
 - **Geographic**: Deploy agents globally (anycast)
-- **Backend**: MySQL for 10k+ zones, Git for <100 zones
+- **Backend**: SQLite by default; PostgreSQL/MySQL for 10k+ zones; Git for <100 zones
 
 ## Technology Stack
 
@@ -337,6 +345,8 @@ type Zone struct {
 **Dependencies**:
 - `miekg/dns`: DNS protocol library
 - `gin-gonic/gin`: HTTP framework
+- `modernc.org/sqlite`: SQLite backend (pure Go, no CGO)
+- `github.com/lib/pq`: PostgreSQL backend
 - `go-git/go-git`: Git backend
 - `go.etcd.io/etcd/client/v3`: etcd backend
 - `go.uber.org/zap`: Structured logging
@@ -347,7 +357,7 @@ type Zone struct {
 - Unbound (recursive DNS)
 - BIRD (BGP daemon)
 - Prometheus (metrics)
-- MySQL/etcd/Git (storage)
+- SQLite/PostgreSQL/MySQL/etcd/Git (storage)
 
 ## Future Enhancements
 

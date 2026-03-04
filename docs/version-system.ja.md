@@ -355,12 +355,14 @@ T4                                                    -> 409 Conflict!
 
 ### backend の対応状況
 
-| Backend | Versioning | Mechanism |
-|---------|-----------|-----------|
-| Memory  | ❌ No     | 現在の 1 バージョンのみ |
-| MySQL   | ⚠️ Optional | `zone_versions` テーブル |
-| Git     | ✅ Yes    | Git commit（ネイティブ） |
-| etcd    | ✅ Yes    | revision ベース履歴 |
+| Backend    | Versioning | Mechanism |
+|------------|-----------|----------|
+| SQLite     | ⚠️ Optional | `zone_versions` テーブル |
+| PostgreSQL | ⚠️ Optional | `zone_versions` テーブル |
+| MySQL      | ⚠️ Optional | `zone_versions` テーブル |
+| Git        | ✅ Yes    | Git commit（ネイティブ） |
+| etcd       | ✅ Yes    | revision ベース履歴 |
+| Memory     | ❌ No     | 現在の 1 バージョンのみ（非推奨） |
 
 ### ロールバック手順
 

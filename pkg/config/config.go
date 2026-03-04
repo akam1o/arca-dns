@@ -25,6 +25,10 @@ type AgentConfig struct {
 	// Controller configuration
 	Controller ControllerClientConfig `mapstructure:"controller"`
 
+	// Authoritative is the authoritative DNS server type ("nsd" or "knot").
+	// Default: "nsd"
+	Authoritative string `mapstructure:"authoritative"`
+
 	// NSD configuration
 	NSD NSDConfig `mapstructure:"nsd"`
 
@@ -107,10 +111,16 @@ type RateLimitConfig struct {
 
 // BackendConfig configures the zone storage backend.
 type BackendConfig struct {
-	// Type is the backend type (memory, mysql, git, etcd)
+	// Type is the backend type (sqlite, postgres, mysql, git, etcd, memory)
 	Type string `mapstructure:"type"`
 
-	// Memory backend config
+	// SQLite backend config (default)
+	SQLite SQLiteBackendConfig `mapstructure:"sqlite"`
+
+	// PostgreSQL backend config
+	Postgres PostgresBackendConfig `mapstructure:"postgres"`
+
+	// Memory backend config (deprecated: use sqlite with :memory: DSN)
 	Memory MemoryBackendConfig `mapstructure:"memory"`
 
 	// MySQL backend config
@@ -123,7 +133,31 @@ type BackendConfig struct {
 	Etcd EtcdBackendConfig `mapstructure:"etcd"`
 }
 
+// SQLiteBackendConfig configures the SQLite backend.
+type SQLiteBackendConfig struct {
+	// DSN is the SQLite data source name.
+	// Examples: "file:arca-dns.db", "file::memory:?cache=shared", ":memory:"
+	DSN string `mapstructure:"dsn"`
+}
+
+// PostgresBackendConfig configures the PostgreSQL backend.
+type PostgresBackendConfig struct {
+	// DSN is the PostgreSQL connection string.
+	// Example: "postgres://user:password@host:5432/arca_dns?sslmode=disable"
+	DSN string `mapstructure:"dsn"`
+
+	// MaxOpenConns is the maximum number of open connections
+	MaxOpenConns int `mapstructure:"max_open_conns"`
+
+	// MaxIdleConns is the maximum number of idle connections
+	MaxIdleConns int `mapstructure:"max_idle_conns"`
+
+	// ConnMaxLifetime is the maximum connection lifetime
+	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
+}
+
 // MemoryBackendConfig configures the in-memory backend.
+// Deprecated: Use SQLite with DSN ":memory:" instead.
 type MemoryBackendConfig struct {
 	// InitialCapacity is the initial capacity for the zone map
 	InitialCapacity int `mapstructure:"initial_capacity"`
@@ -575,7 +609,10 @@ func DefaultControllerConfig() *ControllerConfig {
 			},
 		},
 		Backend: BackendConfig{
-			Type: "memory",
+			Type: "sqlite",
+			SQLite: SQLiteBackendConfig{
+				DSN: "file:arca-dns.db",
+			},
 		},
 		DNSSEC: DNSSECConfig{
 			Enabled:                true,
@@ -615,6 +652,7 @@ func DefaultAgentConfig() *AgentConfig {
 			RetryAttempts: 3,
 			RetryDelay:    5 * time.Second,
 		},
+		Authoritative: "nsd",
 		NSD: NSDConfig{
 			Enabled:       true,
 			ConfigPath:    "/etc/nsd/nsd.conf",

@@ -15,7 +15,14 @@ api:
     burst: 200
 
 backend:
-  type: "memory" # memory|mysql|git|etcd
+  type: "sqlite" # sqlite|postgres|mysql|git|etcd|memory
+  sqlite:
+    dsn: "file:arca-dns.db" # file path or ":memory:" for testing
+  postgres:
+    dsn: "postgres://user:pass@localhost:5432/arca_dns?sslmode=disable"
+    max_open_conns: 25
+    max_idle_conns: 5
+    conn_max_lifetime: "5m"
   mysql:
     dsn: "root:pass@tcp(mysql:3306)/arca_dns?parseTime=true"
   git:

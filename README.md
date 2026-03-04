@@ -15,7 +15,7 @@ arca-dns is designed for large-scale DNS deployments with the following features
 - **Split Architecture**: Separate control plane (management/signing) and data plane (distribution/routing)
 - **BGP Anycast + ECMP**: Horizontal scaling with equal-cost multi-path routing
 - **DNSSEC**: Central signing with automated key management
-- **Pluggable Backends**: MySQL, Git, or etcd for zone storage
+- **Pluggable Backends**: SQLite (default), PostgreSQL, MySQL, Git, or etcd for zone storage
 - **High Performance**: Designed for high-throughput deployments
 - **Observability**: DNSTap binary logging and Prometheus metrics
 
@@ -24,12 +24,12 @@ arca-dns is designed for large-scale DNS deployments with the following features
 ### Control Plane: `arca-dns-controller`
 - REST API for zone management (JSON and raw BIND formats)
 - Central DNSSEC signing (KSK/ZSK management)
-- Pluggable storage backends (MySQL, Git, etcd, in-memory)
+- Pluggable storage backends (SQLite, PostgreSQL, MySQL, Git, etcd)
 - Zone versioning and artifact distribution
 
 ### Data Plane: `arca-dns-agent`
 - Zone synchronization from controller
-- NSD and Unbound orchestration
+- DNS server orchestration via plugin interfaces (NSD, Unbound, BIRD)
 - BIRD BGP route control with health checking
 - DNSTap logging and Prometheus metrics
 - Automatic failover and recovery
@@ -137,7 +137,7 @@ api:
   # TLS is typically terminated by a reverse proxy / ingress.
 
 backend:
-  type: "memory"  # Options: memory, mysql, git, etcd
+  type: "sqlite"  # Options: sqlite, postgres, mysql, git, etcd, memory
 
 dnssec:
   enabled: true

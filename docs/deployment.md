@@ -15,7 +15,7 @@ Recommended production topology:
 ## Prerequisites
 
 ### Controller
-- One backend: `memory` (dev), `mysql`, `git`, or `etcd`
+- One backend: `sqlite` (default, zero-config), `postgres`, `mysql`, `git`, or `etcd` (`memory` is available for testing but deprecated)
 - Storage: writable `storage.artifact_directory` and `storage.key_directory` (also set `dnssec.key_directory` when DNSSEC is enabled)
 - (If `dnssec.enabled: true`) DNSSEC master key configured (see below)
 

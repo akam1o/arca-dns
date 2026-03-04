@@ -11,7 +11,7 @@ info:
     Key features:
     - DNSSEC signing with central key management
     - Zone versioning with ETag support for optimistic concurrency control
-    - Pluggable storage backends (Memory, MySQL, Git, etcd)
+    - Pluggable storage backends (SQLite, PostgreSQL, MySQL, Git, etcd)
     - Artifact distribution for agents with integrity verification
   version: 1.0.0
   contact:

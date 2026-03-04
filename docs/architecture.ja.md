@@ -17,7 +17,7 @@ arca-dns は、BGP Anycast とコントロール/データプレーン分離ア�
 │  │                                                        │   │
 │  │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │   │
 │  │  │ REST API │  │  DNSSEC   │  │ Backend Storage   │  │   │
-│  │  │          │  │  Signing  │  │ (Git/MySQL/etcd)  │  │   │
+│  │  │          │  │  Signing  │  │(SQLite/PG/MySQL/..)│  │   │
 │  │  └────┬─────┘  └─────┬────┘  └─────────┬─────────┘  │   │
 │  │       │              │                  │             │   │
 │  │       └──────────────┴──────────────────┘             │   │
@@ -64,9 +64,10 @@ arca-dns は、BGP Anycast とコントロール/データプレーン分離ア�
    - 親ゾーン向け DS レコードのエクスポート
 
 3. **Backend Storage**（`pkg/backend/`）
-   - 差し替え可能なストレージ: Memory / MySQL / Git / etcd
-   - capability ベースのインターフェイス
-   - トランザクション（MySQL）、バージョニング（Git）、watch（etcd）
+   - 差し替え可能なストレージ: SQLite（既定）/ PostgreSQL / MySQL / Git / etcd
+   - capability ベースのインターフェイス（ZoneStore, TransactionalStore, RevisionStore, WatchableStore）
+   - トランザクション（SQLite, PostgreSQL, MySQL）、バージョニング（Git）、watch（etcd）
+   - Memory バックエンドはテスト用に利用可能（本番は非推奨）
 
 **データフロー**:
 ```
@@ -90,25 +91,32 @@ User → REST API → Validation → Backend Storage
    - 原子的なファイル更新（tmp + rename）
    - バージョン履歴とロールバック支援
 
-2. **NSD オーケストレーション**（`internal/agent/nsd/`）
+2. **プラグインインターフェイス**（`internal/agent/plugin/`）
+   - `AuthoritativeServer`: 権威 DNS インターフェイス（NSD, Knot DNS）
+   - `Resolver`: リカーシブ DNS インターフェイス（Unbound）
+   - `RouteController`: BGP ルート制御インターフェイス（BIRD, FRRouting）
+   - 無効時用の Noop 実装あり
+   - DNS サーバー実装を agent コアを変更せずに差し替え可能
+
+3. **NSD オーケストレーション**（`internal/agent/nsd/`）
    - 権威 DNS（NSD）の制御
    - ゾーンファイル配置と `nsd-control` による reload
    - `nsd-checkzone` を用いた事前検証
-   - ヘルスチェックとプロセス監視
+   - アダプタ経由で `AuthoritativeServer` プラグインインターフェイスを実装
 
-3. **Unbound オーケストレーション**（`internal/agent/unbound/`）
+4. **Unbound オーケストレーション**（`internal/agent/unbound/`）
    - recursive resolver（Unbound）の制御
    - ローカル NSD 向け stub-zone 設定
    - EDNS バッファサイズの強制（ECMP 安全のため 1232）
-   - ヘルスチェックと reload 管理
+   - アダプタ経由で `Resolver` プラグインインターフェイスを実装
 
-4. **BIRD BGP 制御**（`internal/agent/bird/`）
+5. **BIRD BGP 制御**（`internal/agent/bird/`）
    - ヘルスに応じた経路 announce/withdraw
    - debounce を備えた状態機械（フラップ抑止）
    - 段階的劣化（レイテンシ悪化 vs ハード障害）
-   - プロトコル単位の経路管理
+   - アダプタ経由で `RouteController` プラグインインターフェイスを実装
 
-5. **DNSTap 可観測性**（`internal/agent/dnstap/`）
+6. **DNSTap 可観測性**（`internal/agent/dnstap/`）
    - Unix socket 経由のバイナリクエリログ
    - Prometheus メトリクスの export
    - サンプリングログ（レート設定可能）
@@ -317,7 +325,7 @@ type Zone struct {
 - **API レイテンシ**: ゾーン CRUD で p95 < 50ms
 - **署名レイテンシ**: ゾーンあたり ~100ms（ECDSA P-256）
 - **スループット**: 1000+ ゾーン（backend 依存）
-- **backend**: Git（100s）、MySQL（10k+）、etcd（1k+）
+- **backend**: SQLite（1k+ ゾーン）、PostgreSQL（10k+）、MySQL（10k+）、Git（100s）、etcd（1k+）
 
 ### Agent
 - **同期レイテンシ**: 既定 30s（設定可能）
@@ -328,7 +336,7 @@ type Zone struct {
 ### スケーリング
 - **水平**: agent を追加（controller 変更不要）
 - **地理分散**: agent をグローバルに配置（anycast）
-- **backend**: MySQL は 10k+、Git は <100 目安
+- **backend**: SQLite が既定。PostgreSQL/MySQL は 10k+、Git は <100 目安
 
 ## 技術スタック
 
@@ -337,6 +345,8 @@ type Zone struct {
 **Dependencies**:
 - `miekg/dns`: DNS プロトコルライブラリ
 - `gin-gonic/gin`: HTTP framework
+- `modernc.org/sqlite`: SQLite backend（pure Go、CGO 不要）
+- `github.com/lib/pq`: PostgreSQL backend
 - `go-git/go-git`: Git backend
 - `go.etcd.io/etcd/client/v3`: etcd backend
 - `go.uber.org/zap`: 構造化ロギング
@@ -347,7 +357,7 @@ type Zone struct {
 - Unbound（recursive DNS）
 - BIRD（BGP daemon）
 - Prometheus（metrics）
-- MySQL / etcd / Git（storage）
+- SQLite / PostgreSQL / MySQL / etcd / Git（storage）
 
 ## 今後の拡張
 

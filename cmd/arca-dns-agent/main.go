@@ -18,6 +18,7 @@ import (
 	"github.com/akam1o/arca-dns/internal/agent/dnstap"
 	"github.com/akam1o/arca-dns/internal/agent/health"
 	"github.com/akam1o/arca-dns/internal/agent/nsd"
+	"github.com/akam1o/arca-dns/internal/agent/plugin"
 	zonesync "github.com/akam1o/arca-dns/internal/agent/sync"
 	"github.com/akam1o/arca-dns/internal/agent/unbound"
 	"github.com/akam1o/arca-dns/pkg/config"
@@ -107,34 +108,35 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Create syncer
 	syncer := zonesync.NewSyncer(client, fileMgr, cfg.Sync, logger)
 
-	// Create NSD controller
-	var nsdCtrl *nsd.Controller
+	// Create authoritative DNS server plugin
+	var authServer plugin.AuthoritativeServer
 	if cfg.NSD.Enabled {
-		nsdCtrl = nsd.NewController(cfg.NSD, logger)
-		logger.Info("NSD controller initialized")
+		nsdCtrl := nsd.NewController(cfg.NSD, logger)
+		authServer = nsd.NewAdapter(nsdCtrl)
+		logger.Info("Authoritative server initialized", zap.String("type", authServer.Type()))
+	} else {
+		authServer = &plugin.NoopAuthoritativeServer{}
 	}
 
-	// Create Unbound controller
-	var unboundCtrl *unbound.Controller
+	// Create resolver plugin
+	var resolver plugin.Resolver
 	if cfg.Unbound.Enabled {
-		unboundCtrl = unbound.NewController(cfg.Unbound, logger)
-		logger.Info("Unbound controller initialized")
+		unboundCtrl := unbound.NewController(cfg.Unbound, logger)
+		resolver = unbound.NewAdapter(unboundCtrl)
+		logger.Info("Resolver initialized", zap.String("type", resolver.Type()))
+	} else {
+		resolver = &plugin.NoopResolver{}
 	}
 
 	// Wire zone-apply hook: reload services after zone file write.
 	syncer.SetOnZoneApplied(func(ctx context.Context, zoneName string) error {
-		// Reload NSD zone immediately so updates become visible to DNS.
-		if nsdCtrl != nil {
-			if err := nsdCtrl.ReloadZone(zoneName); err != nil {
-				return err
-			}
+		// Reload authoritative server zone immediately so updates become visible to DNS.
+		if err := authServer.ReloadZone(ctx, zoneName); err != nil {
+			return err
 		}
-		// Unbound typically doesn't need a reload for zone changes (stub-zone points to NSD),
-		// but keep parity with "enabled" behavior by reloading when configured.
-		if unboundCtrl != nil {
-			if err := unboundCtrl.Reload(); err != nil {
-				return err
-			}
+		// Reload resolver to pick up any configuration changes.
+		if err := resolver.Reload(ctx); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -390,7 +392,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Start HTTP status server
 	wg.Add(1)
-	statusServer := startStatusServer(cfg, syncer, checker, routeManager, dnstapProcessor, logger)
+	var routeCtrl plugin.RouteController
+	if routeManager != nil {
+		routeCtrl = bird.NewAdapter(routeManager)
+	}
+	statusServer := startStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
 	go func() {
 		defer wg.Done()
 		<-ctx.Done()
@@ -452,7 +458,7 @@ func reexecSelf() error {
 }
 
 // startStatusServer starts an HTTP server for status and metrics.
-func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeManager *bird.RouteManager, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
+func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -473,10 +479,10 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 			"health_checks":     len(healthStatus.Checks),
 			"last_health_check": healthStatus.LastCheck,
 			"bgp_announced": func() bool {
-				if routeManager == nil {
+				if routeCtrl == nil {
 					return false
 				}
-				return routeManager.IsAnnounced()
+				return routeCtrl.IsAnnounced()
 			}(),
 		})
 	})
@@ -552,16 +558,16 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 			sb.WriteString(fmt.Sprintf("arca_dns_agent_health_check_status{type=%q} %d\n", checkType, boolToInt(result.Success)))
 		}
 
-		if routeManager != nil {
+		if routeCtrl != nil {
 			sb.WriteString("\n# HELP arca_dns_agent_bgp_enabled Whether BGP control is enabled (1/0).\n")
 			sb.WriteString("# TYPE arca_dns_agent_bgp_enabled gauge\n")
 			sb.WriteString("arca_dns_agent_bgp_enabled 1\n")
 
 			sb.WriteString("\n# HELP arca_dns_agent_bgp_routes_announced Whether routes are currently announced (1/0).\n")
 			sb.WriteString("# TYPE arca_dns_agent_bgp_routes_announced gauge\n")
-			sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_routes_announced %d\n", boolToInt(routeManager.IsAnnounced())))
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_routes_announced %d\n", boolToInt(routeCtrl.IsAnnounced())))
 
-			if ts := routeManager.LastChangeTime(); !ts.IsZero() {
+			if ts := routeCtrl.LastChangeTime(); !ts.IsZero() {
 				sb.WriteString("\n# HELP arca_dns_agent_bgp_last_change_timestamp_seconds Unix timestamp of the last successful route state change.\n")
 				sb.WriteString("# TYPE arca_dns_agent_bgp_last_change_timestamp_seconds gauge\n")
 				sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_last_change_timestamp_seconds %d\n", ts.Unix()))

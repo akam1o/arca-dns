@@ -13,11 +13,11 @@ import (
 func TestGetRegisteredBackends(t *testing.T) {
 	backends := GetRegisteredBackends()
 
-	// Should have all 4 backends
-	assert.Len(t, backends, 4, "Should have exactly 4 registered backends")
+	// Should have all 6 backends
+	assert.Len(t, backends, 6, "Should have exactly 6 registered backends")
 
 	// Should be sorted
-	assert.Equal(t, []string{"etcd", "git", "memory", "mysql"}, backends,
+	assert.Equal(t, []string{"etcd", "git", "memory", "mysql", "postgres", "sqlite"}, backends,
 		"Backends should be sorted alphabetically")
 }
 

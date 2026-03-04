@@ -15,7 +15,7 @@ func TestLoadControllerConfig_Defaults(t *testing.T) {
 	require.NoError(t, err)
 	
 	assert.Equal(t, "0.0.0.0:8080", cfg.API.Listen)
-	assert.Equal(t, "memory", cfg.Backend.Type)
+	assert.Equal(t, "sqlite", cfg.Backend.Type)
 	assert.True(t, cfg.DNSSEC.Enabled)
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
 	assert.Equal(t, "info", cfg.Logging.Level)

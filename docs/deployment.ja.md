@@ -15,7 +15,7 @@ arca-dns は以下で構成されます。
 ## 前提条件
 
 ### Controller
-- いずれかの backend: `memory`（dev）, `mysql`, `git`, `etcd`
+- いずれかの backend: `sqlite`（既定、ゼロコンフィグ）, `postgres`, `mysql`, `git`, `etcd`（`memory` はテスト用に利用可能だが非推奨）
 - ストレージ: 書き込み可能な `storage.artifact_directory` と `storage.key_directory`（DNSSEC 有効時は `dnssec.key_directory` も設定）
 - （`dnssec.enabled: true` の場合）DNSSEC マスターキー設定（後述）
 

@@ -15,7 +15,7 @@ arca-dns は、大規模な DNS デプロイメント向けに以下の機能を
 - **分割アーキテクチャ**: コントロールプレーン（管理/署名）とデータプレーン（配布/ルーティング）を分離
 - **BGP Anycast + ECMP**: 等コストマルチパス（ECMP）による水平スケーリング
 - **DNSSEC**: 中央署名と自動鍵管理
-- **差し替え可能なバックエンド**: ゾーン格納に MySQL / Git / etcd を利用可能
+- **差し替え可能なバックエンド**: ゾーン格納に SQLite（既定）/ PostgreSQL / MySQL / Git / etcd を利用可能
 - **高性能**: 高スループットな運用を想定
 - **可観測性**: DNSTap のバイナリログと Prometheus メトリクス
 
@@ -24,12 +24,12 @@ arca-dns は、大規模な DNS デプロイメント向けに以下の機能を
 ### コントロールプレーン: `arca-dns-controller`
 - ゾーン管理用 REST API（JSON および生 BIND 形式）
 - 中央 DNSSEC 署名（KSK/ZSK 管理）
-- 差し替え可能なストレージバックエンド（MySQL / Git / etcd / in-memory）
+- 差し替え可能なストレージバックエンド（SQLite / PostgreSQL / MySQL / Git / etcd）
 - ゾーンのバージョニングとアーティファクト配布
 
 ### データプレーン: `arca-dns-agent`
 - コントローラからのゾーン同期
-- NSD / Unbound のオーケストレーション
+- プラグインインターフェイスによる DNS サーバーオーケストレーション（NSD / Unbound / BIRD）
 - ヘルスチェック付き BIRD による BGP ルート制御
 - DNSTap ロギングと Prometheus メトリクス
 - 自動フェイルオーバーと復旧
@@ -137,7 +137,7 @@ api:
   # TLS は通常 reverse proxy / ingress で終端します。
 
 backend:
-  type: "memory"  # 選択肢: memory, mysql, git, etcd
+  type: "sqlite"  # 選択肢: sqlite, postgres, mysql, git, etcd, memory
 
 dnssec:
   enabled: true

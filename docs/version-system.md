@@ -355,12 +355,14 @@ T4                                                    -> 409 Conflict!
 
 ### Backend Support
 
-| Backend | Versioning | Mechanism |
-|---------|-----------|-----------|
-| Memory  | ❌ No     | Single current version only |
-| MySQL   | ⚠️ Optional | Separate `zone_versions` table |
-| Git     | ✅ Yes    | Git commits (native versioning) |
-| etcd    | ✅ Yes    | Revision-based history |
+| Backend    | Versioning | Mechanism |
+|------------|-----------|----------|
+| SQLite     | ⚠️ Optional | Separate `zone_versions` table |
+| PostgreSQL | ⚠️ Optional | Separate `zone_versions` table |
+| MySQL      | ⚠️ Optional | Separate `zone_versions` table |
+| Git        | ✅ Yes    | Git commits (native versioning) |
+| etcd       | ✅ Yes    | Revision-based history |
+| Memory     | ❌ No     | Single current version only (deprecated) |
 
 ### Rollback Process
 

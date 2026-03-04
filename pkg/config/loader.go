@@ -113,13 +113,15 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	}
 
 	validBackendTypes := map[string]bool{
-		"memory": true,
-		"mysql":  true,
-		"git":    true,
-		"etcd":   true,
+		"memory":   true,
+		"mysql":    true,
+		"git":      true,
+		"etcd":     true,
+		"sqlite":   true,
+		"postgres": true,
 	}
 	if !validBackendTypes[cfg.Backend.Type] {
-		return fmt.Errorf("invalid backend.type: %s (must be one of: memory, mysql, git, etcd)", cfg.Backend.Type)
+		return fmt.Errorf("invalid backend.type: %s (must be one of: memory, mysql, git, etcd, sqlite, postgres)", cfg.Backend.Type)
 	}
 
 	if cfg.DNSSEC.Enabled {
