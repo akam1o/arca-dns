@@ -59,7 +59,13 @@ arca-dns は、大規模な DNS デプロイメント向けに以下の機能を
 **Docker Compose（Controller + MySQL 例）**:
 - 例の compose ファイル: `deployments/compose/controller-mysql/docker-compose.yaml`
 - 起動:
-  - `docker compose -f deployments/compose/controller-mysql/docker-compose.yaml --project-directory . up -d`
+  ```bash
+  export ARCA_DNS_API_KEY="$(openssl rand -hex 32)"
+  export ARCA_DNS_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_API_KEY" | sha256sum | awk '{print $1}')"
+  export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
+
+  docker compose -f deployments/compose/controller-mysql/docker-compose.yaml --project-directory . up -d
+  ```
 
 **DEB/RPM パッケージ**:
 - パッケージング資産は `packaging/` 配下にあり、`.goreleaser.yaml` でビルドします。
@@ -135,6 +141,10 @@ make test-coverage
 api:
   listen: "0.0.0.0:8080"
   # TLS は通常 reverse proxy / ingress で終端します。
+  auth:
+    enabled: true
+    api_keys:
+      admin: "sha256:REPLACE_WITH_SHA256_HEX"
 
 backend:
   type: "sqlite"  # 選択肢: sqlite, postgres, mysql, git, etcd, memory
@@ -150,20 +160,28 @@ dnssec:
 ```yaml
 controller:
   url: "http://localhost:8080"
+  api_key: "REPLACE_WITH_RAW_API_KEY"
+
+sync:
   sync_interval: "30s"
 
 nsd:
+  enabled: true
   config_path: "/etc/nsd/nsd.conf"
   zone_directory: "/var/lib/nsd/zones"
 
 unbound:
+  enabled: true
   config_path: "/etc/unbound/unbound.conf"
   edns_buffer_size: 1232  # ECMP によるフラグメントを抑制
 
 bird:
+  enabled: true
   socket_path: "/var/run/bird/bird.ctl"
-  anycast_prefixes:
-    - "203.0.113.53/32"
+  protocols:
+    - name: "anycast_1"
+      neighbor_address: "10.0.0.1"
+      neighbor_asn: 64512
 
 health:
   check_interval: "10s"
@@ -185,6 +203,7 @@ make build
 
 controller の起動:
 ```bash
+# 先に API キー placeholder を置き換え、DNSSEC マスターキーを設定してください。
 ./bin/arca-dns-controller serve --config configs/controller.example.yaml
 ```
 
