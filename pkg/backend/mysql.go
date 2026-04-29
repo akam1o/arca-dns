@@ -440,7 +440,7 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// CAS update on zone
+	// Update zone. Add CAS condition only when an expected version is provided.
 	zoneQuery := `
 		UPDATE zones SET
 			version = ?,
@@ -448,7 +448,7 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 			dnssec_enabled = ?, dnssec_algorithm = ?, dnssec_ksk_key_tag = ?, dnssec_zsk_key_tag = ?,
 			dnssec_nsec3_enabled = ?, dnssec_nsec3_iterations = ?, dnssec_nsec3_salt = ?, dnssec_signature_expiration = ?,
 			updated_at = ?
-		WHERE name = ? AND version = ?
+		WHERE name = ?
 	`
 
 	var dnssecAlgorithm, dnssecKSKKeyTag, dnssecZSKKeyTag interface{}
@@ -470,15 +470,21 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 		}
 	}
 
-	result, err := tx.ExecContext(ctx, zoneQuery,
+	args := []interface{}{
 		zone.Version,
 		zone.SOA.MName, zone.SOA.RName, zone.SOA.Serial, zone.SOA.Refresh,
 		zone.SOA.Retry, zone.SOA.Expire, zone.SOA.Minimum,
 		dnssecEnabled, dnssecAlgorithm, dnssecKSKKeyTag, dnssecZSKKeyTag,
 		dnssecNSEC3Enabled, dnssecNSEC3Iterations, dnssecNSEC3Salt, dnssecSignatureExpiration,
 		zone.UpdatedAt,
-		zone.Name, expectedVersion,
-	)
+		zone.Name,
+	}
+	if expectedVersion != "" {
+		zoneQuery += " AND version = ?"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := tx.ExecContext(ctx, zoneQuery, args...)
 
 	if err != nil {
 		return fmt.Errorf("failed to update zone: %w", err)
@@ -861,7 +867,7 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
 
-	// CAS update on zone
+	// Update zone. Add CAS condition only when an expected version is provided.
 	zoneQuery := `
 		UPDATE zones SET
 			version = ?,
@@ -869,7 +875,7 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 			dnssec_enabled = ?, dnssec_algorithm = ?, dnssec_ksk_key_tag = ?, dnssec_zsk_key_tag = ?,
 			dnssec_nsec3_enabled = ?, dnssec_nsec3_iterations = ?, dnssec_nsec3_salt = ?, dnssec_signature_expiration = ?,
 			updated_at = ?
-		WHERE name = ? AND version = ?
+		WHERE name = ?
 	`
 
 	var dnssecAlgorithm, dnssecKSKKeyTag, dnssecZSKKeyTag interface{}
@@ -891,15 +897,21 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 		}
 	}
 
-	result, err := t.tx.ExecContext(ctx, zoneQuery,
+	args := []interface{}{
 		zone.Version,
 		zone.SOA.MName, zone.SOA.RName, zone.SOA.Serial, zone.SOA.Refresh,
 		zone.SOA.Retry, zone.SOA.Expire, zone.SOA.Minimum,
 		dnssecEnabled, dnssecAlgorithm, dnssecKSKKeyTag, dnssecZSKKeyTag,
 		dnssecNSEC3Enabled, dnssecNSEC3Iterations, dnssecNSEC3Salt, dnssecSignatureExpiration,
 		zone.UpdatedAt,
-		zone.Name, expectedVersion,
-	)
+		zone.Name,
+	}
+	if expectedVersion != "" {
+		zoneQuery += " AND version = ?"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := t.tx.ExecContext(ctx, zoneQuery, args...)
 
 	if err != nil {
 		return fmt.Errorf("failed to update zone: %w", err)
