@@ -140,46 +140,53 @@ func TestChecker_CheckAll(t *testing.T) {
 func TestChecker_Run(t *testing.T) {
 	logger := zap.NewNop()
 
+	server, addr := startTestDNSServer(t, dns.RcodeSuccess)
+	defer func() { _ = server.Shutdown() }()
+
 	checker := NewChecker(config.HealthConfig{
-		CheckInterval:    50 * time.Millisecond,
-		QueryTimeout:     100 * time.Millisecond, // Short timeout for test
+		CheckInterval:    20 * time.Millisecond,
+		QueryTimeout:     500 * time.Millisecond,
 		LatencyThreshold: 100 * time.Millisecond,
+		TestRecord:       "example.com",
+		NSDServer:        addr,
+		UnboundServer:    addr,
 	}, logger)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	statusChan := make(chan HealthStatus, 10)
+	errChan := make(chan error, 1)
 
-	go func() { _ = checker.Run(ctx, statusChan) }()
+	go func() { errChan <- checker.Run(ctx, statusChan) }()
 
 	// Wait for at least one status update
 	select {
 	case status := <-statusChan:
 		// Check that we received a status
 		assert.NotNil(t, status.Checks)
+		assert.True(t, status.Healthy)
 		assert.Contains(t, status.Checks, CheckTypeQuery)
 	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for initial status update")
 	}
 
-	// Verify we can receive more updates
-	time.Sleep(100 * time.Millisecond)
-
-	// Drain channel to count updates
-	updateCount := 1 // Already got one above
-	for {
-		select {
-		case <-statusChan:
-			updateCount++
-		case <-time.After(10 * time.Millisecond):
-			goto done
-		}
+	select {
+	case status := <-statusChan:
+		assert.True(t, status.Healthy)
+		assert.Contains(t, status.Checks, CheckTypeFullPath)
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for periodic status update")
 	}
 
-done:
-	// Should have received multiple updates (initial + at least 1 periodic)
-	assert.GreaterOrEqual(t, updateCount, 1, "Should receive at least 1 status update")
+	cancel()
+
+	select {
+	case err := <-errChan:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for health checker to stop")
+	}
 }
 
 // startTestDNSServer starts a test DNS server and returns the server and address.
