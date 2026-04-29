@@ -29,6 +29,9 @@ func LoadControllerConfig(path string) (*ControllerConfig, error) {
 			return nil, fmt.Errorf("load controller config: %w", err)
 		}
 
+		// Manually apply environment variables that need explicit binding.
+		bindControllerEnvVars(v)
+
 		// Unmarshal into config struct
 		if err := v.Unmarshal(cfg); err != nil {
 			return nil, fmt.Errorf("unmarshal controller config: %w", err)
@@ -340,8 +343,7 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	return nil
 }
 
-// bindControllerEnvVars manually binds key environment variables for controller.
-// This is needed when no config file is provided.
+// bindControllerEnvVars manually applies controller environment overrides.
 func bindControllerEnvVars(v *viper.Viper) {
 	// Bind key environment variables
 	envVars := []string{
@@ -361,6 +363,32 @@ func bindControllerEnvVars(v *viper.Viper) {
 		if val := os.Getenv(envKey); val != "" {
 			v.Set(key, val)
 		}
+	}
+
+	bindControllerAPIKeyEnvVars(v)
+}
+
+func bindControllerAPIKeyEnvVars(v *viper.Viper) {
+	const prefix = "ARCA_DNS_API_AUTH_API_KEYS_"
+
+	apiKeys := make(map[string]string)
+	for name, hash := range v.GetStringMapString("api.auth.api_keys") {
+		apiKeys[name] = hash
+	}
+
+	for _, env := range os.Environ() {
+		name, value, ok := strings.Cut(env, "=")
+		if !ok || !strings.HasPrefix(name, prefix) {
+			continue
+		}
+
+		keyName := strings.TrimPrefix(name, prefix)
+		keyName = strings.ToLower(keyName)
+		apiKeys[keyName] = value
+	}
+
+	if len(apiKeys) > 0 {
+		v.Set("api.auth.api_keys", apiKeys)
 	}
 }
 

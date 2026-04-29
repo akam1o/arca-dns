@@ -11,6 +11,7 @@ import (
 )
 
 const validTestAPIKeyHash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+const alternateValidTestAPIKeyHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 func validControllerConfigForTest() *ControllerConfig {
 	cfg := DefaultControllerConfig()
@@ -38,6 +39,18 @@ func TestLoadControllerConfig_AuthDisabledFromEnvAllowsDefaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, cfg.API.Auth.Enabled)
 	assert.Empty(t, cfg.API.Auth.APIKeys)
+}
+
+func TestLoadControllerConfig_APIKeysFromEnvAllowsDefaults(t *testing.T) {
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", validTestAPIKeyHash)
+
+	cfg, err := LoadControllerConfig("")
+	require.NoError(t, err)
+
+	assert.True(t, cfg.API.Auth.Enabled)
+	assert.Equal(t, map[string]string{
+		"admin": validTestAPIKeyHash,
+	}, cfg.API.Auth.APIKeys)
 }
 
 func TestDefaultControllerConfig_Defaults(t *testing.T) {
@@ -128,6 +141,32 @@ logging:
 	assert.False(t, cfg.API.Auth.Enabled)
 	assert.Equal(t, "git", cfg.Backend.Type)
 	assert.Equal(t, "warn", cfg.Logging.Level)
+}
+
+func TestLoadControllerConfig_APIKeyEnvMergesAndOverridesYAML(t *testing.T) {
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", alternateValidTestAPIKeyHash)
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_EDGE_AGENT", validTestAPIKeyHash)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "controller.yaml")
+
+	configContent := `
+api:
+  auth:
+    enabled: true
+    api_keys:
+      admin: "` + validTestAPIKeyHash + `"
+      readonly: "` + validTestAPIKeyHash + `"
+`
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	cfg, err := LoadControllerConfig(configPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, alternateValidTestAPIKeyHash, cfg.API.Auth.APIKeys["admin"])
+	assert.Equal(t, validTestAPIKeyHash, cfg.API.Auth.APIKeys["edge_agent"])
+	assert.Equal(t, validTestAPIKeyHash, cfg.API.Auth.APIKeys["readonly"])
 }
 
 func TestLoadControllerConfig_InvalidFile(t *testing.T) {

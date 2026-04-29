@@ -52,7 +52,9 @@ API keys before exposing the controller:
 echo -n 'your-api-key' | sha256sum
 ```
 
-Then set e.g. `sha256:<hex>` in `api.auth.api_keys`.
+Then set e.g. `sha256:<hex>` in `api.auth.api_keys`. For env-only
+deployments, set `ARCA_DNS_API_AUTH_API_KEYS_ADMIN=sha256:<hex>`; the suffix
+becomes the API key principal name, lowercased.
 
 For an intentionally unauthenticated local development setup, set
 `api.auth.enabled: false` explicitly.
