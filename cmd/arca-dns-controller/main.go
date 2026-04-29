@@ -251,6 +251,19 @@ func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error)
 	case "memory":
 		return backend.NewBackend("memory", configMap)
 
+	case "sqlite":
+		if cfg.Backend.SQLite.DSN != "" {
+			configMap["dsn"] = cfg.Backend.SQLite.DSN
+		}
+		return backend.NewBackend("sqlite", configMap)
+
+	case "postgres":
+		if cfg.Backend.Postgres.DSN == "" {
+			return nil, fmt.Errorf("postgres backend requires backend.postgres.dsn")
+		}
+		configMap["dsn"] = cfg.Backend.Postgres.DSN
+		return backend.NewBackend("postgres", configMap)
+
 	case "mysql":
 		if cfg.Backend.MySQL.DSN == "" {
 			return nil, fmt.Errorf("mysql backend requires backend.mysql.dsn")
