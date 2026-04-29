@@ -37,6 +37,7 @@ type SignedZoneArtifact struct {
 	UnsignedRRs []dns.RR
 	SignedRRs   []dns.RR
 	Metadata    SigningMetadata
+	DNSSEC      *model.DNSSECConfig
 }
 
 // SigningMetadata tracks signing parameters and timing.
@@ -158,6 +159,7 @@ func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*Signe
 		UnsignedRRs: unsignedRRs,
 		SignedRRs:   signedRRs,
 		Metadata:    metadata,
+		DNSSEC:      cloneDNSSECConfig(signedZone.DNSSEC),
 	}
 
 	return artifact, nil
@@ -196,6 +198,14 @@ func (s *SigningService) SignAndStoreZone(ctx context.Context, zone *model.Zone)
 
 	dnskeyAdded, rrsigAdded, nsec3Added, nsec3paramAdded := diffDNSSECTypes(artifact.UnsignedRRs, artifact.SignedRRs)
 
+	if err := s.persistDNSSECMetadata(ctx, zone.Name, artifact.DNSSEC); err != nil {
+		s.logger.Error("Failed to persist DNSSEC metadata",
+			zap.String("zone", zone.Name),
+			zap.Error(err))
+		return err
+	}
+	zone.DNSSEC = cloneDNSSECConfig(artifact.DNSSEC)
+
 	// Store signed artifact (implementation depends on backend)
 	if s.artifactDir != "" {
 		if err := s.storeArtifact(zone.Name, artifact.Version, []byte(artifact.SignedZone)); err != nil {
@@ -217,6 +227,32 @@ func (s *SigningService) SignAndStoreZone(ctx context.Context, zone *model.Zone)
 		zap.Int("dnssec_added_nsec3param", nsec3paramAdded))
 
 	return nil
+}
+
+func (s *SigningService) persistDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	if dnssec == nil || !dnssec.Enabled {
+		return fmt.Errorf("signed DNSSEC metadata missing for zone %s", zoneName)
+	}
+
+	metadataStore, ok := s.store.(backend.DNSSECMetadataStore)
+	if !ok {
+		return fmt.Errorf("backend does not support DNSSEC metadata persistence")
+	}
+
+	return metadataStore.UpdateDNSSECMetadata(ctx, zoneName, cloneDNSSECConfig(dnssec))
+}
+
+func cloneDNSSECConfig(config *model.DNSSECConfig) *model.DNSSECConfig {
+	if config == nil {
+		return nil
+	}
+
+	cloned := *config
+	if config.SignatureExpiration != nil {
+		expiration := *config.SignatureExpiration
+		cloned.SignatureExpiration = &expiration
+	}
+	return &cloned
 }
 
 func diffDNSSECTypes(unsignedRRs []dns.RR, signedRRs []dns.RR) (dnskeyAdded int, rrsigAdded int, nsec3Added int, nsec3paramAdded int) {
@@ -284,6 +320,9 @@ func (s *SigningService) GetSignedZone(ctx context.Context, zoneName string) (*S
 		// Sign it now if not already signed
 		artifact, err := s.SignZone(ctx, zone)
 		if err != nil {
+			return nil, err
+		}
+		if err := s.persistDNSSECMetadata(ctx, zone.Name, artifact.DNSSEC); err != nil {
 			return nil, err
 		}
 		if s.artifactDir != "" {

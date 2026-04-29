@@ -52,6 +52,13 @@ type ZoneStore interface {
 	Close() error
 }
 
+// DNSSECMetadataStore is an optional capability for backends that can update
+// DNSSEC operational metadata without changing zone content version or SOA
+// serial. This is used after signing so schedulers can identify signed zones.
+type DNSSECMetadataStore interface {
+	UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error
+}
+
 // RevisionStore is an optional capability for backends that support
 // versioning and history (e.g., Git, etcd).
 //

@@ -368,6 +368,52 @@ func (e *EtcdBackend) UpdateZone(ctx context.Context, zone *model.Zone, expected
 	return nil
 }
 
+// UpdateDNSSECMetadata updates DNSSEC metadata without changing zone version or SOA serial.
+func (e *EtcdBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	normalized := model.NormalizeZoneName(zoneName)
+
+	zoneMu := e.acquireZoneLock(normalized)
+	defer e.releaseZoneLock(zoneMu)
+
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
+	defer cancel()
+
+	zoneKey := e.zoneKey(normalized)
+	resp, err := e.client.Get(ctx, zoneKey)
+	if err != nil {
+		return fmt.Errorf("failed to get zone: %w", err)
+	}
+	if resp.Count == 0 {
+		return model.ErrZoneNotFound
+	}
+
+	var zone model.Zone
+	if err := json.Unmarshal(resp.Kvs[0].Value, &zone); err != nil {
+		return fmt.Errorf("failed to unmarshal zone: %w", err)
+	}
+
+	zone.DNSSEC = cloneDNSSECConfig(dnssec)
+	zone.UpdatedAt = time.Now()
+
+	zoneData, err := json.Marshal(&zone)
+	if err != nil {
+		return fmt.Errorf("failed to marshal zone: %w", err)
+	}
+
+	txn := e.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.CreateRevision(zoneKey), ">", 0)).
+		Then(clientv3.OpPut(zoneKey, string(zoneData)))
+
+	txnResp, err := txn.Commit()
+	if err != nil {
+		return fmt.Errorf("failed to update DNSSEC metadata: %w", err)
+	}
+	if !txnResp.Succeeded {
+		return model.ErrZoneNotFound
+	}
+	return nil
+}
+
 // DeleteZone removes a zone and all its records.
 func (e *EtcdBackend) DeleteZone(ctx context.Context, name string) error {
 	normalized := model.NormalizeZoneName(name)

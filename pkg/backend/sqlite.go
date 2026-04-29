@@ -289,6 +289,40 @@ func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 	return tx.Commit()
 }
 
+// UpdateDNSSECMetadata updates DNSSEC metadata without changing zone version or SOA serial.
+func (s *SQLiteBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	name := normalizeZoneName(zoneName)
+
+	query := `
+		UPDATE zones SET
+			dnssec_enabled = ?, dnssec_algorithm = ?, dnssec_ksk_key_tag = ?, dnssec_zsk_key_tag = ?,
+			dnssec_nsec3_enabled = ?, dnssec_nsec3_iterations = ?, dnssec_nsec3_salt = ?, dnssec_signature_expiration = ?,
+			updated_at = ?
+		WHERE name = ?
+	`
+	args := s.dnssecMetadataUpdateArgs(name, dnssec)
+
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("update DNSSEC metadata: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows == 0 {
+		var exists bool
+		if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
+			return fmt.Errorf("check zone existence: %w", err)
+		}
+		if !exists {
+			return model.ErrZoneNotFound
+		}
+	}
+	return nil
+}
+
 // DeleteZone removes a zone and all its records.
 func (s *SQLiteBackend) DeleteZone(ctx context.Context, name string) error {
 	name = normalizeZoneName(name)
@@ -317,7 +351,7 @@ func (s *SQLiteBackend) Close() error {
 func (s *SQLiteBackend) Info() BackendInfo {
 	return BackendInfo{
 		Type:         "sqlite",
-		Capabilities: []string{"ZoneStore", "TransactionalStore"},
+		Capabilities: []string{"ZoneStore", "TransactionalStore", "DNSSECMetadataStore"},
 		Consistency:  "strong",
 		Description:  "SQLite storage (default, single-binary, WAL mode)",
 	}
@@ -581,6 +615,29 @@ func (s *SQLiteBackend) zoneUpdateArgs(zone *model.Zone) []interface{} {
 	}
 }
 
+func (s *SQLiteBackend) dnssecMetadataUpdateArgs(zoneName string, dnssec *model.DNSSECConfig) []interface{} {
+	enabled, algorithm, kskKeyTag, zskKeyTag, nsec3Enabled, nsec3Iterations, nsec3Salt, signatureExpiration := dnssecColumnValues(dnssec)
+
+	dnssecEnabled := 0
+	if enabled {
+		dnssecEnabled = 1
+	}
+	dnssecNSEC3Enabled := 0
+	if nsec3Enabled {
+		dnssecNSEC3Enabled = 1
+	}
+	if expiration, ok := signatureExpiration.(*time.Time); ok {
+		signatureExpiration = expiration.Format(time.RFC3339Nano)
+	}
+
+	return []interface{}{
+		dnssecEnabled, algorithm, kskKeyTag, zskKeyTag,
+		dnssecNSEC3Enabled, nsec3Iterations, nsec3Salt, signatureExpiration,
+		time.Now().Format(time.RFC3339Nano),
+		zoneName,
+	}
+}
+
 func isSQLiteConstraintError(err error) bool {
 	return strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
@@ -753,9 +810,9 @@ func (t *sqliteTx) DeleteZone(ctx context.Context, name string) error {
 	return nil
 }
 
-func (t *sqliteTx) Close() error   { return nil }
+func (t *sqliteTx) Close() error                       { return nil }
 func (t *sqliteTx) Commit(ctx context.Context) error   { return t.tx.Commit() }
-func (t *sqliteTx) Rollback(ctx context.Context) error  { return t.tx.Rollback() }
+func (t *sqliteTx) Rollback(ctx context.Context) error { return t.tx.Rollback() }
 
 func init() {
 	RegisterBackend("sqlite", func(cfg map[string]interface{}) (ZoneStore, error) {

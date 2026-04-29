@@ -226,9 +226,31 @@ func TestSigningService_SignAndStoreZone(t *testing.T) {
 	}
 
 	// Verify zone was signed (DNSSEC metadata updated)
-	// Note: Current implementation doesn't persist signed artifact in backend
-	// This test verifies the signing succeeds without errors
-	t.Log("Zone signed and stored successfully")
+	persisted, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone: %v", err)
+	}
+	if persisted.DNSSEC == nil || !persisted.DNSSEC.Enabled {
+		t.Fatal("DNSSEC metadata was not persisted as enabled")
+	}
+	if persisted.DNSSEC.Algorithm == 0 {
+		t.Error("DNSSEC algorithm was not persisted")
+	}
+	if persisted.DNSSEC.KSKKeyTag == 0 {
+		t.Error("KSK key tag was not persisted")
+	}
+	if persisted.DNSSEC.ZSKKeyTag == 0 {
+		t.Error("ZSK key tag was not persisted")
+	}
+	if persisted.DNSSEC.SignatureExpiration == nil {
+		t.Error("signature expiration was not persisted")
+	}
+	if persisted.Version != zone.Version {
+		t.Errorf("zone version changed during DNSSEC metadata persistence: got %s, want %s", persisted.Version, zone.Version)
+	}
+	if persisted.SOA.Serial != zone.SOA.Serial {
+		t.Errorf("SOA serial changed during DNSSEC metadata persistence: got %d, want %d", persisted.SOA.Serial, zone.SOA.Serial)
+	}
 }
 
 func TestSigningService_GetSignedZone(t *testing.T) {

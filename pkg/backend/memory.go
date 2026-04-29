@@ -163,6 +163,22 @@ func (m *MemoryBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 	return nil
 }
 
+// UpdateDNSSECMetadata updates DNSSEC metadata without changing zone version or SOA serial.
+func (m *MemoryBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	normalized := model.NormalizeZoneName(zoneName)
+	zone, exists := m.zones[normalized]
+	if !exists {
+		return model.ErrZoneNotFound
+	}
+
+	zone.DNSSEC = cloneDNSSECConfig(dnssec)
+	zone.UpdatedAt = time.Now()
+	return nil
+}
+
 // DeleteZone removes a zone and all its records.
 func (m *MemoryBackend) DeleteZone(ctx context.Context, name string) error {
 	m.mu.Lock()
@@ -187,7 +203,7 @@ func (m *MemoryBackend) Close() error {
 func (m *MemoryBackend) Info() BackendInfo {
 	return BackendInfo{
 		Type:         "memory",
-		Capabilities: []string{"ZoneStore"},
+		Capabilities: []string{"ZoneStore", "DNSSECMetadataStore"},
 		Consistency:  "strong",
 		Description:  "In-memory storage (non-persistent, for testing and development)",
 	}
@@ -212,8 +228,7 @@ func copyZone(zone *model.Zone) *model.Zone {
 	copy(copied.Records, zone.Records)
 
 	if zone.DNSSEC != nil {
-		dnssec := *zone.DNSSEC
-		copied.DNSSEC = &dnssec
+		copied.DNSSEC = cloneDNSSECConfig(zone.DNSSEC)
 	}
 
 	return copied

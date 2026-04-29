@@ -290,6 +290,43 @@ func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expe
 	return tx.Commit()
 }
 
+// UpdateDNSSECMetadata updates DNSSEC metadata without changing zone version or SOA serial.
+func (p *PostgresBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	name := normalizeZoneName(zoneName)
+	enabled, algorithm, kskKeyTag, zskKeyTag, nsec3Enabled, nsec3Iterations, nsec3Salt, signatureExpiration := dnssecColumnValues(dnssec)
+
+	query := `
+		UPDATE zones SET
+			dnssec_enabled = $1, dnssec_algorithm = $2, dnssec_ksk_key_tag = $3, dnssec_zsk_key_tag = $4,
+			dnssec_nsec3_enabled = $5, dnssec_nsec3_iterations = $6, dnssec_nsec3_salt = $7, dnssec_signature_expiration = $8,
+			updated_at = $9
+		WHERE name = $10
+	`
+	result, err := p.db.ExecContext(ctx, query,
+		enabled, algorithm, kskKeyTag, zskKeyTag,
+		nsec3Enabled, nsec3Iterations, nsec3Salt, signatureExpiration,
+		time.Now(), name,
+	)
+	if err != nil {
+		return fmt.Errorf("update DNSSEC metadata: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		var exists bool
+		if err := p.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = $1)", name).Scan(&exists); err != nil {
+			return fmt.Errorf("check zone existence: %w", err)
+		}
+		if !exists {
+			return model.ErrZoneNotFound
+		}
+	}
+	return nil
+}
+
 // DeleteZone removes a zone.
 func (p *PostgresBackend) DeleteZone(ctx context.Context, name string) error {
 	name = normalizeZoneName(name)
@@ -314,7 +351,7 @@ func (p *PostgresBackend) Close() error { return p.db.Close() }
 func (p *PostgresBackend) Info() BackendInfo {
 	return BackendInfo{
 		Type:         "postgres",
-		Capabilities: []string{"ZoneStore", "TransactionalStore"},
+		Capabilities: []string{"ZoneStore", "TransactionalStore", "DNSSECMetadataStore"},
 		Consistency:  "strong",
 		Description:  "PostgreSQL storage (recommended for large-scale production)",
 	}
@@ -721,9 +758,9 @@ func (t *pgTx) DeleteZone(ctx context.Context, name string) error {
 	return nil
 }
 
-func (t *pgTx) Close() error                    { return nil }
+func (t *pgTx) Close() error                       { return nil }
 func (t *pgTx) Commit(ctx context.Context) error   { return t.tx.Commit() }
-func (t *pgTx) Rollback(ctx context.Context) error  { return t.tx.Rollback() }
+func (t *pgTx) Rollback(ctx context.Context) error { return t.tx.Rollback() }
 
 func init() {
 	RegisterBackend("postgres", func(cfg map[string]interface{}) (ZoneStore, error) {

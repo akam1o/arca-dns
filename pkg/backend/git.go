@@ -607,6 +607,38 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 	return g.commitZone(ctx, normalized, "update", summary, zone)
 }
 
+// UpdateDNSSECMetadata updates DNSSEC metadata without changing zone version or SOA serial.
+func (g *GitBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	normalized := model.NormalizeZoneName(zoneName)
+
+	zoneMu, err := g.acquireLock(ctx, normalized)
+	if err != nil {
+		return err
+	}
+	defer g.releaseLock(zoneMu)
+
+	if err := g.pullIfNeeded(ctx); err != nil {
+		return err
+	}
+
+	zone, err := g.readZone(normalized)
+	if err != nil {
+		if err == model.ErrZoneNotFound {
+			return model.ErrZoneNotFound
+		}
+		return err
+	}
+
+	zone.DNSSEC = cloneDNSSECConfig(dnssec)
+	zone.UpdatedAt = time.Now()
+
+	if err := g.writeZone(normalized, zone); err != nil {
+		return err
+	}
+
+	return g.commitZone(ctx, normalized, "dnssec", "updated DNSSEC metadata", zone)
+}
+
 // DeleteZone deletes a zone
 func (g *GitBackend) DeleteZone(ctx context.Context, name string) error {
 	normalized := model.NormalizeZoneName(name)

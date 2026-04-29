@@ -121,13 +121,13 @@ func (m *MySQLBackend) GetZone(ctx context.Context, name string) (*model.Zone, e
 	// Populate DNSSEC config if enabled
 	if dnssecEnabled {
 		zone.DNSSEC = &model.DNSSECConfig{
-			Enabled:       true,
-			Algorithm:     uint8(dnssecAlgorithm.Int64),
-			KSKKeyTag:     uint16(dnssecKSKKeyTag.Int64),
-			ZSKKeyTag:     uint16(dnssecZSKKeyTag.Int64),
-			NSEC3Enabled:  dnssecNSEC3Enabled,
+			Enabled:         true,
+			Algorithm:       uint8(dnssecAlgorithm.Int64),
+			KSKKeyTag:       uint16(dnssecKSKKeyTag.Int64),
+			ZSKKeyTag:       uint16(dnssecZSKKeyTag.Int64),
+			NSEC3Enabled:    dnssecNSEC3Enabled,
 			NSEC3Iterations: uint16(dnssecNSEC3Iterations.Int64),
-			NSEC3Salt:     dnssecNSEC3Salt.String,
+			NSEC3Salt:       dnssecNSEC3Salt.String,
 		}
 		if dnssecSignatureExpiration.Valid {
 			zone.DNSSEC.SignatureExpiration = &dnssecSignatureExpiration.Time
@@ -236,13 +236,13 @@ func (m *MySQLBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mode
 		// Populate DNSSEC config if enabled
 		if dnssecEnabled {
 			zone.DNSSEC = &model.DNSSECConfig{
-				Enabled:       true,
-				Algorithm:     uint8(dnssecAlgorithm.Int64),
-				KSKKeyTag:     uint16(dnssecKSKKeyTag.Int64),
-				ZSKKeyTag:     uint16(dnssecZSKKeyTag.Int64),
-				NSEC3Enabled:  dnssecNSEC3Enabled,
+				Enabled:         true,
+				Algorithm:       uint8(dnssecAlgorithm.Int64),
+				KSKKeyTag:       uint16(dnssecKSKKeyTag.Int64),
+				ZSKKeyTag:       uint16(dnssecZSKKeyTag.Int64),
+				NSEC3Enabled:    dnssecNSEC3Enabled,
 				NSEC3Iterations: uint16(dnssecNSEC3Iterations.Int64),
-				NSEC3Salt:     dnssecNSEC3Salt.String,
+				NSEC3Salt:       dnssecNSEC3Salt.String,
 			}
 			if dnssecSignatureExpiration.Valid {
 				zone.DNSSEC.SignatureExpiration = &dnssecSignatureExpiration.Time
@@ -368,6 +368,51 @@ func (m *MySQLBackend) UpdateZone(ctx context.Context, zone *model.Zone, expecte
 	return m.withRetry(ctx, func(ctx context.Context) error {
 		return m.updateZone(ctx, zone, expectedVersion)
 	})
+}
+
+// UpdateDNSSECMetadata updates DNSSEC metadata without changing zone version or SOA serial.
+func (m *MySQLBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	return m.withRetry(ctx, func(ctx context.Context) error {
+		return m.updateDNSSECMetadata(ctx, zoneName, dnssec)
+	})
+}
+
+func (m *MySQLBackend) updateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	name := normalizeZoneName(zoneName)
+	enabled, algorithm, kskKeyTag, zskKeyTag, nsec3Enabled, nsec3Iterations, nsec3Salt, signatureExpiration := dnssecColumnValues(dnssec)
+
+	query := `
+		UPDATE zones SET
+			dnssec_enabled = ?, dnssec_algorithm = ?, dnssec_ksk_key_tag = ?, dnssec_zsk_key_tag = ?,
+			dnssec_nsec3_enabled = ?, dnssec_nsec3_iterations = ?, dnssec_nsec3_salt = ?, dnssec_signature_expiration = ?,
+			updated_at = ?
+		WHERE name = ?
+	`
+
+	result, err := m.db.ExecContext(ctx, query,
+		enabled, algorithm, kskKeyTag, zskKeyTag,
+		nsec3Enabled, nsec3Iterations, nsec3Salt, signatureExpiration,
+		time.Now(), name,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update DNSSEC metadata: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		var exists bool
+		err := m.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists)
+		if err != nil {
+			return fmt.Errorf("failed to check zone existence: %w", err)
+		}
+		if !exists {
+			return model.ErrZoneNotFound
+		}
+	}
+	return nil
 }
 
 func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
@@ -570,13 +615,13 @@ func (t *MySQLTx) GetZone(ctx context.Context, name string) (*model.Zone, error)
 	// Populate DNSSEC config if enabled
 	if dnssecEnabled {
 		zone.DNSSEC = &model.DNSSECConfig{
-			Enabled:       true,
-			Algorithm:     uint8(dnssecAlgorithm.Int64),
-			KSKKeyTag:     uint16(dnssecKSKKeyTag.Int64),
-			ZSKKeyTag:     uint16(dnssecZSKKeyTag.Int64),
-			NSEC3Enabled:  dnssecNSEC3Enabled,
+			Enabled:         true,
+			Algorithm:       uint8(dnssecAlgorithm.Int64),
+			KSKKeyTag:       uint16(dnssecKSKKeyTag.Int64),
+			ZSKKeyTag:       uint16(dnssecZSKKeyTag.Int64),
+			NSEC3Enabled:    dnssecNSEC3Enabled,
 			NSEC3Iterations: uint16(dnssecNSEC3Iterations.Int64),
-			NSEC3Salt:     dnssecNSEC3Salt.String,
+			NSEC3Salt:       dnssecNSEC3Salt.String,
 		}
 		if dnssecSignatureExpiration.Valid {
 			zone.DNSSEC.SignatureExpiration = &dnssecSignatureExpiration.Time
@@ -687,13 +732,13 @@ func (t *MySQLTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zon
 		// Populate DNSSEC config if enabled
 		if dnssecEnabled {
 			zone.DNSSEC = &model.DNSSECConfig{
-				Enabled:       true,
-				Algorithm:     uint8(dnssecAlgorithm.Int64),
-				KSKKeyTag:     uint16(dnssecKSKKeyTag.Int64),
-				ZSKKeyTag:     uint16(dnssecZSKKeyTag.Int64),
-				NSEC3Enabled:  dnssecNSEC3Enabled,
+				Enabled:         true,
+				Algorithm:       uint8(dnssecAlgorithm.Int64),
+				KSKKeyTag:       uint16(dnssecKSKKeyTag.Int64),
+				ZSKKeyTag:       uint16(dnssecZSKKeyTag.Int64),
+				NSEC3Enabled:    dnssecNSEC3Enabled,
 				NSEC3Iterations: uint16(dnssecNSEC3Iterations.Int64),
-				NSEC3Salt:     dnssecNSEC3Salt.String,
+				NSEC3Salt:       dnssecNSEC3Salt.String,
 			}
 			if dnssecSignatureExpiration.Valid {
 				zone.DNSSEC.SignatureExpiration = &dnssecSignatureExpiration.Time

@@ -44,6 +44,19 @@ func (s *InstrumentedZoneStore) UpdateZone(ctx context.Context, zone *model.Zone
 	return err
 }
 
+func (s *InstrumentedZoneStore) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	metadataStore, ok := s.inner.(backend.DNSSECMetadataStore)
+	if !ok {
+		err := model.NewAPIError(model.ErrorCodeInternal, "backend does not support DNSSEC metadata updates")
+		s.metrics.IncBackendOperation("update_dnssec_metadata", statusLabel(err))
+		return err
+	}
+
+	err := metadataStore.UpdateDNSSECMetadata(ctx, zoneName, dnssec)
+	s.metrics.IncBackendOperation("update_dnssec_metadata", statusLabel(err))
+	return err
+}
+
 func (s *InstrumentedZoneStore) DeleteZone(ctx context.Context, name string) error {
 	err := s.inner.DeleteZone(ctx, name)
 	s.metrics.IncBackendOperation("delete_zone", statusLabel(err))
@@ -62,4 +75,3 @@ func statusLabel(err error) string {
 	}
 	return "error"
 }
-
