@@ -36,17 +36,17 @@ func (al *AuditLogger) Middleware() gin.HandlerFunc {
 		// Record start time
 		start := time.Now()
 
-		// Extract auth info (if available)
-		authPrincipal := c.GetString("auth_principal")
-		if authPrincipal == "" {
-			authPrincipal = "anonymous"
-		}
-
 		// Process request
 		c.Next()
 
 		// Calculate latency
 		latency := time.Since(start)
+
+		// Extract auth info after downstream middleware has populated it.
+		authPrincipal := c.GetString("auth_principal")
+		if authPrincipal == "" {
+			authPrincipal = "anonymous"
+		}
 
 		// Log audit entry
 		al.logger.Info("api_request",
