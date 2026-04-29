@@ -178,6 +178,81 @@ func (s *SigningService) unsignedRRsFromZone(zone *model.Zone) ([]dns.RR, error)
 	return parsed.Records, nil
 }
 
+func signedArtifactFromCache(zone *model.Zone, signed []byte) (*SignedZoneArtifact, error) {
+	signedZone := string(signed)
+	parsed, err := parser.ParseBINDZone(strings.NewReader(signedZone), zone.Name, parser.DefaultParseOptions())
+	if err != nil {
+		return nil, fmt.Errorf("parse cached signed artifact: %w", err)
+	}
+
+	metadata := signingMetadataFromRRs(parsed.Records, zone.DNSSEC)
+	if metadata.Expiration == 0 {
+		return nil, fmt.Errorf("cached signed artifact has no RRSIG records")
+	}
+
+	return &SignedZoneArtifact{
+		ZoneName:   zone.Name,
+		Version:    zone.Version,
+		SignedZone: signedZone,
+		SignedRRs:  parsed.Records,
+		Metadata:   metadata,
+		DNSSEC:     cloneDNSSECConfig(zone.DNSSEC),
+	}, nil
+}
+
+func signingMetadataFromRRs(rrs []dns.RR, dnssecConfig *model.DNSSECConfig) SigningMetadata {
+	var metadata SigningMetadata
+
+	for _, rr := range rrs {
+		switch record := rr.(type) {
+		case *dns.RRSIG:
+			if metadata.Algorithm == 0 {
+				metadata.Algorithm = record.Algorithm
+			}
+			if metadata.Inception == 0 || record.Inception < metadata.Inception {
+				metadata.Inception = record.Inception
+			}
+			if metadata.Expiration == 0 || record.Expiration < metadata.Expiration {
+				metadata.Expiration = record.Expiration
+			}
+		case *dns.DNSKEY:
+			if metadata.Algorithm == 0 {
+				metadata.Algorithm = record.Algorithm
+			}
+			switch record.Flags {
+			case 257:
+				if metadata.KSKKeyTag == 0 {
+					metadata.KSKKeyTag = record.KeyTag()
+				}
+			case 256:
+				if metadata.ZSKKeyTag == 0 {
+					metadata.ZSKKeyTag = record.KeyTag()
+				}
+			}
+		case *dns.NSEC3PARAM:
+			metadata.NSEC3Params = &NSEC3Metadata{
+				Enabled:    true,
+				HashAlg:    record.Hash,
+				Flags:      record.Flags,
+				Iterations: record.Iterations,
+				Salt:       record.Salt,
+			}
+		}
+	}
+
+	if metadata.NSEC3Params == nil && dnssecConfig != nil && dnssecConfig.NSEC3Enabled {
+		metadata.NSEC3Params = &NSEC3Metadata{
+			Enabled:    true,
+			HashAlg:    dns.SHA1,
+			Flags:      0,
+			Iterations: dnssecConfig.NSEC3Iterations,
+			Salt:       dnssecConfig.NSEC3Salt,
+		}
+	}
+
+	return metadata
+}
+
 // SignAndStoreZone signs a zone and stores both unsigned and signed versions.
 // This is called automatically after zone create/update operations.
 // NOTE: This acquires per-zone lock to prevent concurrent signing.
@@ -307,11 +382,14 @@ func (s *SigningService) GetSignedZone(ctx context.Context, zoneName string) (*S
 	// Use the unsigned zone version as the cache key (must match the artifact version scheme).
 	if s.artifactDir != "" && zone.Version != "" {
 		if signed, err := s.loadArtifact(zone.Name, zone.Version); err == nil && signed != nil {
-			return &SignedZoneArtifact{
-				ZoneName:   zone.Name,
-				Version:    zone.Version,
-				SignedZone: string(signed),
-			}, nil
+			artifact, err := signedArtifactFromCache(zone, signed)
+			if err == nil {
+				return artifact, nil
+			}
+			s.logger.Warn("Failed to load cached signed artifact (re-signing)",
+				zap.String("zone", zone.Name),
+				zap.String("version", zone.Version),
+				zap.Error(err))
 		}
 	}
 

@@ -282,6 +282,59 @@ func TestSigningService_GetSignedZone(t *testing.T) {
 	t.Logf("Retrieved signed zone: %s (version %s)", artifact.ZoneName, artifact.Version)
 }
 
+func TestSigningService_GetSignedZone_CacheHitRestoresSignedRRs(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	artifact, err := service.GetSignedZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetSignedZone failed: %v", err)
+	}
+
+	const cacheMarker = "; cache-hit-marker"
+	if err := service.storeArtifact(zone.Name, artifact.Version, []byte(artifact.SignedZone+"\n"+cacheMarker+"\n")); err != nil {
+		t.Fatalf("failed to store marked signed artifact: %v", err)
+	}
+
+	cachedArtifact, err := service.GetSignedZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetSignedZone cache hit failed: %v", err)
+	}
+
+	if !strings.Contains(cachedArtifact.SignedZone, cacheMarker) {
+		t.Fatal("expected GetSignedZone to serve the cached signed artifact")
+	}
+	if len(cachedArtifact.SignedRRs) == 0 {
+		t.Fatal("cached artifact did not restore SignedRRs")
+	}
+
+	hasRRSIG := false
+	for _, rr := range cachedArtifact.SignedRRs {
+		if _, ok := rr.(*dns.RRSIG); ok {
+			hasRRSIG = true
+			break
+		}
+	}
+	if !hasRRSIG {
+		t.Fatal("cached artifact SignedRRs has no RRSIG records")
+	}
+
+	expiration, err := service.GetEarliestExpiration(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetEarliestExpiration failed on cached artifact: %v", err)
+	}
+	if expiration == 0 {
+		t.Fatal("cached artifact returned zero expiration")
+	}
+}
+
 func TestSigningService_GetDSRecords(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
