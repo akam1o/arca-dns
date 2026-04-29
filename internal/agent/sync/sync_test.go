@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,6 +172,135 @@ func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
 	// Verify zone file exists
 	zonePath := fileMgr.GetZonePath("example.com")
 	assert.FileExists(t, zonePath)
+}
+
+func TestSyncer_SyncAll_RemovesDeletedZones(t *testing.T) {
+	requireTCPListener(t)
+	var zoneDeleted atomic.Bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/zones":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			if zoneDeleted.Load() {
+				fmt.Fprintf(w, `{"zones":[]}`)
+				return
+			}
+			fmt.Fprintf(w, `{"zones":[{"name":"example.com","version":"v1-abc123","soa":{"mname":"ns1.example.com","rname":"admin.example.com","serial":2024010101,"refresh":3600,"retry":1800,"expire":604800,"minimum":86400},"records":[]}]}`)
+
+		case "/api/v1/zones/example.com/signed":
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("ETag", "v1-abc123")
+			w.Header().Set("X-Zone-Serial", "2024010101")
+			w.Header().Set("X-Zone-Hash", "717fd058")
+			w.Header().Set("X-Zone-Hash8", "717fd058")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n")
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	zoneDir := filepath.Join(tmpDir, "zones")
+	require.NoError(t, os.MkdirAll(zoneDir, 0755))
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	logger := zap.NewNop()
+	fileMgr := NewFileManager(zoneDir, 3, logger)
+	require.NoError(t, fileMgr.EnsureDirectory())
+
+	syncer := NewSyncer(client, fileMgr, config.SyncConfig{
+		SyncInterval:    30 * time.Second,
+		Jitter:          5 * time.Second,
+		MaxStaleness:    5 * time.Minute,
+		BackupVersions:  3,
+		VerifyChecksums: true,
+	}, logger)
+
+	deletedZones := make([]string, 0)
+	syncer.SetOnZoneDeleted(func(ctx context.Context, zoneName string) error {
+		deletedZones = append(deletedZones, zoneName)
+		return nil
+	})
+
+	ctx := context.Background()
+	require.NoError(t, syncer.SyncAll(ctx))
+	assert.FileExists(t, fileMgr.GetZonePath("example.com"))
+	require.NotNil(t, syncer.GetZoneState("example.com"))
+
+	zoneDeleted.Store(true)
+	require.NoError(t, syncer.SyncAll(ctx))
+
+	assert.NoFileExists(t, fileMgr.GetZonePath("example.com"))
+	assert.Nil(t, syncer.GetZoneState("example.com"))
+	assert.Equal(t, []string{"example.com"}, deletedZones)
+}
+
+func TestSyncer_SyncAll_RemovesOrphanZoneFiles(t *testing.T) {
+	requireTCPListener(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/zones":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"zones":[]}`)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	zoneDir := filepath.Join(tmpDir, "zones")
+	require.NoError(t, os.MkdirAll(zoneDir, 0755))
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	logger := zap.NewNop()
+	fileMgr := NewFileManager(zoneDir, 3, logger)
+	require.NoError(t, fileMgr.EnsureDirectory())
+	require.NoError(t, fileMgr.WriteZoneFile("deleted.com", "$ORIGIN deleted.com.\n"))
+	require.NoError(t, fileMgr.WriteZoneFile("deleted.com", "$ORIGIN deleted.com.\n$TTL 3600\n"))
+
+	syncer := NewSyncer(client, fileMgr, config.SyncConfig{
+		SyncInterval:   30 * time.Second,
+		Jitter:         5 * time.Second,
+		MaxStaleness:   5 * time.Minute,
+		BackupVersions: 3,
+	}, logger)
+
+	deletedZones := make([]string, 0)
+	syncer.SetOnZoneDeleted(func(ctx context.Context, zoneName string) error {
+		deletedZones = append(deletedZones, zoneName)
+		return nil
+	})
+
+	require.NoError(t, syncer.SyncAll(context.Background()))
+
+	assert.NoFileExists(t, fileMgr.GetZonePath("deleted.com"))
+	backups, err := fileMgr.listBackups("deleted.com")
+	require.NoError(t, err)
+	assert.Empty(t, backups)
+	assert.Equal(t, []string{"deleted.com"}, deletedZones)
 }
 
 func TestSyncer_SyncZone(t *testing.T) {
