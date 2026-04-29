@@ -2,14 +2,59 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/akam1o/arca-dns/internal/controller/service"
+	"github.com/akam1o/arca-dns/pkg/backend"
+	"github.com/akam1o/arca-dns/pkg/config"
+	"github.com/akam1o/arca-dns/pkg/dnssec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
+
+func setupRawTestWithSigning(t *testing.T) (*backend.MemoryBackend, *httptest.Server) {
+	t.Helper()
+
+	logger := zap.NewNop()
+	store := backend.NewMemoryBackend()
+	tmpDir := t.TempDir()
+
+	masterKey, err := dnssec.GenerateMasterKey()
+	require.NoError(t, err)
+
+	keyManager, err := dnssec.NewKeyManager(dnssec.KeyManagerOptions{
+		KeyDirectory: filepath.Join(tmpDir, "keys"),
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	signingService := service.NewSigningService(store, keyManager, filepath.Join(tmpDir, "artifacts"), nil, logger)
+	handler := NewHandler(store, signingService, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = false
+	apiCfg.RateLimit.Enabled = false
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("tcp listen not permitted in this environment: %v", err)
+	}
+	server := httptest.NewUnstartedServer(router)
+	server.Listener = ln
+	server.Start()
+
+	return store, server
+}
 
 func TestCreateZoneRaw_TextPlain(t *testing.T) {
 	_, _, server := setupTest(t)
@@ -40,6 +85,38 @@ www.example.com. IN A 192.0.2.2
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 	assert.NotEmpty(t, resp.Header.Get("ETag"))
 	assert.Equal(t, "/api/v1/zones/example.com.", resp.Header.Get("Location"))
+}
+
+func TestCreateZoneRaw_AutoSignsWhenSigningServiceEnabled(t *testing.T) {
+	store, server := setupRawTestWithSigning(t)
+	defer server.Close()
+
+	zoneFile := `$TTL 3600
+signed-raw.com. IN SOA ns1.signed-raw.com. admin.signed-raw.com. (
+    2024010101 3600 1800 604800 86400
+)
+signed-raw.com. IN NS ns1.signed-raw.com.
+signed-raw.com. IN A 192.0.2.1
+`
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=signed-raw.com.",
+		strings.NewReader(zoneFile))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	created, err := store.GetZone(context.Background(), "signed-raw.com.")
+	require.NoError(t, err)
+	require.NotNil(t, created.DNSSEC)
+	assert.True(t, created.DNSSEC.Enabled)
+	assert.NotZero(t, created.DNSSEC.KSKKeyTag)
+	assert.NotZero(t, created.DNSSEC.ZSKKeyTag)
+	assert.NotNil(t, created.DNSSEC.SignatureExpiration)
 }
 
 func TestCreateZoneRaw_MultipartForm(t *testing.T) {
