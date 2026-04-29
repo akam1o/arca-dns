@@ -114,6 +114,90 @@ func TestListZones(t *testing.T) {
 	}
 }
 
+func TestListZones_Paginates(t *testing.T) {
+	requireTCPListener(t)
+
+	var offsets []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/zones" {
+			t.Errorf("Expected path /api/v1/zones, got %s", r.URL.Path)
+		}
+
+		if r.Method != http.MethodGet {
+			t.Errorf("Expected GET method, got %s", r.Method)
+		}
+
+		limit := r.URL.Query().Get("limit")
+		if limit != "1000" {
+			t.Errorf("Expected limit 1000, got %s", limit)
+		}
+
+		offset := r.URL.Query().Get("offset")
+		offsets = append(offsets, offset)
+
+		switch offset {
+		case "0":
+			writeListZonesPage(w, 0, 1000)
+		case "1000":
+			writeListZonesPage(w, 1000, 1)
+		default:
+			t.Errorf("Unexpected offset %s", offset)
+			writeListZonesPage(w, 0, 0)
+		}
+	}))
+	defer server.Close()
+
+	cfg := config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	zones, err := client.ListZones()
+	if err != nil {
+		t.Fatalf("ListZones failed: %v", err)
+	}
+
+	if len(zones) != 1001 {
+		t.Fatalf("Expected 1001 zones, got %d", len(zones))
+	}
+
+	expectedOffsets := []string{"0", "1000"}
+	if len(offsets) != len(expectedOffsets) {
+		t.Fatalf("Expected offsets %v, got %v", expectedOffsets, offsets)
+	}
+	for i := range expectedOffsets {
+		if offsets[i] != expectedOffsets[i] {
+			t.Fatalf("Expected offsets %v, got %v", expectedOffsets, offsets)
+		}
+	}
+
+	if zones[1000].Name != "zone-1000.example.com." {
+		t.Errorf("Expected final zone name zone-1000.example.com., got %s", zones[1000].Name)
+	}
+}
+
+func writeListZonesPage(w http.ResponseWriter, offset, count int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"zones":[`)
+	for i := 0; i < count; i++ {
+		if i > 0 {
+			fmt.Fprint(w, ",")
+		}
+		zoneID := offset + i
+		fmt.Fprintf(w, `{"name":"zone-%d.example.com.","version":"v%04d","records":[]}`, zoneID, zoneID)
+	}
+	fmt.Fprintf(w, `],"pagination":{"offset":%d,"limit":1000,"count":%d}}`, offset, count)
+}
+
 func TestFetchSignedZone_Success(t *testing.T) {
 	requireTCPListener(t)
 	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400

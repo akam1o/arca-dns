@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -16,6 +17,8 @@ import (
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/model"
 )
+
+const listZonesPageLimit = 1000
 
 // Client is an HTTP client for communicating with the arca-dns controller.
 type Client struct {
@@ -40,6 +43,19 @@ type SignedZoneResponse struct {
 		Serial  uint32 `json:"serial"`
 		Hash    string `json:"hash"`
 	} `json:"metadata"`
+}
+
+type listZonesResponse struct {
+	Zones      []model.Zone `json:"zones"`
+	Pagination struct {
+		Offset int `json:"offset"`
+		Limit  int `json:"limit"`
+		Count  int `json:"count"`
+	} `json:"pagination"`
+}
+
+func (r listZonesResponse) hasPagination() bool {
+	return r.Pagination.Offset != 0 || r.Pagination.Limit != 0 || r.Pagination.Count != 0
 }
 
 func normalizeIfNoneMatch(etag string) string {
@@ -114,9 +130,57 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 
 // ListZones retrieves the list of zones from the controller.
 func (c *Client) ListZones() ([]ZoneInfo, error) {
-	url := fmt.Sprintf("%s/api/v1/zones", c.baseURL)
+	var zones []ZoneInfo
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	for offset := 0; ; {
+		result, err := c.listZonesPage(offset, listZonesPageLimit)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, z := range result.Zones {
+			zones = append(zones, ZoneInfo{
+				Name:    z.Name,
+				Version: z.Version,
+				ETag:    z.Version, // ETag is the same as version
+			})
+		}
+
+		if !result.hasPagination() {
+			return zones, nil
+		}
+
+		count := result.Pagination.Count
+		if count == 0 {
+			count = len(result.Zones)
+		}
+
+		limit := result.Pagination.Limit
+		if limit <= 0 {
+			limit = listZonesPageLimit
+		}
+
+		if count == 0 || count < limit {
+			break
+		}
+
+		offset += count
+	}
+
+	return zones, nil
+}
+
+func (c *Client) listZonesPage(offset, limit int) (*listZonesResponse, error) {
+	endpoint, err := url.Parse(fmt.Sprintf("%s/api/v1/zones", c.baseURL))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse request URL: %w", err)
+	}
+	query := endpoint.Query()
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	query.Set("limit", fmt.Sprintf("%d", limit))
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -137,25 +201,12 @@ func (c *Client) ListZones() ([]ZoneInfo, error) {
 		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
 	}
 
-	var result struct {
-		Zones []model.Zone `json:"zones"`
-	}
-
+	var result listZonesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// Convert to ZoneInfo
-	zones := make([]ZoneInfo, len(result.Zones))
-	for i, z := range result.Zones {
-		zones[i] = ZoneInfo{
-			Name:    z.Name,
-			Version: z.Version,
-			ETag:    z.Version, // ETag is the same as version
-		}
-	}
-
-	return zones, nil
+	return &result, nil
 }
 
 // FetchSignedZone fetches a signed zone file from the controller.
