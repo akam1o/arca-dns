@@ -11,9 +11,9 @@ import (
 
 // ParsedZone represents the intermediate representation of a parsed BIND zone file
 type ParsedZone struct {
-	Origin     string    // Zone origin (e.g., "example.com.")
-	DefaultTTL uint32    // Default TTL from $TTL directive
-	Records    []dns.RR  // Parsed resource records
+	Origin     string   // Zone origin (e.g., "example.com.")
+	DefaultTTL uint32   // Default TTL from $TTL directive
+	Records    []dns.RR // Parsed resource records
 }
 
 // ParseOptions configures zone file parsing behavior

@@ -174,9 +174,9 @@ func (km *KeyManager) loadKey(zone string, role KeyRole) (*KeyPair, error) {
 
 	// Parse active.json
 	var active struct {
-		Algorithm     uint8  `json:"algorithm"`
-		ActiveKSKTag  uint16 `json:"active_ksk_key_tag"`
-		ActiveZSKTag  uint16 `json:"active_zsk_key_tag"`
+		Algorithm    uint8  `json:"algorithm"`
+		ActiveKSKTag uint16 `json:"active_ksk_key_tag"`
+		ActiveZSKTag uint16 `json:"active_zsk_key_tag"`
 	}
 	if err := json.Unmarshal(activeData, &active); err != nil {
 		return nil, fmt.Errorf("parse active.json: %w", err)

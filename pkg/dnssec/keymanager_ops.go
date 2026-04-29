@@ -122,4 +122,3 @@ func parseKeyTagFromFilename(prefix string, filename string) (uint16, bool) {
 	}
 	return uint16(tagInt), true
 }
-

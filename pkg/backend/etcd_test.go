@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package backend
@@ -31,8 +32,8 @@ func setupEtcdBackend(t *testing.T) (*EtcdBackend, func()) {
 	backend, err := NewEtcdBackend(
 		endpoints,
 		prefix,
-		"",  // username
-		"",  // password
+		"",             // username
+		"",             // password
 		5*time.Second,  // dialTimeout
 		10*time.Second, // requestTimeout
 	)

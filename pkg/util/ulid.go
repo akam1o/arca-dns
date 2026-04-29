@@ -95,4 +95,3 @@ func encodeULID(ms uint64, rnd [10]byte) string {
 
 	return string(out)
 }
-

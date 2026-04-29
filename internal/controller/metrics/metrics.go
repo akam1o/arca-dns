@@ -54,10 +54,10 @@ type ControllerMetrics struct {
 
 func NewControllerMetrics() *ControllerMetrics {
 	return &ControllerMetrics{
-		apiRequests: make(map[apiKey]uint64),
-		apiLatency:  make(map[apiDurKey]*Histogram),
-		backendOps:  make(map[backendKey]uint64),
-		signingDur:  make(map[signKey]*Histogram),
+		apiRequests:     make(map[apiKey]uint64),
+		apiLatency:      make(map[apiDurKey]*Histogram),
+		backendOps:      make(map[backendKey]uint64),
+		signingDur:      make(map[signKey]*Histogram),
 		schedulerResign: make(map[string]uint64),
 		requestLatencyBuckets: []float64{
 			0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,

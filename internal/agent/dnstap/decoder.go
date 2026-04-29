@@ -12,14 +12,14 @@ import (
 
 // Query represents a parsed DNS query from DNSTap.
 type Query struct {
-	Timestamp   time.Time
-	ClientIP    net.IP
-	QueryType   uint16
-	QueryName   string
+	Timestamp    time.Time
+	ClientIP     net.IP
+	QueryType    uint16
+	QueryName    string
 	ResponseCode uint16
-	Transport   string  // "tcp" or "udp"
-	Latency     float64 // milliseconds
-	DNSSECValid bool
+	Transport    string  // "tcp" or "udp"
+	Latency      float64 // milliseconds
+	DNSSECValid  bool
 }
 
 // Decoder decodes DNSTap protobuf messages.

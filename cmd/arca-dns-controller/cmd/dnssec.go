@@ -274,4 +274,3 @@ func outputDS(w io.Writer, ds *dns.DS, format string) error {
 		return fmt.Errorf("unsupported output format: %s (supported: bind, json)", format)
 	}
 }
-

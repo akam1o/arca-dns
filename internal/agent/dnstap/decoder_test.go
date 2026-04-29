@@ -55,15 +55,15 @@ func TestDecoder_Decode(t *testing.T) {
 	dt := &dnstap.Dnstap{
 		Type: &dnstapType,
 		Message: &dnstap.Message{
-			Type:              &msgType,
-			SocketProtocol:    &socketProto,
-			QueryAddress:      clientIP,
-			QueryMessage:      queryData,
-			ResponseMessage:   responseData,
-			QueryTimeSec:      &queryTimeSec,
-			QueryTimeNsec:     &queryTimeNsec,
-			ResponseTimeSec:   &responseTimeSec,
-			ResponseTimeNsec:  &responseTimeNsec,
+			Type:             &msgType,
+			SocketProtocol:   &socketProto,
+			QueryAddress:     clientIP,
+			QueryMessage:     queryData,
+			ResponseMessage:  responseData,
+			QueryTimeSec:     &queryTimeSec,
+			QueryTimeNsec:    &queryTimeNsec,
+			ResponseTimeSec:  &responseTimeSec,
+			ResponseTimeNsec: &responseTimeNsec,
 		},
 	}
 
@@ -108,12 +108,12 @@ func TestDecoder_DecodeClientQuery(t *testing.T) {
 	dt := &dnstap.Dnstap{
 		Type: &dnstapType,
 		Message: &dnstap.Message{
-			Type:            &msgType,
-			SocketProtocol:  &socketProto,
-			QueryAddress:    clientIP,
-			QueryMessage:    queryData,
-			QueryTimeSec:    &queryTimeSec,
-			QueryTimeNsec:   &queryTimeNsec,
+			Type:           &msgType,
+			SocketProtocol: &socketProto,
+			QueryAddress:   clientIP,
+			QueryMessage:   queryData,
+			QueryTimeSec:   &queryTimeSec,
+			QueryTimeNsec:  &queryTimeNsec,
 		},
 	}
 
@@ -132,7 +132,7 @@ func TestDecoder_DecodeClientQuery(t *testing.T) {
 	assert.Equal(t, "tcp", query.Transport)
 	assert.Equal(t, clientIP.String(), query.ClientIP.String())
 	assert.Equal(t, uint16(0), query.ResponseCode) // No response in CLIENT_QUERY
-	assert.Equal(t, 0.0, query.Latency) // No latency in CLIENT_QUERY
+	assert.Equal(t, 0.0, query.Latency)            // No latency in CLIENT_QUERY
 }
 
 // TestDecoder_DecodeInvalidProtobuf tests handling of invalid protobuf data.

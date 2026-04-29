@@ -7,13 +7,13 @@ import (
 
 // Sampler implements query sampling logic.
 type Sampler struct {
-	sampleRate       float64 // Base sample rate (0.0-1.0)
-	alwaysLogErrors  bool    // Always log error responses
-	stratifyByType   bool    // Balance sampling across query types
-	mu               sync.RWMutex
-	typeCounts       map[string]int64 // Track samples per type
-	totalSamples     int64
-	alwaysLogRCodes  map[string]bool // RCodes to always log
+	sampleRate      float64 // Base sample rate (0.0-1.0)
+	alwaysLogErrors bool    // Always log error responses
+	stratifyByType  bool    // Balance sampling across query types
+	mu              sync.RWMutex
+	typeCounts      map[string]int64 // Track samples per type
+	totalSamples    int64
+	alwaysLogRCodes map[string]bool // RCodes to always log
 }
 
 // SamplerConfig configures the sampler.
@@ -49,11 +49,11 @@ func NewSampler(config SamplerConfig) *Sampler {
 	}
 
 	return &Sampler{
-		sampleRate:       config.SampleRate,
-		alwaysLogErrors:  config.AlwaysLogErrors,
-		stratifyByType:   config.StratifyByType,
-		typeCounts:       make(map[string]int64),
-		alwaysLogRCodes:  alwaysLogRCodes,
+		sampleRate:      config.SampleRate,
+		alwaysLogErrors: config.AlwaysLogErrors,
+		stratifyByType:  config.StratifyByType,
+		typeCounts:      make(map[string]int64),
+		alwaysLogRCodes: alwaysLogRCodes,
 	}
 }
 
@@ -103,8 +103,8 @@ func (s *Sampler) GetStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"sample_rate":    s.sampleRate,
-		"total_samples":  s.totalSamples,
+		"sample_rate":     s.sampleRate,
+		"total_samples":   s.totalSamples,
 		"samples_by_type": typeCounts,
 	}
 }

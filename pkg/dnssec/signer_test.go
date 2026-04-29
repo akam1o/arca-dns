@@ -83,7 +83,7 @@ func TestZoneSigner_SignZone(t *testing.T) {
 
 	// Verify signature expiration is approximately 30 days in the future
 	expectedExpiration := time.Now().Add(30 * 24 * time.Hour)
-	if signedZone.DNSSEC.SignatureExpiration.Before(expectedExpiration.Add(-1 * time.Hour)) ||
+	if signedZone.DNSSEC.SignatureExpiration.Before(expectedExpiration.Add(-1*time.Hour)) ||
 		signedZone.DNSSEC.SignatureExpiration.After(expectedExpiration.Add(1*time.Hour)) {
 		t.Errorf("signature expiration not in expected range: got %v", signedZone.DNSSEC.SignatureExpiration)
 	}

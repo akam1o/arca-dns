@@ -279,10 +279,10 @@ func TestMemoryBackend_Close(t *testing.T) {
 
 func TestGenerateSerial(t *testing.T) {
 	tests := []struct {
-		name           string
-		currentSerial  uint32
-		wantDateBased  bool
-		wantIncrement  bool
+		name          string
+		currentSerial uint32
+		wantDateBased bool
+		wantIncrement bool
 	}{
 		{
 			name:          "first serial",

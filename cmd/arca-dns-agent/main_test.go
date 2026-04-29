@@ -32,4 +32,3 @@ func TestReexecSelf_UsesExecutableAsArgv0(t *testing.T) {
 		t.Fatalf("expected argv[0]==path, got argv[0]=%q path=%q", gotArgv[0], gotPath)
 	}
 }
-

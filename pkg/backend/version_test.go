@@ -26,8 +26,8 @@ func TestComputeZoneVersion(t *testing.T) {
 			{ID: "1", Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 			{ID: "2", Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"},
 		},
-		CreatedAt: now,       // Should be excluded from hash
-		UpdatedAt: now,       // Should be excluded from hash
+		CreatedAt: now, // Should be excluded from hash
+		UpdatedAt: now, // Should be excluded from hash
 	}
 
 	version, err := ComputeZoneVersion(zone)
@@ -119,7 +119,6 @@ func TestComputeZoneVersion_Deterministic(t *testing.T) {
 		t.Fatalf("ComputeZoneVersion failed: %v", err)
 	}
 
-
 	if v1 != v2 {
 		t.Errorf("Versions differ despite identical content: %q vs %q", v1, v2)
 	}
@@ -164,7 +163,6 @@ func TestComputeZoneVersion_OrderIndependent(t *testing.T) {
 		t.Fatalf("ComputeZoneVersion failed: %v", err)
 	}
 
-
 	if vA != vB {
 		t.Errorf("Versions differ despite same records in different order: %q vs %q", vA, vB)
 	}
@@ -206,7 +204,6 @@ func TestComputeZoneVersion_VersionFieldExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputeZoneVersion failed: %v", err)
 	}
-
 
 	if v1 != v2 {
 		t.Errorf("Versions differ despite only Version field being different: %q vs %q", v1, v2)
@@ -261,7 +258,6 @@ func TestComputeZoneVersion_CaseInsensitive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputeZoneVersion failed: %v", err)
 	}
-
 
 	if v1 != v2 {
 		t.Errorf("Versions differ despite only case differences: %q vs %q", v1, v2)
@@ -390,7 +386,6 @@ func TestComputeZoneVersion_DNSSECIncluded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputeZoneVersion failed: %v", err)
 	}
-
 
 	if v1 == v2 {
 		t.Errorf("Versions same despite different DNSSEC config: %q", v1)

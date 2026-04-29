@@ -90,21 +90,25 @@ type ServerStatus struct {
 // NoopAuthoritativeServer is a no-op implementation used when the authoritative server is disabled.
 type NoopAuthoritativeServer struct{}
 
-func (n *NoopAuthoritativeServer) ReloadZone(_ context.Context, _ string) error        { return nil }
-func (n *NoopAuthoritativeServer) CheckZone(_ context.Context, _, _ string) error       { return nil }
-func (n *NoopAuthoritativeServer) Reload(_ context.Context) error                       { return nil }
-func (n *NoopAuthoritativeServer) Status(_ context.Context) (ServerStatus, error)       { return ServerStatus{StatusText: "disabled"}, nil }
-func (n *NoopAuthoritativeServer) Type() string                                         { return "noop" }
+func (n *NoopAuthoritativeServer) ReloadZone(_ context.Context, _ string) error   { return nil }
+func (n *NoopAuthoritativeServer) CheckZone(_ context.Context, _, _ string) error { return nil }
+func (n *NoopAuthoritativeServer) Reload(_ context.Context) error                 { return nil }
+func (n *NoopAuthoritativeServer) Status(_ context.Context) (ServerStatus, error) {
+	return ServerStatus{StatusText: "disabled"}, nil
+}
+func (n *NoopAuthoritativeServer) Type() string { return "noop" }
 
 // NoopResolver is a no-op implementation used when the resolver is disabled.
 type NoopResolver struct{}
 
-func (n *NoopResolver) Reload(_ context.Context) error                       { return nil }
-func (n *NoopResolver) CheckConfig(_ context.Context) error                  { return nil }
-func (n *NoopResolver) FlushZone(_ context.Context, _ string) error          { return nil }
-func (n *NoopResolver) UpdateStubZone(_ context.Context, _ string) error     { return nil }
-func (n *NoopResolver) Status(_ context.Context) (ServerStatus, error)       { return ServerStatus{StatusText: "disabled"}, nil }
-func (n *NoopResolver) Type() string                                         { return "noop" }
+func (n *NoopResolver) Reload(_ context.Context) error                   { return nil }
+func (n *NoopResolver) CheckConfig(_ context.Context) error              { return nil }
+func (n *NoopResolver) FlushZone(_ context.Context, _ string) error      { return nil }
+func (n *NoopResolver) UpdateStubZone(_ context.Context, _ string) error { return nil }
+func (n *NoopResolver) Status(_ context.Context) (ServerStatus, error) {
+	return ServerStatus{StatusText: "disabled"}, nil
+}
+func (n *NoopResolver) Type() string { return "noop" }
 
 // NewAuthoritativeServer creates an AuthoritativeServer by type name.
 // Callers must register implementations via RegisterAuthoritativeServer.

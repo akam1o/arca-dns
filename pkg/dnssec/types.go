@@ -14,7 +14,7 @@ type KeyRole string
 const (
 	// KeyRoleKSK is the Key Signing Key role.
 	KeyRoleKSK KeyRole = "KSK"
-	
+
 	// KeyRoleZSK is the Zone Signing Key role.
 	KeyRoleZSK KeyRole = "ZSK"
 )
@@ -23,10 +23,10 @@ const (
 type KeyID struct {
 	// Zone is the zone name (FQDN with trailing dot).
 	Zone string
-	
+
 	// Algorithm is the DNSSEC algorithm number.
 	Algorithm uint8
-	
+
 	// KeyTag is the key tag (computed from DNSKEY).
 	KeyTag uint16
 }
@@ -35,13 +35,13 @@ type KeyID struct {
 type KeyPair struct {
 	// ID uniquely identifies this key.
 	ID KeyID
-	
+
 	// Role is the key's role (KSK or ZSK).
 	Role KeyRole
-	
+
 	// DNSKEY is the public key record.
 	DNSKEY dns.DNSKEY
-	
+
 	// Private is the private key.
 	Private crypto.PrivateKey
 }
@@ -55,20 +55,20 @@ func NormalizeZoneFQDN(zone string) (string, error) {
 	if zone == "" {
 		return "", fmt.Errorf("zone name cannot be empty")
 	}
-	
+
 	// Convert to lowercase
 	zone = strings.ToLower(zone)
-	
+
 	// Ensure trailing dot
 	if !strings.HasSuffix(zone, ".") {
 		zone = zone + "."
 	}
-	
+
 	// Validate DNS name
 	if !dns.IsFqdn(zone) {
 		return "", fmt.Errorf("invalid DNS name: %s", zone)
 	}
-	
+
 	return zone, nil
 }
 
@@ -82,7 +82,7 @@ func ZoneNameForFile(zone string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	// Remove trailing dot
 	return strings.TrimSuffix(zone, "."), nil
 }
@@ -94,11 +94,11 @@ func MakeKeyFilenames(zone string, alg uint8, keyTag uint16) (pub string, privEn
 	if err != nil {
 		return "", "", err
 	}
-	
+
 	base := fmt.Sprintf("K%s.+%03d+%05d", zoneName, alg, keyTag)
 	pub = base + ".key"
 	privEnc = base + ".private.enc"
-	
+
 	return pub, privEnc, nil
 }
 

@@ -57,7 +57,7 @@ func TestNormalizeZoneFQDN(t *testing.T) {
 			wantErr:  true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := NormalizeZoneFQDN(tt.input)
@@ -109,7 +109,7 @@ func TestZoneNameForFile(t *testing.T) {
 			wantErr:  true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := ZoneNameForFile(tt.input)
@@ -179,7 +179,7 @@ func TestMakeKeyFilenames(t *testing.T) {
 			wantErr:     true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pub, enc, err := MakeKeyFilenames(tt.zone, tt.alg, tt.keyTag)
@@ -203,7 +203,7 @@ func TestAlgorithmName(t *testing.T) {
 		{alg: 13, expected: "ECDSAP256SHA256"},
 		{alg: 99, expected: "UNKNOWN(99)"},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.expected, func(t *testing.T) {
 			result := AlgorithmName(tt.alg)
@@ -239,7 +239,7 @@ func TestValidateAlgorithm(t *testing.T) {
 			wantErr: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateAlgorithm(tt.alg)

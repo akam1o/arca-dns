@@ -100,9 +100,9 @@ func convertRecordToRR(origin string, record *model.Record) (dns.RR, error) {
 
 	// Create RR header
 	hdr := dns.RR_Header{
-		Name:   name,
-		Class:  dns.ClassINET,
-		Ttl:    record.TTL,
+		Name:  name,
+		Class: dns.ClassINET,
+		Ttl:   record.TTL,
 	}
 
 	// Create specific RR type

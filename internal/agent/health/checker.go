@@ -41,10 +41,10 @@ type Checker struct {
 	config config.HealthConfig
 	logger *zap.Logger
 
-	testZone           string
-	testRecord         string
-	nsdServer          string
-	unboundServer      string
+	testZone      string
+	testRecord    string
+	nsdServer     string
+	unboundServer string
 }
 
 // NewChecker creates a new health checker.

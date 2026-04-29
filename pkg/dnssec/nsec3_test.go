@@ -12,14 +12,14 @@ func TestGenerateNSEC3Chain_Basic(t *testing.T) {
 	// Create basic zone records
 	rrs := []dns.RR{
 		&dns.SOA{
-			Hdr: dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
-			Ns:  "ns1.example.com.",
-			Mbox: "admin.example.com.",
-			Serial: 2024122801,
+			Hdr:     dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
+			Ns:      "ns1.example.com.",
+			Mbox:    "admin.example.com.",
+			Serial:  2024122801,
 			Refresh: 3600,
-			Retry: 1800,
-			Expire: 604800,
-			Minttl: 86400,
+			Retry:   1800,
+			Expire:  604800,
+			Minttl:  86400,
 		},
 		&dns.NS{
 			Hdr: dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 3600},
@@ -90,8 +90,8 @@ func TestGenerateNSEC3Chain_CyclicChain(t *testing.T) {
 
 	rrs := []dns.RR{
 		&dns.SOA{
-			Hdr: dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
-			Ns:  "ns1.example.com.",
+			Hdr:  dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
+			Ns:   "ns1.example.com.",
 			Mbox: "admin.example.com.",
 		},
 		&dns.NS{
@@ -166,8 +166,8 @@ func TestGenerateNSEC3Chain_EmptyNonTerminals(t *testing.T) {
 	// Only record at a.b.example.com (should create ENT for b.example.com)
 	rrs := []dns.RR{
 		&dns.SOA{
-			Hdr: dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
-			Ns:  "ns1.example.com.",
+			Hdr:  dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
+			Ns:   "ns1.example.com.",
 			Mbox: "admin.example.com.",
 		},
 		&dns.NS{
@@ -222,8 +222,8 @@ func TestGenerateNSEC3Chain_TypeBitmaps(t *testing.T) {
 
 	rrs := []dns.RR{
 		&dns.SOA{
-			Hdr: dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
-			Ns:  "ns1.example.com.",
+			Hdr:  dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
+			Ns:   "ns1.example.com.",
 			Mbox: "admin.example.com.",
 		},
 		&dns.NS{
@@ -297,8 +297,8 @@ func TestGenerateNSEC3Chain_OutOfZoneFiltering(t *testing.T) {
 
 	rrs := []dns.RR{
 		&dns.SOA{
-			Hdr: dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
-			Ns:  "ns1.example.com.",
+			Hdr:  dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
+			Ns:   "ns1.example.com.",
 			Mbox: "admin.example.com.",
 		},
 		&dns.NS{

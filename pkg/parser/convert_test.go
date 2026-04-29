@@ -48,8 +48,8 @@ example.com. IN A 192.0.2.1
 			errMsg:  "no SOA record found",
 		},
 		{
-			name: "empty zone",
-			raw:  ``,
+			name:    "empty zone",
+			raw:     ``,
 			origin:  "example.com.",
 			wantErr: true,
 		},

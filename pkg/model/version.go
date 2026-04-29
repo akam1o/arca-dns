@@ -16,4 +16,3 @@ func NewZoneVersion() (string, error) {
 	}
 	return fmt.Sprintf("v%s", id), nil
 }
-

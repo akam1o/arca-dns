@@ -126,11 +126,11 @@ func runServe(cmd *cobra.Command, args []string) {
 		})
 		if err != nil {
 			logger.Fatal("Failed to create key manager", zap.Error(err))
-			}
+		}
 
-			// Create signing service (Note: SignerOptions are set per-zone in SigningService)
-			signingService = service.NewSigningService(store, keyManager, cfg.Storage.ArtifactDirectory, metrics, logger)
-			logger.Info("DNSSEC signing service initialized")
+		// Create signing service (Note: SignerOptions are set per-zone in SigningService)
+		signingService = service.NewSigningService(store, keyManager, cfg.Storage.ArtifactDirectory, metrics, logger)
+		logger.Info("DNSSEC signing service initialized")
 
 		// Initialize scheduler if enabled
 		if cfg.DNSSEC.SchedulerEnabled {
@@ -151,15 +151,15 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 
 			ticker := dnssec.NewRealTicker(schedulerConfig.CheckInterval)
-				scheduler := dnssec.NewScheduler(
-					schedulerConfig,
-					store,          // ZoneLister
-					signingService, // Signer
-					&dnssec.RealClock{},
-					ticker,
-					metrics,
-					logger,
-				)
+			scheduler := dnssec.NewScheduler(
+				schedulerConfig,
+				store,          // ZoneLister
+				signingService, // Signer
+				&dnssec.RealClock{},
+				ticker,
+				metrics,
+				logger,
+			)
 
 			// Start scheduler in background with proper lifecycle management
 			wg.Add(1)
@@ -174,7 +174,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				zap.Duration("check_interval", schedulerConfig.CheckInterval),
 				zap.Duration("resign_threshold", schedulerConfig.ResignThreshold))
 		}
-		}
+	}
 
 	// Initialize API handler
 	handler := api.NewHandler(store, signingService, metrics, api.BuildInfo{

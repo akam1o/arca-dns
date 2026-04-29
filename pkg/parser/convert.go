@@ -14,7 +14,7 @@ func BindToModel(raw string, origin string) (*model.Zone, error) {
 	// Parse the BIND zone file
 	reader := strings.NewReader(raw)
 	opts := DefaultParseOptions()
-	
+
 	parsed, err := ParseBINDZone(reader, origin, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse zone file: %w", err)
@@ -77,10 +77,10 @@ func BindToModelWithDefaults(raw string) (*model.Zone, error) {
 // extractOrigin attempts to extract the zone origin from a BIND zone file
 func extractOrigin(raw string) (string, error) {
 	lines := strings.Split(raw, "\n")
-	
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		
+
 		// Skip comments and empty lines
 		if line == "" || strings.HasPrefix(line, ";") {
 			continue
