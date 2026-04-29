@@ -280,6 +280,14 @@ func TestValidateControllerConfig_ResignThresholdTooLarge(t *testing.T) {
 	assert.Contains(t, err.Error(), "resign_threshold")
 }
 
+func TestValidateControllerConfig_InvalidNSEC3SaltLength(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.DNSSEC.NSEC3SaltLength = -1
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nsec3_salt_length")
+}
+
 func TestLoadAgentConfig_Defaults(t *testing.T) {
 	cfg, err := LoadAgentConfig("")
 	require.NoError(t, err)

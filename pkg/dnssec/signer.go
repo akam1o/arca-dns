@@ -21,13 +21,26 @@ type SignerOptions struct {
 	// Expiration is the duration from now when signatures expire.
 	// Default: 30 days
 	Expiration time.Duration
+
+	// NSEC3Enabled selects NSEC3 denial-of-existence records. When false, NSEC
+	// records are generated instead.
+	NSEC3Enabled bool
+
+	// NSEC3Iterations is the number of additional NSEC3 hash iterations.
+	NSEC3Iterations uint16
+
+	// NSEC3SaltLength is the NSEC3 salt length in bytes. Zero means no salt.
+	NSEC3SaltLength int
 }
 
 // DefaultSignerOptions returns default signer options.
 func DefaultSignerOptions() SignerOptions {
 	return SignerOptions{
-		Inception:  -1 * time.Hour,
-		Expiration: 30 * 24 * time.Hour,
+		Inception:       -1 * time.Hour,
+		Expiration:      30 * 24 * time.Hour,
+		NSEC3Enabled:    true,
+		NSEC3Iterations: 1,
+		NSEC3SaltLength: 8,
 	}
 }
 
@@ -40,6 +53,13 @@ type ZoneSigner struct {
 
 // NewZoneSigner creates a new zone signer.
 func NewZoneSigner(keyManager *KeyManager, opts SignerOptions) *ZoneSigner {
+	if opts == (SignerOptions{}) {
+		opts = DefaultSignerOptions()
+	}
+	if opts.Expiration <= 0 {
+		opts.Expiration = DefaultSignerOptions().Expiration
+	}
+
 	return &ZoneSigner{
 		keyManager: keyManager,
 		options:    opts,
@@ -109,23 +129,40 @@ func (s *ZoneSigner) SignZone(zone *model.Zone) (*model.Zone, []dns.RR, error) {
 		signedRRs = append(signedRRs, rrsig)
 	}
 
-	// Generate NSEC3 chain (M4.3)
-	nsec3Params := DefaultNSEC3Params(zone.SOA.Minimum)
-	nsec3Records, err := GenerateNSEC3Chain(normalizedZoneName, signedRRs, nsec3Params)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate NSEC3 chain: %w", err)
-	}
-
-	// Sign NSEC3 and NSEC3PARAM records with ZSK
-	for _, nsec3RR := range nsec3Records {
-		signedRRs = append(signedRRs, nsec3RR)
-
-		// Sign the NSEC3/NSEC3PARAM record
-		rrsig, err := s.signRRset([]dns.RR{nsec3RR}, zsk, normalizedZoneName)
+	var nsec3Params *NSEC3Params
+	if s.options.NSEC3Enabled {
+		params := NewNSEC3Params(zone.SOA.Minimum, s.options.NSEC3Iterations, s.options.NSEC3SaltLength)
+		nsec3Records, err := GenerateNSEC3Chain(normalizedZoneName, signedRRs, params)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to sign NSEC3 record %s: %w", nsec3RR.Header().Name, err)
+			return nil, nil, fmt.Errorf("failed to generate NSEC3 chain: %w", err)
 		}
-		signedRRs = append(signedRRs, rrsig)
+		nsec3Params = &params
+
+		// Sign NSEC3 and NSEC3PARAM records with ZSK.
+		for _, nsec3RR := range nsec3Records {
+			signedRRs = append(signedRRs, nsec3RR)
+
+			rrsig, err := s.signRRset([]dns.RR{nsec3RR}, zsk, normalizedZoneName)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to sign NSEC3 record %s: %w", nsec3RR.Header().Name, err)
+			}
+			signedRRs = append(signedRRs, rrsig)
+		}
+	} else {
+		nsecRecords, err := GenerateNSECChain(normalizedZoneName, signedRRs, zone.SOA.Minimum)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to generate NSEC chain: %w", err)
+		}
+
+		for _, nsecRR := range nsecRecords {
+			signedRRs = append(signedRRs, nsecRR)
+
+			rrsig, err := s.signRRset([]dns.RR{nsecRR}, zsk, normalizedZoneName)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to sign NSEC record %s: %w", nsecRR.Header().Name, err)
+			}
+			signedRRs = append(signedRRs, rrsig)
+		}
 	}
 
 	// Sort signed RRs for deterministic output
@@ -137,10 +174,11 @@ func (s *ZoneSigner) SignZone(zone *model.Zone) (*model.Zone, []dns.RR, error) {
 		return nil, nil, fmt.Errorf("failed to convert signed RRs to zone: %w", err)
 	}
 
-	// Update NSEC3 metadata
-	signedZone.DNSSEC.NSEC3Enabled = true
-	signedZone.DNSSEC.NSEC3Iterations = nsec3Params.Iterations
-	signedZone.DNSSEC.NSEC3Salt = nsec3Params.Salt
+	if nsec3Params != nil {
+		signedZone.DNSSEC.NSEC3Enabled = true
+		signedZone.DNSSEC.NSEC3Iterations = nsec3Params.Iterations
+		signedZone.DNSSEC.NSEC3Salt = nsec3Params.Salt
+	}
 
 	return signedZone, signedRRs, nil
 }

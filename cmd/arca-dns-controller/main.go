@@ -128,8 +128,14 @@ func runServe(cmd *cobra.Command, args []string) {
 			logger.Fatal("Failed to create key manager", zap.Error(err))
 		}
 
-		// Create signing service (Note: SignerOptions are set per-zone in SigningService)
-		signingService = service.NewSigningService(store, keyManager, cfg.Storage.ArtifactDirectory, metrics, logger)
+		signingService = service.NewSigningService(
+			store,
+			keyManager,
+			cfg.Storage.ArtifactDirectory,
+			metrics,
+			logger,
+			signerOptionsFromConfig(cfg.DNSSEC),
+		)
 		logger.Info("DNSSEC signing service initialized")
 
 		// Initialize scheduler if enabled
@@ -313,4 +319,14 @@ func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error)
 	default:
 		return nil, fmt.Errorf("unsupported backend type: %s", cfg.Backend.Type)
 	}
+}
+
+func signerOptionsFromConfig(cfg config.DNSSECConfig) dnssec.SignerOptions {
+	options := dnssec.DefaultSignerOptions()
+	options.Inception = -cfg.SignatureInception
+	options.Expiration = cfg.SignatureValidity
+	options.NSEC3Enabled = cfg.NSEC3
+	options.NSEC3Iterations = cfg.NSEC3Iterations
+	options.NSEC3SaltLength = cfg.NSEC3SaltLength
+	return options
 }

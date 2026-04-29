@@ -27,6 +27,7 @@ type SigningService struct {
 	zoneLocks   sync.Map // map[string]*sync.Mutex - per-zone locks for concurrent signing safety
 	artifactDir string
 	metrics     *ctrlmetrics.ControllerMetrics
+	options     dnssec.SignerOptions
 }
 
 // SignedZoneArtifact represents a signed zone with metadata.
@@ -60,13 +61,19 @@ type NSEC3Metadata struct {
 }
 
 // NewSigningService creates a new signing service.
-func NewSigningService(store backend.ZoneStore, keyManager *dnssec.KeyManager, artifactDir string, metrics *ctrlmetrics.ControllerMetrics, logger *zap.Logger) *SigningService {
+func NewSigningService(store backend.ZoneStore, keyManager *dnssec.KeyManager, artifactDir string, metrics *ctrlmetrics.ControllerMetrics, logger *zap.Logger, options ...dnssec.SignerOptions) *SigningService {
+	signerOptions := dnssec.DefaultSignerOptions()
+	if len(options) > 0 {
+		signerOptions = options[0]
+	}
+
 	return &SigningService{
 		store:       store,
 		keyManager:  keyManager,
 		logger:      logger,
 		artifactDir: artifactDir,
 		metrics:     metrics,
+		options:     signerOptions,
 	}
 }
 
@@ -95,8 +102,7 @@ func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*Signe
 		return nil, fmt.Errorf("failed to ensure zone keys: %w", err)
 	}
 
-	// Create signer with default options
-	signer := dnssec.NewZoneSigner(s.keyManager, dnssec.DefaultSignerOptions())
+	signer := dnssec.NewZoneSigner(s.keyManager, s.options)
 
 	// Sign the zone
 	signedZone, signedRRs, err := signer.SignZone(zone)

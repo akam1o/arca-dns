@@ -11,6 +11,52 @@ import (
 	"github.com/miekg/dns"
 )
 
+func newTestZoneSigner(t *testing.T, opts SignerOptions) *ZoneSigner {
+	t.Helper()
+
+	tempDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	if err != nil {
+		t.Fatalf("failed to generate master key: %v", err)
+	}
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tempDir,
+		MasterKey:    masterKey,
+		Algorithm:    dns.ECDSAP256SHA256,
+		KSKBits:      0,
+		ZSKBits:      0,
+	})
+	if err != nil {
+		t.Fatalf("failed to create key manager: %v", err)
+	}
+
+	return NewZoneSigner(km, opts)
+}
+
+func testSignerZone(now time.Time) *model.Zone {
+	return &model.Zone{
+		Name:    "example.com.",
+		Version: "v2024122801-testtest",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024122801,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{
+			{Name: "@", Type: "NS", TTL: 3600, Value: "ns1.example.com."},
+			{Name: "@", Type: "A", TTL: 300, Value: "203.0.113.1"},
+			{Name: "www", Type: "A", TTL: 300, Value: "203.0.113.2"},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
 func TestZoneSigner_SignZone(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
@@ -382,6 +428,112 @@ func TestZoneSigner_ClockInjection(t *testing.T) {
 	if !signedZone.DNSSEC.SignatureExpiration.Equal(expectedExpiration) {
 		t.Errorf("signature expiration mismatch: got %v, want %v",
 			signedZone.DNSSEC.SignatureExpiration, expectedExpiration)
+	}
+}
+
+func TestZoneSigner_UsesCustomSignerOptions(t *testing.T) {
+	opts := DefaultSignerOptions()
+	opts.Inception = -2 * time.Hour
+	opts.Expiration = 48 * time.Hour
+	opts.NSEC3Iterations = 7
+	opts.NSEC3SaltLength = 4
+
+	signer := newTestZoneSigner(t, opts)
+	fixedTime := time.Date(2024, 12, 28, 12, 0, 0, 0, time.UTC)
+	signer.clock = func() time.Time { return fixedTime }
+
+	signedZone, signedRRs, err := signer.SignZone(testSignerZone(fixedTime))
+	if err != nil {
+		t.Fatalf("failed to sign zone: %v", err)
+	}
+
+	expectedExpiration := fixedTime.Add(48 * time.Hour)
+	if !signedZone.DNSSEC.SignatureExpiration.Equal(expectedExpiration) {
+		t.Errorf("signature expiration mismatch: got %v, want %v",
+			signedZone.DNSSEC.SignatureExpiration, expectedExpiration)
+	}
+
+	expectedInception := uint32(fixedTime.Add(-2 * time.Hour).Unix())
+	expectedRRSIGExpiration := uint32(expectedExpiration.Unix())
+	hasRRSIG := false
+	var nsec3param *dns.NSEC3PARAM
+
+	for _, rr := range signedRRs {
+		switch record := rr.(type) {
+		case *dns.RRSIG:
+			hasRRSIG = true
+			if record.Inception != expectedInception {
+				t.Errorf("RRSIG inception mismatch: got %d, want %d", record.Inception, expectedInception)
+			}
+			if record.Expiration != expectedRRSIGExpiration {
+				t.Errorf("RRSIG expiration mismatch: got %d, want %d", record.Expiration, expectedRRSIGExpiration)
+			}
+		case *dns.NSEC3PARAM:
+			nsec3param = record
+		}
+	}
+
+	if !hasRRSIG {
+		t.Fatal("no RRSIG records found")
+	}
+	if nsec3param == nil {
+		t.Fatal("no NSEC3PARAM record found")
+	}
+	if nsec3param.Iterations != 7 {
+		t.Errorf("NSEC3 iterations mismatch: got %d, want 7", nsec3param.Iterations)
+	}
+	if nsec3param.SaltLength != 4 {
+		t.Errorf("NSEC3 salt length mismatch: got %d, want 4", nsec3param.SaltLength)
+	}
+	if len(nsec3param.Salt) != 8 {
+		t.Errorf("NSEC3 salt hex length mismatch: got %d, want 8", len(nsec3param.Salt))
+	}
+}
+
+func TestZoneSigner_GeneratesNSECWhenNSEC3Disabled(t *testing.T) {
+	opts := DefaultSignerOptions()
+	opts.NSEC3Enabled = false
+
+	signer := newTestZoneSigner(t, opts)
+	fixedTime := time.Date(2024, 12, 28, 12, 0, 0, 0, time.UTC)
+	signer.clock = func() time.Time { return fixedTime }
+
+	signedZone, signedRRs, err := signer.SignZone(testSignerZone(fixedTime))
+	if err != nil {
+		t.Fatalf("failed to sign zone: %v", err)
+	}
+
+	hasNSEC := false
+	hasNSEC3 := false
+	hasNSEC3PARAM := false
+	for _, rr := range signedRRs {
+		switch rr.(type) {
+		case *dns.NSEC:
+			hasNSEC = true
+		case *dns.NSEC3:
+			hasNSEC3 = true
+		case *dns.NSEC3PARAM:
+			hasNSEC3PARAM = true
+		}
+	}
+
+	if !hasNSEC {
+		t.Fatal("no NSEC records found")
+	}
+	if hasNSEC3 {
+		t.Error("NSEC3 records found when NSEC3 is disabled")
+	}
+	if hasNSEC3PARAM {
+		t.Error("NSEC3PARAM record found when NSEC3 is disabled")
+	}
+	if signedZone.DNSSEC.NSEC3Enabled {
+		t.Error("signed zone metadata reports NSEC3 enabled")
+	}
+	if signedZone.DNSSEC.NSEC3Iterations != 0 {
+		t.Errorf("NSEC3 iterations persisted when disabled: got %d", signedZone.DNSSEC.NSEC3Iterations)
+	}
+	if signedZone.DNSSEC.NSEC3Salt != "" {
+		t.Errorf("NSEC3 salt persisted when disabled: got %q", signedZone.DNSSEC.NSEC3Salt)
 	}
 }
 

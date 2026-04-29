@@ -14,7 +14,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func setupSigningService(t *testing.T) (*SigningService, func()) {
+func setupSigningService(t *testing.T, options ...dnssec.SignerOptions) (*SigningService, func()) {
 	t.Helper()
 
 	// Create temporary directory for keys
@@ -51,7 +51,7 @@ func setupSigningService(t *testing.T) (*SigningService, func()) {
 	logger := zap.NewNop()
 
 	// Create signing service
-	service := NewSigningService(store, keyManager, filepath.Join(tmpDir, "artifacts"), nil, logger)
+	service := NewSigningService(store, keyManager, filepath.Join(tmpDir, "artifacts"), nil, logger, options...)
 
 	return service, cleanup
 }
@@ -206,6 +206,60 @@ func TestSigningService_SignZone(t *testing.T) {
 
 	t.Logf("Signed zone successfully: %d signed RRs", len(artifact.SignedRRs))
 	t.Logf("Signed zone file length: %d bytes", len(artifact.SignedZone))
+}
+
+func TestSigningService_UsesConfiguredSignerOptions(t *testing.T) {
+	options := dnssec.DefaultSignerOptions()
+	options.NSEC3Iterations = 9
+	options.NSEC3SaltLength = 3
+
+	service, cleanup := setupSigningService(t, options)
+	defer cleanup()
+
+	artifact, err := service.SignZone(context.Background(), createTestZone())
+	if err != nil {
+		t.Fatalf("SignZone failed: %v", err)
+	}
+
+	if artifact.Metadata.NSEC3Params == nil {
+		t.Fatal("NSEC3Params is nil")
+	}
+	if artifact.Metadata.NSEC3Params.Iterations != 9 {
+		t.Errorf("NSEC3 iterations mismatch: got %d, want 9", artifact.Metadata.NSEC3Params.Iterations)
+	}
+	if len(artifact.Metadata.NSEC3Params.Salt) != 6 {
+		t.Errorf("NSEC3 salt hex length mismatch: got %d, want 6", len(artifact.Metadata.NSEC3Params.Salt))
+	}
+}
+
+func TestSigningService_UsesNSECWhenNSEC3Disabled(t *testing.T) {
+	options := dnssec.DefaultSignerOptions()
+	options.NSEC3Enabled = false
+
+	service, cleanup := setupSigningService(t, options)
+	defer cleanup()
+
+	artifact, err := service.SignZone(context.Background(), createTestZone())
+	if err != nil {
+		t.Fatalf("SignZone failed: %v", err)
+	}
+
+	if artifact.Metadata.NSEC3Params != nil {
+		t.Fatalf("NSEC3Params should be nil when NSEC3 is disabled: %+v", artifact.Metadata.NSEC3Params)
+	}
+
+	hasNSEC := false
+	for _, rr := range artifact.SignedRRs {
+		switch rr.(type) {
+		case *dns.NSEC:
+			hasNSEC = true
+		case *dns.NSEC3, *dns.NSEC3PARAM:
+			t.Fatalf("found NSEC3 record when NSEC3 is disabled: %T", rr)
+		}
+	}
+	if !hasNSEC {
+		t.Fatal("no NSEC records found")
+	}
 }
 
 func TestSigningService_SignAndStoreZone(t *testing.T) {

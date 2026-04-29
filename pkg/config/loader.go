@@ -161,6 +161,10 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 			return fmt.Errorf("invalid dnssec.resign_threshold: must be less than signature_validity")
 		}
 
+		if cfg.DNSSEC.NSEC3SaltLength < 0 {
+			return fmt.Errorf("invalid dnssec.nsec3_salt_length: must be non-negative")
+		}
+
 		// Validate scheduler configuration if enabled
 		if cfg.DNSSEC.SchedulerEnabled {
 			if cfg.DNSSEC.SchedulerCheckInterval <= 0 {

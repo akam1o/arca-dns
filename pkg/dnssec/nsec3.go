@@ -21,22 +21,76 @@ type NSEC3Params struct {
 
 // DefaultNSEC3Params returns standard NSEC3 parameters per PLAN.md.
 func DefaultNSEC3Params(ttl uint32) NSEC3Params {
+	return NewNSEC3Params(ttl, 1, 8)
+}
+
+// NewNSEC3Params returns NSEC3 parameters for the configured policy.
+func NewNSEC3Params(ttl uint32, iterations uint16, saltLength int) NSEC3Params {
 	return NSEC3Params{
 		HashAlg:    dns.SHA1,
 		Flags:      0, // no opt-out
-		Iterations: 1,
-		Salt:       generateRandomSalt(),
+		Iterations: iterations,
+		Salt:       generateRandomSalt(saltLength),
 		TTL:        ttl,
 	}
 }
 
-// generateRandomSalt creates an 8-byte random hex salt.
-func generateRandomSalt() string {
-	b := make([]byte, 8)
+// generateRandomSalt creates a random hex salt with the requested byte length.
+func generateRandomSalt(length int) string {
+	if length <= 0 {
+		return "-"
+	}
+
+	b := make([]byte, length)
 	if _, err := rand.Read(b); err != nil {
 		return "-" // fallback to empty salt on error
 	}
 	return hex.EncodeToString(b)
+}
+
+// GenerateNSECChain creates NSEC records for a zone.
+// rrs should be the signed RRs before NSEC records are added.
+func GenerateNSECChain(zoneApex string, rrs []dns.RR, ttl uint32) ([]dns.RR, error) {
+	zoneApex = dns.Fqdn(zoneApex)
+
+	names, emptyNonTerminals, err := collectAuthoritativeNames(zoneApex, rrs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to collect names: %w", err)
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no authoritative names found")
+	}
+
+	typeBitmaps, err := typeBitmapByName(zoneApex, rrs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute type bitmaps: %w", err)
+	}
+
+	sort.Strings(names)
+
+	nsecRecords := make([]dns.RR, 0, len(names))
+	for i, name := range names {
+		nextName := names[(i+1)%len(names)]
+		bitmap := typeBitmaps[name]
+		if emptyNonTerminals[name] {
+			bitmap = []uint16{}
+		}
+		bitmap = appendUnique(bitmap, dns.TypeNSEC)
+		sort.Slice(bitmap, func(i, j int) bool { return bitmap[i] < bitmap[j] })
+
+		nsecRecords = append(nsecRecords, &dns.NSEC{
+			Hdr: dns.RR_Header{
+				Name:   name,
+				Rrtype: dns.TypeNSEC,
+				Class:  dns.ClassINET,
+				Ttl:    ttl,
+			},
+			NextDomain: nextName,
+			TypeBitMap: bitmap,
+		})
+	}
+
+	return nsecRecords, nil
 }
 
 // GenerateNSEC3Chain creates NSEC3 + NSEC3PARAM records for a zone.
