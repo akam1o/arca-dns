@@ -201,6 +201,32 @@ func (fm *FileManager) listBackups(zoneName string) ([]string, error) {
 	return matches, nil
 }
 
+// listZoneFiles returns the safe zone names for managed zone files in the zone directory.
+func (fm *FileManager) listZoneFiles() ([]string, error) {
+	pattern := filepath.Join(fm.zoneDir, "*.zone")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list zone files: %w", err)
+	}
+
+	zoneNames := make([]string, 0, len(matches))
+	for _, match := range matches {
+		info, err := os.Stat(match)
+		if err != nil {
+			return nil, fmt.Errorf("failed to stat zone file: %w", err)
+		}
+		if info.IsDir() {
+			continue
+		}
+
+		fileName := filepath.Base(match)
+		zoneNames = append(zoneNames, fileName[:len(fileName)-len(".zone")])
+	}
+
+	sort.Strings(zoneNames)
+	return zoneNames, nil
+}
+
 // fsyncFile performs fsync on a file to ensure it's written to disk.
 func (fm *FileManager) fsyncFile(path string) error {
 	file, err := os.OpenFile(path, os.O_RDWR, 0)

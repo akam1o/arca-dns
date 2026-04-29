@@ -141,6 +141,17 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		return nil
 	})
 
+	// Wire zone-delete hook: reload services after the zone file is removed.
+	syncer.SetOnZoneDeleted(func(ctx context.Context, zoneName string) error {
+		if err := authServer.Reload(ctx); err != nil {
+			return err
+		}
+		if err := resolver.Reload(ctx); err != nil {
+			return err
+		}
+		return nil
+	})
+
 	// Create health checker (DNS behavior is the source of truth).
 	checker := health.NewChecker(cfg.Health, logger)
 	logger.Info("Health checker initialized")
