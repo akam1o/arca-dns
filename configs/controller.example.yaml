@@ -4,6 +4,9 @@ api:
   listen: "0.0.0.0:8080"
   trusted_proxies: [] # e.g. ["10.0.0.0/8", "192.168.0.0/16"]
   auth:
+    # The built-in default is true. When enabled, at least one valid API key
+    # hash is required; otherwise the controller exits during config validation.
+    # Set enabled: false only for intentionally unauthenticated local setups.
     enabled: true
     api_keys:
       # Generate: echo -n 'your-api-key' | sha256sum

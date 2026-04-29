@@ -2,6 +2,8 @@ api:
   listen: "0.0.0.0:8080"
   trusted_proxies: []
   auth:
+    # Replace the placeholder before deployment. When auth is enabled, at least
+    # one valid sha256:<64-hex> API key hash is required at startup.
     enabled: true
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
@@ -43,4 +45,3 @@ logging:
   level: "info"
   format: "json"
   output: "stdout"
-

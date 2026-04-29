@@ -44,13 +44,18 @@ arca-dns は以下で構成されます。
 
 #### API 認証
 
-`api.auth.enabled: true` の場合、API キーのハッシュ値を設定します。
+controller のデフォルトは `api.auth.enabled: true` です。認証が有効な場合、
+少なくとも 1 つの有効な API キーハッシュが設定されていないと起動時にエラーになります。
+controller を公開する前に API キーのハッシュ値を設定してください。
 
 ```bash
 echo -n 'your-api-key' | sha256sum
 ```
 
 次に `api.auth.api_keys` に `sha256:<hex>` の形式で設定してください。
+
+意図的に無認証のローカル開発環境として起動する場合だけ、明示的に
+`api.auth.enabled: false` を設定してください。
 
 #### DNSSEC マスターキー
 

@@ -70,7 +70,7 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 	}
 
 	protected := v1
-	if cfg != nil && cfg.Auth.Enabled && len(cfg.Auth.APIKeys) > 0 {
+	if cfg != nil && cfg.Auth.Enabled {
 		authConfig := middleware.AuthConfig{
 			APIKeys:    cfg.Auth.APIKeys,
 			HeaderName: "X-API-Key",

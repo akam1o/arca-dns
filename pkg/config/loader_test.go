@@ -10,11 +10,41 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLoadControllerConfig_Defaults(t *testing.T) {
+const validTestAPIKeyHash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+func validControllerConfigForTest() *ControllerConfig {
+	cfg := DefaultControllerConfig()
+	cfg.API.Auth.APIKeys = map[string]string{
+		"admin": validTestAPIKeyHash,
+	}
+	return cfg
+}
+
+func TestLoadControllerConfig_DefaultsRequireAPIKeys(t *testing.T) {
+	t.Setenv("ARCA_DNS_API_AUTH_ENABLED", "true")
+
+	cfg, err := LoadControllerConfig("")
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "api.auth.api_keys")
+	assert.Contains(t, err.Error(), "echo -n '<api-key>' | sha256sum")
+	assert.Contains(t, err.Error(), "api.auth.enabled: false")
+}
+
+func TestLoadControllerConfig_AuthDisabledFromEnvAllowsDefaults(t *testing.T) {
+	t.Setenv("ARCA_DNS_API_AUTH_ENABLED", "false")
+
 	cfg, err := LoadControllerConfig("")
 	require.NoError(t, err)
-	
+	assert.False(t, cfg.API.Auth.Enabled)
+	assert.Empty(t, cfg.API.Auth.APIKeys)
+}
+
+func TestDefaultControllerConfig_Defaults(t *testing.T) {
+	cfg := DefaultControllerConfig()
+
 	assert.Equal(t, "0.0.0.0:8080", cfg.API.Listen)
+	assert.True(t, cfg.API.Auth.Enabled)
 	assert.Equal(t, "sqlite", cfg.Backend.Type)
 	assert.True(t, cfg.DNSSEC.Enabled)
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
@@ -25,10 +55,14 @@ func TestLoadControllerConfig_FromYAML(t *testing.T) {
 	// Create temporary config file
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "controller.yaml")
-	
+
 	configContent := `
 api:
   listen: "127.0.0.1:9090"
+  auth:
+    enabled: true
+    api_keys:
+      admin: "` + validTestAPIKeyHash + `"
 backend:
   type: "mysql"
 dnssec:
@@ -43,10 +77,10 @@ logging:
 `
 	err := os.WriteFile(configPath, []byte(configContent), 0644)
 	require.NoError(t, err)
-	
+
 	cfg, err := LoadControllerConfig(configPath)
 	require.NoError(t, err)
-	
+
 	assert.Equal(t, "127.0.0.1:9090", cfg.API.Listen)
 	assert.Equal(t, "mysql", cfg.Backend.Type)
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
@@ -57,21 +91,27 @@ logging:
 func TestLoadControllerConfig_EnvOverride(t *testing.T) {
 	// Set environment variables
 	os.Setenv("ARCA_DNS_API_LISTEN", "0.0.0.0:7070")
+	os.Setenv("ARCA_DNS_API_AUTH_ENABLED", "false")
 	os.Setenv("ARCA_DNS_BACKEND_TYPE", "git")
 	os.Setenv("ARCA_DNS_LOGGING_LEVEL", "warn")
 	defer func() {
 		os.Unsetenv("ARCA_DNS_API_LISTEN")
+		os.Unsetenv("ARCA_DNS_API_AUTH_ENABLED")
 		os.Unsetenv("ARCA_DNS_BACKEND_TYPE")
 		os.Unsetenv("ARCA_DNS_LOGGING_LEVEL")
 	}()
-	
+
 	// Create temporary config file
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "controller.yaml")
-	
+
 	configContent := `
 api:
   listen: "127.0.0.1:8080"
+  auth:
+    enabled: true
+    api_keys:
+      admin: "` + validTestAPIKeyHash + `"
 backend:
   type: "memory"
 logging:
@@ -79,12 +119,13 @@ logging:
 `
 	err := os.WriteFile(configPath, []byte(configContent), 0644)
 	require.NoError(t, err)
-	
+
 	cfg, err := LoadControllerConfig(configPath)
 	require.NoError(t, err)
-	
+
 	// Environment variables should override YAML
 	assert.Equal(t, "0.0.0.0:7070", cfg.API.Listen)
+	assert.False(t, cfg.API.Auth.Enabled)
 	assert.Equal(t, "git", cfg.Backend.Type)
 	assert.Equal(t, "warn", cfg.Logging.Level)
 }
@@ -98,7 +139,7 @@ func TestLoadControllerConfig_InvalidFile(t *testing.T) {
 func TestLoadControllerConfig_InvalidYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "controller.yaml")
-	
+
 	// Invalid YAML
 	configContent := `
 api:
@@ -107,20 +148,51 @@ api:
 `
 	err := os.WriteFile(configPath, []byte(configContent), 0644)
 	require.NoError(t, err)
-	
+
 	cfg, err := LoadControllerConfig(configPath)
 	assert.Error(t, err)
 	assert.Nil(t, cfg)
 }
 
 func TestValidateControllerConfig_Valid(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	err := ValidateControllerConfig(cfg)
+	assert.NoError(t, err)
+}
+
+func TestValidateControllerConfig_AuthEnabledRequiresAPIKeys(t *testing.T) {
 	cfg := DefaultControllerConfig()
+	cfg.API.Auth.Enabled = true
+	cfg.API.Auth.APIKeys = nil
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "api.auth.api_keys")
+	assert.Contains(t, err.Error(), "echo -n '<api-key>' | sha256sum")
+	assert.Contains(t, err.Error(), "api.auth.enabled: false")
+}
+
+func TestValidateControllerConfig_AuthEnabledRejectsInvalidAPIKeyHash(t *testing.T) {
+	cfg := DefaultControllerConfig()
+	cfg.API.Auth.Enabled = true
+	cfg.API.Auth.APIKeys = map[string]string{
+		"admin": "sha256:REPLACE_WITH_SHA256_HEX",
+	}
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "api.auth.api_keys.admin")
+	assert.Contains(t, err.Error(), "sha256:<64 hex characters>")
+}
+
+func TestValidateControllerConfig_AuthDisabledAllowsEmptyAPIKeys(t *testing.T) {
+	cfg := DefaultControllerConfig()
+	cfg.API.Auth.Enabled = false
+	cfg.API.Auth.APIKeys = nil
 	err := ValidateControllerConfig(cfg)
 	assert.NoError(t, err)
 }
 
 func TestValidateControllerConfig_EmptyAPIListen(t *testing.T) {
-	cfg := DefaultControllerConfig()
+	cfg := validControllerConfigForTest()
 	cfg.API.Listen = ""
 	err := ValidateControllerConfig(cfg)
 	assert.Error(t, err)
@@ -128,7 +200,7 @@ func TestValidateControllerConfig_EmptyAPIListen(t *testing.T) {
 }
 
 func TestValidateControllerConfig_InvalidBackendType(t *testing.T) {
-	cfg := DefaultControllerConfig()
+	cfg := validControllerConfigForTest()
 	cfg.Backend.Type = "invalid"
 	err := ValidateControllerConfig(cfg)
 	assert.Error(t, err)
@@ -136,7 +208,7 @@ func TestValidateControllerConfig_InvalidBackendType(t *testing.T) {
 }
 
 func TestValidateControllerConfig_EmptyKeyDirectory(t *testing.T) {
-	cfg := DefaultControllerConfig()
+	cfg := validControllerConfigForTest()
 	cfg.DNSSEC.Enabled = true
 	cfg.DNSSEC.KeyDirectory = ""
 	err := ValidateControllerConfig(cfg)
@@ -145,7 +217,7 @@ func TestValidateControllerConfig_EmptyKeyDirectory(t *testing.T) {
 }
 
 func TestValidateControllerConfig_InvalidAlgorithm(t *testing.T) {
-	cfg := DefaultControllerConfig()
+	cfg := validControllerConfigForTest()
 	cfg.DNSSEC.Algorithm = 99
 	err := ValidateControllerConfig(cfg)
 	assert.Error(t, err)
@@ -153,7 +225,7 @@ func TestValidateControllerConfig_InvalidAlgorithm(t *testing.T) {
 }
 
 func TestValidateControllerConfig_InvalidSignatureValidity(t *testing.T) {
-	cfg := DefaultControllerConfig()
+	cfg := validControllerConfigForTest()
 	cfg.DNSSEC.SignatureValidity = -1 * time.Hour
 	err := ValidateControllerConfig(cfg)
 	assert.Error(t, err)
@@ -161,7 +233,7 @@ func TestValidateControllerConfig_InvalidSignatureValidity(t *testing.T) {
 }
 
 func TestValidateControllerConfig_ResignThresholdTooLarge(t *testing.T) {
-	cfg := DefaultControllerConfig()
+	cfg := validControllerConfigForTest()
 	cfg.DNSSEC.SignatureValidity = 10 * 24 * time.Hour
 	cfg.DNSSEC.ResignThreshold = 15 * 24 * time.Hour
 	err := ValidateControllerConfig(cfg)
@@ -172,7 +244,7 @@ func TestValidateControllerConfig_ResignThresholdTooLarge(t *testing.T) {
 func TestLoadAgentConfig_Defaults(t *testing.T) {
 	cfg, err := LoadAgentConfig("")
 	require.NoError(t, err)
-	
+
 	assert.Equal(t, "http://localhost:8080", cfg.Controller.URL)
 	assert.True(t, cfg.NSD.Enabled)
 	assert.True(t, cfg.Unbound.Enabled)
@@ -183,7 +255,7 @@ func TestLoadAgentConfig_Defaults(t *testing.T) {
 func TestLoadAgentConfig_FromYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "agent.yaml")
-	
+
 	configContent := `
 controller:
   url: "https://controller.example.com"
@@ -198,10 +270,10 @@ logging:
 `
 	err := os.WriteFile(configPath, []byte(configContent), 0644)
 	require.NoError(t, err)
-	
+
 	cfg, err := LoadAgentConfig(configPath)
 	require.NoError(t, err)
-	
+
 	assert.Equal(t, "https://controller.example.com", cfg.Controller.URL)
 	assert.Equal(t, "test-key", cfg.Controller.APIKey)
 	assert.Equal(t, "/tmp/nsd-zones", cfg.NSD.ZoneDirectory)

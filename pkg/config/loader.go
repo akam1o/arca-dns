@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -108,6 +109,10 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return fmt.Errorf("invalid api.listen: empty")
 	}
 
+	if err := validateControllerAuthConfig(cfg.API.Auth); err != nil {
+		return err
+	}
+
 	if cfg.Backend.Type == "" {
 		return fmt.Errorf("invalid backend.type: empty")
 	}
@@ -180,6 +185,44 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	}
 
 	return nil
+}
+
+func validateControllerAuthConfig(auth AuthConfig) error {
+	if !auth.Enabled {
+		return nil
+	}
+
+	if len(auth.APIKeys) == 0 {
+		return fmt.Errorf("invalid api.auth.api_keys: at least one API key is required when api.auth.enabled is true; add api.auth.api_keys.<name>: sha256:<64-hex-sha256> (generate with: echo -n '<api-key>' | sha256sum), or set api.auth.enabled: false only for intentionally unauthenticated local development")
+	}
+
+	for name, hash := range auth.APIKeys {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("invalid api.auth.api_keys: key name must not be empty")
+		}
+		if !isSHA256APIKeyHash(hash) {
+			return fmt.Errorf("invalid api.auth.api_keys.%s: expected sha256:<64 hex characters>; generate with: echo -n '<api-key>' | sha256sum", name)
+		}
+	}
+
+	return nil
+}
+
+func isSHA256APIKeyHash(hash string) bool {
+	const prefix = "sha256:"
+
+	value := strings.TrimSpace(hash)
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+
+	hexPart := strings.TrimPrefix(value, prefix)
+	if len(hexPart) != 64 {
+		return false
+	}
+
+	_, err := hex.DecodeString(hexPart)
+	return err == nil
 }
 
 // ValidateAgentConfig validates the agent configuration.
@@ -303,6 +346,7 @@ func bindControllerEnvVars(v *viper.Viper) {
 	// Bind key environment variables
 	envVars := []string{
 		"api.listen",
+		"api.auth.enabled",
 		"backend.type",
 		"dnssec.enabled",
 		"dnssec.key_directory",

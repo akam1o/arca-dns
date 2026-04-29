@@ -44,13 +44,18 @@ Edit `/etc/arca-dns/controller.yaml` (installed from `configs/controller.example
 
 #### API auth
 
-If `api.auth.enabled: true`, set hashed API keys:
+The controller default is `api.auth.enabled: true`. When auth is enabled,
+startup fails unless at least one valid API key hash is configured. Set hashed
+API keys before exposing the controller:
 
 ```bash
 echo -n 'your-api-key' | sha256sum
 ```
 
 Then set e.g. `sha256:<hex>` in `api.auth.api_keys`.
+
+For an intentionally unauthenticated local development setup, set
+`api.auth.enabled: false` explicitly.
 
 #### DNSSEC master key
 
