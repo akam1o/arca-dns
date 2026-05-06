@@ -356,6 +356,7 @@ func signerOptionsFromConfig(cfg config.DNSSECConfig) dnssec.SignerOptions {
 	options := dnssec.DefaultSignerOptions()
 	options.Inception = -cfg.SignatureInception
 	options.Expiration = cfg.SignatureValidity
+	options.ResignThreshold = cfg.ResignThreshold
 	options.NSEC3Enabled = cfg.NSEC3
 	options.NSEC3Iterations = cfg.NSEC3Iterations
 	options.NSEC3SaltLength = cfg.NSEC3SaltLength

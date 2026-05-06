@@ -45,6 +45,7 @@ func TestSignerOptionsFromConfig(t *testing.T) {
 	cfg := config.DNSSECConfig{
 		SignatureValidity:  48 * time.Hour,
 		SignatureInception: 2 * time.Hour,
+		ResignThreshold:    6 * time.Hour,
 		NSEC3:              true,
 		NSEC3Iterations:    7,
 		NSEC3SaltLength:    4,
@@ -57,6 +58,9 @@ func TestSignerOptionsFromConfig(t *testing.T) {
 	}
 	if options.Inception != -2*time.Hour {
 		t.Fatalf("Inception = %s, want -2h", options.Inception)
+	}
+	if options.ResignThreshold != 6*time.Hour {
+		t.Fatalf("ResignThreshold = %s, want 6h", options.ResignThreshold)
 	}
 	if !options.NSEC3Enabled {
 		t.Fatal("NSEC3Enabled = false, want true")

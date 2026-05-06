@@ -11,6 +11,7 @@ import (
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/dnssec"
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/akam1o/arca-dns/pkg/parser"
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 )
@@ -488,6 +489,56 @@ func TestSigningService_GetSignedZone_CacheHitRestoresSignedRRs(t *testing.T) {
 	}
 	if expiration == 0 {
 		t.Fatal("cached artifact returned zero expiration")
+	}
+}
+
+func TestSigningService_GetSignedZone_StaleCacheIsResigned(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+
+	artifact, err := service.SignZone(ctx, zone)
+	if err != nil {
+		t.Fatalf("SignZone failed: %v", err)
+	}
+	zone.DNSSEC = artifact.DNSSEC
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	parsed, err := parser.ParseBINDZone(strings.NewReader(artifact.SignedZone), zone.Name, parser.DefaultParseOptions())
+	if err != nil {
+		t.Fatalf("failed to parse signed artifact: %v", err)
+	}
+	expiredAt := uint32(time.Now().Add(-time.Hour).Unix())
+	for _, rr := range parsed.Records {
+		if sig, ok := rr.(*dns.RRSIG); ok {
+			sig.Expiration = expiredAt
+		}
+	}
+
+	expiredZoneFile, err := parser.GenerateBINDZoneFileFromRRs(zone.Name, artifact.Version, parsed.Records)
+	if err != nil {
+		t.Fatalf("failed to generate expired signed artifact: %v", err)
+	}
+
+	const staleCacheMarker = "; stale-cache-marker"
+	if err := service.storeArtifact(zone.Name, artifact.Version, []byte(expiredZoneFile+"\n"+staleCacheMarker+"\n")); err != nil {
+		t.Fatalf("failed to store expired signed artifact: %v", err)
+	}
+
+	freshArtifact, err := service.GetSignedZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetSignedZone failed: %v", err)
+	}
+
+	if strings.Contains(freshArtifact.SignedZone, staleCacheMarker) {
+		t.Fatal("expected stale cached signed artifact to be ignored")
+	}
+	if freshArtifact.Metadata.Expiration <= uint32(time.Now().Unix()) {
+		t.Fatalf("re-signed artifact still expired: %d", freshArtifact.Metadata.Expiration)
 	}
 }
 

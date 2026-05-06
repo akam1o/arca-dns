@@ -279,8 +279,29 @@ func (s *SigningService) cachedSignedZoneArtifact(zone *model.Zone) (*SignedZone
 			zap.Error(err))
 		return nil, false
 	}
+	if !s.cachedArtifactFresh(artifact) {
+		s.logger.Info("Cached signed artifact is stale (re-signing)",
+			zap.String("zone", zone.Name),
+			zap.String("version", zone.Version),
+			zap.Uint32("expiration", artifact.Metadata.Expiration))
+		return nil, false
+	}
 
 	return artifact, true
+}
+
+func (s *SigningService) cachedArtifactFresh(artifact *SignedZoneArtifact) bool {
+	if artifact == nil || artifact.Metadata.Expiration == 0 {
+		return false
+	}
+
+	threshold := s.options.ResignThreshold
+	if threshold < 0 {
+		threshold = 0
+	}
+
+	expiration := time.Unix(int64(artifact.Metadata.Expiration), 0)
+	return expiration.After(time.Now().Add(threshold))
 }
 
 func signingMetadataFromRRs(rrs []dns.RR, dnssecConfig *model.DNSSECConfig) SigningMetadata {

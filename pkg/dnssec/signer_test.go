@@ -170,6 +170,42 @@ func TestZoneSigner_SignZone(t *testing.T) {
 	}
 }
 
+func TestZoneSigner_WildcardRRSIGLabelsExcludeWildcard(t *testing.T) {
+	now := time.Date(2024, 12, 28, 12, 0, 0, 0, time.UTC)
+	signer := newTestZoneSigner(t, DefaultSignerOptions())
+	signer.clock = func() time.Time { return now }
+
+	zone := testSignerZone(now)
+	zone.Records = append(zone.Records, model.Record{
+		Name:  "*.www",
+		Type:  "A",
+		TTL:   300,
+		Value: "203.0.113.10",
+	})
+
+	_, signedRRs, err := signer.SignZone(zone)
+	if err != nil {
+		t.Fatalf("failed to sign zone: %v", err)
+	}
+
+	var wildcardSig *dns.RRSIG
+	for _, rr := range signedRRs {
+		sig, ok := rr.(*dns.RRSIG)
+		if ok && sig.Hdr.Name == "*.www.example.com." && sig.TypeCovered == dns.TypeA {
+			wildcardSig = sig
+			break
+		}
+	}
+	if wildcardSig == nil {
+		t.Fatal("failed to find wildcard A RRSIG")
+	}
+
+	want := uint8(dns.CountLabel("*.www.example.com.") - 1)
+	if wildcardSig.Labels != want {
+		t.Fatalf("wildcard RRSIG labels = %d, want %d", wildcardSig.Labels, want)
+	}
+}
+
 func TestZoneSigner_SplitsLongTXT(t *testing.T) {
 	signer := newTestZoneSigner(t, DefaultSignerOptions())
 	value := strings.Repeat("a", 300)

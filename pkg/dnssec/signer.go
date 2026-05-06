@@ -23,6 +23,10 @@ type SignerOptions struct {
 	// Default: 30 days
 	Expiration time.Duration
 
+	// ResignThreshold is how soon before expiration cached signed artifacts
+	// should be refreshed. Default: 7 days.
+	ResignThreshold time.Duration
+
 	// NSEC3Enabled selects NSEC3 denial-of-existence records. When false, NSEC
 	// records are generated instead.
 	NSEC3Enabled bool
@@ -39,6 +43,7 @@ func DefaultSignerOptions() SignerOptions {
 	return SignerOptions{
 		Inception:       -1 * time.Hour,
 		Expiration:      30 * 24 * time.Hour,
+		ResignThreshold: 7 * 24 * time.Hour,
 		NSEC3Enabled:    true,
 		NSEC3Iterations: 1,
 		NSEC3SaltLength: 8,
@@ -59,6 +64,9 @@ func NewZoneSigner(keyManager *KeyManager, opts SignerOptions) *ZoneSigner {
 	}
 	if opts.Expiration <= 0 {
 		opts.Expiration = DefaultSignerOptions().Expiration
+	}
+	if opts.ResignThreshold < 0 {
+		opts.ResignThreshold = 0
 	}
 
 	return &ZoneSigner{
@@ -372,7 +380,7 @@ func (s *ZoneSigner) signRRset(rrset []dns.RR, key *KeyPair, zoneName string) (d
 		},
 		TypeCovered: rrset[0].Header().Rrtype,
 		Algorithm:   key.DNSKEY.Algorithm,
-		Labels:      uint8(dns.CountLabel(rrset[0].Header().Name)),
+		Labels:      rrsigLabelCount(rrset[0].Header().Name),
 		OrigTtl:     rrset[0].Header().Ttl,
 		Expiration:  expiration,
 		Inception:   inception,
@@ -393,6 +401,14 @@ func (s *ZoneSigner) signRRset(rrset []dns.RR, key *KeyPair, zoneName string) (d
 	}
 
 	return rrsig, nil
+}
+
+func rrsigLabelCount(owner string) uint8 {
+	labels := dns.CountLabel(owner)
+	if strings.HasPrefix(owner, "*.") && labels > 0 {
+		labels--
+	}
+	return uint8(labels)
 }
 
 // rrsToModel converts signed RRs back to model.Zone.
