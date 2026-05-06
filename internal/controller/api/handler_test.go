@@ -242,6 +242,84 @@ func TestUpdateZone(t *testing.T) {
 	assert.Len(t, updated.Records, 2)
 }
 
+func TestUpdateZone_OmittedRecordsPreservesExistingRecords(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	soa := retrieved.SOA
+	soa.Refresh = 7200
+
+	body, err := json.Marshal(map[string]interface{}{
+		"name": "example.com.",
+		"soa":  soa,
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", retrieved.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	assert.Equal(t, uint32(7200), updated.SOA.Refresh)
+	assert.Len(t, updated.Records, 2)
+	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
+	assert.Equal(t, "192.0.2.2", updated.Records[1].Value)
+}
+
+func TestUpdateZone_EmptyRecordsClearsExistingRecords(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	body, err := json.Marshal(map[string]interface{}{
+		"name":    "example.com.",
+		"soa":     retrieved.SOA,
+		"records": []model.Record{},
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", retrieved.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	assert.Empty(t, updated.Records)
+}
+
 func TestUpdateZone_Conflict(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()

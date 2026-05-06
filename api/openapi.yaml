@@ -909,13 +909,13 @@ components:
       required:
         - name
         - soa
-        - records
       properties:
         name:
           type: string
         soa:
           $ref: '#/components/schemas/SOARecord'
         records:
+          description: Records to create with the zone. Omit to create an empty zone.
           type: array
           items:
             $ref: '#/components/schemas/CreateRecordRequest'
@@ -931,6 +931,7 @@ components:
         soa:
           $ref: '#/components/schemas/SOARecord'
         records:
+          description: Records to replace the existing record set. Omit to keep existing records; send an empty array to remove all records.
           type: array
           items:
             $ref: '#/components/schemas/Record'

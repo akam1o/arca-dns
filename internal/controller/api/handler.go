@@ -35,6 +35,13 @@ type BuildInfo struct {
 	Date    string `json:"date"`
 }
 
+type updateZoneRequest struct {
+	Name    string              `json:"name"`
+	SOA     model.SOARecord     `json:"soa"`
+	Records *[]model.Record     `json:"records,omitempty"`
+	DNSSEC  *model.DNSSECConfig `json:"dnssec,omitempty"`
+}
+
 // NewHandler creates a new API handler.
 func NewHandler(store backend.ZoneStore, signingService *service.SigningService, metrics *ctrlmetrics.ControllerMetrics, buildInfo BuildInfo, logger *zap.Logger) *Handler {
 	return &Handler{
@@ -436,8 +443,8 @@ func (h *Handler) GetZoneRevision(c *gin.Context) {
 func (h *Handler) UpdateZone(c *gin.Context) {
 	name := c.Param("name")
 
-	var zone model.Zone
-	if err := c.ShouldBindJSON(&zone); err != nil {
+	var req updateZoneRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Invalid request body", zap.Error(err))
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
@@ -447,23 +454,22 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
+	zone := model.Zone{
+		Name:   req.Name,
+		SOA:    req.SOA,
+		DNSSEC: req.DNSSEC,
+	}
+	recordsProvided := req.Records != nil
+	if recordsProvided {
+		zone.Records = *req.Records
+	}
+
 	// Ensure zone name matches URL
 	if zone.Name != name {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone name in body does not match URL",
 			map[string]interface{}{"url": name, "body": zone.Name},
-		))
-		return
-	}
-
-	// Validate zone
-	if err := model.ValidateZone(&zone); err != nil {
-		h.logger.Warn("Zone validation failed", zap.String("zone", zone.Name), zap.Error(err))
-		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInvalidInput,
-			"Zone validation failed",
-			map[string]interface{}{"error": "internal error"},
 		))
 		return
 	}
@@ -481,8 +487,11 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 
 	// Resolve If-Match into a concrete expected version (accepts quoted/unquoted, W/, and lists).
 	expectedVersion := ""
-	if strings.TrimSpace(ifMatch) != "*" {
-		current, err := h.store.GetZone(c.Request.Context(), zone.Name)
+	var current *model.Zone
+	needsCurrent := strings.TrimSpace(ifMatch) != "*" || !recordsProvided
+	if needsCurrent {
+		var err error
+		current, err = h.store.GetZone(c.Request.Context(), zone.Name)
 		if err != nil {
 			if err == model.ErrZoneNotFound {
 				c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
@@ -500,7 +509,9 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 			))
 			return
 		}
+	}
 
+	if strings.TrimSpace(ifMatch) != "*" {
 		if !etagMatches(ifMatch, current.Version) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
@@ -511,6 +522,21 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		}
 
 		expectedVersion = current.Version
+	}
+
+	if !recordsProvided {
+		zone.Records = current.Records
+	}
+
+	// Validate zone after defaulting omitted fields.
+	if err := model.ValidateZone(&zone); err != nil {
+		h.logger.Warn("Zone validation failed", zap.String("zone", zone.Name), zap.Error(err))
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Zone validation failed",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
 	}
 
 	// Issue a new version (controller-generated).
