@@ -68,7 +68,7 @@ For signed artifacts:
 
 ### Zones (JSON mode)
 
-- `GET /zones?limit=<n>&offset=<n>`: list zones (paginated)
+- `GET /zones?limit=<n>&offset=<n>`: list zones (paginated). Add `fields=summary` to return only `name` and `version`.
 - `POST /zones`: create a zone
 - `GET /zones/:name`: get a zone
 - `PUT /zones/:name`: update a zone (requires `If-Match`)

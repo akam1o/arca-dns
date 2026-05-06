@@ -59,6 +59,10 @@ func TestListZones(t *testing.T) {
 			t.Errorf("Expected GET method, got %s", r.Method)
 		}
 
+		if fields := r.URL.Query().Get("fields"); fields != "summary" {
+			t.Errorf("Expected fields summary, got %s", fields)
+		}
+
 		// Return mock zone list
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -127,6 +131,10 @@ func TestListZones_Paginates(t *testing.T) {
 
 		if r.Method != http.MethodGet {
 			t.Errorf("Expected GET method, got %s", r.Method)
+		}
+
+		if fields := r.URL.Query().Get("fields"); fields != "summary" {
+			t.Errorf("Expected fields summary, got %s", fields)
 		}
 
 		limit := r.URL.Query().Get("limit")

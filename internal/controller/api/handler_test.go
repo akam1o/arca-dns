@@ -199,6 +199,39 @@ func TestListZones(t *testing.T) {
 	assert.Equal(t, 3, result.Pagination.Count)
 }
 
+func TestListZones_SummaryFields(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	resp, err := http.Get(server.URL + "/api/v1/zones?fields=summary")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Zones      []map[string]interface{} `json:"zones"`
+		Pagination struct {
+			Count int `json:"count"`
+		} `json:"pagination"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	require.Len(t, result.Zones, 1)
+	assert.Equal(t, "example.com.", result.Zones[0]["name"])
+	assert.NotEmpty(t, result.Zones[0]["version"])
+	assert.NotContains(t, result.Zones[0], "records")
+	assert.Equal(t, 1, result.Pagination.Count)
+}
+
 func TestListZones_Pagination(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()

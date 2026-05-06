@@ -303,6 +303,32 @@ func (h *Handler) ListZones(c *gin.Context) {
 		}
 	}
 
+	if listZonesSummaryOnly(c) {
+		summaries, err := backend.ListZoneSummaries(c.Request.Context(), h.store, backend.ListOptions{
+			Offset: offset,
+			Limit:  limit,
+		})
+		if err != nil {
+			h.logger.Error("Failed to list zone summaries", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+				model.ErrorCodeInternal,
+				"Failed to list zones",
+				map[string]interface{}{"error": "internal error"},
+			))
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"zones": summaries,
+			"pagination": gin.H{
+				"offset": offset,
+				"limit":  limit,
+				"count":  len(summaries),
+			},
+		})
+		return
+	}
+
 	zones, err := h.store.ListZones(c.Request.Context(), backend.ListOptions{
 		Offset: offset,
 		Limit:  limit,
@@ -326,6 +352,11 @@ func (h *Handler) ListZones(c *gin.Context) {
 			"count":  len(zones),
 		},
 	})
+}
+
+func listZonesSummaryOnly(c *gin.Context) bool {
+	fields := strings.ToLower(strings.TrimSpace(c.Query("fields")))
+	return fields == "summary" || fields == "summaries"
 }
 
 // ListZoneVersions handles GET /api/v1/zones/:name/versions

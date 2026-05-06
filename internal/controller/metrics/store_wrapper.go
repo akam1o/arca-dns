@@ -61,6 +61,12 @@ func (s *InstrumentedZoneStore) ListZones(ctx context.Context, opts backend.List
 	return zones, err
 }
 
+func (s *InstrumentedZoneStore) ListZoneSummaries(ctx context.Context, opts backend.ListOptions) ([]*backend.ZoneSummary, error) {
+	summaries, err := backend.ListZoneSummaries(ctx, s.inner, opts)
+	s.metrics.IncBackendOperation("list_zone_summaries", statusLabel(err))
+	return summaries, err
+}
+
 func (s *InstrumentedZoneStore) CreateZone(ctx context.Context, zone *model.Zone) error {
 	err := s.inner.CreateZone(ctx, zone)
 	s.metrics.IncBackendOperation("create_zone", statusLabel(err))

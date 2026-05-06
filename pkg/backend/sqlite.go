@@ -170,6 +170,40 @@ func (s *SQLiteBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mod
 	return zones, nil
 }
 
+// ListZoneSummaries returns zone names and versions without loading records.
+func (s *SQLiteBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	query := `
+		SELECT name, version
+		FROM zones
+		ORDER BY name
+	`
+	args := []interface{}{}
+	if opts.Limit > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, opts.Limit, opts.Offset)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query zone summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]*ZoneSummary, 0)
+	for rows.Next() {
+		summary := &ZoneSummary{}
+		if err := rows.Scan(&summary.Name, &summary.Version); err != nil {
+			return nil, fmt.Errorf("failed to scan zone summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating zone summaries: %w", err)
+	}
+
+	return summaries, nil
+}
+
 // CreateZone creates a new zone.
 func (s *SQLiteBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.Name = normalizeZoneName(zone.Name)
@@ -740,6 +774,38 @@ func (t *sqliteTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zo
 		zone.Records = records
 	}
 	return zones, nil
+}
+
+func (t *sqliteTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	query := `
+		SELECT name, version
+		FROM zones
+		ORDER BY name
+	`
+	args := []interface{}{}
+	if opts.Limit > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, opts.Limit, opts.Offset)
+	}
+
+	rows, err := t.tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query zone summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]*ZoneSummary, 0)
+	for rows.Next() {
+		summary := &ZoneSummary{}
+		if err := rows.Scan(&summary.Name, &summary.Version); err != nil {
+			return nil, fmt.Errorf("scan zone summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate zone summaries: %w", err)
+	}
+	return summaries, nil
 }
 
 func (t *sqliteTx) CreateZone(ctx context.Context, zone *model.Zone) error {

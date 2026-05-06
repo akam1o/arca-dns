@@ -157,6 +157,38 @@ func (p *PostgresBackend) ListZones(ctx context.Context, opts ListOptions) ([]*m
 	return zones, nil
 }
 
+// ListZoneSummaries returns zone names and versions without loading records.
+func (p *PostgresBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	query := `
+		SELECT name, version
+		FROM zones ORDER BY name
+	`
+	args := []interface{}{}
+	if opts.Limit > 0 {
+		query += " LIMIT $1 OFFSET $2"
+		args = append(args, opts.Limit, opts.Offset)
+	}
+
+	rows, err := p.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query zone summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]*ZoneSummary, 0)
+	for rows.Next() {
+		summary := &ZoneSummary{}
+		if err := rows.Scan(&summary.Name, &summary.Version); err != nil {
+			return nil, fmt.Errorf("scan zone summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate zone summaries: %w", err)
+	}
+	return summaries, nil
+}
+
 // CreateZone creates a new zone.
 func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.Name = normalizeZoneName(zone.Name)
@@ -668,6 +700,37 @@ func (t *pgTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, 
 		zone.Records = records
 	}
 	return zones, nil
+}
+
+func (t *pgTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	query := `
+		SELECT name, version
+		FROM zones ORDER BY name
+	`
+	args := []interface{}{}
+	if opts.Limit > 0 {
+		query += " LIMIT $1 OFFSET $2"
+		args = append(args, opts.Limit, opts.Offset)
+	}
+
+	rows, err := t.tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query zone summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]*ZoneSummary, 0)
+	for rows.Next() {
+		summary := &ZoneSummary{}
+		if err := rows.Scan(&summary.Name, &summary.Version); err != nil {
+			return nil, fmt.Errorf("scan zone summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate zone summaries: %w", err)
+	}
+	return summaries, nil
 }
 
 func (t *pgTx) CreateZone(ctx context.Context, zone *model.Zone) error {

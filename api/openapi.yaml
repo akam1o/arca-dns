@@ -107,6 +107,13 @@ paths:
             type: integer
             default: 0
             minimum: 0
+        - name: fields
+          in: query
+          description: Response field set. Use summary to return only zone names and versions.
+          schema:
+            type: string
+            enum: [full, summary]
+            default: full
         - name: filter
           in: query
           description: Filter expression (backend-specific)
@@ -123,7 +130,9 @@ paths:
                   zones:
                     type: array
                     items:
-                      $ref: '#/components/schemas/Zone'
+                      oneOf:
+                        - $ref: '#/components/schemas/Zone'
+                        - $ref: '#/components/schemas/ZoneSummary'
                   pagination:
                     $ref: '#/components/schemas/Pagination'
         '401':
@@ -1059,6 +1068,21 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    ZoneSummary:
+      type: object
+      required:
+        - name
+        - version
+      properties:
+        name:
+          type: string
+          description: Fully qualified domain name
+          example: "example.com."
+        version:
+          type: string
+          description: Zone version identifier (controller-issued)
+          example: "v01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
     SOARecord:
       type: object

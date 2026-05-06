@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/config"
-	"github.com/akam1o/arca-dns/pkg/model"
 )
 
 const listZonesPageLimit = 1000
@@ -52,7 +51,7 @@ type SignedZoneResponse struct {
 }
 
 type listZonesResponse struct {
-	Zones      []model.Zone `json:"zones"`
+	Zones      []ZoneInfo `json:"zones"`
 	Pagination struct {
 		Offset int `json:"offset"`
 		Limit  int `json:"limit"`
@@ -200,6 +199,7 @@ func (c *Client) listZonesPage(ctx context.Context, offset, limit int) (*listZon
 		return nil, fmt.Errorf("failed to parse request URL: %w", err)
 	}
 	query := endpoint.Query()
+	query.Set("fields", "summary")
 	query.Set("offset", fmt.Sprintf("%d", offset))
 	query.Set("limit", fmt.Sprintf("%d", limit))
 	endpoint.RawQuery = query.Encode()

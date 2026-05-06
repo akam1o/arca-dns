@@ -75,6 +75,37 @@ func (m *MemoryBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mod
 	return zones, nil
 }
 
+// ListZoneSummaries returns zone metadata without copying record contents.
+func (m *MemoryBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	summaries := make([]*ZoneSummary, 0, len(m.zones))
+	for _, zone := range m.zones {
+		summaries = append(summaries, &ZoneSummary{
+			Name:    zone.Name,
+			Version: zone.Version,
+		})
+	}
+
+	sort.Slice(summaries, func(i, j int) bool {
+		return strings.ToLower(summaries[i].Name) < strings.ToLower(summaries[j].Name)
+	})
+
+	if opts.Offset > 0 {
+		if opts.Offset >= len(summaries) {
+			return []*ZoneSummary{}, nil
+		}
+		summaries = summaries[opts.Offset:]
+	}
+
+	if opts.Limit > 0 && opts.Limit < len(summaries) {
+		summaries = summaries[:opts.Limit]
+	}
+
+	return summaries, nil
+}
+
 // CreateZone creates a new zone.
 func (m *MemoryBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	m.mu.Lock()

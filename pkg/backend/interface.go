@@ -52,6 +52,41 @@ type ZoneStore interface {
 	Close() error
 }
 
+// ZoneSummary is the lightweight representation used by controllers and
+// agents when record contents are not needed.
+type ZoneSummary struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// ZoneSummaryStore is an optional capability for backends that can list zone
+// metadata without loading full zone records.
+type ZoneSummaryStore interface {
+	ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error)
+}
+
+// ListZoneSummaries returns lightweight zone metadata, using an optimized
+// backend projection when available and falling back to ListZones otherwise.
+func ListZoneSummaries(ctx context.Context, store ZoneStore, opts ListOptions) ([]*ZoneSummary, error) {
+	if summaryStore, ok := store.(ZoneSummaryStore); ok {
+		return summaryStore.ListZoneSummaries(ctx, opts)
+	}
+
+	zones, err := store.ListZones(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	summaries := make([]*ZoneSummary, 0, len(zones))
+	for _, zone := range zones {
+		summaries = append(summaries, &ZoneSummary{
+			Name:    zone.Name,
+			Version: zone.Version,
+		})
+	}
+	return summaries, nil
+}
+
 // DNSSECMetadataStore is an optional capability for backends that can update
 // DNSSEC operational metadata without changing zone content version or SOA
 // serial. This is used after signing so schedulers can identify signed zones.

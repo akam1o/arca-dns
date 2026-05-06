@@ -68,7 +68,7 @@ X-API-Key: <api-key>
 
 ### Zones（JSON モード）
 
-- `GET /zones?limit=<n>&offset=<n>`: ゾーン一覧（ページング）
+- `GET /zones?limit=<n>&offset=<n>`: ゾーン一覧（ページング）。`fields=summary` を付けると `name` と `version` のみを返します。
 - `POST /zones`: ゾーン作成
 - `GET /zones/:name`: ゾーン取得
 - `PUT /zones/:name`: ゾーン更新（`If-Match` 必須）
