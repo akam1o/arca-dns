@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -26,6 +28,8 @@ type Handler struct {
 	logger         *zap.Logger
 	metrics        *ctrlmetrics.ControllerMetrics
 	buildInfo      BuildInfo
+
+	artifactSignatureKey string
 }
 
 // BuildInfo is returned by /status.
@@ -49,6 +53,11 @@ func NewHandler(store backend.ZoneStore, signingService *service.SigningService,
 		metrics:        metrics,
 		buildInfo:      buildInfo,
 	}
+}
+
+// SetArtifactSignatureKey configures HMAC signing for signed-zone artifact responses.
+func (h *Handler) SetArtifactSignatureKey(key string) {
+	h.artifactSignatureKey = strings.TrimSpace(key)
 }
 
 // Health handles GET /health (and /api/v1/health).
@@ -257,6 +266,12 @@ func sha256HexAndHash8(s string) (string, string) {
 		return hexSum, hexSum
 	}
 	return hexSum, hexSum[:8]
+}
+
+func signArtifact(body string, key string) string {
+	mac := hmac.New(sha256.New, []byte(key))
+	_, _ = mac.Write([]byte(body))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // ListZones handles GET /api/v1/zones
@@ -664,6 +679,9 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 	c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
 	c.Header("X-Zone-Hash", hashHex)
 	c.Header("X-Zone-Hash8", hash8)
+	if h.artifactSignatureKey != "" {
+		c.Header("X-Zone-Signature", signArtifact(zoneFile, h.artifactSignatureKey))
+	}
 
 	if match := c.GetHeader("If-None-Match"); match != "" && etagMatches(match, hashHex) {
 		c.Status(http.StatusNotModified)

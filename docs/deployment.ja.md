@@ -71,6 +71,7 @@ controller にはハッシュを設定します。
 
 ```yaml
 api:
+  artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
   auth:
     enabled: true
     api_keys:
@@ -83,12 +84,17 @@ agent には生の API キーを設定します。
 controller:
   url: "https://controller.example.com"
   api_key: "REPLACE_WITH_RAW_API_KEY"
+
+sync:
+  verify_signatures: true
+  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 
 環境変数だけで controller の API キーを渡す場合は、次の形式を使えます。suffix は小文字化され、principal 名になります。
 
 ```bash
 export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$API_KEY_HASH"
+export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$SHARED_SIGNATURE_KEY"
 ```
 
 ### DNSSEC マスターキー

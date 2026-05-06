@@ -741,7 +741,7 @@ paths:
               schema:
                 type: string
             X-Zone-Signature:
-              description: HMAC signature of the artifact (optional)
+              description: HMAC signature of the artifact when api.artifact_signature_key is configured
               schema:
                 type: string
           content:

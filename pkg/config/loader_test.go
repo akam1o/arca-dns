@@ -57,6 +57,7 @@ func TestDefaultControllerConfig_Defaults(t *testing.T) {
 	cfg := DefaultControllerConfig()
 
 	assert.Equal(t, "0.0.0.0:8080", cfg.API.Listen)
+	assert.Empty(t, cfg.API.ArtifactSignatureKey)
 	assert.True(t, cfg.API.Auth.Enabled)
 	assert.Equal(t, "sqlite", cfg.Backend.Type)
 	assert.True(t, cfg.DNSSEC.Enabled)
@@ -72,6 +73,7 @@ func TestLoadControllerConfig_FromYAML(t *testing.T) {
 	configContent := `
 api:
   listen: "127.0.0.1:9090"
+  artifact_signature_key: "yaml-signature-key"
   auth:
     enabled: true
     api_keys:
@@ -95,6 +97,7 @@ logging:
 	require.NoError(t, err)
 
 	assert.Equal(t, "127.0.0.1:9090", cfg.API.Listen)
+	assert.Equal(t, "yaml-signature-key", cfg.API.ArtifactSignatureKey)
 	assert.Equal(t, "mysql", cfg.Backend.Type)
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
 	assert.Equal(t, "/tmp/keys", cfg.DNSSEC.KeyDirectory)
@@ -145,6 +148,7 @@ logging:
 
 func TestLoadControllerConfig_NestedEnvOverrides(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", validTestAPIKeyHash)
+	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", "env-signature-key")
 	t.Setenv("ARCA_DNS_API_RATE_LIMIT_REQUESTS_PER_SECOND", "42")
 	t.Setenv("ARCA_DNS_API_RATE_LIMIT_BURST", "84")
 	t.Setenv("ARCA_DNS_BACKEND_TYPE", "postgres")
@@ -160,6 +164,7 @@ func TestLoadControllerConfig_NestedEnvOverrides(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 42, cfg.API.RateLimit.RequestsPerSecond)
+	assert.Equal(t, "env-signature-key", cfg.API.ArtifactSignatureKey)
 	assert.Equal(t, 84, cfg.API.RateLimit.Burst)
 	assert.Equal(t, "postgres", cfg.Backend.Type)
 	assert.Equal(t, "postgres://env:pass@db:5432/arca_dns?sslmode=disable", cfg.Backend.Postgres.DSN)

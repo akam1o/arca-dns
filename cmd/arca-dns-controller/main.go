@@ -185,6 +185,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		Commit:  commit,
 		Date:    date,
 	}, logger)
+	handler.SetArtifactSignatureKey(cfg.API.ArtifactSignatureKey)
 
 	// Setup router
 	router := api.SetupRouter(handler, &cfg.API, logger)

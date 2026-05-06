@@ -14,7 +14,8 @@ sync:
   backup_versions: 3
   verify_checksums: true
   verify_signatures: false
-  # Required when verify_signatures is true.
+  # Required when verify_signatures is true. Must match controller
+  # api.artifact_signature_key.
   controller_public_key: ""
 
 health:

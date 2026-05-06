@@ -59,6 +59,10 @@ type APIConfig struct {
 	// Listen address (e.g., "0.0.0.0:8080")
 	Listen string `mapstructure:"listen"`
 
+	// ArtifactSignatureKey signs signed-zone artifact responses with HMAC-SHA256.
+	// Agents use sync.controller_public_key with the same value to verify.
+	ArtifactSignatureKey string `mapstructure:"artifact_signature_key"`
+
 	// Authentication configuration
 	Auth AuthConfig `mapstructure:"auth"`
 
@@ -572,7 +576,7 @@ type SyncConfig struct {
 	// VerifySignatures enables artifact signature verification
 	VerifySignatures bool `mapstructure:"verify_signatures"`
 
-	// ControllerPublicKey is the controller's public key for verification
+	// ControllerPublicKey is the HMAC key used to verify controller artifact signatures.
 	ControllerPublicKey string `mapstructure:"controller_public_key"`
 }
 

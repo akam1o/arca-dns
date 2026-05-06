@@ -71,6 +71,7 @@ Set the hash on the controller:
 
 ```yaml
 api:
+  artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
   auth:
     enabled: true
     api_keys:
@@ -83,12 +84,17 @@ Set the raw API key on agents:
 controller:
   url: "https://controller.example.com"
   api_key: "REPLACE_WITH_RAW_API_KEY"
+
+sync:
+  verify_signatures: true
+  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 
 For env-only controller deployments, API keys can be supplied as:
 
 ```bash
 export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$API_KEY_HASH"
+export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$SHARED_SIGNATURE_KEY"
 ```
 
 The suffix becomes the lowercased principal name.

@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	agentsync "github.com/akam1o/arca-dns/internal/agent/sync"
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -827,6 +829,60 @@ func TestGetSignedZone(t *testing.T) {
 	assert.Contains(t, zoneFile, "$ORIGIN example.com.")
 	assert.Contains(t, zoneFile, "192.0.2.1")
 	assert.Contains(t, zoneFile, "ns1.example.com.")
+}
+
+func TestGetSignedZone_WithArtifactSignature(t *testing.T) {
+	handler, store, server := setupTest(t)
+	defer server.Close()
+	handler.SetArtifactSignatureKey("test-signature-key")
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	resp, err := http.Get(server.URL + "/api/v1/zones/example.com./signed")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, signArtifact(string(body), "test-signature-key"), resp.Header.Get("X-Zone-Signature"))
+}
+
+func TestGetSignedZone_AgentClientVerifiesArtifactSignature(t *testing.T) {
+	handler, store, server := setupTest(t)
+	defer server.Close()
+	handler.SetArtifactSignatureKey("test-signature-key")
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	client, err := agentsync.NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    10 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	defer client.Close()
+	client.SetSignatureVerification(true, "test-signature-key")
+
+	zoneFile, _, notModified, err := client.FetchSignedZone("example.com.", "")
+	require.NoError(t, err)
+	assert.False(t, notModified)
+	assert.Contains(t, zoneFile, "192.0.2.1")
 }
 
 func TestGetSignedZone_NotModified(t *testing.T) {

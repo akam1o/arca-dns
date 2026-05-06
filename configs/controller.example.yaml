@@ -2,6 +2,10 @@
 
 api:
   listen: "0.0.0.0:8080"
+  # Optional HMAC key for X-Zone-Signature on signed zone artifacts.
+  # Agents that enable sync.verify_signatures must use the same value in
+  # sync.controller_public_key.
+  artifact_signature_key: ""
   trusted_proxies: [] # e.g. ["10.0.0.0/8", "192.168.0.0/16"]
   auth:
     # The built-in default is true. When enabled, at least one valid API key
