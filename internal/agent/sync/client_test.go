@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -305,6 +306,71 @@ func TestFetchSignedZone_NotModified(t *testing.T) {
 
 	if etag != "v01ARZ3NDEKTSV4RRFFQ69G5FAV" {
 		t.Errorf("Expected ETag v01ARZ3NDEKTSV4RRFFQ69G5FAV, got %s", etag)
+	}
+}
+
+func TestFetchSignedZone_NotModifiedRejectsMissingETag(t *testing.T) {
+	requireTCPListener(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != "\"v01ARZ3NDEKTSV4RRFFQ69G5FAV\"" {
+			t.Errorf("Expected If-None-Match header \"v01ARZ3NDEKTSV4RRFFQ69G5FAV\", got %s", r.Header.Get("If-None-Match"))
+		}
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	cfg := config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, _, _, err = client.FetchSignedZone("example.com.", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err == nil {
+		t.Fatal("Expected missing ETag in 304 response to fail")
+	}
+	if !strings.Contains(err.Error(), "missing ETag") {
+		t.Errorf("Expected missing ETag error, got %v", err)
+	}
+}
+
+func TestFetchSignedZone_NotModifiedRejectsMismatchedETag(t *testing.T) {
+	requireTCPListener(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != "\"v01ARZ3NDEKTSV4RRFFQ69G5FAV\"" {
+			t.Errorf("Expected If-None-Match header \"v01ARZ3NDEKTSV4RRFFQ69G5FAV\", got %s", r.Header.Get("If-None-Match"))
+		}
+		w.Header().Set("ETag", "v01DIFFERENT")
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	cfg := config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, _, _, err = client.FetchSignedZone("example.com.", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err == nil {
+		t.Fatal("Expected mismatched ETag in 304 response to fail")
+	}
+	if !strings.Contains(err.Error(), "ETag mismatch") {
+		t.Errorf("Expected ETag mismatch error, got %v", err)
 	}
 }
 

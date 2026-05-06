@@ -245,8 +245,9 @@ func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, s
 	}
 
 	// Add If-None-Match header for conditional fetch (ETag-based)
-	if normalized := normalizeIfNoneMatch(currentETag); normalized != "" {
-		req.Header.Set("If-None-Match", normalized)
+	requestETag := normalizeIfNoneMatch(currentETag)
+	if requestETag != "" {
+		req.Header.Set("If-None-Match", requestETag)
 	}
 
 	resp, err := c.doWithRetry(req)
@@ -257,9 +258,19 @@ func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, s
 
 	// Handle 304 Not Modified (zone hasn't changed)
 	if resp.StatusCode == http.StatusNotModified {
-		// Extract integrity headers even on 304
-		newETag := resp.Header.Get("ETag")
-		return "", newETag, true, nil
+		if requestETag == "" {
+			return "", "", false, fmt.Errorf("received 304 Not Modified without a conditional ETag")
+		}
+
+		responseETag := normalizeIfNoneMatch(resp.Header.Get("ETag"))
+		if responseETag == "" {
+			return "", "", false, fmt.Errorf("missing ETag header in 304 response")
+		}
+		if responseETag != requestETag {
+			return "", "", false, fmt.Errorf("ETag mismatch in 304 response: requested %s, got %s", requestETag, responseETag)
+		}
+
+		return "", currentETag, true, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {

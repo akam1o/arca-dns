@@ -345,14 +345,6 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 		s.logger.Debug("Zone not modified (304)",
 			zap.String("zone", zone.Name),
 			zap.String("etag", currentETag))
-
-		// Prefer the response ETag (may be quoted); keep our local state aligned.
-		if newETag != "" {
-			s.mu.Lock()
-			state := s.getOrCreateStateLocked(zone.Name)
-			state.Version = newETag
-			s.mu.Unlock()
-		}
 		return nil
 	}
 
