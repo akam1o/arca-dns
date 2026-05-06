@@ -75,6 +75,8 @@ nfpms:
         dst: /etc/arca-dns/agent.yaml
         type: config
 
+      - src: ./packaging/sysusers.d/arca-dns.conf
+        dst: /usr/lib/sysusers.d/arca-dns.conf
       - src: ./packaging/tmpfiles.d/arca-dns.conf
         dst: /usr/lib/tmpfiles.d/arca-dns.conf
 

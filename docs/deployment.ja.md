@@ -232,6 +232,7 @@ sudo dnf install bird nsd unbound arca-dns
 - `/etc/arca-dns/agent.yaml`
 - `/usr/lib/systemd/system/arca-dns-controller.service`
 - `/usr/lib/systemd/system/arca-dns-agent.service`
+- `/usr/lib/sysusers.d/arca-dns.conf`
 
 `tmpfiles.d` により次のディレクトリも作成されます。
 
@@ -252,7 +253,7 @@ sudo dnf install bird nsd unbound arca-dns
 - DNSSEC 有効時は `/etc/arca-dns/master.key` または `ARCA_DNS_DNSSEC_MASTER_KEY_B64` を設定する
 - `storage.*` と `dnssec.key_directory` が service から書き込み可能であることを確認する
 
-systemd service は現在 root で起動します。権限を絞る場合は、NSD/Unbound/BIRD の control command、zone directory、key/artifact directory への権限も合わせて設計してください。
+パッケージ版 controller は `arca-dns` service user で起動します。agent は NSD/Unbound/BIRD の制御のため root を維持しますが、systemd unit で sandboxing され、設定済みの DNS、BIRD、state、log、runtime path のみを書き込み可能にしています。path を変更する場合は、権限または systemd drop-in も合わせて調整してください。
 
 ### 3. agent を設定
 

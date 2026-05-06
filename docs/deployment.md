@@ -234,6 +234,7 @@ The package installs:
 - `/etc/arca-dns/agent.yaml`
 - `/usr/lib/systemd/system/arca-dns-controller.service`
 - `/usr/lib/systemd/system/arca-dns-agent.service`
+- `/usr/lib/sysusers.d/arca-dns.conf`
 
 `tmpfiles.d` creates:
 
@@ -254,7 +255,7 @@ Minimum production checks:
 - if DNSSEC is enabled, configure `/etc/arca-dns/master.key` or `ARCA_DNS_DNSSEC_MASTER_KEY_B64`
 - verify `storage.*` and `dnssec.key_directory` are writable by the service
 
-The current systemd units run as root. If you harden them to run as another user, also adjust permissions for NSD/Unbound/BIRD control commands and all key, artifact, and zone directories.
+The packaged controller runs as the `arca-dns` service user. The agent keeps root for NSD/Unbound/BIRD control, but its systemd unit is sandboxed and only the configured DNS, BIRD, state, log, and runtime paths are writable. If you customize those paths, add matching permissions or a systemd drop-in.
 
 ### 3. Configure the Agent
 
