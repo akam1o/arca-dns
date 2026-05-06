@@ -136,8 +136,9 @@ func TestValidateTXTValue(t *testing.T) {
 	}{
 		{"valid simple", "v=spf1 include:_spf.example.com ~all", false},
 		{"valid with quotes", "\"v=DKIM1; k=rsa; p=...\"", false},
+		{"valid long chunked value", strings.Repeat("a", MaxTXTValueLength), false},
 		{"empty", "", false}, // TXT records can be empty
-		{"too long", strings.Repeat("a", 65536), true},
+		{"too long", strings.Repeat("a", MaxTXTValueLength+1), true},
 	}
 
 	for _, tt := range tests {
@@ -150,6 +151,16 @@ func TestValidateTXTValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSplitTXTValue(t *testing.T) {
+	value := strings.Repeat("a", 300)
+	chunks := SplitTXTValue(value)
+
+	assert.Len(t, chunks, 2)
+	assert.Len(t, chunks[0], MaxTXTCharacterStringLength)
+	assert.Len(t, chunks[1], 45)
+	assert.Equal(t, value, strings.Join(chunks, ""))
 }
 
 func TestValidateSRVValue(t *testing.T) {

@@ -170,6 +170,42 @@ func TestZoneSigner_SignZone(t *testing.T) {
 	}
 }
 
+func TestZoneSigner_SplitsLongTXT(t *testing.T) {
+	signer := newTestZoneSigner(t, DefaultSignerOptions())
+	value := strings.Repeat("a", 300)
+	zone := testSignerZone(time.Now())
+	zone.Records = append(zone.Records, model.Record{
+		Name:  "@",
+		Type:  "TXT",
+		TTL:   300,
+		Value: value,
+	})
+
+	_, signedRRs, err := signer.SignZone(zone)
+	if err != nil {
+		t.Fatalf("failed to sign zone: %v", err)
+	}
+
+	for _, rr := range signedRRs {
+		txt, ok := rr.(*dns.TXT)
+		if !ok || txt.Hdr.Name != "example.com." {
+			continue
+		}
+
+		if strings.Join(txt.Txt, "") != value {
+			t.Fatalf("TXT chunks joined to %q, want %q", strings.Join(txt.Txt, ""), value)
+		}
+		for _, chunk := range txt.Txt {
+			if len(chunk) > model.MaxTXTCharacterStringLength {
+				t.Fatalf("TXT chunk length=%d, want <=%d", len(chunk), model.MaxTXTCharacterStringLength)
+			}
+		}
+		return
+	}
+
+	t.Fatal("signed RRs did not include the long TXT record")
+}
+
 func TestZoneSigner_CAAValueWithSpaces(t *testing.T) {
 	signer := &ZoneSigner{}
 	rr, err := signer.recordToRR("example.com.", &model.Record{

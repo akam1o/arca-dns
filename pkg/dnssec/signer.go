@@ -296,7 +296,7 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 
 	case model.RecordTypeTXT:
 		hdr.Rrtype = dns.TypeTXT
-		return &dns.TXT{Hdr: hdr, Txt: []string{record.Value}}, nil
+		return &dns.TXT{Hdr: hdr, Txt: model.SplitTXTValue(record.Value)}, nil
 
 	case model.RecordTypePTR:
 		hdr.Rrtype = dns.TypePTR

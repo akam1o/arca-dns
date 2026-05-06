@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -155,6 +156,26 @@ func TestConvertRecordToRR_InvalidMX(t *testing.T) {
 	_, err := convertRecordToRR("example.com.", record)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid MX value format")
+}
+
+func TestConvertRecordToRR_SplitsLongTXT(t *testing.T) {
+	value := strings.Repeat("a", 300)
+	record := &model.Record{
+		Name:  "@",
+		Type:  "TXT",
+		TTL:   300,
+		Value: value,
+	}
+
+	rr, err := convertRecordToRR("example.com.", record)
+	require.NoError(t, err)
+
+	txt, ok := rr.(*dns.TXT)
+	require.True(t, ok)
+	require.Len(t, txt.Txt, 2)
+	assert.Len(t, txt.Txt[0], model.MaxTXTCharacterStringLength)
+	assert.Len(t, txt.Txt[1], 45)
+	assert.Equal(t, value, strings.Join(txt.Txt, ""))
 }
 
 func TestConvertRecordToRR_InvalidSRV(t *testing.T) {

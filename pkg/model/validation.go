@@ -15,6 +15,13 @@ var (
 	controlOrSpaceRe = regexp.MustCompile(`[\x00-\x20\x7f]`)
 )
 
+const (
+	// MaxTXTCharacterStringLength is the DNS wire limit for one TXT character-string.
+	MaxTXTCharacterStringLength = 255
+	// MaxTXTValueLength is the largest TXT payload that fits in one RR after chunk length bytes.
+	MaxTXTValueLength = 65279
+)
+
 // ValidateZone validates a complete zone.
 func ValidateZone(zone *Zone) error {
 	if zone == nil {
@@ -368,11 +375,26 @@ func ValidateMXValue(value string) error {
 // ValidateTXTValue validates a TXT record value.
 func ValidateTXTValue(value string) error {
 	// TXT records have flexible format, just check it's not empty
-	// and not too long (max 255 characters per string, but can have multiple)
-	if len(value) > 65535 {
-		return fmt.Errorf("TXT value too long (max 65535 characters)")
+	// and not too long (max 255 bytes per string, but can have multiple)
+	if len(value) > MaxTXTValueLength {
+		return fmt.Errorf("TXT value too long (max %d bytes)", MaxTXTValueLength)
 	}
 	return nil
+}
+
+// SplitTXTValue splits a TXT value into DNS character-strings.
+func SplitTXTValue(value string) []string {
+	if len(value) <= MaxTXTCharacterStringLength {
+		return []string{value}
+	}
+
+	chunks := make([]string, 0, (len(value)+MaxTXTCharacterStringLength-1)/MaxTXTCharacterStringLength)
+	for len(value) > MaxTXTCharacterStringLength {
+		chunks = append(chunks, value[:MaxTXTCharacterStringLength])
+		value = value[MaxTXTCharacterStringLength:]
+	}
+	chunks = append(chunks, value)
+	return chunks
 }
 
 // ValidateSRVValue validates an SRV record value (priority weight port target).

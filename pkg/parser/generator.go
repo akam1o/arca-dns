@@ -169,7 +169,7 @@ func convertRecordToRR(origin string, record *model.Record) (dns.RR, error) {
 		hdr.Rrtype = dns.TypeTXT
 		return &dns.TXT{
 			Hdr: hdr,
-			Txt: []string{record.Value},
+			Txt: model.SplitTXTValue(record.Value),
 		}, nil
 
 	case model.RecordTypePTR:
