@@ -77,6 +77,18 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		assert.ErrorIs(t, err, model.ErrZoneAlreadyExists)
 	})
 
+	t.Run("CreateZone_DuplicateRecords", func(t *testing.T) {
+		zone := createTestZone("duplicate-records.example.com.")
+		zone.Records = []model.Record{
+			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		}
+
+		err := store.CreateZone(ctx, zone)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate record")
+	})
+
 	t.Run("GetZone", func(t *testing.T) {
 		zone := createTestZone("get.example.com.")
 		err := store.CreateZone(ctx, zone)

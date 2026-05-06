@@ -223,6 +223,10 @@ func (s *SQLiteBackend) CreateZone(ctx context.Context, zone *model.Zone) error 
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -272,6 +276,10 @@ func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 	}
 	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	zone.SOA.Serial = generateSerial(currentSerial)
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	// CAS update
 	query := `
@@ -824,6 +832,10 @@ func (t *sqliteTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	zoneID, err := t.backend.insertZoneTx(ctx, t.tx, zone)
 	if err != nil {
 		return err
@@ -855,6 +867,10 @@ func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVer
 	}
 	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	zone.SOA.Serial = generateSerial(currentSerial)
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	query := `
 		UPDATE zones SET

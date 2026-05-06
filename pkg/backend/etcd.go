@@ -242,6 +242,10 @@ func (e *EtcdBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 		zone.Version = version
 	}
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	// Acquire zone lock
 	zoneMu := e.acquireZoneLock(normalized)
 	defer e.releaseZoneLock(zoneMu)
@@ -322,6 +326,10 @@ func (e *EtcdBackend) UpdateZone(ctx context.Context, zone *model.Zone, expected
 			return fmt.Errorf("generate zone version: %w", err)
 		}
 		zone.Version = newVersion
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
 	}
 
 	// Marshal zone data

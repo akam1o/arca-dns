@@ -128,6 +128,28 @@ func TestCreateZone_Duplicate(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, resp.StatusCode)
 }
 
+func TestCreateZone_RejectsDuplicateRecords(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+
+	body, err := json.Marshal(zone)
+	require.NoError(t, err)
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 func TestGetZone(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()

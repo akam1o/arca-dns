@@ -335,6 +335,10 @@ func (m *MySQLBackend) createZone(ctx context.Context, zone *model.Zone) error {
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	// Start transaction
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -485,6 +489,10 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 		return fmt.Errorf("failed to query zone serial: %w", err)
 	}
 	zone.SOA.Serial = generateSerial(currentSerial)
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	// Update zone. Add CAS condition only when an expected version is provided.
 	zoneQuery := `
@@ -914,6 +922,10 @@ func (t *MySQLTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	// Insert zone
 	zoneQuery := `
 		INSERT INTO zones (
@@ -995,6 +1007,10 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 		return fmt.Errorf("failed to query zone serial: %w", err)
 	}
 	zone.SOA.Serial = generateSerial(currentSerial)
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	// Update zone. Add CAS condition only when an expected version is provided.
 	zoneQuery := `

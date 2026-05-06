@@ -451,6 +451,42 @@ func TestValidateZone_RejectsInconsistentRRsetTTL(t *testing.T) {
 	assert.Contains(t, err.Error(), "inconsistent TTL")
 }
 
+func TestValidateZone_RejectsDuplicateRecords(t *testing.T) {
+	tests := []struct {
+		name    string
+		records []Record
+	}{
+		{
+			name: "exact duplicate",
+			records: []Record{
+				{Name: "www", Type: RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+				{Name: "www", Type: RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+			},
+		},
+		{
+			name: "canonical duplicate",
+			records: []Record{
+				{Name: "@", Type: RecordTypeNS, TTL: 300, Value: "ns1.example.com."},
+				{Name: "example.com.", Type: RecordTypeNS, TTL: 300, Value: "ns1.example.com"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			zone := &Zone{
+				Name:    "example.com.",
+				SOA:     DefaultSOA("ns1.example.com.", "admin.example.com."),
+				Records: tt.records,
+			}
+
+			err := ValidateZone(zone)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "duplicate record")
+		})
+	}
+}
+
 func TestValidateSOA(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -138,6 +138,10 @@ func (m *MemoryBackend) CreateZone(ctx context.Context, zone *model.Zone) error 
 		zone.Version = version
 	}
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	// Assign IDs to records
 	for i := range zone.Records {
 		m.nextID++
@@ -181,6 +185,10 @@ func (m *MemoryBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 			return fmt.Errorf("generate zone version: %w", err)
 		}
 		zone.Version = newVersion
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
 	}
 
 	// Assign IDs to new records

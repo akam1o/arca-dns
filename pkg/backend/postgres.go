@@ -206,6 +206,10 @@ func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) erro
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -253,6 +257,10 @@ func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expe
 	}
 	zone.CreatedAt = createdAt
 	zone.SOA.Serial = generateSerial(currentSerial)
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	// CAS update
 	dnssecEnabled := false
@@ -748,6 +756,9 @@ func (t *pgTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	now := time.Now()
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 	zoneID, err := t.backend.insertZonePGTx(ctx, t.tx, zone)
 	if err != nil {
 		return err
@@ -777,6 +788,10 @@ func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion
 	}
 	zone.CreatedAt = createdAt
 	zone.SOA.Serial = generateSerial(currentSerial)
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	dnssecEnabled := false
 	var dnssecAlgo, dnssecKSK, dnssecZSK interface{}

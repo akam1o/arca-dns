@@ -70,8 +70,15 @@ func ValidateRecordSetConstraints(zone *Zone) error {
 	}
 
 	owners := make(map[string]ownerState)
+	seenRecords := make(map[string]int)
 	for i, record := range zone.Records {
 		owner := canonicalRecordOwnerName(record.Name, zoneName)
+		duplicateKey := canonicalRecordDuplicateKey(record, owner)
+		if firstIndex, ok := seenRecords[duplicateKey]; ok {
+			return fmt.Errorf("invalid record at index %d: duplicate record matches index %d", i, firstIndex)
+		}
+		seenRecords[duplicateKey] = i
+
 		state, exists := owners[owner]
 		if !exists {
 			state.cnameIndex = -1
@@ -109,6 +116,43 @@ func ValidateRecordSetConstraints(zone *Zone) error {
 	}
 
 	return nil
+}
+
+func canonicalRecordDuplicateKey(record Record, owner string) string {
+	return strings.Join([]string{
+		owner,
+		record.Type,
+		strconv.FormatUint(uint64(record.TTL), 10),
+		canonicalRecordValue(record.Type, record.Value),
+	}, "\x00")
+}
+
+func canonicalRecordValue(recordType, value string) string {
+	switch recordType {
+	case RecordTypeA, RecordTypeAAAA:
+		if ip := net.ParseIP(value); ip != nil {
+			return ip.String()
+		}
+	case RecordTypeCNAME, RecordTypeNS, RecordTypePTR:
+		return NormalizeDomainName(value)
+	case RecordTypeMX:
+		parts := strings.Fields(value)
+		if len(parts) == 2 {
+			return parts[0] + " " + NormalizeDomainName(parts[1])
+		}
+	case RecordTypeSRV:
+		parts := strings.Fields(value)
+		if len(parts) == 4 {
+			return strings.Join([]string{
+				parts[0],
+				parts[1],
+				parts[2],
+				NormalizeDomainName(parts[3]),
+			}, " ")
+		}
+	}
+
+	return value
 }
 
 func canonicalRecordOwnerName(recordName, zoneName string) string {

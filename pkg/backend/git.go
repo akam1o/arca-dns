@@ -609,6 +609,10 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 		zone.Version = version
 	}
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	zoneMu, err := g.acquireLock(ctx, normalized)
 	if err != nil {
 		return err
@@ -685,6 +689,10 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 			return fmt.Errorf("generate zone version: %w", err)
 		}
 		zone.Version = newVersion
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
 	}
 
 	// Write updated zone file
