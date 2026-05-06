@@ -360,28 +360,10 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	return nil
 }
 
-// bindControllerEnvVars manually applies controller environment overrides.
+// bindControllerEnvVars binds all controller config leaves so environment
+// variables are visible to Unmarshal even when a key is absent from YAML.
 func bindControllerEnvVars(v *viper.Viper) {
-	// Bind key environment variables
-	envVars := []string{
-		"api.listen",
-		"api.auth.enabled",
-		"backend.type",
-		"dnssec.enabled",
-		"dnssec.key_directory",
-		"dnssec.algorithm",
-		"storage.artifact_directory",
-		"storage.key_directory",
-		"logging.level",
-	}
-
-	for _, key := range envVars {
-		envKey := "ARCA_DNS_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
-		if val := os.Getenv(envKey); val != "" {
-			v.Set(key, val)
-		}
-	}
-
+	bindEnvVarsFromStruct(v, reflect.TypeOf(ControllerConfig{}), "")
 	bindControllerAPIKeyEnvVars(v)
 }
 

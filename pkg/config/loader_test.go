@@ -143,6 +143,34 @@ logging:
 	assert.Equal(t, "warn", cfg.Logging.Level)
 }
 
+func TestLoadControllerConfig_NestedEnvOverrides(t *testing.T) {
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", validTestAPIKeyHash)
+	t.Setenv("ARCA_DNS_API_RATE_LIMIT_REQUESTS_PER_SECOND", "42")
+	t.Setenv("ARCA_DNS_API_RATE_LIMIT_BURST", "84")
+	t.Setenv("ARCA_DNS_BACKEND_TYPE", "postgres")
+	t.Setenv("ARCA_DNS_BACKEND_POSTGRES_DSN", "postgres://env:pass@db:5432/arca_dns?sslmode=disable")
+	t.Setenv("ARCA_DNS_BACKEND_POSTGRES_MAX_OPEN_CONNS", "17")
+	t.Setenv("ARCA_DNS_BACKEND_ETCD_ENDPOINTS", "http://etcd-a:2379,http://etcd-b:2379")
+	t.Setenv("ARCA_DNS_DNSSEC_SIGNATURE_VALIDITY", "240h")
+	t.Setenv("ARCA_DNS_DNSSEC_RESIGN_THRESHOLD", "24h")
+	t.Setenv("ARCA_DNS_DNSSEC_SCHEDULER_CHECK_INTERVAL", "15m")
+	t.Setenv("ARCA_DNS_STORAGE_MAX_VERSIONS_PER_ZONE", "42")
+
+	cfg, err := LoadControllerConfig("")
+	require.NoError(t, err)
+
+	assert.Equal(t, 42, cfg.API.RateLimit.RequestsPerSecond)
+	assert.Equal(t, 84, cfg.API.RateLimit.Burst)
+	assert.Equal(t, "postgres", cfg.Backend.Type)
+	assert.Equal(t, "postgres://env:pass@db:5432/arca_dns?sslmode=disable", cfg.Backend.Postgres.DSN)
+	assert.Equal(t, 17, cfg.Backend.Postgres.MaxOpenConns)
+	assert.Equal(t, []string{"http://etcd-a:2379", "http://etcd-b:2379"}, cfg.Backend.Etcd.Endpoints)
+	assert.Equal(t, 240*time.Hour, cfg.DNSSEC.SignatureValidity)
+	assert.Equal(t, 24*time.Hour, cfg.DNSSEC.ResignThreshold)
+	assert.Equal(t, 15*time.Minute, cfg.DNSSEC.SchedulerCheckInterval)
+	assert.Equal(t, 42, cfg.Storage.MaxVersionsPerZone)
+}
+
 func TestLoadControllerConfig_APIKeyEnvMergesAndOverridesYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", alternateValidTestAPIKeyHash)
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_EDGE_AGENT", validTestAPIKeyHash)
