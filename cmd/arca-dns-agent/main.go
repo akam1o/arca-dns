@@ -429,22 +429,26 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}()
 
 	// Start HTTP status server
-	wg.Add(1)
 	var routeCtrl plugin.RouteController
 	if routeManager != nil {
 		routeCtrl = bird.NewAdapter(routeManager)
 	}
-	statusServer := startStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
-	go func() {
-		defer wg.Done()
-		<-ctx.Done()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		if err := statusServer.Shutdown(shutdownCtx); err != nil {
-			logger.Error("Status server shutdown failed", zap.Error(err))
-		}
-		logger.Info("Status server stopped")
-	}()
+	if cfg.Metrics.Enabled {
+		wg.Add(1)
+		statusServer := startStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+		go func() {
+			defer wg.Done()
+			<-ctx.Done()
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			if err := statusServer.Shutdown(shutdownCtx); err != nil {
+				logger.Error("Status server shutdown failed", zap.Error(err))
+			}
+			logger.Info("Status server stopped")
+		}()
+	} else {
+		logger.Info("Status server disabled")
+	}
 
 	logger.Info("Agent started successfully",
 		zap.String("sync_interval", cfg.Sync.SyncInterval.String()),
@@ -558,7 +562,7 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 	})
 
 	// Metrics endpoint (Prometheus format)
-	router.GET("/metrics", func(c *gin.Context) {
+	router.GET(metricPath(cfg.Metrics.Path), func(c *gin.Context) {
 		var sb strings.Builder
 
 		sb.WriteString("# arca-dns agent metrics\n")
@@ -651,6 +655,17 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 	}()
 
 	return server
+}
+
+func metricPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/metrics"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
 }
 
 func boolToInt(v bool) int {

@@ -32,3 +32,18 @@ func TestReexecSelf_UsesExecutableAsArgv0(t *testing.T) {
 		t.Fatalf("expected argv[0]==path, got argv[0]=%q path=%q", gotArgv[0], gotPath)
 	}
 }
+
+func TestMetricPath(t *testing.T) {
+	tests := map[string]string{
+		"":                "/metrics",
+		"metrics":         "/metrics",
+		"/custom-metrics": "/custom-metrics",
+		"  scrape  ":      "/scrape",
+	}
+
+	for input, want := range tests {
+		if got := metricPath(input); got != want {
+			t.Fatalf("metricPath(%q)=%q, want %q", input, got, want)
+		}
+	}
+}

@@ -502,6 +502,24 @@ func TestValidateAgentConfig_VerifySignaturesRequiresKey(t *testing.T) {
 	assert.Contains(t, err.Error(), "sync.controller_public_key")
 }
 
+func TestValidateAgentConfig_InvalidDNSTapSampleRate(t *testing.T) {
+	cfg := DefaultAgentConfig()
+	cfg.DNSTap.Enabled = true
+	cfg.DNSTap.SampleRate = 0
+	err := ValidateAgentConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "dnstap.sample_rate")
+}
+
+func TestValidateAgentConfig_MetricsEnabledRequiresListen(t *testing.T) {
+	cfg := DefaultAgentConfig()
+	cfg.Metrics.Enabled = true
+	cfg.Metrics.Listen = ""
+	err := ValidateAgentConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "metrics.listen")
+}
+
 func TestValidateAgentConfig_InvalidLogLevel(t *testing.T) {
 	cfg := DefaultAgentConfig()
 	cfg.Logging.Level = "invalid"

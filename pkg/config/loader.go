@@ -339,6 +339,16 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid sync.controller_public_key: required when sync.verify_signatures is true")
 	}
 
+	if cfg.DNSTap.Enabled && cfg.DNSTap.SampleRate <= 0 {
+		return fmt.Errorf("invalid dnstap.sample_rate: must be positive when DNSTap is enabled")
+	}
+
+	if cfg.Metrics.Enabled {
+		if strings.TrimSpace(cfg.Metrics.Listen) == "" {
+			return fmt.Errorf("invalid metrics.listen: empty when metrics is enabled")
+		}
+	}
+
 	if cfg.Health.CheckInterval <= 0 {
 		return fmt.Errorf("invalid health.check_interval: must be positive")
 	}
