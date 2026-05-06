@@ -132,10 +132,20 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		resolver = &plugin.NoopResolver{}
 	}
 
+	syncer.SetValidateZoneFile(func(ctx context.Context, zoneName string, zonePath string) error {
+		return authServer.CheckZone(ctx, zoneName, zonePath)
+	})
+
 	// Wire zone-apply hook: reload services after zone file write.
 	syncer.SetOnZoneApplied(func(ctx context.Context, zoneName string) error {
 		// Reload authoritative server zone immediately so updates become visible to DNS.
 		if err := authServer.ReloadZone(ctx, zoneName); err != nil {
+			return err
+		}
+		if err := resolver.UpdateStubZone(ctx, zoneName); err != nil {
+			return err
+		}
+		if err := resolver.CheckConfig(ctx); err != nil {
 			return err
 		}
 		// Reload resolver to pick up any configuration changes.

@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -138,6 +139,57 @@ func TestFileManager_BackupCleanup(t *testing.T) {
 
 	if len(backups) != 2 {
 		t.Errorf("Expected 2 backups, got %d", len(backups))
+	}
+}
+
+func TestFileManager_WriteZoneFileValidatedFailurePreservesCurrent(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	original := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	replacement := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122802 3600 1800 604800 86400`
+
+	if err := fm.WriteZoneFile(zoneName, original); err != nil {
+		t.Fatalf("WriteZoneFile failed: %v", err)
+	}
+
+	err = fm.WriteZoneFileValidated(zoneName, replacement, func(zonePath string) error {
+		if _, statErr := os.Stat(zonePath); statErr != nil {
+			t.Fatalf("temporary zone path should exist during validation: %v", statErr)
+		}
+		return errors.New("invalid zone")
+	})
+	if err == nil {
+		t.Fatal("expected validation failure")
+	}
+
+	current, err := fm.ReadZoneFile(zoneName)
+	if err != nil {
+		t.Fatalf("ReadZoneFile failed: %v", err)
+	}
+	if current != original {
+		t.Fatalf("current zone file changed after validation failure")
+	}
+	if _, err := os.Stat(fm.GetZonePath(zoneName) + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temporary file should be removed, got err=%v", err)
+	}
+
+	backups, err := fm.listBackups(zoneName)
+	if err != nil {
+		t.Fatalf("listBackups failed: %v", err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("expected no backup when validation fails, got %d", len(backups))
 	}
 }
 

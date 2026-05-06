@@ -36,6 +36,12 @@ func NewFileManager(zoneDir string, backupVersions int, logger *zap.Logger) *Fil
 // 5. Rename temporary file to target (atomic operation)
 // 6. Clean up old backups
 func (fm *FileManager) WriteZoneFile(zoneName string, content string) error {
+	return fm.WriteZoneFileValidated(zoneName, content, nil)
+}
+
+// WriteZoneFileValidated writes a zone file atomically after validating the
+// temporary file, if a validator is provided.
+func (fm *FileManager) WriteZoneFileValidated(zoneName string, content string, validate func(zonePath string) error) error {
 	targetPath := fm.GetZonePath(zoneName) // Use safe path with GetZonePath
 	tmpPath := targetPath + ".tmp"
 
@@ -53,6 +59,13 @@ func (fm *FileManager) WriteZoneFile(zoneName string, content string) error {
 	if err := fm.fsyncFile(tmpPath); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to fsync temporary file: %w", err)
+	}
+
+	if validate != nil {
+		if err := validate(tmpPath); err != nil {
+			os.Remove(tmpPath)
+			return fmt.Errorf("zone validation failed: %w", err)
+		}
 	}
 
 	// Backup old version if it exists

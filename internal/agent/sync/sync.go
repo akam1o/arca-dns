@@ -2,9 +2,12 @@ package sync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,8 +34,9 @@ type Syncer struct {
 	lastSuccess time.Time                 // Last successful sync (any zone)
 	mu          sync.RWMutex              // Protects zoneStates and lastSuccess
 
-	onZoneApplied func(ctx context.Context, zoneName string) error
-	onZoneDeleted func(ctx context.Context, zoneName string) error
+	onZoneApplied    func(ctx context.Context, zoneName string) error
+	onZoneDeleted    func(ctx context.Context, zoneName string) error
+	validateZoneFile func(ctx context.Context, zoneName string, zonePath string) error
 }
 
 // NewSyncer creates a new zone syncer.
@@ -61,6 +65,12 @@ func (s *Syncer) SetOnZoneApplied(fn func(ctx context.Context, zoneName string) 
 // Returning an error will keep the zone state so the deletion reload can be retried.
 func (s *Syncer) SetOnZoneDeleted(fn func(ctx context.Context, zoneName string) error) {
 	s.onZoneDeleted = fn
+}
+
+// SetValidateZoneFile sets a hook used to validate the temporary zone file
+// before it replaces the active file.
+func (s *Syncer) SetValidateZoneFile(fn func(ctx context.Context, zoneName string, zonePath string) error) {
+	s.validateZoneFile = fn
 }
 
 // Run starts the sync loop with configurable interval and jitter.
@@ -316,6 +326,13 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 	}
 	s.mu.RUnlock()
 
+	if currentETag != "" && !s.localZoneFileMatchesState(zone.Name, currentETag) {
+		s.logger.Warn("Local zone file missing or mismatched, forcing full fetch",
+			zap.String("zone", zone.Name),
+			zap.String("etag", currentETag))
+		currentETag = ""
+	}
+
 	// Step 3: Conditional fetch using ETag
 	zoneContent, newETag, notModified, err := s.client.FetchSignedZone(zone.Name, currentETag)
 	if err != nil {
@@ -347,7 +364,13 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 
 	// Step 5: Atomic file write
 	// Step 6: Backup old version (handled by FileManager)
-	if err := s.fileMgr.WriteZoneFile(zone.Name, zoneContent); err != nil {
+	var validate func(zonePath string) error
+	if s.validateZoneFile != nil {
+		validate = func(zonePath string) error {
+			return s.validateZoneFile(ctx, zone.Name, zonePath)
+		}
+	}
+	if err := s.fileMgr.WriteZoneFileValidated(zone.Name, zoneContent, validate); err != nil {
 		return fmt.Errorf("failed to write zone file: %w", err)
 	}
 
@@ -369,6 +392,37 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+func (s *Syncer) localZoneFileMatchesState(zoneName, currentETag string) bool {
+	if !s.fileMgr.ZoneExists(zoneName) {
+		return false
+	}
+
+	expectedHash := etagValue(currentETag)
+	if len(expectedHash) != 64 || !isHex(expectedHash) {
+		return true
+	}
+
+	content, err := s.fileMgr.ReadZoneFile(zoneName)
+	if err != nil {
+		return false
+	}
+
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:]) == expectedHash
+}
+
+func etagValue(etag string) string {
+	etag = strings.TrimSpace(etag)
+	etag = strings.TrimPrefix(etag, "W/")
+	etag = strings.TrimSpace(etag)
+	return strings.Trim(etag, "\"")
+}
+
+func isHex(s string) bool {
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 
 // SyncZone synchronizes a specific zone by name.

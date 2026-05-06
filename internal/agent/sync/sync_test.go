@@ -2,6 +2,8 @@ package sync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -172,6 +174,77 @@ func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
 	// Verify zone file exists
 	zonePath := fileMgr.GetZonePath("example.com")
 	assert.FileExists(t, zonePath)
+}
+
+func TestSyncer_SyncAll_ForcesFetchWhenLocalZoneFileMissing(t *testing.T) {
+	requireTCPListener(t)
+
+	zoneContent := "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n"
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+	requestIfNoneMatch := make([]string, 0)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/zones":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"zones":[{"name":"example.com","version":"v1-abc123","soa":{"mname":"ns1.example.com","rname":"admin.example.com","serial":2024010101,"refresh":3600,"retry":1800,"expire":604800,"minimum":86400},"records":[]}]}`)
+
+		case "/api/v1/zones/example.com/signed":
+			ifNoneMatch := r.Header.Get("If-None-Match")
+			requestIfNoneMatch = append(requestIfNoneMatch, ifNoneMatch)
+			w.Header().Set("ETag", `"`+hashHex+`"`)
+			w.Header().Set("X-Zone-Serial", "2024010101")
+			w.Header().Set("X-Zone-Hash", hashHex)
+			w.Header().Set("X-Zone-Hash8", hashHex[:8])
+			if ifNoneMatch == `"`+hashHex+`"` {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, zoneContent)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	zoneDir := filepath.Join(tmpDir, "zones")
+	require.NoError(t, os.MkdirAll(zoneDir, 0755))
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	logger := zap.NewNop()
+	fileMgr := NewFileManager(zoneDir, 3, logger)
+	require.NoError(t, fileMgr.EnsureDirectory())
+
+	syncer := NewSyncer(client, fileMgr, config.SyncConfig{
+		SyncInterval:    30 * time.Second,
+		Jitter:          5 * time.Second,
+		MaxStaleness:    5 * time.Minute,
+		BackupVersions:  3,
+		VerifyChecksums: true,
+	}, logger)
+
+	ctx := context.Background()
+	require.NoError(t, syncer.SyncAll(ctx))
+	require.NoError(t, os.Remove(fileMgr.GetZonePath("example.com")))
+	require.NoError(t, syncer.SyncAll(ctx))
+
+	require.Len(t, requestIfNoneMatch, 2)
+	assert.Empty(t, requestIfNoneMatch[0])
+	assert.Empty(t, requestIfNoneMatch[1])
+	assert.FileExists(t, fileMgr.GetZonePath("example.com"))
 }
 
 func TestSyncer_SyncAll_RemovesDeletedZones(t *testing.T) {
