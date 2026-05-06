@@ -658,6 +658,36 @@ func TestCreateRecord_RequiresIfMatch(t *testing.T) {
 	assert.Equal(t, http.StatusPreconditionRequired, resp.StatusCode)
 }
 
+func TestCreateRecord_RejectsWildcardIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	record := model.Record{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", "*")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Empty(t, unchanged.Records)
+}
+
 func TestCreateRecord_RejectsStaleIfMatch(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
@@ -956,4 +986,33 @@ func TestUpdateZone_MissingIfMatch(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusPreconditionRequired, resp.StatusCode)
+}
+
+func TestUpdateZone_RejectsWildcardIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	zone.SOA.Refresh = 7200
+	body, err := json.Marshal(zone)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", "*")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, uint32(3600), unchanged.SOA.Refresh)
 }

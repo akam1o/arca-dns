@@ -364,6 +364,9 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 		))
 		return nil, "", false
 	}
+	if rejectWildcardIfMatch(c, "record updates") {
+		return nil, "", false
+	}
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
@@ -384,9 +387,6 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 		return nil, "", false
 	}
 
-	if strings.TrimSpace(ifMatch) == "*" {
-		return zone, "", true
-	}
 	if !etagMatches(ifMatch, zone.Version) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,

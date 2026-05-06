@@ -259,6 +259,19 @@ func formatETag(version string) string {
 	return `"` + version + `"`
 }
 
+func rejectWildcardIfMatch(c *gin.Context, operation string) bool {
+	if strings.TrimSpace(c.GetHeader("If-Match")) != "*" {
+		return false
+	}
+
+	c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+		model.ErrorCodeInvalidInput,
+		"If-Match wildcard is not supported for "+operation,
+		map[string]interface{}{"header": "If-Match"},
+	))
+	return true
+}
+
 func sha256HexAndHash8(s string) (string, string) {
 	sum := sha256.Sum256([]byte(s))
 	hexSum := hex.EncodeToString(sum[:])
@@ -492,6 +505,9 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		))
 		return
 	}
+	if rejectWildcardIfMatch(c, "zone updates") {
+		return
+	}
 
 	// Resolve If-Match into a concrete expected version (accepts quoted/unquoted, W/, and lists).
 	expectedVersion := ""
@@ -515,18 +531,15 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
-	if strings.TrimSpace(ifMatch) != "*" {
-		if !etagMatches(ifMatch, current.Version) {
-			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
-				model.ErrorCodeConflict,
-				"Zone version mismatch (optimistic lock failure)",
-				map[string]interface{}{"expected_version": ifMatch},
-			))
-			return
-		}
-
-		expectedVersion = current.Version
+	if !etagMatches(ifMatch, current.Version) {
+		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
+			model.ErrorCodeConflict,
+			"Zone version mismatch (optimistic lock failure)",
+			map[string]interface{}{"expected_version": ifMatch},
+		))
+		return
 	}
+	expectedVersion = current.Version
 
 	zone.Records = current.Records
 	zone.DNSSEC = current.DNSSEC
