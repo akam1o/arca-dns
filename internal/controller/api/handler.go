@@ -36,10 +36,9 @@ type BuildInfo struct {
 }
 
 type updateZoneRequest struct {
-	Name    string              `json:"name"`
-	SOA     model.SOARecord     `json:"soa"`
-	Records *[]model.Record     `json:"records,omitempty"`
-	DNSSEC  *model.DNSSECConfig `json:"dnssec,omitempty"`
+	Name   string              `json:"name"`
+	SOA    model.SOARecord     `json:"soa"`
+	DNSSEC *model.DNSSECConfig `json:"dnssec,omitempty"`
 }
 
 // NewHandler creates a new API handler.
@@ -459,10 +458,6 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		SOA:    req.SOA,
 		DNSSEC: req.DNSSEC,
 	}
-	recordsProvided := req.Records != nil
-	if recordsProvided {
-		zone.Records = *req.Records
-	}
 
 	// Ensure zone name matches URL
 	if zone.Name != name {
@@ -488,27 +483,23 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	// Resolve If-Match into a concrete expected version (accepts quoted/unquoted, W/, and lists).
 	expectedVersion := ""
 	var current *model.Zone
-	needsCurrent := strings.TrimSpace(ifMatch) != "*" || !recordsProvided
-	if needsCurrent {
-		var err error
-		current, err = h.store.GetZone(c.Request.Context(), zone.Name)
-		if err != nil {
-			if err == model.ErrZoneNotFound {
-				c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
-					model.ErrorCodeNotFound,
-					"Zone not found",
-					map[string]interface{}{"zone": name},
-				))
-				return
-			}
-			h.logger.Error("Failed to get zone for If-Match evaluation", zap.String("zone", zone.Name), zap.Error(err))
-			c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-				model.ErrorCodeInternal,
-				"Failed to update zone",
-				map[string]interface{}{"error": "internal error"},
+	current, err := h.store.GetZone(c.Request.Context(), zone.Name)
+	if err != nil {
+		if err == model.ErrZoneNotFound {
+			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
+				model.ErrorCodeNotFound,
+				"Zone not found",
+				map[string]interface{}{"zone": name},
 			))
 			return
 		}
+		h.logger.Error("Failed to get zone for If-Match evaluation", zap.String("zone", zone.Name), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to update zone",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
 	}
 
 	if strings.TrimSpace(ifMatch) != "*" {
@@ -524,9 +515,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		expectedVersion = current.Version
 	}
 
-	if !recordsProvided {
-		zone.Records = current.Records
-	}
+	zone.Records = current.Records
 
 	// Validate zone after defaulting omitted fields.
 	if err := model.ValidateZone(&zone); err != nil {

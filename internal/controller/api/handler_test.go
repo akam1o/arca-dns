@@ -216,7 +216,9 @@ func TestUpdateZone(t *testing.T) {
 	require.NoError(t, err)
 	originalVersion := retrieved.Version
 
-	// Update the zone
+	// Update the zone. Records in a zone update request are ignored; record
+	// mutations belong to record-specific workflows.
+	retrieved.SOA.Refresh = 7200
 	retrieved.Records = append(retrieved.Records, model.Record{
 		Name:  "www",
 		Type:  "A",
@@ -239,7 +241,9 @@ func TestUpdateZone(t *testing.T) {
 	var updated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
 	assert.NotEqual(t, originalVersion, updated.Version)
-	assert.Len(t, updated.Records, 2)
+	assert.Equal(t, uint32(7200), updated.SOA.Refresh)
+	assert.Len(t, updated.Records, 1)
+	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
 }
 
 func TestUpdateZone_OmittedRecordsPreservesExistingRecords(t *testing.T) {
@@ -284,7 +288,7 @@ func TestUpdateZone_OmittedRecordsPreservesExistingRecords(t *testing.T) {
 	assert.Equal(t, "192.0.2.2", updated.Records[1].Value)
 }
 
-func TestUpdateZone_EmptyRecordsClearsExistingRecords(t *testing.T) {
+func TestUpdateZone_EmptyRecordsPreservesExistingRecords(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
 
@@ -317,7 +321,8 @@ func TestUpdateZone_EmptyRecordsClearsExistingRecords(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var updated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
-	assert.Empty(t, updated.Records)
+	assert.Len(t, updated.Records, 1)
+	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
 }
 
 func TestUpdateZone_Conflict(t *testing.T) {

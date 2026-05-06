@@ -368,7 +368,7 @@ paths:
     put:
       tags: [zones]
       summary: Update a zone
-      description: Updates an existing zone (requires If-Match header for concurrency control)
+      description: Updates zone metadata such as SOA and DNSSEC settings. Existing records are preserved; manage records through record-specific workflows. Requires If-Match header for concurrency control.
       operationId: updateZone
       parameters:
         - name: If-Match
@@ -930,11 +930,6 @@ components:
           type: string
         soa:
           $ref: '#/components/schemas/SOARecord'
-        records:
-          description: Records to replace the existing record set. Omit to keep existing records; send an empty array to remove all records.
-          type: array
-          items:
-            $ref: '#/components/schemas/Record'
 
     CreateRecordRequest:
       type: object
