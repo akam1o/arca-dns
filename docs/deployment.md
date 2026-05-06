@@ -444,6 +444,10 @@ Agent HTTP endpoints:
 | `GET /status` | sync state, health, BGP announce state |
 | `GET /metrics` | Prometheus metrics |
 
+By default the agent status server listens on `127.0.0.1:9090`. Set
+`metrics.listen` to a remote address only when the endpoint is protected by
+network controls or an authenticated proxy.
+
 ## Post-Deployment Checks
 
 Controller:
@@ -458,10 +462,10 @@ curl http://controller:8080/metrics
 Agent:
 
 ```bash
-curl http://agent:9090/health
-curl http://agent:9090/ready
-curl http://agent:9090/status
-curl http://agent:9090/metrics
+curl http://localhost:9090/health
+curl http://localhost:9090/ready
+curl http://localhost:9090/status
+curl http://localhost:9090/metrics
 ```
 
 DNS:

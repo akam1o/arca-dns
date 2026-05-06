@@ -25,14 +25,18 @@ curl http://controller:8080/status
 **Agent**:
 ```bash
 # Liveness check
-curl http://agent:9090/health
+curl http://localhost:9090/health
 
 # Readiness check (requires successful sync)
-curl http://agent:9090/ready
+curl http://localhost:9090/ready
 
 # Full status with zone states
-curl http://agent:9090/status
+curl http://localhost:9090/status
 ```
+
+The agent status server binds to `127.0.0.1:9090` by default because `/status`
+includes zone sync and BGP state. Expose `metrics.listen` remotely only behind
+network filtering, a tunnel, or another authenticated control plane.
 
 ### Prometheus Metrics
 
@@ -43,7 +47,7 @@ curl http://agent:9090/status
 - `dnssec_signing_duration_seconds`: DNSSEC signing latency
 - `backend_operations_total`: Backend operation count by type, status
 
-**Agent metrics** (`http://agent:9090/metrics`):
+**Agent metrics** (`http://localhost:9090/metrics`):
 - `dns_queries_total`: DNS query count by type, rcode
 - `dns_query_duration_seconds`: Query latency histogram
 - `dns_udp_queries_total`, `dns_tcp_queries_total`: Transport breakdown

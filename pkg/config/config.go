@@ -709,7 +709,7 @@ func DefaultAgentConfig() *AgentConfig {
 		},
 		Metrics: MetricsConfig{
 			Enabled: true,
-			Listen:  "0.0.0.0:9090",
+			Listen:  "127.0.0.1:9090",
 			Path:    "/metrics",
 		},
 		Health: HealthConfig{

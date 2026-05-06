@@ -74,6 +74,13 @@ func TestDefaultControllerConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "info", cfg.Logging.Level)
 }
 
+func TestDefaultAgentConfig_MetricsListenIsLoopback(t *testing.T) {
+	cfg := DefaultAgentConfig()
+
+	assert.Equal(t, "127.0.0.1:9090", cfg.Metrics.Listen)
+	assert.True(t, cfg.Metrics.Enabled)
+}
+
 func TestLoadControllerConfig_FromYAML(t *testing.T) {
 	// Create temporary config file
 	tmpDir := t.TempDir()

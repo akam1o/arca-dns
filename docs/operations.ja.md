@@ -25,14 +25,19 @@ curl http://controller:8080/status
 **Agent**:
 ```bash
 # Liveness check
-curl http://agent:9090/health
+curl http://localhost:9090/health
 
 # Readiness check (requires successful sync)
-curl http://agent:9090/ready
+curl http://localhost:9090/ready
 
 # Full status with zone states
-curl http://agent:9090/status
+curl http://localhost:9090/status
 ```
+
+agent の status server はデフォルトで `127.0.0.1:9090` に bind します。
+`/status` には zone 同期状態と BGP 状態が含まれるため、`metrics.listen`
+をリモート公開する場合は firewall、tunnel、または認証済みの control plane
+の背後に置いてください。
 
 ### Prometheus メトリクス
 
@@ -43,7 +48,7 @@ curl http://agent:9090/status
 - `dnssec_signing_duration_seconds`: DNSSEC 署名のレイテンシ
 - `backend_operations_total`: backend 操作数（type/status 別）
 
-**Agent metrics**（`http://agent:9090/metrics`）:
+**Agent metrics**（`http://localhost:9090/metrics`）:
 - `dns_queries_total`: type/rcode 別のクエリ数
 - `dns_query_duration_seconds`: クエリレイテンシのヒストグラム
 - `dns_udp_queries_total`, `dns_tcp_queries_total`: transport 別

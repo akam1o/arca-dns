@@ -94,6 +94,42 @@ func TestReceiver_RunClosesActiveConnectionsOnCancel(t *testing.T) {
 	requireRunCanceled(t, errCh)
 }
 
+func TestRemoveStaleSocket_RemovesUnixSocket(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	socketPath := filepath.Join(tmpDir, "stale.sock")
+
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	require.NoError(t, listener.Close())
+
+	require.NoError(t, removeStaleSocket(socketPath))
+	_, err = os.Lstat(socketPath)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestRemoveStaleSocket_RefusesRegularFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	socketPath := filepath.Join(tmpDir, "not-a-socket")
+	require.NoError(t, os.WriteFile(socketPath, []byte("keep"), 0600))
+
+	err = removeStaleSocket(socketPath)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "non-socket")
+	contents, readErr := os.ReadFile(socketPath)
+	require.NoError(t, readErr)
+	require.Equal(t, []byte("keep"), contents)
+}
+
+func TestRemoveStaleSocket_RefusesEmptyPath(t *testing.T) {
+	err := removeStaleSocket(" ")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "empty")
+}
+
 func requireRunCanceled(t *testing.T, errCh <-chan error) {
 	t.Helper()
 

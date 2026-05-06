@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,9 +57,8 @@ func NewReceiver(config ReceiverConfig, logger *zap.Logger) *Receiver {
 // Run starts the DNSTap receiver and sends frames to the channel.
 // It blocks until the context is canceled.
 func (r *Receiver) Run(ctx context.Context, frameChan chan<- Frame) error {
-	// Remove stale socket file if it exists
-	if err := os.Remove(r.socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove stale socket: %w", err)
+	if err := removeStaleSocket(r.socketPath); err != nil {
+		return err
 	}
 
 	// Create Unix socket listener
@@ -144,6 +144,29 @@ func (r *Receiver) Run(ctx context.Context, frameChan chan<- Frame) error {
 			}(conn)
 		}
 	}
+}
+
+func removeStaleSocket(socketPath string) error {
+	if strings.TrimSpace(socketPath) == "" {
+		return fmt.Errorf("dnstap socket path is empty")
+	}
+
+	info, err := os.Lstat(socketPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat dnstap socket path: %w", err)
+	}
+
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to remove non-socket dnstap path %q (mode %s)", socketPath, info.Mode())
+	}
+
+	if err := os.Remove(socketPath); err != nil {
+		return fmt.Errorf("failed to remove stale dnstap socket: %w", err)
+	}
+	return nil
 }
 
 // handleConnection reads DNSTap frames from a connection.

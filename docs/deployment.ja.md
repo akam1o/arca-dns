@@ -442,6 +442,10 @@ agent の HTTP endpoint:
 | `GET /status` | 同期状態、health、BGP announce 状態 |
 | `GET /metrics` | Prometheus metrics |
 
+agent の status server はデフォルトで `127.0.0.1:9090` を listen します。
+`metrics.listen` をリモートアドレスに変更する場合は、network control
+または認証付き proxy の背後に置いてください。
+
 ## デプロイ後の確認
 
 controller:
@@ -456,10 +460,10 @@ curl http://controller:8080/metrics
 agent:
 
 ```bash
-curl http://agent:9090/health
-curl http://agent:9090/ready
-curl http://agent:9090/status
-curl http://agent:9090/metrics
+curl http://localhost:9090/health
+curl http://localhost:9090/ready
+curl http://localhost:9090/status
+curl http://localhost:9090/metrics
 ```
 
 DNS:
