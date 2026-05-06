@@ -299,7 +299,7 @@ all-types.com. IN AAAA 2001:db8::1
 www.all-types.com. IN CNAME all-types.com.
 all-types.com. IN MX 10 mail.all-types.com.
 all-types.com. IN TXT "v=spf1 -all"
-1.2.0.192.in-addr.arpa. IN PTR all-types.com.
+ptr.all-types.com. IN PTR all-types.com.
 _http._tcp.all-types.com. IN SRV 0 5 80 www.all-types.com.
 all-types.com. IN CAA 0 issue "ca.example.com"
 `

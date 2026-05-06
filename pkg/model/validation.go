@@ -36,10 +36,8 @@ func ValidateZone(zone *Zone) error {
 		if err := ValidateRecord(&record); err != nil {
 			return fmt.Errorf("invalid record at index %d: %w", i, err)
 		}
-		if record.Type != RecordTypePTR {
-			if err := ValidateRecordNameInZone(record.Name, zone.Name); err != nil {
-				return fmt.Errorf("invalid record at index %d: %w", i, err)
-			}
+		if err := ValidateRecordNameInZone(record.Name, zone.Name); err != nil {
+			return fmt.Errorf("invalid record at index %d: %w", i, err)
 		}
 	}
 

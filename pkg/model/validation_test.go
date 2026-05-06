@@ -341,6 +341,48 @@ func TestValidateZone_RecordNameMustStayInZone(t *testing.T) {
 	assert.Contains(t, err.Error(), "outside zone")
 }
 
+func TestValidateZone_PTRRecordNameMustStayInZone(t *testing.T) {
+	zone := &Zone{
+		Name: "example.com.",
+		SOA: SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []Record{
+			{Name: "1.2.0.192.in-addr.arpa.", Type: "PTR", TTL: 300, Value: "host.example.com."},
+		},
+	}
+
+	err := ValidateZone(zone)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "outside zone")
+}
+
+func TestValidateZone_PTRRecordNameAllowsReverseZone(t *testing.T) {
+	zone := &Zone{
+		Name: "0.192.in-addr.arpa.",
+		SOA: SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []Record{
+			{Name: "1.2.0.192.in-addr.arpa.", Type: "PTR", TTL: 300, Value: "host.example.com."},
+		},
+	}
+
+	assert.NoError(t, ValidateZone(zone))
+}
+
 func TestValidateSOA(t *testing.T) {
 	tests := []struct {
 		name    string

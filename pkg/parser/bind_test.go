@@ -121,7 +121,7 @@ example.com. IN AAAA 2001:db8::1
 www.example.com. IN CNAME example.com.
 example.com. IN MX 10 mail.example.com.
 example.com. IN TXT "v=spf1 -all"
-1.2.0.192.in-addr.arpa. IN PTR example.com.
+ptr.example.com. IN PTR example.com.
 _http._tcp.example.com. IN SRV 0 5 80 www.example.com.
 example.com. IN CAA 0 issue "ca.example.com"
 `
