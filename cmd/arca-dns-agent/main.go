@@ -306,7 +306,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 				QueueSize:  1000, // Default queue size
 			},
 			SamplerConfig: dnstap.SamplerConfig{
-				SampleRate: 1.0 / float64(cfg.DNSTap.SampleRate), // Convert 1/N to float
+				SampleRate:      1.0 / float64(cfg.DNSTap.SampleRate), // Convert 1/N to float
+				AlwaysLogErrors: cfg.DNSTap.AlwaysLogErrors,
 			},
 			PrometheusEnabled: cfg.Metrics.Enabled,
 		}
