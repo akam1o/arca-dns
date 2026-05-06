@@ -113,16 +113,37 @@ curl -X POST http://controller:8080/api/v1/zones/raw \
 ### ゾーンを更新する
 
 ```bash
-# Update specific records
+# SOA メタデータを更新する。このエンドポイントでは既存 records は保持されます。
+etag="$(curl -sI http://controller:8080/api/v1/zones/example.com. \
+  -H "X-API-Key: your-api-key" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
 curl -X PUT http://controller:8080/api/v1/zones/example.com. \
   -H "X-API-Key: your-api-key" \
   -H "Content-Type: application/json" \
-  -H "If-Match: v2024122801-a3f5c2e9" \
+  -H "If-Match: ${etag}" \
   -d '{
-    "records": [
-      {"name": "www", "type": "A", "ttl": 300, "value": "192.0.2.100"}
-    ]
+    "name": "example.com.",
+    "soa": {
+      "mname": "ns1.example.com.",
+      "rname": "admin.example.com.",
+      "refresh": 3600,
+      "retry": 600,
+      "expire": 604800,
+      "minimum": 300
+    }
   }'
+
+# 特定の record は record CRUD エンドポイントで更新する。
+record_id="$(curl -s http://controller:8080/api/v1/zones/example.com./records \
+  -H "X-API-Key: your-api-key" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+etag="$(curl -sI http://controller:8080/api/v1/zones/example.com. \
+  -H "X-API-Key: your-api-key" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+curl -X PUT "http://controller:8080/api/v1/zones/example.com./records/${record_id}" \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -H "If-Match: ${etag}" \
+  -d '{"name": "www", "type": "A", "ttl": 300, "value": "192.0.2.100"}'
 ```
 
 ### ゾーンを削除する
@@ -617,4 +638,3 @@ groups:
     expr: arca_dns_agent_health_status == 0
     for: 2m
 ```
-
