@@ -107,6 +107,30 @@ func TestMigrateImport(t *testing.T) {
 	assert.NotEmpty(t, imported.Version)
 }
 
+func TestMigrateImport_RejectsInvalidZone(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	invalidZone := &model.Zone{
+		Name: "invalid.example.com.",
+		SOA:  model.DefaultSOA("ns1.invalid.example.com.", "admin.invalid.example.com."),
+		Records: []model.Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "not-an-ip"},
+		},
+	}
+
+	data, err := json.MarshalIndent(invalidZone, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "invalid_example_com.json"), data, 0644))
+
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	_, err = importToStore(context.Background(), store, tmpDir, false, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validate file")
+	assert.Contains(t, err.Error(), "invalid record")
+}
+
 // TestMigrateCopy tests copying zones between backends.
 func TestMigrateCopy(t *testing.T) {
 	// Create source backend with test zones

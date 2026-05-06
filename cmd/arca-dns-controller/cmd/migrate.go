@@ -348,6 +348,9 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 		if err := json.Unmarshal(data, &zone); err != nil {
 			return 0, fmt.Errorf("parse file %s: %w", file, err)
 		}
+		if err := model.ValidateZone(&zone); err != nil {
+			return 0, fmt.Errorf("validate file %s: %w", file, err)
+		}
 
 		zones = append(zones, &zone)
 	}
