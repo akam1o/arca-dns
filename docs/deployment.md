@@ -64,6 +64,7 @@ The controller default is `api.auth.enabled: true`. When auth is enabled, `api.a
 ```bash
 API_KEY="$(openssl rand -hex 32)"
 API_KEY_HASH="sha256:$(printf '%s' "$API_KEY" | sha256sum | awk '{print $1}')"
+SHARED_SIGNATURE_KEY="$(openssl rand -base64 32)"
 
 printf 'raw api key: %s\n' "$API_KEY"
 printf 'hash: %s\n' "$API_KEY_HASH"
@@ -73,6 +74,7 @@ Set the hash on the controller:
 
 ```yaml
 api:
+  # Generate with: openssl rand -base64 32
   artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
   auth:
     enabled: true
@@ -89,6 +91,7 @@ controller:
 
 sync:
   verify_signatures: true
+  # Must match api.artifact_signature_key.
   controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 

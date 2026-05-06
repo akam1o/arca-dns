@@ -12,6 +12,9 @@ import (
 
 const validTestAPIKeyHash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 const alternateValidTestAPIKeyHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+const validTestArtifactSignatureKey = "test-artifact-signature-key-32-bytes"
+const validYAMLArtifactSignatureKey = "yaml-artifact-signature-key-32-bytes"
+const validEnvArtifactSignatureKey = "env-artifact-signature-key-32-bytes"
 
 func validControllerConfigForTest() *ControllerConfig {
 	cfg := DefaultControllerConfig()
@@ -23,7 +26,7 @@ func validControllerConfigForTest() *ControllerConfig {
 
 func validAgentConfigForTest() *AgentConfig {
 	cfg := DefaultAgentConfig()
-	cfg.Sync.ControllerPublicKey = "test-signature-key"
+	cfg.Sync.ControllerPublicKey = validTestArtifactSignatureKey
 	return cfg
 }
 
@@ -79,7 +82,7 @@ func TestLoadControllerConfig_FromYAML(t *testing.T) {
 	configContent := `
 api:
   listen: "127.0.0.1:9090"
-  artifact_signature_key: "yaml-signature-key"
+  artifact_signature_key: "` + validYAMLArtifactSignatureKey + `"
   auth:
     enabled: true
     api_keys:
@@ -103,7 +106,7 @@ logging:
 	require.NoError(t, err)
 
 	assert.Equal(t, "127.0.0.1:9090", cfg.API.Listen)
-	assert.Equal(t, "yaml-signature-key", cfg.API.ArtifactSignatureKey)
+	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.API.ArtifactSignatureKey)
 	assert.Equal(t, "mysql", cfg.Backend.Type)
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
 	assert.Equal(t, "/tmp/keys", cfg.DNSSEC.KeyDirectory)
@@ -217,7 +220,7 @@ logging:
 
 func TestLoadControllerConfig_NestedEnvOverrides(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", validTestAPIKeyHash)
-	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", "env-signature-key")
+	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 	t.Setenv("ARCA_DNS_API_RATE_LIMIT_REQUESTS_PER_SECOND", "42")
 	t.Setenv("ARCA_DNS_API_RATE_LIMIT_BURST", "84")
 	t.Setenv("ARCA_DNS_BACKEND_TYPE", "postgres")
@@ -233,7 +236,7 @@ func TestLoadControllerConfig_NestedEnvOverrides(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 42, cfg.API.RateLimit.RequestsPerSecond)
-	assert.Equal(t, "env-signature-key", cfg.API.ArtifactSignatureKey)
+	assert.Equal(t, validEnvArtifactSignatureKey, cfg.API.ArtifactSignatureKey)
 	assert.Equal(t, 84, cfg.API.RateLimit.Burst)
 	assert.Equal(t, "postgres", cfg.Backend.Type)
 	assert.Equal(t, "postgres://env:pass@db:5432/arca_dns?sslmode=disable", cfg.Backend.Postgres.DSN)
@@ -332,6 +335,36 @@ func TestValidateControllerConfig_AuthDisabledAllowsEmptyAPIKeys(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestValidateControllerConfig_RejectsInvalidArtifactSignatureKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{
+			name: "placeholder",
+			key:  "REPLACE_WITH_SHARED_SIGNATURE_KEY",
+			want: "placeholder",
+		},
+		{
+			name: "too short",
+			key:  "short-secret",
+			want: "at least 32 bytes",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validControllerConfigForTest()
+			cfg.API.ArtifactSignatureKey = tc.key
+			err := ValidateControllerConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "api.artifact_signature_key")
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestValidateControllerConfig_EmptyAPIListen(t *testing.T) {
 	cfg := validControllerConfigForTest()
 	cfg.API.Listen = ""
@@ -407,7 +440,7 @@ func TestValidateControllerConfig_InvalidNSEC3SaltLength(t *testing.T) {
 }
 
 func TestLoadAgentConfig_Defaults(t *testing.T) {
-	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", "test-signature-key")
+	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", validTestArtifactSignatureKey)
 
 	cfg, err := LoadAgentConfig("")
 	require.NoError(t, err)
@@ -417,7 +450,7 @@ func TestLoadAgentConfig_Defaults(t *testing.T) {
 	assert.True(t, cfg.Unbound.Enabled)
 	assert.Equal(t, 1232, cfg.Unbound.EDNSBufferSize)
 	assert.True(t, cfg.Sync.VerifySignatures)
-	assert.Equal(t, "test-signature-key", cfg.Sync.ControllerPublicKey)
+	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, "info", cfg.Logging.Level)
 }
 
@@ -435,7 +468,7 @@ nsd:
 unbound:
   enabled: false
 sync:
-  controller_public_key: "yaml-signature-key"
+  controller_public_key: "` + validYAMLArtifactSignatureKey + `"
 logging:
   level: "debug"
 `
@@ -450,7 +483,7 @@ logging:
 	assert.Equal(t, "/tmp/nsd-zones", cfg.NSD.ZoneDirectory)
 	assert.False(t, cfg.Unbound.Enabled)
 	assert.True(t, cfg.Sync.VerifySignatures)
-	assert.Equal(t, "yaml-signature-key", cfg.Sync.ControllerPublicKey)
+	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, "debug", cfg.Logging.Level)
 }
 
@@ -461,7 +494,7 @@ func TestLoadAgentConfig_EnvOverrideWithYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_NSD_ENABLED", "false")
 	t.Setenv("ARCA_DNS_UNBOUND_STUB_ZONE_NSD_PORT", "5533")
 	t.Setenv("ARCA_DNS_SYNC_VERIFY_CHECKSUMS", "false")
-	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", "env-signature-key")
+	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", validEnvArtifactSignatureKey)
 	t.Setenv("ARCA_DNS_HEALTH_QUERY_TIMEOUT", "2s")
 	t.Setenv("ARCA_DNS_METRICS_PATH", "/env-metrics")
 	t.Setenv("ARCA_DNS_LOGGING_ENABLE_CALLER", "true")
@@ -484,7 +517,7 @@ unbound:
     nsd_port: 5353
 sync:
   verify_checksums: true
-  controller_public_key: "yaml-signature-key"
+  controller_public_key: "` + validYAMLArtifactSignatureKey + `"
 health:
   query_timeout: 5s
 metrics:
@@ -505,7 +538,7 @@ logging:
 	assert.False(t, cfg.NSD.Enabled)
 	assert.Equal(t, 5533, cfg.Unbound.StubZoneConfig.NSDPort)
 	assert.False(t, cfg.Sync.VerifyChecksums)
-	assert.Equal(t, "env-signature-key", cfg.Sync.ControllerPublicKey)
+	assert.Equal(t, validEnvArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, 2*time.Second, cfg.Health.QueryTimeout)
 	assert.Equal(t, "/env-metrics", cfg.Metrics.Path)
 	assert.True(t, cfg.Logging.EnableCaller)
@@ -514,14 +547,14 @@ logging:
 func TestLoadAgentConfig_EnvOverrideWithoutFile(t *testing.T) {
 	t.Setenv("ARCA_DNS_CONTROLLER_URL", "https://env-only-controller.example.com")
 	t.Setenv("ARCA_DNS_CONTROLLER_API_KEY", "env-only-api-key")
-	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", "env-signature-key")
+	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", validEnvArtifactSignatureKey)
 
 	cfg, err := LoadAgentConfig("")
 	require.NoError(t, err)
 
 	assert.Equal(t, "https://env-only-controller.example.com", cfg.Controller.URL)
 	assert.Equal(t, "env-only-api-key", cfg.Controller.APIKey)
-	assert.Equal(t, "env-signature-key", cfg.Sync.ControllerPublicKey)
+	assert.Equal(t, validEnvArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 }
 
 func TestValidateAgentConfig_Valid(t *testing.T) {
@@ -590,6 +623,37 @@ func TestValidateAgentConfig_VerifySignaturesRequiresKey(t *testing.T) {
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "sync.controller_public_key")
+}
+
+func TestValidateAgentConfig_RejectsInvalidSignatureKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{
+			name: "placeholder",
+			key:  "REPLACE_WITH_SHARED_SIGNATURE_KEY",
+			want: "placeholder",
+		},
+		{
+			name: "too short",
+			key:  "short-secret",
+			want: "at least 32 bytes",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.Sync.VerifySignatures = true
+			cfg.Sync.ControllerPublicKey = tc.key
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "sync.controller_public_key")
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
 }
 
 func TestValidateAgentConfig_InvalidDNSTapSampleRate(t *testing.T) {

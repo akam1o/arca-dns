@@ -15,7 +15,7 @@ sync:
   verify_checksums: true
   verify_signatures: true
   # Required when verify_signatures is true. Must match controller
-  # api.artifact_signature_key.
+  # api.artifact_signature_key. Generate with: openssl rand -base64 32
   controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 health:

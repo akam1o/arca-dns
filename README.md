@@ -140,6 +140,7 @@ See `configs/controller.example.yaml` and `configs/agent.example.yaml`, plus `do
 ```yaml
 api:
   listen: "0.0.0.0:8080"
+  # Generate with: openssl rand -base64 32
   artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
   # TLS is typically terminated by a reverse proxy / ingress.
   auth:
@@ -166,6 +167,7 @@ controller:
 sync:
   sync_interval: "30s"
   verify_signatures: true
+  # Must match api.artifact_signature_key.
   controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 nsd:

@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/viper"
 )
 
+const minArtifactSignatureKeyBytes = 32
+
 // LoadControllerConfig loads the controller configuration from the specified file.
 // Priority: defaults < YAML file < environment variables
 func LoadControllerConfig(path string) (*ControllerConfig, error) {
@@ -114,6 +116,10 @@ func LoadAgentConfig(path string) (*AgentConfig, error) {
 func ValidateControllerConfig(cfg *ControllerConfig) error {
 	if cfg.API.Listen == "" {
 		return fmt.Errorf("invalid api.listen: empty")
+	}
+
+	if err := validateArtifactSignatureKey("api.artifact_signature_key", cfg.API.ArtifactSignatureKey, false); err != nil {
+		return err
 	}
 
 	if err := validateControllerAuthConfig(cfg.API.Auth); err != nil {
@@ -245,6 +251,34 @@ func isSHA256APIKeyHash(hash string) bool {
 	return err == nil
 }
 
+func validateArtifactSignatureKey(field string, key string, required bool) error {
+	value := strings.TrimSpace(key)
+	if value == "" {
+		if required {
+			return fmt.Errorf("invalid %s: required when sync.verify_signatures is true; generate a shared secret with: openssl rand -base64 32", field)
+		}
+		return nil
+	}
+
+	if isPlaceholderSecret(value) {
+		return fmt.Errorf("invalid %s: replace placeholder value with a generated shared secret (generate with: openssl rand -base64 32)", field)
+	}
+
+	if len([]byte(value)) < minArtifactSignatureKeyBytes {
+		return fmt.Errorf("invalid %s: must be at least %d bytes; generate with: openssl rand -base64 32", field, minArtifactSignatureKeyBytes)
+	}
+
+	return nil
+}
+
+func isPlaceholderSecret(value string) bool {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	return strings.Contains(normalized, "REPLACE") ||
+		strings.Contains(normalized, "CHANGEME") ||
+		strings.Contains(normalized, "CHANGE_ME") ||
+		strings.Contains(normalized, "TODO")
+}
+
 // ValidateAgentConfig validates the agent configuration.
 func ValidateAgentConfig(cfg *AgentConfig) error {
 	if cfg.Controller.URL == "" {
@@ -339,8 +373,10 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid sync.backup_versions: must be non-negative")
 	}
 
-	if cfg.Sync.VerifySignatures && strings.TrimSpace(cfg.Sync.ControllerPublicKey) == "" {
-		return fmt.Errorf("invalid sync.controller_public_key: required when sync.verify_signatures is true")
+	if cfg.Sync.VerifySignatures {
+		if err := validateArtifactSignatureKey("sync.controller_public_key", cfg.Sync.ControllerPublicKey, true); err != nil {
+			return err
+		}
 	}
 
 	if cfg.DNSTap.Enabled && cfg.DNSTap.SampleRate <= 0 {
