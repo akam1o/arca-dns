@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/config"
@@ -176,10 +177,11 @@ func (c *Checker) CheckAll(ctx context.Context) HealthStatus {
 // checkDNSQuery performs a DNS query and verifies the response.
 func (c *Checker) checkDNSQuery(ctx context.Context, server string, checkType CheckType) CheckResult {
 	start := time.Now()
+	questionName := c.questionName()
 
 	// Create DNS query
 	msg := new(dns.Msg)
-	msg.SetQuestion(dns.Fqdn(c.testRecord), dns.TypeA)
+	msg.SetQuestion(questionName, dns.TypeA)
 
 	// Create DNS client
 	client := &dns.Client{
@@ -198,12 +200,11 @@ func (c *Checker) checkDNSQuery(ctx context.Context, server string, checkType Ch
 		}
 	}
 
-	// Verify response code
-	if resp.Rcode != dns.RcodeSuccess {
+	if err := validateDNSResponse(resp, questionName, dns.TypeA, checkType); err != nil {
 		return CheckResult{
 			Type:      checkType,
 			Success:   false,
-			Error:     fmt.Errorf("DNS query returned error: %s", dns.RcodeToString[resp.Rcode]),
+			Error:     err,
 			Timestamp: time.Now(),
 			Latency:   time.Since(start),
 		}
@@ -220,10 +221,11 @@ func (c *Checker) checkDNSQuery(ctx context.Context, server string, checkType Ch
 // checkLatency verifies that DNS queries complete within the acceptable threshold.
 func (c *Checker) checkLatency(ctx context.Context) CheckResult {
 	start := time.Now()
+	questionName := c.questionName()
 
 	// Create DNS query
 	msg := new(dns.Msg)
-	msg.SetQuestion(dns.Fqdn(c.testRecord), dns.TypeA)
+	msg.SetQuestion(questionName, dns.TypeA)
 
 	// Create DNS client
 	client := &dns.Client{
@@ -231,7 +233,7 @@ func (c *Checker) checkLatency(ctx context.Context) CheckResult {
 	}
 
 	// Perform query
-	_, rtt, err := client.ExchangeContext(ctx, msg, c.unboundServer)
+	resp, rtt, err := client.ExchangeContext(ctx, msg, c.unboundServer)
 	if err != nil {
 		return CheckResult{
 			Type:      CheckTypeLatency,
@@ -239,6 +241,15 @@ func (c *Checker) checkLatency(ctx context.Context) CheckResult {
 			Error:     fmt.Errorf("latency check query failed: %w", err),
 			Timestamp: time.Now(),
 			Latency:   time.Since(start),
+		}
+	}
+	if err := validateDNSResponse(resp, questionName, dns.TypeA, CheckTypeLatency); err != nil {
+		return CheckResult{
+			Type:      CheckTypeLatency,
+			Success:   false,
+			Error:     err,
+			Timestamp: time.Now(),
+			Latency:   rtt,
 		}
 	}
 
@@ -259,6 +270,44 @@ func (c *Checker) checkLatency(ctx context.Context) CheckResult {
 		Timestamp: time.Now(),
 		Latency:   rtt,
 	}
+}
+
+func (c *Checker) questionName() string {
+	record := strings.TrimSpace(c.testRecord)
+	if record == "" {
+		record = "localhost."
+	}
+	if record == "@" {
+		return dns.Fqdn(c.testZone)
+	}
+	if strings.HasSuffix(record, ".") || strings.Contains(record, ".") {
+		return dns.Fqdn(record)
+	}
+
+	zone := strings.TrimSpace(c.testZone)
+	if zone == "" {
+		return dns.Fqdn(record)
+	}
+	return dns.Fqdn(record + "." + strings.TrimSuffix(zone, "."))
+}
+
+func validateDNSResponse(resp *dns.Msg, questionName string, questionType uint16, checkType CheckType) error {
+	if resp == nil {
+		return fmt.Errorf("DNS query returned nil response")
+	}
+	if resp.Rcode != dns.RcodeSuccess {
+		return fmt.Errorf("DNS query returned error: %s", dns.RcodeToString[resp.Rcode])
+	}
+	if checkType == CheckTypeQuery && !resp.Authoritative {
+		return fmt.Errorf("DNS response is not authoritative for %s", questionName)
+	}
+	for _, rr := range resp.Answer {
+		header := rr.Header()
+		if dns.Fqdn(header.Name) == questionName && header.Rrtype == questionType {
+			return nil
+		}
+	}
+	return fmt.Errorf("DNS response missing expected %s answer for %s", dns.TypeToString[questionType], questionName)
 }
 
 // CheckHealth performs a single health check and returns the status.

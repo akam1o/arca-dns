@@ -64,6 +64,51 @@ func TestChecker_checkDNSQuery_Failure(t *testing.T) {
 	assert.Contains(t, result.Error.Error(), "SERVFAIL")
 }
 
+func TestChecker_checkDNSQuery_NoAnswerFails(t *testing.T) {
+	logger := zap.NewNop()
+
+	server, addr := startTestDNSServerWithOptions(t, dns.RcodeSuccess, true, false)
+	defer func() { _ = server.Shutdown() }()
+
+	checker := NewChecker(config.HealthConfig{
+		QueryTimeout: 5 * time.Second,
+		TestRecord:   "example.com",
+	}, logger)
+
+	result := checker.checkDNSQuery(context.Background(), addr, CheckTypeFullPath)
+
+	assert.False(t, result.Success)
+	require.Error(t, result.Error)
+	assert.Contains(t, result.Error.Error(), "missing expected A answer")
+}
+
+func TestChecker_checkDNSQuery_AuthoritativeCheckRequiresAA(t *testing.T) {
+	logger := zap.NewNop()
+
+	server, addr := startTestDNSServerWithOptions(t, dns.RcodeSuccess, false, true)
+	defer func() { _ = server.Shutdown() }()
+
+	checker := NewChecker(config.HealthConfig{
+		QueryTimeout: 5 * time.Second,
+		TestRecord:   "example.com",
+	}, logger)
+
+	result := checker.checkDNSQuery(context.Background(), addr, CheckTypeQuery)
+
+	assert.False(t, result.Success)
+	require.Error(t, result.Error)
+	assert.Contains(t, result.Error.Error(), "not authoritative")
+}
+
+func TestChecker_questionNameUsesTestZoneForRelativeRecord(t *testing.T) {
+	checker := NewChecker(config.HealthConfig{
+		TestZone:   "example.com.",
+		TestRecord: "www",
+	}, zap.NewNop())
+
+	assert.Equal(t, "www.example.com.", checker.questionName())
+}
+
 func TestChecker_checkLatency(t *testing.T) {
 	logger := zap.NewNop()
 
@@ -258,13 +303,20 @@ func TestChecker_Run(t *testing.T) {
 func startTestDNSServer(t *testing.T, rcode int) (*dns.Server, string) {
 	t.Helper()
 
+	return startTestDNSServerWithOptions(t, rcode, true, true)
+}
+
+func startTestDNSServerWithOptions(t *testing.T, rcode int, authoritative bool, includeAnswer bool) (*dns.Server, string) {
+	t.Helper()
+
 	// Create handler
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
 		msg := new(dns.Msg)
 		msg.SetReply(r)
 		msg.Rcode = rcode
+		msg.Authoritative = authoritative
 
-		if rcode == dns.RcodeSuccess {
+		if rcode == dns.RcodeSuccess && includeAnswer {
 			// Add answer
 			msg.Answer = append(msg.Answer, &dns.A{
 				Hdr: dns.RR_Header{
