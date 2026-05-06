@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,6 +33,43 @@ func setupGitBackend(t *testing.T) (*GitBackend, func()) {
 	}
 
 	return backend, cleanup
+}
+
+func TestGitBackend_FreshRepoUsesConfiguredBranch(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "repo")
+
+	backend, err := NewGitBackendWithOptions(repoPath, GitBackendOptions{
+		Branch:      "main",
+		AuthorName:  "test-author",
+		AuthorEmail: "test@example.com",
+	})
+	require.NoError(t, err)
+	defer backend.Close()
+
+	head, err := backend.repo.Storer.Reference(plumbing.HEAD)
+	require.NoError(t, err)
+	assert.Equal(t, plumbing.NewBranchReferenceName("main"), head.Target())
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	require.NoError(t, backend.CreateZone(context.Background(), zone))
+
+	_, err = backend.repo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	_, err = backend.repo.Reference(plumbing.NewBranchReferenceName("master"), true)
+	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
 }
 
 func runGitCommand(t *testing.T, dir string, args ...string) {

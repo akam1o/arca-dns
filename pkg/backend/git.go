@@ -209,8 +209,15 @@ func openOrInitRepo(path, branch string) (*git.Repository, error) {
 				if err != nil {
 					return nil, fmt.Errorf("failed to create branch %s: %w", branch, err)
 				}
+			} else if headErr == plumbing.ErrReferenceNotFound {
+				// Empty repositories do not have a commit to checkout from yet.
+				// Point HEAD at the configured branch so the first commit lands there.
+				if err := repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, branchRef)); err != nil {
+					return nil, fmt.Errorf("failed to set HEAD to branch %s: %w", branch, err)
+				}
+			} else {
+				return nil, headErr
 			}
-			// If HEAD doesn't exist, the repository is empty; the branch will be created on first commit.
 		} else if err != nil {
 			return nil, err
 		} else {
@@ -234,7 +241,9 @@ func openOrInitRepo(path, branch string) (*git.Repository, error) {
 	fs := osfs.New(path)
 	storage := filesystem.NewStorage(fs, cache.NewObjectLRUDefault())
 
-	repo, err = git.Init(storage, fs)
+	repo, err = git.InitWithOptions(storage, fs, git.InitOptions{
+		DefaultBranch: plumbing.NewBranchReferenceName(branch),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize repository: %w", err)
 	}
