@@ -5,12 +5,32 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+type bulkRecordRequest struct {
+	Create []model.Record       `json:"create"`
+	Update []bulkRecordUpdate   `json:"update"`
+	Delete []bulkRecordDeletion `json:"delete"`
+}
+
+type bulkRecordUpdate struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Type     string  `json:"type"`
+	TTL      uint32  `json:"ttl"`
+	Value    string  `json:"value"`
+	Priority *uint16 `json:"priority,omitempty"`
+}
+
+type bulkRecordDeletion struct {
+	ID string `json:"id"`
+}
 
 // ListRecords handles GET /api/v1/zones/:name/records.
 func (h *Handler) ListRecords(c *gin.Context) {
@@ -82,6 +102,54 @@ func (h *Handler) CreateRecord(c *gin.Context) {
 	}
 	h.logger.Info("Record created", zap.String("zone", updated.Name), zap.String("version", updated.Version))
 	c.JSON(http.StatusCreated, zoneWithRecordIDs(updated))
+}
+
+// BulkRecords handles POST /api/v1/zones/:name/records/batch.
+func (h *Handler) BulkRecords(c *gin.Context) {
+	name := c.Param("name")
+
+	var req bulkRecordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Invalid bulk record request body", zap.Error(err))
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Invalid request body",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+	if len(req.Create) == 0 && len(req.Update) == 0 && len(req.Delete) == 0 {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Bulk request must include at least one operation",
+			map[string]interface{}{"error": "empty operation set"},
+		))
+		return
+	}
+
+	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
+	if !ok {
+		return
+	}
+
+	records, ok := h.applyBulkRecordOperations(c, zone.Name, zone.Records, req)
+	if !ok {
+		return
+	}
+	zone.Records = records
+
+	updated, ok := h.commitRecordMutation(c, zone, expectedVersion)
+	if !ok {
+		return
+	}
+
+	h.logger.Info("Bulk records updated",
+		zap.String("zone", updated.Name),
+		zap.Int("create", len(req.Create)),
+		zap.Int("update", len(req.Update)),
+		zap.Int("delete", len(req.Delete)),
+		zap.String("version", updated.Version))
+	c.JSON(http.StatusOK, zoneWithRecordIDs(updated))
 }
 
 // UpdateRecord handles PUT /api/v1/zones/:name/records/:id.
@@ -181,6 +249,109 @@ func (h *Handler) DeleteRecord(c *gin.Context) {
 
 	h.logger.Info("Record deleted", zap.String("zone", updated.Name), zap.String("record_id", id), zap.String("version", updated.Version))
 	c.JSON(http.StatusOK, zoneWithRecordIDs(updated))
+}
+
+func (h *Handler) applyBulkRecordOperations(c *gin.Context, zoneName string, current []model.Record, req bulkRecordRequest) ([]model.Record, bool) {
+	records := append([]model.Record(nil), current...)
+
+	deleteIDs := make(map[string]struct{}, len(req.Delete))
+	for i, op := range req.Delete {
+		id := strings.TrimSpace(op.ID)
+		if id == "" {
+			h.recordBatchError(c, http.StatusBadRequest, "Delete operation is missing record id", i, "delete", map[string]interface{}{"index": i})
+			return nil, false
+		}
+		if _, exists := deleteIDs[id]; exists {
+			h.recordBatchError(c, http.StatusBadRequest, "Duplicate record id in delete operations", i, "delete", map[string]interface{}{"record_id": id})
+			return nil, false
+		}
+		if findRecordByID(records, id) == -1 {
+			h.recordBatchError(c, http.StatusNotFound, "Record not found", i, "delete", map[string]interface{}{"record_id": id})
+			return nil, false
+		}
+		deleteIDs[id] = struct{}{}
+	}
+
+	if len(deleteIDs) > 0 {
+		filtered := records[:0]
+		for _, record := range records {
+			if _, deleted := deleteIDs[recordID(record)]; deleted {
+				continue
+			}
+			filtered = append(filtered, record)
+		}
+		records = filtered
+	}
+
+	updateIDs := make(map[string]struct{}, len(req.Update))
+	for i, op := range req.Update {
+		id := strings.TrimSpace(op.ID)
+		if id == "" {
+			h.recordBatchError(c, http.StatusBadRequest, "Update operation is missing record id", i, "update", map[string]interface{}{"index": i})
+			return nil, false
+		}
+		if _, deleted := deleteIDs[id]; deleted {
+			h.recordBatchError(c, http.StatusBadRequest, "Record cannot be updated and deleted in the same batch", i, "update", map[string]interface{}{"record_id": id})
+			return nil, false
+		}
+		if _, exists := updateIDs[id]; exists {
+			h.recordBatchError(c, http.StatusBadRequest, "Duplicate record id in update operations", i, "update", map[string]interface{}{"record_id": id})
+			return nil, false
+		}
+		idx := findRecordByID(records, id)
+		if idx == -1 {
+			h.recordBatchError(c, http.StatusNotFound, "Record not found", i, "update", map[string]interface{}{"record_id": id})
+			return nil, false
+		}
+
+		record := model.Record{
+			ID:       id,
+			Name:     op.Name,
+			Type:     op.Type,
+			TTL:      op.TTL,
+			Value:    op.Value,
+			Priority: op.Priority,
+		}
+		if !h.validateRecordForZone(c, zoneName, &record) {
+			return nil, false
+		}
+		records[idx] = record
+		updateIDs[id] = struct{}{}
+	}
+
+	for i := range req.Create {
+		record := req.Create[i]
+		record.ID = derivedRecordID(record)
+		if !h.validateRecordForZone(c, zoneName, &record) {
+			return nil, false
+		}
+		records = append(records, record)
+	}
+
+	if duplicateIndex, exists := firstDuplicateRecord(records); exists {
+		h.recordBatchError(c, http.StatusConflict, "Record already exists", duplicateIndex, "records", map[string]interface{}{"index": duplicateIndex})
+		return nil, false
+	}
+
+	return records, true
+}
+
+func (h *Handler) recordBatchError(c *gin.Context, status int, message string, index int, operation string, details map[string]interface{}) {
+	if details == nil {
+		details = map[string]interface{}{}
+	}
+	details["operation"] = operation
+	details["index"] = index
+
+	errorCode := model.ErrorCodeInvalidInput
+	if status == http.StatusConflict {
+		errorCode = model.ErrorCodeAlreadyExists
+	}
+	if status == http.StatusNotFound {
+		errorCode = model.ErrorCodeNotFound
+	}
+
+	c.JSON(status, model.NewAPIErrorWithDetails(errorCode, message, details))
 }
 
 func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model.Zone, string, bool) {
@@ -341,6 +512,18 @@ func recordExists(records []model.Record, record model.Record, skip int) bool {
 	return false
 }
 
+func firstDuplicateRecord(records []model.Record) (int, bool) {
+	seen := make(map[string]int, len(records))
+	for i, record := range records {
+		key := recordIdentity(record)
+		if _, exists := seen[key]; exists {
+			return i, true
+		}
+		seen[key] = i
+	}
+	return -1, false
+}
+
 func findRecordID(records []model.Record, record model.Record) string {
 	for _, candidate := range records {
 		if sameRecord(candidate, record) {
@@ -351,10 +534,11 @@ func findRecordID(records []model.Record, record model.Record) string {
 }
 
 func sameRecord(a, b model.Record) bool {
-	return a.Name == b.Name &&
-		a.Type == b.Type &&
-		a.TTL == b.TTL &&
-		a.Value == b.Value
+	return recordIdentity(a) == recordIdentity(b)
+}
+
+func recordIdentity(record model.Record) string {
+	return record.Name + "\x00" + record.Type + "\x00" + strconv.FormatUint(uint64(record.TTL), 10) + "\x00" + record.Value
 }
 
 func zoneWithRecordIDs(zone *model.Zone) *model.Zone {
@@ -382,6 +566,6 @@ func recordID(record model.Record) string {
 }
 
 func derivedRecordID(record model.Record) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%s", record.Name, record.Type, record.TTL, record.Value)))
+	sum := sha256.Sum256([]byte(recordIdentity(record)))
 	return "r" + hex.EncodeToString(sum[:])[:16]
 }

@@ -86,10 +86,12 @@ Notes:
 
 - `GET /zones/:name/records`: ゾーンのレコード一覧
 - `POST /zones/:name/records`: レコード作成
+- `POST /zones/:name/records/batch`: 複数の作成/更新/削除を原子的に適用
 - `PUT /zones/:name/records/:id`: レコード置換
 - `DELETE /zones/:name/records/:id`: レコード削除
 
 レコードを変更するリクエストでは、現在のゾーン `ETag` を `If-Match` に指定する必要があります。これはゾーン更新と同じ楽観ロックです。
+batch endpoint は削除、更新、作成の順で適用し、最終的なレコード集合が検証を通ってから 1 回だけ保存します。
 
 レコードフィールド:
 
@@ -201,6 +203,31 @@ curl -i -X POST "${BASE}/zones/example.com./records" \
   -H 'Content-Type: application/json' \
   -H "If-Match: ${etag}" \
   -d '{"name":"www","type":"A","ttl":300,"value":"192.0.2.2"}'
+```
+
+複数レコード変更を原子的に適用:
+
+```bash
+records_json="$(curl -s "${BASE}/zones/example.com./records" "${AUTH[@]}")"
+root_id="$(printf '%s' "${records_json}" | jq -r '.records[] | select(.name=="@" and .type=="A") | .id')"
+old_id="$(printf '%s' "${records_json}" | jq -r '.records[] | select(.name=="old" and .type=="A") | .id')"
+etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+curl -i -X POST "${BASE}/zones/example.com./records/batch" \
+  "${AUTH[@]}" \
+  -H 'Content-Type: application/json' \
+  -H "If-Match: ${etag}" \
+  -d "{
+    \"create\": [
+      {\"name\":\"api\",\"type\":\"AAAA\",\"ttl\":300,\"value\":\"2001:db8::1\"}
+    ],
+    \"update\": [
+      {\"id\":\"${root_id}\",\"name\":\"@\",\"type\":\"A\",\"ttl\":300,\"value\":\"192.0.2.9\"}
+    ],
+    \"delete\": [
+      {\"id\":\"${old_id}\"}
+    ]
+  }"
 ```
 
 レコード更新:

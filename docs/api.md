@@ -86,10 +86,12 @@ Endpoints:
 
 - `GET /zones/:name/records`: list records for a zone
 - `POST /zones/:name/records`: create a record
+- `POST /zones/:name/records/batch`: apply multiple create/update/delete operations atomically
 - `PUT /zones/:name/records/:id`: replace a record
 - `DELETE /zones/:name/records/:id`: delete a record
 
 Mutating record requests require `If-Match` with the current zone `ETag`; this uses the same optimistic locking model as zone updates.
+The batch endpoint applies deletes first, then updates, then creates, and persists the zone only after the final record set validates.
 
 Record fields:
 
@@ -201,6 +203,31 @@ curl -i -X POST "${BASE}/zones/example.com./records" \
   -H 'Content-Type: application/json' \
   -H "If-Match: ${etag}" \
   -d '{"name":"www","type":"A","ttl":300,"value":"192.0.2.2"}'
+```
+
+Apply multiple record changes atomically:
+
+```bash
+records_json="$(curl -s "${BASE}/zones/example.com./records" "${AUTH[@]}")"
+root_id="$(printf '%s' "${records_json}" | jq -r '.records[] | select(.name=="@" and .type=="A") | .id')"
+old_id="$(printf '%s' "${records_json}" | jq -r '.records[] | select(.name=="old" and .type=="A") | .id')"
+etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+curl -i -X POST "${BASE}/zones/example.com./records/batch" \
+  "${AUTH[@]}" \
+  -H 'Content-Type: application/json' \
+  -H "If-Match: ${etag}" \
+  -d "{
+    \"create\": [
+      {\"name\":\"api\",\"type\":\"AAAA\",\"ttl\":300,\"value\":\"2001:db8::1\"}
+    ],
+    \"update\": [
+      {\"id\":\"${root_id}\",\"name\":\"@\",\"type\":\"A\",\"ttl\":300,\"value\":\"192.0.2.9\"}
+    ],
+    \"delete\": [
+      {\"id\":\"${old_id}\"}
+    ]
+  }"
 ```
 
 Update a record:

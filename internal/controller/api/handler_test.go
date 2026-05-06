@@ -473,6 +473,168 @@ func TestDeleteRecord(t *testing.T) {
 	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
 }
 
+func TestBulkRecords_CreateUpdateDelete(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+			{Name: "old", Type: "A", TTL: 300, Value: "192.0.2.2"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, current.Records, 2)
+	rootID := current.Records[0].ID
+	oldID := current.Records[1].ID
+
+	body, err := json.Marshal(map[string]interface{}{
+		"create": []model.Record{
+			{Name: "api", Type: "AAAA", TTL: 300, Value: "2001:db8::1"},
+		},
+		"update": []map[string]interface{}{
+			{"id": rootID, "name": "@", "type": "A", "ttl": 300, "value": "192.0.2.9"},
+		},
+		"delete": []map[string]interface{}{
+			{"id": oldID},
+		},
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records/batch", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.NotEmpty(t, resp.Header.Get("ETag"))
+
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.Len(t, updated.Records, 2)
+	assert.NotEqual(t, current.Version, updated.Version)
+
+	records := map[string]model.Record{}
+	for _, record := range updated.Records {
+		records[record.Name] = record
+	}
+	assert.Equal(t, "192.0.2.9", records["@"].Value)
+	assert.Equal(t, "2001:db8::1", records["api"].Value)
+	assert.NotContains(t, records, "old")
+}
+
+func TestBulkRecords_RollsBackOnMissingRecord(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+			{Name: "old", Type: "A", TTL: 300, Value: "192.0.2.2"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, current.Records, 2)
+
+	body, err := json.Marshal(map[string]interface{}{
+		"create": []model.Record{
+			{Name: "api", Type: "AAAA", TTL: 300, Value: "2001:db8::1"},
+		},
+		"update": []map[string]interface{}{
+			{"id": "missing-record", "name": "@", "type": "A", "ttl": 300, "value": "192.0.2.9"},
+		},
+		"delete": []map[string]interface{}{
+			{"id": current.Records[1].ID},
+		},
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records/batch", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, current.Version, unchanged.Version)
+	assert.Len(t, unchanged.Records, 2)
+	assert.Equal(t, "old", unchanged.Records[1].Name)
+}
+
+func TestBulkRecords_RejectsDuplicateResult(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	body, err := json.Marshal(map[string]interface{}{
+		"create": []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records/batch", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+}
+
+func TestBulkRecords_RejectsEmptyOperationSet(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records/batch", bytes.NewReader([]byte(`{}`)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 func TestCreateRecord_RequiresIfMatch(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()

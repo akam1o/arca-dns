@@ -265,6 +265,26 @@ curl -i -X POST "${BASE}/zones/example.com./records" \
   -d '{"name":"www","type":"A","ttl":300,"value":"203.0.113.2"}'
 ```
 
+**Apply multiple record changes atomically**:
+
+```bash
+etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+old_id="$(curl -s "${BASE}/zones/example.com./records" -H "X-API-Key: ${API_KEY}" | jq -r '.records[] | select(.name=="old" and .type=="A") | .id')"
+
+curl -i -X POST "${BASE}/zones/example.com./records/batch" \
+  -H "X-API-Key: ${API_KEY}" \
+  -H 'Content-Type: application/json' \
+  -H "If-Match: ${etag}" \
+  -d "{
+    \"create\": [
+      {\"name\":\"api\",\"type\":\"AAAA\",\"ttl\":300,\"value\":\"2001:db8::1\"}
+    ],
+    \"delete\": [
+      {\"id\":\"${old_id}\"}
+    ]
+  }"
+```
+
 **Update or delete a record**:
 
 ```bash

@@ -527,6 +527,67 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /zones/{zoneName}/records/batch:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        description: Fully qualified domain name of the zone
+        schema:
+          type: string
+          example: "example.com."
+
+    post:
+      tags: [zones]
+      summary: Apply multiple record changes
+      description: Applies record deletes, updates, and creates atomically. Requires If-Match with the current zone version.
+      operationId: bulkRecords
+      parameters:
+        - name: If-Match
+          in: header
+          description: Zone version for optimistic concurrency control
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkRecordRequest'
+      responses:
+        '200':
+          description: Records updated; response body is the updated zone
+          headers:
+            ETag:
+              description: New zone version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict - duplicate record or If-Match mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '428':
+          description: Precondition required - If-Match header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /zones/{zoneName}/records/{recordId}:
     parameters:
       - name: zoneName
@@ -1157,6 +1218,43 @@ components:
           maximum: 4294967295
         value:
           type: string
+
+    BulkRecordRequest:
+      type: object
+      description: Batch record mutation request. Deletes are applied first, then updates, then creates.
+      properties:
+        create:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateRecordRequest'
+        update:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpdateRecordRequest'
+        delete:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeleteRecordRequest'
+
+    UpdateRecordRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreateRecordRequest'
+        - type: object
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              description: Record identifier from the current record list response
+
+    DeleteRecordRequest:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          description: Record identifier from the current record list response
 
     Pagination:
       type: object

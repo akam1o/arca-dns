@@ -91,6 +91,7 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 		protected.DELETE("/zones/:name", handler.DeleteZone)
 		protected.GET("/zones/:name/records", handler.ListRecords)
 		protected.POST("/zones/:name/records", handler.CreateRecord)
+		protected.POST("/zones/:name/records/batch", handler.BulkRecords)
 		protected.PUT("/zones/:name/records/:id", handler.UpdateRecord)
 		protected.DELETE("/zones/:name/records/:id", handler.DeleteRecord)
 
