@@ -632,49 +632,30 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 		return
 	}
 
-	// Check If-None-Match for conditional fetch BEFORE generating zone file (optimization)
-	if match := c.GetHeader("If-None-Match"); match != "" && etagMatches(match, zone.Version) {
-		// Set headers even on 304
-		c.Header("ETag", formatETag(zone.Version))
-		c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
-		c.Status(http.StatusNotModified)
+	zoneFile, _, err := h.signedZoneFile(c.Request.Context(), name, zone)
+	if err != nil {
+		h.logger.Error("Failed to get signed zone", zap.String("zone", name), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to retrieve signed zone",
+			map[string]interface{}{"error": "signing failed"},
+		))
 		return
-	}
-
-	// Get signed zone from signing service (M4.5)
-	var zoneFile string
-	if h.signingService != nil {
-		artifact, err := h.signingService.GetSignedZone(c.Request.Context(), name)
-		if err != nil {
-			h.logger.Error("Failed to get signed zone", zap.String("zone", name), zap.Error(err))
-			c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-				model.ErrorCodeInternal,
-				"Failed to retrieve signed zone",
-				map[string]interface{}{"error": "signing failed"},
-			))
-			return
-		}
-		zoneFile = artifact.SignedZone
-	} else {
-		// Fallback to unsigned zone if signing service is not available
-		zoneFile, err = parser.GenerateBINDZoneFile(zone)
-		if err != nil {
-			h.logger.Error("Failed to generate zone file", zap.String("zone", name), zap.Error(err))
-			c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-				model.ErrorCodeInternal,
-				"Failed to generate zone file",
-				map[string]interface{}{"error": "zone generation failed"},
-			))
-			return
-		}
 	}
 
 	// Set headers for successful response
 	hashHex, hash8 := sha256HexAndHash8(zoneFile)
-	c.Header("ETag", formatETag(zone.Version))
+	artifactETag := formatETag(hashHex)
+	c.Header("ETag", artifactETag)
 	c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
 	c.Header("X-Zone-Hash", hashHex)
 	c.Header("X-Zone-Hash8", hash8)
+
+	if match := c.GetHeader("If-None-Match"); match != "" && etagMatches(match, hashHex) {
+		c.Status(http.StatusNotModified)
+		return
+	}
+
 	c.Header("Content-Type", "text/plain; charset=utf-8")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone.signed", strings.TrimSuffix(zone.Name, ".")))
 
@@ -706,48 +687,27 @@ func (h *Handler) GetSignedZoneMetadata(c *gin.Context) {
 		return
 	}
 
-	// Set headers (same metadata headers as /signed).
-	c.Header("ETag", formatETag(zone.Version))
-	c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
-
-	// Conditional GET: return 304 when If-None-Match matches current version.
-	ifNoneMatch := c.GetHeader("If-None-Match")
-	if ifNoneMatch != "" && etagMatches(ifNoneMatch, zone.Version) {
-		c.Status(http.StatusNotModified)
+	zoneFile, dnssecConfig, err := h.signedZoneFile(c.Request.Context(), name, zone)
+	if err != nil {
+		h.logger.Error("Failed to get signed zone for metadata", zap.String("zone", name), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to retrieve signed zone metadata",
+			map[string]interface{}{"error": "signing failed"},
+		))
 		return
 	}
 
-	// Compute artifact hash without returning the zone file content.
-	var zoneFile string
-	if h.signingService != nil {
-		artifact, err := h.signingService.GetSignedZone(c.Request.Context(), name)
-		if err != nil {
-			h.logger.Error("Failed to get signed zone for metadata", zap.String("zone", name), zap.Error(err))
-			c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-				model.ErrorCodeInternal,
-				"Failed to retrieve signed zone metadata",
-				map[string]interface{}{"error": "signing failed"},
-			))
-			return
-		}
-		zoneFile = artifact.SignedZone
-	} else {
-		// Fallback to unsigned zone file if signing service is not available.
-		zoneFile, err = parser.GenerateBINDZoneFile(zone)
-		if err != nil {
-			h.logger.Error("Failed to generate zone file for metadata", zap.String("zone", name), zap.Error(err))
-			c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-				model.ErrorCodeInternal,
-				"Failed to retrieve signed zone metadata",
-				map[string]interface{}{"error": "zone generation failed"},
-			))
-			return
-		}
-	}
-
 	hashHex, hash8 := sha256HexAndHash8(zoneFile)
+	c.Header("ETag", formatETag(hashHex))
+	c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
 	c.Header("X-Zone-Hash", hashHex)
 	c.Header("X-Zone-Hash8", hash8)
+
+	if ifNoneMatch := c.GetHeader("If-None-Match"); ifNoneMatch != "" && etagMatches(ifNoneMatch, hashHex) {
+		c.Status(http.StatusNotModified)
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"zone":           zone.Name,
@@ -755,8 +715,24 @@ func (h *Handler) GetSignedZoneMetadata(c *gin.Context) {
 		"serial":         zone.SOA.Serial,
 		"hash":           hashHex,
 		"hash8":          hash8,
-		"dnssec_enabled": zone.DNSSEC != nil && zone.DNSSEC.Enabled,
+		"dnssec_enabled": dnssecConfig != nil && dnssecConfig.Enabled,
 	})
+}
+
+func (h *Handler) signedZoneFile(ctx context.Context, name string, zone *model.Zone) (string, *model.DNSSECConfig, error) {
+	if h.signingService != nil {
+		artifact, err := h.signingService.GetSignedZone(ctx, name)
+		if err != nil {
+			return "", nil, err
+		}
+		return artifact.SignedZone, artifact.DNSSEC, nil
+	}
+
+	zoneFile, err := parser.GenerateBINDZoneFile(zone)
+	if err != nil {
+		return "", nil, fmt.Errorf("generate zone file: %w", err)
+	}
+	return zoneFile, zone.DNSSEC, nil
 }
 
 // GetDSRecords handles GET /api/v1/zones/:name/ds

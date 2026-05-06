@@ -349,10 +349,13 @@ func TestGetSignedZone_NotModified(t *testing.T) {
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
-	// Get zone to retrieve ETag
-	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	// Get signed artifact to retrieve its content ETag.
+	firstResp, err := http.Get(server.URL + "/api/v1/zones/example.com./signed")
 	require.NoError(t, err)
-	etag := retrieved.Version
+	etag := firstResp.Header.Get("ETag")
+	require.NotEmpty(t, etag)
+	require.Equal(t, http.StatusOK, firstResp.StatusCode)
+	require.NoError(t, firstResp.Body.Close())
 
 	// Request with If-None-Match
 	req, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/zones/example.com./signed", nil)
@@ -364,7 +367,7 @@ func TestGetSignedZone_NotModified(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusNotModified, resp.StatusCode)
-	assert.Equal(t, formatETag(etag), resp.Header.Get("ETag"))
+	assert.Equal(t, etag, resp.Header.Get("ETag"))
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Serial"))
 
 	// Body should be empty for 304
