@@ -1,10 +1,14 @@
 package health
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/akam1o/arca-dns/internal/agent/bird"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
 
@@ -68,4 +72,38 @@ func TestEngine_processHealthStatus_LatencyFailureRemainsDegraded(t *testing.T) 
 	assert.False(t, signal.HardFail)
 	assert.True(t, signal.LatencyDegraded)
 	assert.Equal(t, "Latency threshold exceeded", signal.Reason)
+}
+
+func TestEngine_RunWithStatusProcessesExistingChannel(t *testing.T) {
+	engine := NewEngine(nil, EngineConfig{
+		FailureThreshold:  1,
+		RecoveryThreshold: 1,
+	}, zap.NewNop())
+
+	statusChan := make(chan HealthStatus, 1)
+	signalChan := make(chan bird.HealthSignal, 1)
+	statusChan <- HealthStatus{
+		Healthy: false,
+		Checks: map[CheckType]CheckResult{
+			CheckTypeQuery: {
+				Type:      CheckTypeQuery,
+				Success:   false,
+				Error:     errors.New("query failed"),
+				Timestamp: time.Now(),
+			},
+		},
+		LastCheck: time.Now(),
+	}
+	close(statusChan)
+
+	err := engine.RunWithStatus(context.Background(), statusChan, signalChan)
+	require.NoError(t, err)
+
+	select {
+	case signal := <-signalChan:
+		assert.True(t, signal.HardFail)
+		assert.Equal(t, "query failed", signal.Reason)
+	default:
+		t.Fatal("expected health signal")
+	}
 }

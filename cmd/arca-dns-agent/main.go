@@ -378,16 +378,51 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		logger.Info("Zone sync loop stopped")
 	}()
 
-	// Start health check loop
+	// Start one health check loop and fan out results to consumers.
+	healthCheckChan := make(chan health.HealthStatus, 10)
 	healthStatusChan := make(chan health.HealthStatus, 10)
+	var healthEngineStatusChan chan health.HealthStatus
+	if cfg.BIRD.Enabled && healthEngine != nil && controlLoop != nil {
+		healthEngineStatusChan = make(chan health.HealthStatus, 10)
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(healthCheckChan)
 		logger.Info("Starting health check loop")
-		if err := checker.Run(ctx, healthStatusChan); err != nil && err != context.Canceled {
+		if err := checker.Run(ctx, healthCheckChan); err != nil && err != context.Canceled {
 			logger.Error("Health check loop failed", zap.Error(err))
 		}
 		logger.Info("Health check loop stopped")
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(healthStatusChan)
+		if healthEngineStatusChan != nil {
+			defer close(healthEngineStatusChan)
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case status, ok := <-healthCheckChan:
+				if !ok {
+					return
+				}
+				if !sendHealthStatus(ctx, healthStatusChan, status) {
+					return
+				}
+				if healthEngineStatusChan != nil {
+					if !sendHealthStatus(ctx, healthEngineStatusChan, status) {
+						return
+					}
+				}
+			}
+		}
 	}()
 
 	// Start BIRD BGP control loop (M5)
@@ -400,7 +435,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			defer wg.Done()
 			defer close(healthSignalChan) // Close signal channel on exit
 			logger.Info("Starting health engine")
-			if err := healthEngine.Run(ctx, healthSignalChan); err != nil && err != context.Canceled {
+			if err := healthEngine.RunWithStatus(ctx, healthEngineStatusChan, healthSignalChan); err != nil && err != context.Canceled {
 				logger.Error("Health engine failed", zap.Error(err))
 			}
 			logger.Info("Health engine stopped")
@@ -512,6 +547,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func sendHealthStatus(ctx context.Context, statusChan chan<- health.HealthStatus, status health.HealthStatus) bool {
+	select {
+	case statusChan <- status:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func reexecSelf() error {
