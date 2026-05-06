@@ -3,6 +3,7 @@ package nsd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +45,14 @@ func TestController_Disabled(t *testing.T) {
 		t.Errorf("ReloadZone should succeed when disabled: %v", err)
 	}
 
+	if err := ctrl.EnsureZone("example.com."); err != nil {
+		t.Errorf("EnsureZone should succeed when disabled: %v", err)
+	}
+
+	if err := ctrl.DeleteZone("example.com."); err != nil {
+		t.Errorf("DeleteZone should succeed when disabled: %v", err)
+	}
+
 	if err := ctrl.NotifyZone("example.com."); err != nil {
 		t.Errorf("NotifyZone should succeed when disabled: %v", err)
 	}
@@ -66,6 +75,71 @@ func TestController_Disabled(t *testing.T) {
 
 	if ctrl.IsRunning() {
 		t.Error("IsRunning should return false when disabled")
+	}
+}
+
+func TestController_EnsureZoneConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	commandLog := filepath.Join(tmpDir, "commands.log")
+	controlPath := filepath.Join(tmpDir, "nsd-control")
+	controlScript := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + commandLog + "\"\n"
+	if err := os.WriteFile(controlPath, []byte(controlScript), 0755); err != nil {
+		t.Fatalf("Failed to write fake nsd-control: %v", err)
+	}
+
+	zoneDir := filepath.Join(tmpDir, "zones")
+	zoneConfigPath := filepath.Join(tmpDir, "arca-dns-zones.conf")
+
+	logger, _ := zap.NewDevelopment()
+	ctrl := NewController(config.NSDConfig{
+		Enabled:        true,
+		ConfigPath:     filepath.Join(tmpDir, "nsd.conf"),
+		ZoneConfigPath: zoneConfigPath,
+		ControlPath:    controlPath,
+		ZoneDirectory:  zoneDir,
+		ReloadTimeout:  2 * time.Second,
+	}, logger)
+
+	if err := ctrl.EnsureZone("Example.COM."); err != nil {
+		t.Fatalf("EnsureZone failed: %v", err)
+	}
+	if err := ctrl.EnsureZone("example.com."); err != nil {
+		t.Fatalf("EnsureZone should be idempotent: %v", err)
+	}
+
+	configData, err := os.ReadFile(zoneConfigPath)
+	if err != nil {
+		t.Fatalf("Failed to read generated config: %v", err)
+	}
+	configText := string(configData)
+	if !strings.Contains(configText, "# arca-dns-zone: example.com.") {
+		t.Fatalf("Generated config missing zone marker:\n%s", configText)
+	}
+	if !strings.Contains(configText, `name: "example.com."`) {
+		t.Fatalf("Generated config missing zone name:\n%s", configText)
+	}
+	if !strings.Contains(configText, filepath.Join(zoneDir, "example.com.zone")) {
+		t.Fatalf("Generated config missing zonefile path:\n%s", configText)
+	}
+
+	logData, err := os.ReadFile(commandLog)
+	if err != nil {
+		t.Fatalf("Failed to read command log: %v", err)
+	}
+	if got := strings.Count(string(logData), "reconfig"); got != 1 {
+		t.Fatalf("Expected one reconfig for idempotent ensure, got %d log=%q", got, string(logData))
+	}
+
+	if err := ctrl.DeleteZone("example.com."); err != nil {
+		t.Fatalf("DeleteZone failed: %v", err)
+	}
+
+	configData, err = os.ReadFile(zoneConfigPath)
+	if err != nil {
+		t.Fatalf("Failed to read generated config after delete: %v", err)
+	}
+	if strings.Contains(string(configData), "# arca-dns-zone: example.com.") {
+		t.Fatalf("Generated config still contains deleted zone:\n%s", string(configData))
 	}
 }
 

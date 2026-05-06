@@ -138,6 +138,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Wire zone-apply hook: reload services after zone file write.
 	syncer.SetOnZoneApplied(func(ctx context.Context, zoneName string) error {
+		if err := authServer.EnsureZone(ctx, zoneName); err != nil {
+			return err
+		}
 		// Reload authoritative server zone immediately so updates become visible to DNS.
 		if err := authServer.ReloadZone(ctx, zoneName); err != nil {
 			return err
@@ -157,7 +160,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Wire zone-delete hook: reload services after the zone file is removed.
 	syncer.SetOnZoneDeleted(func(ctx context.Context, zoneName string) error {
-		if err := authServer.Reload(ctx); err != nil {
+		if err := authServer.DeleteZone(ctx, zoneName); err != nil {
 			return err
 		}
 		if err := resolver.DeleteStubZone(ctx, zoneName); err != nil {

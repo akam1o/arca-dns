@@ -41,6 +41,8 @@ Recommended production topology:
   - Debian/Ubuntu: the BIRD package is typically `bird2`
   - EL/RHEL: the BIRD package is typically `bird`
 - Ensure `nsd.zone_directory` is writable by the agent
+- Include the agent-managed NSD zone file from `nsd.conf`:
+  `include: "/etc/nsd/arca-dns-zones.conf"`
 - Ensure the agent can run NSD/Unbound/BIRD control and reload commands
 - Expose DNS 53/TCP+UDP from the edge node
 - Prepare BGP neighbor reachability, local ASN, neighbor ASN, and source IP

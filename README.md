@@ -171,6 +171,7 @@ sync:
 nsd:
   enabled: true
   config_path: "/etc/nsd/nsd.conf"
+  zone_config_path: "/etc/nsd/arca-dns-zones.conf" # include this from nsd.conf
   zone_directory: "/var/lib/nsd/zones"
 
 unbound:

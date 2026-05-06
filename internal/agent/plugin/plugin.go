@@ -14,11 +14,17 @@ import (
 // AuthoritativeServer is the interface for authoritative DNS server plugins.
 // Implementations: NSD ("nsd"), Knot DNS ("knot").
 type AuthoritativeServer interface {
+	// EnsureZone ensures the server configuration includes the zone before reload.
+	EnsureZone(ctx context.Context, zoneName string) error
+
 	// ReloadZone reloads a specific zone from its zone file.
 	ReloadZone(ctx context.Context, zoneName string) error
 
 	// CheckZone validates a zone file before loading it.
 	CheckZone(ctx context.Context, zoneName string, zoneFile string) error
+
+	// DeleteZone removes the zone from the server configuration.
+	DeleteZone(ctx context.Context, zoneName string) error
 
 	// Reload reloads all zones.
 	Reload(ctx context.Context) error
@@ -93,8 +99,10 @@ type ServerStatus struct {
 // NoopAuthoritativeServer is a no-op implementation used when the authoritative server is disabled.
 type NoopAuthoritativeServer struct{}
 
+func (n *NoopAuthoritativeServer) EnsureZone(_ context.Context, _ string) error   { return nil }
 func (n *NoopAuthoritativeServer) ReloadZone(_ context.Context, _ string) error   { return nil }
 func (n *NoopAuthoritativeServer) CheckZone(_ context.Context, _, _ string) error { return nil }
+func (n *NoopAuthoritativeServer) DeleteZone(_ context.Context, _ string) error   { return nil }
 func (n *NoopAuthoritativeServer) Reload(_ context.Context) error                 { return nil }
 func (n *NoopAuthoritativeServer) Status(_ context.Context) (ServerStatus, error) {
 	return ServerStatus{StatusText: "disabled"}, nil

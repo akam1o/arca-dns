@@ -41,6 +41,8 @@ arca-dns は control plane と data plane を分けてデプロイします。
   - Debian/Ubuntu: BIRD パッケージ名は通常 `bird2`
   - EL/RHEL: BIRD パッケージ名は通常 `bird`
 - `nsd.zone_directory` が agent から書き込み可能であること
+- `nsd.conf` から agent 管理の NSD zone file を include すること:
+  `include: "/etc/nsd/arca-dns-zones.conf"`
 - NSD/Unbound/BIRD の reload/control コマンドを agent 実行ユーザーが実行できること
 - DNS 53/TCP+UDP をエッジノードから公開できること
 - BGP セッション用の到達性、local ASN、neighbor ASN、source IP が決まっていること

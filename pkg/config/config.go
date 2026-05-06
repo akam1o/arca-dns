@@ -328,6 +328,10 @@ type NSDConfig struct {
 	// ConfigPath is the path to nsd.conf
 	ConfigPath string `mapstructure:"config_path"`
 
+	// ZoneConfigPath is the generated NSD config file containing managed zone stanzas.
+	// The main nsd.conf must include this file.
+	ZoneConfigPath string `mapstructure:"zone_config_path"`
+
 	// ControlPath is the path to nsd-control binary
 	ControlPath string `mapstructure:"control_path"`
 
@@ -658,12 +662,13 @@ func DefaultAgentConfig() *AgentConfig {
 		},
 		Authoritative: "nsd",
 		NSD: NSDConfig{
-			Enabled:       true,
-			ConfigPath:    "/etc/nsd/nsd.conf",
-			ControlPath:   "/usr/sbin/nsd-control",
-			ZoneDirectory: "/var/lib/nsd/zones",
-			CheckzonePath: "/usr/sbin/nsd-checkzone",
-			ReloadTimeout: 10 * time.Second,
+			Enabled:        true,
+			ConfigPath:     "/etc/nsd/nsd.conf",
+			ZoneConfigPath: "/etc/nsd/arca-dns-zones.conf",
+			ControlPath:    "/usr/sbin/nsd-control",
+			ZoneDirectory:  "/var/lib/nsd/zones",
+			CheckzonePath:  "/usr/sbin/nsd-checkzone",
+			ReloadTimeout:  10 * time.Second,
 		},
 		Unbound: UnboundConfig{
 			Enabled:        true,

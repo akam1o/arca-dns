@@ -32,6 +32,9 @@ health:
 nsd:
   enabled: false
   config_path: "/etc/nsd/nsd.conf"
+  # The agent writes managed zone stanzas here. Include this file from nsd.conf:
+  #   include: "/etc/nsd/arca-dns-zones.conf"
+  zone_config_path: "/etc/nsd/arca-dns-zones.conf"
   control_path: "/usr/sbin/nsd-control"
   zone_directory: "/var/lib/nsd/zones"
   checkzone_path: "/usr/sbin/nsd-checkzone"
