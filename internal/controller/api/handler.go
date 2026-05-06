@@ -624,12 +624,62 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 func (h *Handler) DeleteZone(c *gin.Context) {
 	name := c.Param("name")
 
-	if err := h.store.DeleteZone(c.Request.Context(), name); err != nil {
+	ifMatch := c.GetHeader("If-Match")
+	if ifMatch == "" {
+		c.JSON(http.StatusPreconditionRequired, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"If-Match header is required for zone deletes",
+			map[string]interface{}{"header": "If-Match"},
+		))
+		return
+	}
+	if rejectWildcardIfMatch(c, "zone deletes") {
+		return
+	}
+
+	current, err := h.store.GetZone(c.Request.Context(), name)
+	if err != nil {
 		if err == model.ErrZoneNotFound {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
 				map[string]interface{}{"zone": name},
+			))
+			return
+		}
+		h.logger.Error("Failed to get zone for If-Match evaluation", zap.String("zone", name), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to delete zone",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
+	if !etagMatches(ifMatch, current.Version) {
+		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
+			model.ErrorCodeConflict,
+			"Zone version mismatch (optimistic lock failure)",
+			map[string]interface{}{"expected_version": ifMatch},
+		))
+		return
+	}
+
+	err = h.deleteZoneWithVersion(c.Request.Context(), name, current.Version)
+	if err != nil {
+		if err == model.ErrZoneNotFound {
+			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
+				model.ErrorCodeNotFound,
+				"Zone not found",
+				map[string]interface{}{"zone": name},
+			))
+			return
+		}
+		if err == model.ErrConflict {
+			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
+				model.ErrorCodeConflict,
+				"Zone version mismatch (optimistic lock failure)",
+				map[string]interface{}{"expected_version": ifMatch},
 			))
 			return
 		}
@@ -644,6 +694,17 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 
 	h.logger.Info("Zone deleted", zap.String("zone", name))
 	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) deleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	conditionalStore, ok := h.store.(backend.ConditionalDeleteStore)
+	if ok {
+		return conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
+	}
+
+	// Fallback for custom stores that have not implemented conditional delete.
+	// Built-in stores support ConditionalDeleteStore, so production paths keep CAS semantics.
+	return h.store.DeleteZone(ctx, name)
 }
 
 // GetSignedZone handles GET /api/v1/zones/:name/signed

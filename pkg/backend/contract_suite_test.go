@@ -17,11 +17,11 @@ import (
 
 // RunZoneStoreCRUDSuite tests the core CRUD operations that all ZoneStore implementations must support.
 //
-// Test Cases (13 total):
+// Test Cases:
 //   - CreateZone, CreateZone_AlreadyExists
 //   - GetZone, GetZone_NotFound, GetZone_CaseInsensitive
 //   - UpdateZone, UpdateZone_OptimisticLocking, UpdateZone_OptionalVersionCheck, UpdateZone_NotFound
-//   - DeleteZone, DeleteZone_NotFound
+//   - DeleteZone, DeleteZone_NotFound, DeleteZoneWithVersion_OptimisticLocking
 //   - ListZones_Multiple, ListZones_Pagination
 //
 // Contract Invariants Tested:
@@ -229,6 +229,37 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 
 	t.Run("DeleteZone_NotFound", func(t *testing.T) {
 		err := store.DeleteZone(ctx, "nonexistent.example.com.")
+		assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	})
+
+	t.Run("DeleteZoneWithVersion_OptimisticLocking", func(t *testing.T) {
+		conditionalStore, ok := store.(ConditionalDeleteStore)
+		if !ok {
+			t.Skip("store does not implement ConditionalDeleteStore")
+		}
+
+		zone := createTestZone("conditional-delete.example.com.")
+		err := store.CreateZone(ctx, zone)
+		require.NoError(t, err)
+
+		originalVersion := zone.Version
+		zone.Records = []model.Record{
+			{Name: "test.conditional-delete.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		}
+		err = store.UpdateZone(ctx, zone, originalVersion)
+		require.NoError(t, err)
+
+		err = conditionalStore.DeleteZoneWithVersion(ctx, "conditional-delete.example.com.", originalVersion)
+		assert.ErrorIs(t, err, model.ErrConflict,
+			"DeleteZoneWithVersion with stale expectedVersion must return ErrConflict")
+
+		current, err := store.GetZone(ctx, "conditional-delete.example.com.")
+		require.NoError(t, err)
+
+		err = conditionalStore.DeleteZoneWithVersion(ctx, "conditional-delete.example.com.", current.Version)
+		require.NoError(t, err)
+
+		_, err = store.GetZone(ctx, "conditional-delete.example.com.")
 		assert.ErrorIs(t, err, model.ErrZoneNotFound)
 	})
 

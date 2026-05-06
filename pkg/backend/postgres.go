@@ -348,6 +348,39 @@ func (p *PostgresBackend) DeleteZone(ctx context.Context, name string) error {
 	return nil
 }
 
+// DeleteZoneWithVersion removes a zone only when its current version matches.
+func (p *PostgresBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = $1"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = $2"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := p.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("delete zone: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := p.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = $1)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
+}
+
 // Close releases resources.
 func (p *PostgresBackend) Close() error { return p.db.Close() }
 
@@ -761,6 +794,38 @@ func (t *pgTx) DeleteZone(ctx context.Context, name string) error {
 		return model.ErrZoneNotFound
 	}
 	return nil
+}
+
+func (t *pgTx) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = $1"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = $2"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := t.tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("delete zone: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := t.tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = $1)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
 }
 
 func (t *pgTx) Close() error                       { return nil }

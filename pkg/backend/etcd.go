@@ -462,6 +462,54 @@ func (e *EtcdBackend) DeleteZone(ctx context.Context, name string) error {
 	return nil
 }
 
+// DeleteZoneWithVersion removes a zone only when its current version matches.
+func (e *EtcdBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	normalized := model.NormalizeZoneName(name)
+
+	zoneMu := e.acquireZoneLock(normalized)
+	defer e.releaseZoneLock(zoneMu)
+
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
+	defer cancel()
+
+	zoneKey := e.zoneKey(normalized)
+	versionKey := e.versionKey(normalized)
+
+	resp, err := e.client.Get(ctx, zoneKey)
+	if err != nil {
+		return fmt.Errorf("failed to check zone existence: %w", err)
+	}
+	if resp.Count == 0 {
+		return model.ErrZoneNotFound
+	}
+
+	txn := e.client.Txn(ctx)
+	if expectedVersion != "" {
+		txn = txn.If(clientv3.Compare(clientv3.Value(versionKey), "=", expectedVersion))
+	}
+	txn = txn.Then(
+		clientv3.OpDelete(zoneKey),
+		clientv3.OpDelete(versionKey),
+	)
+
+	txnResp, err := txn.Commit()
+	if err != nil {
+		return fmt.Errorf("failed to delete zone: %w", err)
+	}
+	if !txnResp.Succeeded {
+		existsResp, err := e.client.Get(ctx, zoneKey)
+		if err != nil {
+			return fmt.Errorf("check zone existence after delete conflict: %w", err)
+		}
+		if existsResp.Count == 0 {
+			return model.ErrZoneNotFound
+		}
+		return model.ErrConflict
+	}
+
+	return nil
+}
+
 // Close releases resources.
 func (e *EtcdBackend) Close() error {
 	// Close the client first to cancel all watches

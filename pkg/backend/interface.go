@@ -59,6 +59,12 @@ type DNSSECMetadataStore interface {
 	UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error
 }
 
+// ConditionalDeleteStore is an optional capability for backends that can delete
+// a zone only when its current version matches an expected version.
+type ConditionalDeleteStore interface {
+	DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error
+}
+
 // RevisionStore is an optional capability for backends that support
 // versioning and history (e.g., Git, etcd).
 //

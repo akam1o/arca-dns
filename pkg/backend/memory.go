@@ -194,6 +194,24 @@ func (m *MemoryBackend) DeleteZone(ctx context.Context, name string) error {
 	return nil
 }
 
+// DeleteZoneWithVersion removes a zone only when its current version matches.
+func (m *MemoryBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	normalized := model.NormalizeZoneName(name)
+	zone, exists := m.zones[normalized]
+	if !exists {
+		return model.ErrZoneNotFound
+	}
+	if expectedVersion != "" && zone.Version != expectedVersion {
+		return model.ErrConflict
+	}
+
+	delete(m.zones, normalized)
+	return nil
+}
+
 // Close releases any resources held by the backend.
 func (m *MemoryBackend) Close() error {
 	// Nothing to close for in-memory backend

@@ -49,7 +49,7 @@ X-API-Key: <api-key>
 ## 同時更新制御（ETag / If-Match）
 
 - `POST /zones`, `GET /zones/:name`, `PUT /zones/:name` の成功レスポンスには `ETag` ヘッダ（`ETag: <zone.version>`）が含まれます。
-- `PUT /zones/:name` は `If-Match: <etag>` が必須です。並行更新があると `409 Conflict` を返します。
+- `PUT /zones/:name` と `DELETE /zones/:name` は `If-Match: <etag>` が必須です。並行更新があると `409 Conflict` を返します。
 - `GET /zones/:name/signed` は `If-None-Match: <etag>` をサポートし、変更が無い場合は `304 Not Modified`（`ETag` + メタデータヘッダ付き）を返します。
   - Note: `ETag` は引用符付き（例: `ETag: "<zone.version>"`）で返されます。クライアントは `If-Match` / `If-None-Match` に同値を返してください（引用符付き/なしどちらも受理します）。
 
@@ -72,7 +72,7 @@ X-API-Key: <api-key>
 - `POST /zones`: ゾーン作成
 - `GET /zones/:name`: ゾーン取得
 - `PUT /zones/:name`: ゾーン更新（`If-Match` 必須）
-- `DELETE /zones/:name`: ゾーン削除
+- `DELETE /zones/:name`: ゾーン削除（`If-Match` 必須）
 
 Notes:
 - `PUT` では JSON ボディ内の `name` がパスパラメータ `:name` と一致している必要があります。

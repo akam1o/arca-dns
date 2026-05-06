@@ -49,7 +49,7 @@ Error `code` values are defined in `pkg/model/errors.go` (e.g. `NOT_FOUND`, `ALR
 ## Concurrency Control (ETag / If-Match)
 
 - Successful `POST /zones`, `GET /zones/:name`, and `PUT /zones/:name` return an `ETag` header (`ETag: <zone.version>`).
-- `PUT /zones/:name` requires `If-Match: <etag>`; if the zone was updated concurrently, the API returns `409 Conflict`.
+- `PUT /zones/:name` and `DELETE /zones/:name` require `If-Match: <etag>`; if the zone was updated concurrently, the API returns `409 Conflict`.
 - `GET /zones/:name/signed` supports `If-None-Match: <etag>` and returns `304 Not Modified` (with `ETag` + metadata headers) when unchanged.
   - Note: `ETag` values are returned as quoted strings (e.g. `ETag: "<zone.version>"`). Clients should send the value back in `If-Match`/`If-None-Match` (quoted or unquoted are accepted).
 
@@ -72,7 +72,7 @@ For signed artifacts:
 - `POST /zones`: create a zone
 - `GET /zones/:name`: get a zone
 - `PUT /zones/:name`: update a zone (requires `If-Match`)
-- `DELETE /zones/:name`: delete a zone
+- `DELETE /zones/:name`: delete a zone (requires `If-Match`)
 
 Notes:
 - `PUT` requires the JSON body `name` to match the `:name` path parameter.

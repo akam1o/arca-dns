@@ -561,6 +561,46 @@ func (m *MySQLBackend) DeleteZone(ctx context.Context, name string) error {
 	return nil
 }
 
+// DeleteZoneWithVersion removes a zone only when its current version matches.
+func (m *MySQLBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	return m.withRetry(ctx, func(ctx context.Context) error {
+		return m.deleteZoneWithVersion(ctx, name, expectedVersion)
+	})
+}
+
+func (m *MySQLBackend) deleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = ?"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = ?"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := m.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to delete zone: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := m.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("failed to check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
+}
+
 // Close releases resources held by the backend.
 func (m *MySQLBackend) Close() error {
 	return m.db.Close()
@@ -990,6 +1030,39 @@ func (t *MySQLTx) DeleteZone(ctx context.Context, name string) error {
 	}
 
 	return nil
+}
+
+func (t *MySQLTx) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = ?"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = ?"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := t.tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to delete zone: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := t.tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("failed to check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
 }
 
 // Close is a no-op for transactions (use Commit or Rollback instead).

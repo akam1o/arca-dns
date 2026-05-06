@@ -419,15 +419,34 @@ paths:
     delete:
       tags: [zones]
       summary: Delete a zone
-      description: Deletes a zone and all its records
+      description: Deletes a zone and all its records. Requires If-Match with the current zone version.
       operationId: deleteZone
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          description: Current zone ETag/version for optimistic locking
+          schema:
+            type: string
       responses:
         '204':
           description: Zone deleted successfully
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Conflict - If-Match mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           $ref: '#/components/responses/NotFound'
+        '428':
+          description: Precondition required - If-Match header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           $ref: '#/components/responses/InternalError'
 

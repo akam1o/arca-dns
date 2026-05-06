@@ -108,6 +108,7 @@ ARCA_POSTGRES_DSN="..." MYSQL_DSN="..." go test -v -tags=integration -run Contra
 - **UpdateZone_NotFound**: Returns ErrZoneNotFound when updating non-existent zone
 - **DeleteZone**: Remove zone successfully
 - **DeleteZone_NotFound**: Returns ErrZoneNotFound when deleting missing zone
+- **DeleteZoneWithVersion_OptimisticLocking**: Returns ErrConflict when expectedVersion mismatches
 - **ListZones_Multiple**: Deterministic ordering (sorted by name)
 - **ListZones_Pagination**: Correct limit/offset behavior, no overlap, pagination consistency
 

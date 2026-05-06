@@ -343,6 +343,40 @@ func (s *SQLiteBackend) DeleteZone(ctx context.Context, name string) error {
 	return nil
 }
 
+// DeleteZoneWithVersion removes a zone only when its current version matches.
+func (s *SQLiteBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = ?"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = ?"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("delete zone: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
+}
+
 // Close releases resources.
 func (s *SQLiteBackend) Close() error {
 	return s.db.Close()
@@ -810,6 +844,38 @@ func (t *sqliteTx) DeleteZone(ctx context.Context, name string) error {
 		return model.ErrZoneNotFound
 	}
 	return nil
+}
+
+func (t *sqliteTx) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = ?"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = ?"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := t.tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("delete zone: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := t.tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
 }
 
 func (t *sqliteTx) Close() error                       { return nil }

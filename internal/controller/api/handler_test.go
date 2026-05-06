@@ -800,9 +800,12 @@ func TestDeleteZone(t *testing.T) {
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
 
 	// Delete the zone
 	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
+	req.Header.Set("If-Match", current.Version)
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	require.NoError(t, err)
@@ -820,12 +823,78 @@ func TestDeleteZone_NotFound(t *testing.T) {
 	defer server.Close()
 
 	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/nonexistent.com.", nil)
+	req.Header.Set("If-Match", "missing-version")
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestDeleteZone_RequiresIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusPreconditionRequired, resp.StatusCode)
+	_, err = store.GetZone(context.TODO(), "example.com.")
+	assert.NoError(t, err)
+}
+
+func TestDeleteZone_RejectsWildcardIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
+	req.Header.Set("If-Match", "*")
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	_, err = store.GetZone(context.TODO(), "example.com.")
+	assert.NoError(t, err)
+}
+
+func TestDeleteZone_RejectsStaleIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
+	req.Header.Set("If-Match", "stale-version")
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	_, err = store.GetZone(context.TODO(), "example.com.")
+	assert.NoError(t, err)
 }
 
 func TestGetSignedZone(t *testing.T) {

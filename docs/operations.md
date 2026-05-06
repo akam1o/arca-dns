@@ -149,8 +149,12 @@ curl -X PUT "http://controller:8080/api/v1/zones/example.com./records/${record_i
 ### Deleting a Zone
 
 ```bash
+etag="$(curl -sI http://controller:8080/api/v1/zones/example.com. \
+  -H "X-API-Key: your-api-key" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
 curl -X DELETE http://controller:8080/api/v1/zones/example.com. \
-  -H "X-API-Key: your-api-key"
+  -H "X-API-Key: your-api-key" \
+  -H "If-Match: ${etag}"
 ```
 
 ### Viewing Zone Status

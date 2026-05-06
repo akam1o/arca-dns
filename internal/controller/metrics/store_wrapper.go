@@ -64,10 +64,34 @@ func (s *InstrumentedZoneStore) DeleteZone(ctx context.Context, name string) err
 	return err
 }
 
+func (s *InstrumentedZoneStore) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	conditionalStore, ok := s.inner.(backend.ConditionalDeleteStore)
+	if !ok {
+		err := deleteZoneWithVersionFallback(ctx, s.inner, name, expectedVersion)
+		s.metrics.IncBackendOperation("delete_zone", statusLabel(err))
+		return err
+	}
+
+	err := conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
+	s.metrics.IncBackendOperation("delete_zone", statusLabel(err))
+	return err
+}
+
 func (s *InstrumentedZoneStore) Close() error {
 	err := s.inner.Close()
 	s.metrics.IncBackendOperation("close", statusLabel(err))
 	return err
+}
+
+func deleteZoneWithVersionFallback(ctx context.Context, store backend.ZoneStore, name string, expectedVersion string) error {
+	zone, err := store.GetZone(ctx, name)
+	if err != nil {
+		return err
+	}
+	if expectedVersion != "" && zone.Version != expectedVersion {
+		return model.ErrConflict
+	}
+	return store.DeleteZone(ctx, name)
 }
 
 func statusLabel(err error) string {

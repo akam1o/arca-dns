@@ -770,6 +770,44 @@ func (g *GitBackend) DeleteZone(ctx context.Context, name string) error {
 	return g.removeAndCommit(ctx, normalized, summary)
 }
 
+// DeleteZoneWithVersion deletes a zone only when its current version matches.
+func (g *GitBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	normalized := model.NormalizeZoneName(name)
+
+	zoneMu, err := g.acquireLock(ctx, normalized)
+	if err != nil {
+		return err
+	}
+	defer g.releaseLock(zoneMu)
+
+	if err := g.pullIfNeeded(ctx); err != nil {
+		return err
+	}
+
+	zone, err := g.readZone(normalized)
+	if err != nil {
+		if err == model.ErrZoneNotFound {
+			return model.ErrZoneNotFound
+		}
+		return err
+	}
+	if expectedVersion != "" && zone.Version != expectedVersion {
+		return model.ErrConflict
+	}
+
+	relPath, err := g.zoneFilePath(normalized)
+	if err != nil {
+		return fmt.Errorf("invalid zone path: %w", err)
+	}
+
+	filePath := filepath.Join(g.repoPath, relPath)
+	if err := os.Remove(filePath); err != nil {
+		return fmt.Errorf("failed to delete zone file: %w", err)
+	}
+
+	return g.removeAndCommit(ctx, normalized, "deleted zone")
+}
+
 // Close closes the backend
 func (g *GitBackend) Close() error {
 	// Release file lock if held
