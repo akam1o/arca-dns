@@ -46,6 +46,9 @@ type Resolver interface {
 	// so the resolver forwards queries to the local authoritative server.
 	UpdateStubZone(ctx context.Context, zoneName string) error
 
+	// DeleteStubZone removes generated stub-zone configuration for a zone.
+	DeleteStubZone(ctx context.Context, zoneName string) error
+
 	// Status returns the resolver's current status.
 	Status(ctx context.Context) (ServerStatus, error)
 
@@ -105,6 +108,7 @@ func (n *NoopResolver) Reload(_ context.Context) error                   { retur
 func (n *NoopResolver) CheckConfig(_ context.Context) error              { return nil }
 func (n *NoopResolver) FlushZone(_ context.Context, _ string) error      { return nil }
 func (n *NoopResolver) UpdateStubZone(_ context.Context, _ string) error { return nil }
+func (n *NoopResolver) DeleteStubZone(_ context.Context, _ string) error { return nil }
 func (n *NoopResolver) Status(_ context.Context) (ServerStatus, error) {
 	return ServerStatus{StatusText: "disabled"}, nil
 }

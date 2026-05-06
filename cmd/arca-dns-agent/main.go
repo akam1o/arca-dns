@@ -160,6 +160,12 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		if err := authServer.Reload(ctx); err != nil {
 			return err
 		}
+		if err := resolver.DeleteStubZone(ctx, zoneName); err != nil {
+			return err
+		}
+		if err := resolver.CheckConfig(ctx); err != nil {
+			return err
+		}
 		if err := resolver.Reload(ctx); err != nil {
 			return err
 		}
