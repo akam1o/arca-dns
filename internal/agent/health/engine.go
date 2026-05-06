@@ -93,6 +93,11 @@ func (e *Engine) processHealthStatus(status HealthStatus) (bird.HealthSignal, bo
 		}
 	}
 
+	if !status.Healthy && !hasHardFailure && !hasLatencyIssue {
+		hasHardFailure = true
+		failureReason = "Health status is unhealthy"
+	}
+
 	// Build signal
 	signal := bird.HealthSignal{
 		ObservedAt: now,
