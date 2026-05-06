@@ -150,6 +150,24 @@ func (fm *FileManager) ReadZoneFile(zoneName string) (string, error) {
 func (fm *FileManager) DeleteZoneFile(zoneName string) error {
 	targetPath := fm.GetZonePath(zoneName)
 
+	if err := fm.deleteZoneFiles(zoneName); err != nil {
+		return err
+	}
+
+	if err := fm.removeManagedZone(zoneName); err != nil {
+		return fmt.Errorf("failed to update managed zone index: %w", err)
+	}
+
+	fm.logger.Info("Zone file deleted",
+		zap.String("zone", zoneName),
+		zap.String("path", targetPath))
+
+	return nil
+}
+
+func (fm *FileManager) deleteZoneFiles(zoneName string) error {
+	targetPath := fm.GetZonePath(zoneName)
+
 	// Delete main file
 	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete zone file: %w", err)
@@ -168,14 +186,6 @@ func (fm *FileManager) DeleteZoneFile(zoneName string) error {
 				zap.Error(err))
 		}
 	}
-
-	if err := fm.removeManagedZone(zoneName); err != nil {
-		return fmt.Errorf("failed to update managed zone index: %w", err)
-	}
-
-	fm.logger.Info("Zone file deleted",
-		zap.String("zone", zoneName),
-		zap.String("path", targetPath))
 
 	return nil
 }

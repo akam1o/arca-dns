@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -125,6 +126,46 @@ func TestSyncer_DeleteRemovedZonesUsesCanonicalManagedZoneName(t *testing.T) {
 	if deletedZone != longZone {
 		t.Fatalf("delete hook zone = %q, want %q", deletedZone, longZone)
 	}
+}
+
+func TestSyncer_DeleteRemovedZonesKeepsManagedIndexWhenHookFails(t *testing.T) {
+	zoneDir := filepath.Join(t.TempDir(), "zones")
+	fileMgr := NewFileManager(zoneDir, 3, zap.NewNop())
+	require.NoError(t, fileMgr.EnsureDirectory())
+
+	zoneName := "example.com."
+	require.NoError(t, fileMgr.WriteZoneFile(zoneName, "$ORIGIN example.com.\n"))
+
+	syncer := NewSyncer(nil, fileMgr, config.SyncConfig{}, zap.NewNop())
+	syncer.SetOnZoneDeleted(func(ctx context.Context, zoneName string) error {
+		return errors.New("reload failed")
+	})
+
+	deletedCount, errorCount := syncer.deleteRemovedZones(context.Background(), map[string]struct{}{}, map[string]struct{}{})
+	require.Equal(t, 0, deletedCount)
+	require.Equal(t, 1, errorCount)
+	assert.False(t, fileMgr.ZoneExists(zoneName), "zone file should be removed before retry")
+
+	managedZones, err := fileMgr.listManagedZones()
+	require.NoError(t, err)
+	require.Len(t, managedZones, 1)
+	assert.Equal(t, zoneName, managedZones[0].ZoneName)
+
+	retrySyncer := NewSyncer(nil, fileMgr, config.SyncConfig{}, zap.NewNop())
+	var retriedZone string
+	retrySyncer.SetOnZoneDeleted(func(ctx context.Context, zoneName string) error {
+		retriedZone = zoneName
+		return nil
+	})
+
+	deletedCount, errorCount = retrySyncer.deleteRemovedZones(context.Background(), map[string]struct{}{}, map[string]struct{}{})
+	require.Equal(t, 1, deletedCount)
+	require.Equal(t, 0, errorCount)
+	assert.Equal(t, zoneName, retriedZone)
+
+	managedZones, err = fileMgr.listManagedZones()
+	require.NoError(t, err)
+	assert.Empty(t, managedZones)
 }
 
 func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {

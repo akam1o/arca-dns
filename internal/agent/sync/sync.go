@@ -288,7 +288,7 @@ func (s *Syncer) deleteRemovedZones(ctx context.Context, controllerZones map[str
 }
 
 func (s *Syncer) deleteRemovedZone(ctx context.Context, zoneName string) error {
-	if err := s.fileMgr.DeleteZoneFile(zoneName); err != nil {
+	if err := s.fileMgr.deleteZoneFiles(zoneName); err != nil {
 		return fmt.Errorf("failed to delete zone file: %w", err)
 	}
 
@@ -296,6 +296,10 @@ func (s *Syncer) deleteRemovedZone(ctx context.Context, zoneName string) error {
 		if err := s.onZoneDeleted(ctx, zoneName); err != nil {
 			return fmt.Errorf("post-delete hook failed: %w", err)
 		}
+	}
+
+	if err := s.fileMgr.removeManagedZone(zoneName); err != nil {
+		return fmt.Errorf("failed to update managed zone index: %w", err)
 	}
 
 	s.mu.Lock()
