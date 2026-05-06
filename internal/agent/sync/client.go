@@ -22,10 +22,11 @@ const listZonesPageLimit = 1000
 
 // Client is an HTTP client for communicating with the arca-dns controller.
 type Client struct {
-	httpClient *http.Client
-	baseURL    string
-	apiKey     string
-	config     config.ControllerClientConfig
+	httpClient      *http.Client
+	baseURL         string
+	apiKey          string
+	config          config.ControllerClientConfig
+	verifyChecksums bool
 }
 
 // ZoneInfo contains information about a zone from the controller.
@@ -121,11 +122,18 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 	}
 
 	return &Client{
-		httpClient: httpClient,
-		baseURL:    cfg.URL,
-		apiKey:     cfg.APIKey,
-		config:     cfg,
+		httpClient:      httpClient,
+		baseURL:         cfg.URL,
+		apiKey:          cfg.APIKey,
+		config:          cfg,
+		verifyChecksums: true,
 	}, nil
+}
+
+// SetVerifyChecksums controls whether signed zone downloads must include and
+// match controller checksum headers.
+func (c *Client) SetVerifyChecksums(enabled bool) {
+	c.verifyChecksums = enabled
 }
 
 // ListZones retrieves the list of zones from the controller.
@@ -265,8 +273,13 @@ func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, s
 	zoneHash := resp.Header.Get("X-Zone-Hash")
 	zoneHash8 := resp.Header.Get("X-Zone-Hash8")
 
-	// Verify SHA256 checksum if provided
-	if zoneHash != "" || zoneHash8 != "" {
+	// Verify SHA256 checksum when enabled. Missing checksum headers are an error
+	// because the agent otherwise cannot detect truncated or altered artifacts.
+	if c.verifyChecksums {
+		if zoneHash == "" && zoneHash8 == "" {
+			return "", "", false, fmt.Errorf("missing checksum header in response")
+		}
+
 		computedHash := sha256.Sum256(body)
 		computedHashHex := hex.EncodeToString(computedHash[:])
 		computedHash8 := computedHashHex

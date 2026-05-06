@@ -348,6 +348,73 @@ func TestFetchSignedZone_ChecksumVerification(t *testing.T) {
 	}
 }
 
+func TestFetchSignedZone_MissingChecksumRejected(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+		w.Header().Set("X-Zone-Serial", "2024122801")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, _, _, err = client.FetchSignedZone("example.com.", "")
+	if err == nil {
+		t.Fatal("Expected missing checksum header to fail")
+	}
+	if err.Error() != "missing checksum header in response" {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+}
+
+func TestFetchSignedZone_ChecksumVerificationDisabled(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+		w.Header().Set("X-Zone-Serial", "2024122801")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetVerifyChecksums(false)
+
+	content, _, _, err := client.FetchSignedZone("example.com.", "")
+	if err != nil {
+		t.Fatalf("FetchSignedZone failed with checksum verification disabled: %v", err)
+	}
+	if content != zoneContent {
+		t.Errorf("Zone content mismatch")
+	}
+}
+
 func TestRetryLogic(t *testing.T) {
 	requireTCPListener(t)
 	attempts := 0

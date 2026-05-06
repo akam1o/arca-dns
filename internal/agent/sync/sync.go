@@ -37,6 +37,10 @@ type Syncer struct {
 
 // NewSyncer creates a new zone syncer.
 func NewSyncer(client *Client, fileMgr *FileManager, cfg config.SyncConfig, logger *zap.Logger) *Syncer {
+	if client != nil {
+		client.SetVerifyChecksums(cfg.VerifyChecksums)
+	}
+
 	return &Syncer{
 		client:     client,
 		fileMgr:    fileMgr,
