@@ -46,7 +46,7 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 	if cfg != nil && cfg.RateLimit.Enabled {
 		rateLimiterConfig := middleware.DefaultRateLimiterConfig()
 		rateLimiterConfig.ReadRPS = cfg.RateLimit.RequestsPerSecond
-		rateLimiterConfig.WriteRPS = cfg.RateLimit.RequestsPerSecond / 10
+		rateLimiterConfig.WriteRPS = writeRPSFromReadRPS(cfg.RateLimit.RequestsPerSecond)
 		rateLimiterConfig.Burst = cfg.RateLimit.Burst
 
 		rateLimiter := middleware.NewRateLimiter(rateLimiterConfig)
@@ -98,4 +98,12 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 	}
 
 	return router
+}
+
+func writeRPSFromReadRPS(readRPS int) int {
+	writeRPS := readRPS / 10
+	if writeRPS < 1 {
+		return 1
+	}
+	return writeRPS
 }

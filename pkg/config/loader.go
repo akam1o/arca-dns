@@ -120,6 +120,15 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return err
 	}
 
+	if cfg.API.RateLimit.Enabled {
+		if cfg.API.RateLimit.RequestsPerSecond <= 0 {
+			return fmt.Errorf("invalid api.rate_limit.requests_per_second: must be positive when rate limiting is enabled")
+		}
+		if cfg.API.RateLimit.Burst <= 0 {
+			return fmt.Errorf("invalid api.rate_limit.burst: must be positive when rate limiting is enabled")
+		}
+	}
+
 	if cfg.Backend.Type == "" {
 		return fmt.Errorf("invalid backend.type: empty")
 	}

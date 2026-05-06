@@ -46,3 +46,10 @@ func TestSetupRouter_HealthRoutesBypassAuth(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code)
 }
+
+func TestWriteRPSFromReadRPS_MinimumOne(t *testing.T) {
+	assert.Equal(t, 1, writeRPSFromReadRPS(1))
+	assert.Equal(t, 1, writeRPSFromReadRPS(9))
+	assert.Equal(t, 1, writeRPSFromReadRPS(10))
+	assert.Equal(t, 10, writeRPSFromReadRPS(100))
+}

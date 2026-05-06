@@ -246,6 +246,22 @@ func TestValidateControllerConfig_InvalidBackendType(t *testing.T) {
 	assert.Contains(t, err.Error(), "backend.type")
 }
 
+func TestValidateControllerConfig_InvalidRateLimit(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.API.RateLimit.Enabled = true
+	cfg.API.RateLimit.RequestsPerSecond = 0
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "api.rate_limit.requests_per_second")
+
+	cfg = validControllerConfigForTest()
+	cfg.API.RateLimit.Enabled = true
+	cfg.API.RateLimit.Burst = 0
+	err = ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "api.rate_limit.burst")
+}
+
 func TestValidateControllerConfig_EmptyKeyDirectory(t *testing.T) {
 	cfg := validControllerConfigForTest()
 	cfg.DNSSEC.Enabled = true
