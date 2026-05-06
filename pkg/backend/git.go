@@ -376,6 +376,16 @@ func (g *GitBackend) pullIfNeeded(ctx context.Context) error {
 
 // commitZone commits changes to the zone file
 func (g *GitBackend) commitZone(ctx context.Context, zoneName, operation, summary string, zone *model.Zone) error {
+	message := fmt.Sprintf("[%s] %s: %s\n\nVersion: %s", operation, zoneName, summary, zone.Version)
+	return g.commitZoneWithMessage(ctx, zoneName, message)
+}
+
+func (g *GitBackend) commitZoneMetadata(ctx context.Context, zoneName, operation, summary string) error {
+	message := fmt.Sprintf("[%s] %s: %s", operation, zoneName, summary)
+	return g.commitZoneWithMessage(ctx, zoneName, message)
+}
+
+func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, message string) error {
 	filePath, err := g.zoneFilePath(zoneName)
 	if err != nil {
 		return fmt.Errorf("invalid zone path: %w", err)
@@ -386,9 +396,6 @@ func (g *GitBackend) commitZone(ctx context.Context, zoneName, operation, summar
 	if err != nil {
 		return fmt.Errorf("failed to add file to git: %w", err)
 	}
-
-	// Create commit message
-	message := fmt.Sprintf("[%s] %s: %s\n\nVersion: %s", operation, zoneName, summary, zone.Version)
 
 	// Commit
 	_, err = g.worktree.Commit(message, &git.CommitOptions{
@@ -743,7 +750,7 @@ func (g *GitBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string, 
 		return err
 	}
 
-	return g.commitZone(ctx, normalized, "dnssec", "updated DNSSEC metadata", zone)
+	return g.commitZoneMetadata(ctx, normalized, "dnssec", "updated DNSSEC metadata")
 }
 
 // DeleteZone deletes a zone

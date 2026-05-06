@@ -514,6 +514,50 @@ func TestGitBackend_ListRevisions(t *testing.T) {
 	}
 }
 
+func TestGitBackend_UpdateDNSSECMetadataDoesNotAddRevision(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	require.NoError(t, backend.CreateZone(ctx, zone))
+	created, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+
+	require.NoError(t, backend.UpdateDNSSECMetadata(ctx, "example.com.", &model.DNSSECConfig{
+		Enabled:      true,
+		Algorithm:    13,
+		KSKKeyTag:    12345,
+		ZSKKeyTag:    23456,
+		NSEC3Enabled: true,
+		NSEC3Salt:    "ABCD",
+	}))
+
+	revisions, err := backend.ListRevisions(ctx, "example.com.", ListOptions{Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, revisions, 1)
+	assert.Equal(t, created.Version, revisions[0].Version)
+
+	updated, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	require.NotNil(t, updated.DNSSEC)
+	assert.Equal(t, created.Version, updated.Version)
+	assert.True(t, updated.DNSSEC.Enabled)
+}
+
 func TestGitBackend_GetCurrentVersion(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
