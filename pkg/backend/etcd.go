@@ -386,6 +386,7 @@ func (e *EtcdBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string,
 	if resp.Count == 0 {
 		return model.ErrZoneNotFound
 	}
+	modRevision := resp.Kvs[0].ModRevision
 
 	var zone model.Zone
 	if err := json.Unmarshal(resp.Kvs[0].Value, &zone); err != nil {
@@ -401,7 +402,7 @@ func (e *EtcdBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string,
 	}
 
 	txn := e.client.Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(zoneKey), ">", 0)).
+		If(clientv3.Compare(clientv3.ModRevision(zoneKey), "=", modRevision)).
 		Then(clientv3.OpPut(zoneKey, string(zoneData)))
 
 	txnResp, err := txn.Commit()
@@ -409,7 +410,14 @@ func (e *EtcdBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string,
 		return fmt.Errorf("failed to update DNSSEC metadata: %w", err)
 	}
 	if !txnResp.Succeeded {
-		return model.ErrZoneNotFound
+		existsResp, err := e.client.Get(ctx, zoneKey)
+		if err != nil {
+			return fmt.Errorf("check zone existence after DNSSEC metadata conflict: %w", err)
+		}
+		if existsResp.Count == 0 {
+			return model.ErrZoneNotFound
+		}
+		return model.ErrConflict
 	}
 	return nil
 }
