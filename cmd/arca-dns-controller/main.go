@@ -81,10 +81,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Fatal("Failed to load configuration", zap.Error(err))
 	}
 
-	// Override listen address from flag if provided
-	if listenAddr != "" {
-		cfg.API.Listen = listenAddr
-	}
+	applyServeFlagOverrides(cmd, cfg)
 
 	// Initialize backend from configuration
 	store, err := newStoreFromConfig(cfg)
@@ -248,6 +245,12 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	logger.Info("Server stopped")
+}
+
+func applyServeFlagOverrides(cmd *cobra.Command, cfg *config.ControllerConfig) {
+	if cmd.Flags().Changed("listen") {
+		cfg.API.Listen = listenAddr
+	}
 }
 
 func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error) {
