@@ -345,6 +345,46 @@ func TestGitBackend_AutoPullUsesConfiguredBranch(t *testing.T) {
 	assert.Contains(t, zoneNames(zones), "listed.example.com.")
 }
 
+func TestGitBackend_RepositoryLockSerializesWithinProcess(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	require.NoError(t, backend.acquireFileLock(context.Background()))
+	lockHeld := true
+	defer func() {
+		if lockHeld {
+			backend.releaseFileLock()
+		}
+	}()
+
+	acquired := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		err := backend.acquireFileLock(context.Background())
+		if err == nil {
+			close(acquired)
+			backend.releaseFileLock()
+		}
+		done <- err
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("second repository lock acquired while first lock was still held")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	backend.releaseFileLock()
+	lockHeld = false
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("second repository lock did not acquire after first lock was released")
+	}
+}
+
 func zoneNames(zones []*model.Zone) []string {
 	names := make([]string, 0, len(zones))
 	for _, zone := range zones {

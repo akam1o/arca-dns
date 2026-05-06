@@ -107,6 +107,7 @@ type GitBackend struct {
 
 	repo      *git.Repository
 	worktree  *git.Worktree
+	repoMu    sync.Mutex
 	fileLock  *flock.Flock
 	zoneMutex sync.Map // map[string]*sync.Mutex (per-zone locking)
 }
@@ -273,8 +274,10 @@ func boolFromConfig(value interface{}) (bool, bool) {
 	return v, ok
 }
 
-// acquireFileLock acquires the repository file lock.
+// acquireFileLock acquires the in-process repository lock and cross-process file lock.
 func (g *GitBackend) acquireFileLock(ctx context.Context) error {
+	g.repoMu.Lock()
+
 	locked := false
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -282,11 +285,13 @@ func (g *GitBackend) acquireFileLock(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			g.repoMu.Unlock()
 			return ctx.Err()
 		case <-ticker.C:
 			var err error
 			locked, err = g.fileLock.TryLock()
 			if err != nil {
+				g.repoMu.Unlock()
 				return fmt.Errorf("failed to acquire file lock: %w", err)
 			}
 			if locked {
@@ -298,6 +303,7 @@ func (g *GitBackend) acquireFileLock(ctx context.Context) error {
 
 func (g *GitBackend) releaseFileLock() {
 	_ = g.fileLock.Unlock()
+	g.repoMu.Unlock()
 }
 
 // acquireLock acquires both file lock and per-zone mutex.
@@ -854,6 +860,9 @@ func (g *GitBackend) DeleteZoneWithVersion(ctx context.Context, name string, exp
 
 // Close closes the backend
 func (g *GitBackend) Close() error {
+	g.repoMu.Lock()
+	defer g.repoMu.Unlock()
+
 	// Release file lock if held
 	_ = g.fileLock.Unlock()
 	return nil
