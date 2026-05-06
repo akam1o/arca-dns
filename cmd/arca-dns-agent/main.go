@@ -173,7 +173,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	})
 
 	// Create health checker (DNS behavior is the source of truth).
-	checker := health.NewChecker(cfg.Health, logger)
+	checker := health.NewCheckerWithOptions(cfg.Health, health.CheckerOptions{
+		CheckAuthoritative: cfg.NSD.Enabled,
+		CheckResolver:      cfg.Unbound.Enabled,
+	}, logger)
 	logger.Info("Health checker initialized")
 
 	// Create BIRD BGP control components (M5)

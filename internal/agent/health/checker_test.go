@@ -137,6 +137,71 @@ func TestChecker_CheckAll(t *testing.T) {
 	assert.True(t, status.Checks[CheckTypeLatency].Success)
 }
 
+func TestChecker_CheckAll_AuthoritativeOnly(t *testing.T) {
+	logger := zap.NewNop()
+
+	server, addr := startTestDNSServer(t, dns.RcodeSuccess)
+	defer func() { _ = server.Shutdown() }()
+
+	checker := NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout:     2 * time.Second,
+		LatencyThreshold: 100 * time.Millisecond,
+		TestRecord:       "example.com",
+		NSDServer:        addr,
+		UnboundServer:    "127.0.0.1:1",
+	}, CheckerOptions{
+		CheckAuthoritative: true,
+		CheckResolver:      false,
+	}, logger)
+
+	status := checker.CheckAll(context.Background())
+
+	assert.True(t, status.Healthy)
+	assert.Contains(t, status.Checks, CheckTypeQuery)
+	assert.NotContains(t, status.Checks, CheckTypeFullPath)
+	assert.NotContains(t, status.Checks, CheckTypeLatency)
+}
+
+func TestChecker_CheckAll_ResolverOnly(t *testing.T) {
+	logger := zap.NewNop()
+
+	server, addr := startTestDNSServer(t, dns.RcodeSuccess)
+	defer func() { _ = server.Shutdown() }()
+
+	checker := NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout:     2 * time.Second,
+		LatencyThreshold: 100 * time.Millisecond,
+		TestRecord:       "example.com",
+		NSDServer:        "127.0.0.1:1",
+		UnboundServer:    addr,
+	}, CheckerOptions{
+		CheckAuthoritative: false,
+		CheckResolver:      true,
+	}, logger)
+
+	status := checker.CheckAll(context.Background())
+
+	assert.True(t, status.Healthy)
+	assert.NotContains(t, status.Checks, CheckTypeQuery)
+	assert.Contains(t, status.Checks, CheckTypeFullPath)
+	assert.Contains(t, status.Checks, CheckTypeLatency)
+}
+
+func TestChecker_CheckAll_NoComponentsEnabled(t *testing.T) {
+	logger := zap.NewNop()
+
+	checker := NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout:     2 * time.Second,
+		LatencyThreshold: 100 * time.Millisecond,
+		TestRecord:       "example.com",
+	}, CheckerOptions{}, logger)
+
+	status := checker.CheckAll(context.Background())
+
+	assert.False(t, status.Healthy)
+	assert.Empty(t, status.Checks)
+}
+
 func TestChecker_Run(t *testing.T) {
 	logger := zap.NewNop()
 

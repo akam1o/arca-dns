@@ -45,10 +45,27 @@ type Checker struct {
 	testRecord    string
 	nsdServer     string
 	unboundServer string
+
+	checkAuthoritative bool
+	checkResolver      bool
+}
+
+// CheckerOptions controls which DNS paths are considered active for health.
+type CheckerOptions struct {
+	CheckAuthoritative bool
+	CheckResolver      bool
 }
 
 // NewChecker creates a new health checker.
 func NewChecker(cfg config.HealthConfig, logger *zap.Logger) *Checker {
+	return NewCheckerWithOptions(cfg, CheckerOptions{
+		CheckAuthoritative: true,
+		CheckResolver:      true,
+	}, logger)
+}
+
+// NewCheckerWithOptions creates a health checker for the enabled DNS components.
+func NewCheckerWithOptions(cfg config.HealthConfig, opts CheckerOptions, logger *zap.Logger) *Checker {
 	nsdServer := cfg.NSDServer
 	if nsdServer == "" {
 		nsdServer = "127.0.0.1:5353"
@@ -70,12 +87,14 @@ func NewChecker(cfg config.HealthConfig, logger *zap.Logger) *Checker {
 	}
 
 	return &Checker{
-		config:        cfg,
-		logger:        logger,
-		testZone:      testZone,
-		testRecord:    testRecord,
-		nsdServer:     nsdServer,
-		unboundServer: unboundServer,
+		config:             cfg,
+		logger:             logger,
+		testZone:           testZone,
+		testRecord:         testRecord,
+		nsdServer:          nsdServer,
+		unboundServer:      unboundServer,
+		checkAuthoritative: opts.CheckAuthoritative,
+		checkResolver:      opts.CheckResolver,
 	}
 }
 
@@ -119,21 +138,33 @@ func (c *Checker) Run(ctx context.Context, statusChan chan<- HealthStatus) error
 // 3. Latency under threshold (<100ms)
 func (c *Checker) CheckAll(ctx context.Context) HealthStatus {
 	checks := make(map[CheckType]CheckResult)
+	healthy := true
+	checksRun := 0
 
 	// Check 1: DNS query to NSD (direct)
-	checks[CheckTypeQuery] = c.checkDNSQuery(ctx, c.nsdServer, CheckTypeQuery)
+	if c.checkAuthoritative {
+		checks[CheckTypeQuery] = c.checkDNSQuery(ctx, c.nsdServer, CheckTypeQuery)
+		healthy = healthy && checks[CheckTypeQuery].Success
+		checksRun++
+	}
 
 	// Check 2: Full path query through Unbound
-	checks[CheckTypeFullPath] = c.checkDNSQuery(ctx, c.unboundServer, CheckTypeFullPath)
+	if c.checkResolver {
+		checks[CheckTypeFullPath] = c.checkDNSQuery(ctx, c.unboundServer, CheckTypeFullPath)
+		healthy = healthy && checks[CheckTypeFullPath].Success
+		checksRun++
 
-	// Check 3: Latency check
-	checks[CheckTypeLatency] = c.checkLatency(ctx)
+		// Check 3: Latency check
+		checks[CheckTypeLatency] = c.checkLatency(ctx)
+		healthy = healthy && checks[CheckTypeLatency].Success
+		checksRun++
+	}
 
 	// Determine overall health:
 	// DNS checks are the source of truth for routing decisions.
-	healthy := checks[CheckTypeQuery].Success &&
-		checks[CheckTypeFullPath].Success &&
-		checks[CheckTypeLatency].Success
+	if checksRun == 0 {
+		healthy = false
+	}
 
 	return HealthStatus{
 		Healthy:   healthy,
