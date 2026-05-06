@@ -247,7 +247,7 @@ func TestChecker_CheckAll_NoComponentsEnabled(t *testing.T) {
 	assert.Empty(t, status.Checks)
 }
 
-func TestChecker_CheckAll_AdditionalCheck(t *testing.T) {
+func TestChecker_CheckAll_AdditionalCheckAloneDoesNotMakeHealthy(t *testing.T) {
 	logger := zap.NewNop()
 
 	checker := NewCheckerWithOptions(config.HealthConfig{
@@ -265,7 +265,7 @@ func TestChecker_CheckAll_AdditionalCheck(t *testing.T) {
 
 	status := checker.CheckAll(context.Background())
 
-	assert.True(t, status.Healthy)
+	assert.False(t, status.Healthy)
 	assert.Contains(t, status.Checks, CheckTypeSync)
 	assert.True(t, status.Checks[CheckTypeSync].Success)
 }

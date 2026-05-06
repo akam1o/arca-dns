@@ -151,36 +151,36 @@ func (c *Checker) Run(ctx context.Context, statusChan chan<- HealthStatus) error
 func (c *Checker) CheckAll(ctx context.Context) HealthStatus {
 	checks := make(map[CheckType]CheckResult)
 	healthy := true
-	checksRun := 0
+	dnsChecksRun := 0
 
 	// Check 1: DNS query to NSD (direct)
 	if c.checkAuthoritative {
 		checks[CheckTypeQuery] = c.checkDNSQuery(ctx, c.nsdServer, CheckTypeQuery)
 		healthy = healthy && checks[CheckTypeQuery].Success
-		checksRun++
+		dnsChecksRun++
 	}
 
 	// Check 2: Full path query through Unbound
 	if c.checkResolver {
 		checks[CheckTypeFullPath] = c.checkDNSQuery(ctx, c.unboundServer, CheckTypeFullPath)
 		healthy = healthy && checks[CheckTypeFullPath].Success
-		checksRun++
+		dnsChecksRun++
 
 		// Check 3: Latency check
 		checks[CheckTypeLatency] = c.checkLatency(ctx)
 		healthy = healthy && checks[CheckTypeLatency].Success
-		checksRun++
+		dnsChecksRun++
 	}
 
 	for _, check := range c.additionalChecks {
 		result := check(ctx)
 		checks[result.Type] = result
 		healthy = healthy && result.Success
-		checksRun++
 	}
 
-	// At least one enabled check must pass for the agent to be considered healthy.
-	if checksRun == 0 {
+	// Additional checks can gate DNS health, but cannot make a DNS-disabled
+	// agent healthy enough for routing decisions.
+	if dnsChecksRun == 0 {
 		healthy = false
 	}
 
