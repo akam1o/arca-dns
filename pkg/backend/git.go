@@ -107,7 +107,7 @@ type GitBackend struct {
 
 	repo      *git.Repository
 	worktree  *git.Worktree
-	repoMu    sync.Mutex
+	repoLock  chan struct{}
 	fileLock  *flock.Flock
 	zoneMutex sync.Map // map[string]*sync.Mutex (per-zone locking)
 }
@@ -179,6 +179,7 @@ func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitB
 		pullInterval: options.PullInterval,
 		repo:         repo,
 		worktree:     worktree,
+		repoLock:     make(chan struct{}, 1),
 		fileLock:     fileLock,
 	}, nil
 }
@@ -274,9 +275,24 @@ func boolFromConfig(value interface{}) (bool, bool) {
 	return v, ok
 }
 
+func (g *GitBackend) acquireRepoLock(ctx context.Context) error {
+	select {
+	case g.repoLock <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (g *GitBackend) releaseRepoLock() {
+	<-g.repoLock
+}
+
 // acquireFileLock acquires the in-process repository lock and cross-process file lock.
 func (g *GitBackend) acquireFileLock(ctx context.Context) error {
-	g.repoMu.Lock()
+	if err := g.acquireRepoLock(ctx); err != nil {
+		return err
+	}
 
 	locked := false
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -285,13 +301,13 @@ func (g *GitBackend) acquireFileLock(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			g.repoMu.Unlock()
+			g.releaseRepoLock()
 			return ctx.Err()
 		case <-ticker.C:
 			var err error
 			locked, err = g.fileLock.TryLock()
 			if err != nil {
-				g.repoMu.Unlock()
+				g.releaseRepoLock()
 				return fmt.Errorf("failed to acquire file lock: %w", err)
 			}
 			if locked {
@@ -303,7 +319,7 @@ func (g *GitBackend) acquireFileLock(ctx context.Context) error {
 
 func (g *GitBackend) releaseFileLock() {
 	_ = g.fileLock.Unlock()
-	g.repoMu.Unlock()
+	g.releaseRepoLock()
 }
 
 // acquireLock acquires both file lock and per-zone mutex.
@@ -860,8 +876,10 @@ func (g *GitBackend) DeleteZoneWithVersion(ctx context.Context, name string, exp
 
 // Close closes the backend
 func (g *GitBackend) Close() error {
-	g.repoMu.Lock()
-	defer g.repoMu.Unlock()
+	if err := g.acquireRepoLock(context.Background()); err != nil {
+		return err
+	}
+	defer g.releaseRepoLock()
 
 	// Release file lock if held
 	_ = g.fileLock.Unlock()

@@ -385,6 +385,29 @@ func TestGitBackend_RepositoryLockSerializesWithinProcess(t *testing.T) {
 	}
 }
 
+func TestGitBackend_RepositoryLockHonorsContextCancellation(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	require.NoError(t, backend.acquireFileLock(context.Background()))
+	defer backend.releaseFileLock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- backend.acquireFileLock(ctx)
+	}()
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("repository lock wait did not return after context cancellation")
+	}
+}
+
 func zoneNames(zones []*model.Zone) []string {
 	names := make([]string, 0, len(zones))
 	for _, zone := range zones {
