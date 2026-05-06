@@ -343,10 +343,8 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid dnstap.sample_rate: must be positive when DNSTap is enabled")
 	}
 
-	if cfg.Metrics.Enabled {
-		if strings.TrimSpace(cfg.Metrics.Listen) == "" {
-			return fmt.Errorf("invalid metrics.listen: empty when metrics is enabled")
-		}
+	if strings.TrimSpace(cfg.Metrics.Listen) == "" {
+		return fmt.Errorf("invalid metrics.listen: empty")
 	}
 
 	if cfg.Health.CheckInterval <= 0 {

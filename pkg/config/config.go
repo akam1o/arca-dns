@@ -513,12 +513,12 @@ type LogRotationConfig struct {
 	Compress bool `mapstructure:"compress"`
 }
 
-// MetricsConfig configures Prometheus metrics.
+// MetricsConfig configures the agent status server and Prometheus metrics.
 type MetricsConfig struct {
 	// Enabled enables metrics endpoint
 	Enabled bool `mapstructure:"enabled"`
 
-	// Listen address for metrics endpoint
+	// Listen address for status and metrics endpoints
 	Listen string `mapstructure:"listen"`
 
 	// Path is the HTTP path for metrics (default: /metrics)

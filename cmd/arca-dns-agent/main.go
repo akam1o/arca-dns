@@ -433,22 +433,18 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if routeManager != nil {
 		routeCtrl = bird.NewAdapter(routeManager)
 	}
-	if cfg.Metrics.Enabled {
-		wg.Add(1)
-		statusServer := startStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
-		go func() {
-			defer wg.Done()
-			<-ctx.Done()
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer shutdownCancel()
-			if err := statusServer.Shutdown(shutdownCtx); err != nil {
-				logger.Error("Status server shutdown failed", zap.Error(err))
-			}
-			logger.Info("Status server stopped")
-		}()
-	} else {
-		logger.Info("Status server disabled")
-	}
+	wg.Add(1)
+	statusServer := startStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+	go func() {
+		defer wg.Done()
+		<-ctx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := statusServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("Status server shutdown failed", zap.Error(err))
+		}
+		logger.Info("Status server stopped")
+	}()
 
 	logger.Info("Agent started successfully",
 		zap.String("sync_interval", cfg.Sync.SyncInterval.String()),
@@ -501,6 +497,24 @@ func reexecSelf() error {
 
 // startStatusServer starts an HTTP server for status and metrics.
 func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
+	router := newStatusRouter(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+
+	server := &http.Server{
+		Addr:    cfg.Metrics.Listen,
+		Handler: router,
+	}
+
+	go func() {
+		logger.Info("Starting status server", zap.String("listen", cfg.Metrics.Listen))
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("Status server failed", zap.Error(err))
+		}
+	}()
+
+	return server
+}
+
+func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -560,6 +574,11 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 			"status": "ready",
 		})
 	})
+
+	if !cfg.Metrics.Enabled {
+		logger.Info("Metrics endpoint disabled")
+		return router
+	}
 
 	// Metrics endpoint (Prometheus format)
 	router.GET(metricPath(cfg.Metrics.Path), func(c *gin.Context) {
@@ -642,19 +661,7 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 		c.String(http.StatusOK, sb.String())
 	})
 
-	server := &http.Server{
-		Addr:    cfg.Metrics.Listen,
-		Handler: router,
-	}
-
-	go func() {
-		logger.Info("Starting status server", zap.String("listen", cfg.Metrics.Listen))
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("Status server failed", zap.Error(err))
-		}
-	}()
-
-	return server
+	return router
 }
 
 func metricPath(path string) string {

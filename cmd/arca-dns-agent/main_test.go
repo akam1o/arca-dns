@@ -2,8 +2,16 @@ package main
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/akam1o/arca-dns/internal/agent/health"
+	zonesync "github.com/akam1o/arca-dns/internal/agent/sync"
+	"github.com/akam1o/arca-dns/pkg/config"
+	"go.uber.org/zap"
 )
 
 func TestReexecSelf_UsesExecutableAsArgv0(t *testing.T) {
@@ -46,4 +54,63 @@ func TestMetricPath(t *testing.T) {
 			t.Fatalf("metricPath(%q)=%q, want %q", input, got, want)
 		}
 	}
+}
+
+func TestStatusRouter_HealthAvailableWhenMetricsDisabled(t *testing.T) {
+	router := newTestStatusRouter(config.MetricsConfig{
+		Enabled: false,
+		Path:    "/metrics",
+	})
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /health status=%d, want %d", resp.Code, http.StatusOK)
+	}
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("GET /metrics status=%d, want %d", resp.Code, http.StatusNotFound)
+	}
+}
+
+func TestStatusRouter_MetricsEnabledUsesConfiguredPath(t *testing.T) {
+	router := newTestStatusRouter(config.MetricsConfig{
+		Enabled: true,
+		Path:    "/scrape",
+	})
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/scrape", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /scrape status=%d, want %d", resp.Code, http.StatusOK)
+	}
+	if !strings.Contains(resp.Body.String(), "arca_dns_agent_sync_has_success") {
+		t.Fatalf("GET /scrape response did not contain agent metrics")
+	}
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("GET /metrics status=%d, want %d", resp.Code, http.StatusNotFound)
+	}
+}
+
+func newTestStatusRouter(metrics config.MetricsConfig) http.Handler {
+	logger := zap.NewNop()
+	cfg := &config.AgentConfig{
+		Metrics: metrics,
+	}
+	syncer := zonesync.NewSyncer(nil, nil, config.SyncConfig{
+		MaxStaleness: time.Hour,
+	}, logger)
+	checker := health.NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout: time.Millisecond,
+	}, health.CheckerOptions{}, logger)
+	return newStatusRouter(cfg, syncer, checker, nil, nil, logger)
 }

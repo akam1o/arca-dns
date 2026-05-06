@@ -511,9 +511,9 @@ func TestValidateAgentConfig_InvalidDNSTapSampleRate(t *testing.T) {
 	assert.Contains(t, err.Error(), "dnstap.sample_rate")
 }
 
-func TestValidateAgentConfig_MetricsEnabledRequiresListen(t *testing.T) {
+func TestValidateAgentConfig_StatusServerRequiresListen(t *testing.T) {
 	cfg := DefaultAgentConfig()
-	cfg.Metrics.Enabled = true
+	cfg.Metrics.Enabled = false
 	cfg.Metrics.Listen = ""
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
