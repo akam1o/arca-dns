@@ -260,13 +260,13 @@ func (s *Syncer) deleteRemovedZones(ctx context.Context, controllerZones map[str
 		deletedCount++
 	}
 
-	localZoneFiles, err := s.fileMgr.listZoneFiles()
+	managedZoneFiles, err := s.fileMgr.listManagedZoneFiles()
 	if err != nil {
-		s.logger.Error("Failed to list local zone files", zap.Error(err))
+		s.logger.Error("Failed to list managed zone files", zap.Error(err))
 		return deletedCount, errorCount + 1
 	}
 
-	for _, zoneFile := range localZoneFiles {
+	for _, zoneFile := range managedZoneFiles {
 		if _, exists := controllerZoneFiles[zoneFile]; exists {
 			continue
 		}

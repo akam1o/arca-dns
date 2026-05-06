@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,12 @@ type FileManager struct {
 	zoneDir        string
 	backupVersions int
 	logger         *zap.Logger
+}
+
+const managedZonesIndexFile = ".arca-dns-managed-zones.json"
+
+type managedZonesIndex struct {
+	Zones []string `json:"zones"`
 }
 
 // NewFileManager creates a new file manager.
@@ -34,7 +41,8 @@ func NewFileManager(zoneDir string, backupVersions int, logger *zap.Logger) *Fil
 // 3. Fsync the temporary file
 // 4. Backup old version (if exists)
 // 5. Rename temporary file to target (atomic operation)
-// 6. Clean up old backups
+// 6. Record the file as agent-managed
+// 7. Clean up old backups
 func (fm *FileManager) WriteZoneFile(zoneName string, content string) error {
 	return fm.WriteZoneFileValidated(zoneName, content, nil)
 }
@@ -79,6 +87,10 @@ func (fm *FileManager) WriteZoneFileValidated(zoneName string, content string, v
 	// Atomic rename (this is the commit point)
 	if err := os.Rename(tmpPath, targetPath); err != nil {
 		return fmt.Errorf("failed to rename temporary file: %w", err)
+	}
+
+	if err := fm.recordManagedZone(zoneName); err != nil {
+		return fmt.Errorf("failed to record managed zone: %w", err)
 	}
 
 	// Clean up old backups
@@ -139,6 +151,10 @@ func (fm *FileManager) DeleteZoneFile(zoneName string) error {
 				zap.String("path", backup),
 				zap.Error(err))
 		}
+	}
+
+	if err := fm.removeManagedZone(zoneName); err != nil {
+		return fmt.Errorf("failed to update managed zone index: %w", err)
 	}
 
 	fm.logger.Info("Zone file deleted",
@@ -214,28 +230,93 @@ func (fm *FileManager) listBackups(zoneName string) ([]string, error) {
 	return matches, nil
 }
 
-// listZoneFiles returns the safe zone names for managed zone files in the zone directory.
-func (fm *FileManager) listZoneFiles() ([]string, error) {
-	pattern := filepath.Join(fm.zoneDir, "*.zone")
-	matches, err := filepath.Glob(pattern)
+func (fm *FileManager) managedZonesIndexPath() string {
+	return filepath.Join(fm.zoneDir, managedZonesIndexFile)
+}
+
+func (fm *FileManager) readManagedZones() (map[string]struct{}, error) {
+	path := fm.managedZonesIndexPath()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list zone files: %w", err)
+		if os.IsNotExist(err) {
+			return map[string]struct{}{}, nil
+		}
+		return nil, fmt.Errorf("read managed zone index: %w", err)
 	}
 
-	zoneNames := make([]string, 0, len(matches))
-	for _, match := range matches {
-		info, err := os.Stat(match)
-		if err != nil {
-			return nil, fmt.Errorf("failed to stat zone file: %w", err)
-		}
-		if info.IsDir() {
+	var index managedZonesIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, fmt.Errorf("parse managed zone index: %w", err)
+	}
+
+	zones := make(map[string]struct{}, len(index.Zones))
+	for _, zone := range index.Zones {
+		safeName := SafeZoneFilename(zone)
+		if safeName == "" {
 			continue
 		}
+		zones[safeName] = struct{}{}
+	}
+	return zones, nil
+}
 
-		fileName := filepath.Base(match)
-		zoneNames = append(zoneNames, fileName[:len(fileName)-len(".zone")])
+func (fm *FileManager) writeManagedZones(zones map[string]struct{}) error {
+	names := make([]string, 0, len(zones))
+	for zone := range zones {
+		names = append(names, zone)
+	}
+	sort.Strings(names)
+
+	data, err := json.MarshalIndent(managedZonesIndex{Zones: names}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal managed zone index: %w", err)
+	}
+	data = append(data, '\n')
+
+	if err := os.MkdirAll(fm.zoneDir, 0755); err != nil {
+		return fmt.Errorf("create zone directory: %w", err)
 	}
 
+	path := fm.managedZonesIndexPath()
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return fmt.Errorf("write managed zone index tmp: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename managed zone index: %w", err)
+	}
+	return nil
+}
+
+func (fm *FileManager) recordManagedZone(zoneName string) error {
+	zones, err := fm.readManagedZones()
+	if err != nil {
+		return err
+	}
+	zones[SafeZoneFilename(zoneName)] = struct{}{}
+	return fm.writeManagedZones(zones)
+}
+
+func (fm *FileManager) removeManagedZone(zoneName string) error {
+	zones, err := fm.readManagedZones()
+	if err != nil {
+		return err
+	}
+	delete(zones, SafeZoneFilename(zoneName))
+	return fm.writeManagedZones(zones)
+}
+
+func (fm *FileManager) listManagedZoneFiles() ([]string, error) {
+	zones, err := fm.readManagedZones()
+	if err != nil {
+		return nil, err
+	}
+
+	zoneNames := make([]string, 0, len(zones))
+	for zoneName := range zones {
+		zoneNames = append(zoneNames, zoneName)
+	}
 	sort.Strings(zoneNames)
 	return zoneNames, nil
 }

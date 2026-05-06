@@ -353,6 +353,7 @@ func TestSyncer_SyncAll_RemovesOrphanZoneFiles(t *testing.T) {
 	require.NoError(t, fileMgr.EnsureDirectory())
 	require.NoError(t, fileMgr.WriteZoneFile("deleted.com", "$ORIGIN deleted.com.\n"))
 	require.NoError(t, fileMgr.WriteZoneFile("deleted.com", "$ORIGIN deleted.com.\n$TTL 3600\n"))
+	require.NoError(t, os.WriteFile(filepath.Join(zoneDir, "manual.com.zone"), []byte("$ORIGIN manual.com.\n"), 0644))
 
 	syncer := NewSyncer(client, fileMgr, config.SyncConfig{
 		SyncInterval:   30 * time.Second,
@@ -370,6 +371,7 @@ func TestSyncer_SyncAll_RemovesOrphanZoneFiles(t *testing.T) {
 	require.NoError(t, syncer.SyncAll(context.Background()))
 
 	assert.NoFileExists(t, fileMgr.GetZonePath("deleted.com"))
+	assert.FileExists(t, filepath.Join(zoneDir, "manual.com.zone"))
 	backups, err := fileMgr.listBackups("deleted.com")
 	require.NoError(t, err)
 	assert.Empty(t, backups)

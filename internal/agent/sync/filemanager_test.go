@@ -33,6 +33,14 @@ func TestFileManager_WriteZoneFile(t *testing.T) {
 		t.Fatalf("WriteZoneFile failed: %v", err)
 	}
 
+	managedZones, err := fm.listManagedZoneFiles()
+	if err != nil {
+		t.Fatalf("listManagedZoneFiles failed: %v", err)
+	}
+	if len(managedZones) != 1 || managedZones[0] != "example.com" {
+		t.Fatalf("managed zones mismatch: got %v", managedZones)
+	}
+
 	// Verify file exists
 	if !fm.ZoneExists(zoneName) {
 		t.Error("Zone file should exist")
@@ -238,6 +246,14 @@ func TestFileManager_DeleteZoneFile(t *testing.T) {
 
 	if len(backups) != 0 {
 		t.Errorf("Expected 0 backups, got %d", len(backups))
+	}
+
+	managedZones, err := fm.listManagedZoneFiles()
+	if err != nil {
+		t.Fatalf("listManagedZoneFiles failed: %v", err)
+	}
+	if len(managedZones) != 0 {
+		t.Fatalf("managed zones should be empty after delete, got %v", managedZones)
 	}
 }
 
