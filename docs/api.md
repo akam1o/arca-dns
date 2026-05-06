@@ -80,13 +80,16 @@ Notes:
 
 #### Record Operations (How to “hit” records)
 
-There is no dedicated `/records/*` CRUD API in the current controller router. You manage records by sending a full `Zone` document to `PUT /zones/:name`.
+Record changes are managed through record-specific endpoints. `PUT /zones/:name` updates SOA metadata and preserves existing records.
 
-Workflow:
+Endpoints:
 
-1. `GET /zones/:name` to fetch the current zone and `ETag`.
-2. Edit the `records` array (add/remove/modify entries).
-3. `PUT /zones/:name` with `If-Match: <etag>` and the updated JSON.
+- `GET /zones/:name/records`: list records for a zone
+- `POST /zones/:name/records`: create a record
+- `PUT /zones/:name/records/:id`: replace a record
+- `DELETE /zones/:name/records/:id`: delete a record
+
+Mutating record requests require `If-Match` with the current zone `ETag`; this uses the same optimistic locking model as zone updates.
 
 Record fields:
 
@@ -94,9 +97,7 @@ Record fields:
 - `type` (string): one of the supported types (see below).
 - `ttl` (number): must be `> 0` and `<= 2147483647`.
 - `value` (string): format depends on `type` (validated; see below).
-- `id` (string, optional): backend-specific; don’t rely on it being present/stable.
-
-Typical “delete” is done by omitting the record from the `records` array in your `PUT`.
+- `id` (string, optional): backend-specific when stored; if a backend does not provide one, the API returns a deterministic ID derived from the record content for record CRUD.
 
 #### Record Value Formats (Validation Rules)
 
@@ -169,7 +170,7 @@ List zones:
 curl -s "${BASE}/zones?limit=100&offset=0" "${AUTH[@]}"
 ```
 
-Update a zone with optimistic locking:
+Update zone SOA metadata with optimistic locking:
 
 ```bash
 etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
@@ -180,62 +181,50 @@ curl -i -X PUT "${BASE}/zones/example.com." \
   -H "If-Match: ${etag}" \
   -d '{
     "name":"example.com.",
-    "soa":{"mname":"ns1.example.com.","rname":"admin.example.com.","serial":0,"refresh":3600,"retry":1800,"expire":604800,"minimum":86400},
-    "records":[
-      {"name":"@","type":"NS","ttl":3600,"value":"ns1.example.com."},
-      {"name":"@","type":"A","ttl":300,"value":"192.0.2.1"},
-      {"name":"www","type":"A","ttl":300,"value":"192.0.2.2"}
-    ]
+    "soa":{"mname":"ns1.example.com.","rname":"admin.example.com.","serial":0,"refresh":3600,"retry":1800,"expire":604800,"minimum":86400}
   }'
 ```
 
-Add one record (example: `www A`) using `jq`:
+List records:
 
 ```bash
-zone_json="$(curl -s "${BASE}/zones/example.com." "${AUTH[@]}")"
-etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
-
-updated="$(printf '%s' "${zone_json}" | jq '.records += [{"name":"www","type":"A","ttl":300,"value":"192.0.2.2"}]')"
-
-curl -i -X PUT "${BASE}/zones/example.com." \
-  "${AUTH[@]}" \
-  -H 'Content-Type: application/json' \
-  -H "If-Match: ${etag}" \
-  --data-binary "${updated}"
+curl -s "${BASE}/zones/example.com./records" "${AUTH[@]}"
 ```
 
-Add multiple records at once:
+Add one record (example: `www A`):
 
 ```bash
-zone_json="$(curl -s "${BASE}/zones/example.com." "${AUTH[@]}")"
 etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
 
-updated="$(printf '%s' "${zone_json}" | jq '.records += [
-  {"name":"www","type":"A","ttl":300,"value":"192.0.2.2"},
-  {"name":"api","type":"AAAA","ttl":300,"value":"2001:db8::1"},
-  {"name":"@","type":"MX","ttl":3600,"value":"10 mail.example.com."}
-]')"
-
-curl -i -X PUT "${BASE}/zones/example.com." \
+curl -i -X POST "${BASE}/zones/example.com./records" \
   "${AUTH[@]}" \
   -H 'Content-Type: application/json' \
   -H "If-Match: ${etag}" \
-  --data-binary "${updated}"
+  -d '{"name":"www","type":"A","ttl":300,"value":"192.0.2.2"}'
 ```
 
-Delete records matching a predicate (example: remove `www A 192.0.2.2`):
+Update a record:
 
 ```bash
-zone_json="$(curl -s "${BASE}/zones/example.com." "${AUTH[@]}")"
+record_id="$(curl -s "${BASE}/zones/example.com./records" "${AUTH[@]}" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
 etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
 
-updated="$(printf '%s' "${zone_json}" | jq 'del(.records[] | select(.name=="www" and .type=="A" and .value=="192.0.2.2"))')"
-
-curl -i -X PUT "${BASE}/zones/example.com." \
+curl -i -X PUT "${BASE}/zones/example.com./records/${record_id}" \
   "${AUTH[@]}" \
   -H 'Content-Type: application/json' \
   -H "If-Match: ${etag}" \
-  --data-binary "${updated}"
+  -d '{"name":"www","type":"A","ttl":300,"value":"192.0.2.3"}'
+```
+
+Delete a record:
+
+```bash
+record_id="$(curl -s "${BASE}/zones/example.com./records" "${AUTH[@]}" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+curl -i -X DELETE "${BASE}/zones/example.com./records/${record_id}" \
+  "${AUTH[@]}" \
+  -H "If-Match: ${etag}"
 ```
 
 Create a zone (raw text/plain):

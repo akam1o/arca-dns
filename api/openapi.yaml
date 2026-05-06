@@ -431,6 +431,212 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /zones/{zoneName}/records:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        description: Fully qualified domain name of the zone
+        schema:
+          type: string
+          example: "example.com."
+
+    get:
+      tags: [zones]
+      summary: List records for a zone
+      description: Returns records for a zone. The ETag header is the current zone version.
+      operationId: listRecords
+      responses:
+        '200':
+          description: Records for the zone
+          headers:
+            ETag:
+              description: Current zone version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - records
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Record'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [zones]
+      summary: Create a record
+      description: Creates a record in the zone. Requires If-Match with the current zone version.
+      operationId: createRecord
+      parameters:
+        - name: If-Match
+          in: header
+          description: Zone version for optimistic concurrency control
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRecordRequest'
+      responses:
+        '201':
+          description: Record created; response body is the updated zone
+          headers:
+            ETag:
+              description: New zone version
+              schema:
+                type: string
+            Location:
+              description: Created record URL when the backend returns a record id
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict - duplicate record or If-Match mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '428':
+          description: Precondition required - If-Match header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}/records/{recordId}:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        description: Fully qualified domain name of the zone
+        schema:
+          type: string
+          example: "example.com."
+      - name: recordId
+        in: path
+        required: true
+        description: Record identifier from the current record list response
+        schema:
+          type: string
+
+    put:
+      tags: [zones]
+      summary: Update a record
+      description: Replaces a record in the zone. Requires If-Match with the current zone version.
+      operationId: updateRecord
+      parameters:
+        - name: If-Match
+          in: header
+          description: Zone version for optimistic concurrency control
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRecordRequest'
+      responses:
+        '200':
+          description: Record updated; response body is the updated zone
+          headers:
+            ETag:
+              description: New zone version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict - duplicate record or If-Match mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '428':
+          description: Precondition required - If-Match header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [zones]
+      summary: Delete a record
+      description: Deletes a record from the zone. Requires If-Match with the current zone version.
+      operationId: deleteRecord
+      parameters:
+        - name: If-Match
+          in: header
+          description: Zone version for optimistic concurrency control
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Record deleted; response body is the updated zone
+          headers:
+            ETag:
+              description: New zone version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict - If-Match mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '428':
+          description: Precondition required - If-Match header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /zones/{zoneName}/signed:
     parameters:
       - name: zoneName
@@ -838,7 +1044,7 @@ components:
       properties:
         id:
           type: string
-          description: Record identifier (backend-specific)
+          description: Record identifier. Backend-specific when stored; record CRUD responses derive a deterministic id when the backend does not provide one.
         name:
           type: string
           description: Record name (relative to zone)

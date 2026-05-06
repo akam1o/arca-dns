@@ -250,40 +250,39 @@ curl -X POST http://localhost:8080/api/v1/zones/raw \
   --data-binary @example.com.zone
 ```
 
-**Add 1 record (update zone via ETag / If-Match)**:
-
-This API does not have a dedicated `/records` endpoint; update the full zone document with `PUT /api/v1/zones/:name`.
+**Add 1 record (record CRUD via ETag / If-Match)**:
 
 ```bash
 BASE="http://localhost:8080/api/v1"
 API_KEY="your-api-key" # only if auth is enabled
 
-zone_json="$(curl -s "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}")"
 etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
 
-updated="$(printf '%s' "${zone_json}" | jq '.records += [{"name":"www","type":"A","ttl":300,"value":"203.0.113.2"}]')"
-
-curl -i -X PUT "${BASE}/zones/example.com." \
+curl -i -X POST "${BASE}/zones/example.com./records" \
   -H "X-API-Key: ${API_KEY}" \
   -H 'Content-Type: application/json' \
   -H "If-Match: ${etag}" \
-  --data-binary "${updated}"
+  -d '{"name":"www","type":"A","ttl":300,"value":"203.0.113.2"}'
 ```
 
-**Add multiple records at once**:
+**Update or delete a record**:
 
 ```bash
-updated="$(printf '%s' "${zone_json}" | jq '.records += [
-  {"name":"www","type":"A","ttl":300,"value":"203.0.113.2"},
-  {"name":"api","type":"AAAA","ttl":300,"value":"2001:db8::1"},
-  {"name":"@","type":"MX","ttl":3600,"value":"10 mail.example.com."}
-]')"
+record_id="$(curl -s "${BASE}/zones/example.com./records" -H "X-API-Key: ${API_KEY}" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
 
-curl -i -X PUT "${BASE}/zones/example.com." \
+curl -i -X PUT "${BASE}/zones/example.com./records/${record_id}" \
   -H "X-API-Key: ${API_KEY}" \
   -H 'Content-Type: application/json' \
   -H "If-Match: ${etag}" \
-  --data-binary "${updated}"
+  -d '{"name":"www","type":"A","ttl":300,"value":"203.0.113.3"}'
+
+etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+record_id="$(curl -s "${BASE}/zones/example.com./records" -H "X-API-Key: ${API_KEY}" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+
+curl -i -X DELETE "${BASE}/zones/example.com./records/${record_id}" \
+  -H "X-API-Key: ${API_KEY}" \
+  -H "If-Match: ${etag}"
 ```
 
 See `docs/api.md` for record value formats and more examples.

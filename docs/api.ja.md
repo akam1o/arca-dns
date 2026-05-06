@@ -80,13 +80,16 @@ Notes:
 
 #### レコード操作（records をどう更新するか）
 
-現状の controller router には、専用の `/records/*` CRUD API はありません。`PUT /zones/:name` に `Zone` 全体を送ってレコードを管理します。
+レコード変更は record 専用エンドポイントで行います。`PUT /zones/:name` は SOA メタデータを更新し、既存レコードは保持します。
 
-ワークフロー:
+エンドポイント:
 
-1. `GET /zones/:name` で現在のゾーンと `ETag` を取得
-2. `records` 配列を編集（追加/削除/変更）
-3. `PUT /zones/:name` に `If-Match: <etag>` と更新済み JSON を送信
+- `GET /zones/:name/records`: ゾーンのレコード一覧
+- `POST /zones/:name/records`: レコード作成
+- `PUT /zones/:name/records/:id`: レコード置換
+- `DELETE /zones/:name/records/:id`: レコード削除
+
+レコードを変更するリクエストでは、現在のゾーン `ETag` を `If-Match` に指定する必要があります。これはゾーン更新と同じ楽観ロックです。
 
 レコードフィールド:
 
@@ -94,9 +97,7 @@ Notes:
 - `type`（string）: 対応 type のいずれか（後述）
 - `ttl`（number）: `> 0` かつ `<= 2147483647`
 - `value`（string）: `type` に依存（検証あり。後述）
-- `id`（string, optional）: backend 依存。存在/安定性に依存しないでください。
-
-典型的な削除は、`PUT` する `records` 配列から当該レコードを「除外する」ことで行います。
+- `id`（string, optional）: backend が保持する場合は backend 依存です。backend が ID を返さない場合、API は record CRUD 用にレコード内容から決定的な ID を返します。
 
 #### レコード value の形式（検証ルール）
 
@@ -169,7 +170,7 @@ curl -i -X POST "${BASE}/zones" \
 curl -s "${BASE}/zones?limit=100&offset=0" "${AUTH[@]}"
 ```
 
-楽観ロック付きの更新:
+楽観ロック付きの SOA メタデータ更新:
 
 ```bash
 etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
@@ -180,47 +181,50 @@ curl -i -X PUT "${BASE}/zones/example.com." \
   -H "If-Match: ${etag}" \
   -d '{
     "name":"example.com.",
-    "soa":{"mname":"ns1.example.com.","rname":"admin.example.com.","serial":0,"refresh":3600,"retry":1800,"expire":604800,"minimum":86400},
-    "records":[
-      {"name":"@","type":"NS","ttl":3600,"value":"ns1.example.com."},
-      {"name":"@","type":"A","ttl":300,"value":"192.0.2.1"},
-      {"name":"www","type":"A","ttl":300,"value":"192.0.2.2"}
-    ]
+    "soa":{"mname":"ns1.example.com.","rname":"admin.example.com.","serial":0,"refresh":3600,"retry":1800,"expire":604800,"minimum":86400}
   }'
 ```
 
-`jq` を使ってレコード 1 件追加（例: `www A`）:
+レコード一覧:
 
 ```bash
-zone_json="$(curl -s "${BASE}/zones/example.com." "${AUTH[@]}")"
-etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
-
-updated="$(printf '%s' "${zone_json}" | jq '.records += [{"name":"www","type":"A","ttl":300,"value":"192.0.2.2"}]')"
-
-curl -i -X PUT "${BASE}/zones/example.com." \
-  "${AUTH[@]}" \
-  -H 'Content-Type: application/json' \
-  -H "If-Match: ${etag}" \
-  --data-binary "${updated}"
+curl -s "${BASE}/zones/example.com./records" "${AUTH[@]}"
 ```
 
-複数レコードをまとめて追加:
+レコード 1 件追加（例: `www A`）:
 
 ```bash
-zone_json="$(curl -s "${BASE}/zones/example.com." "${AUTH[@]}")"
 etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
 
-updated="$(printf '%s' "${zone_json}" | jq '.records += [
-  {"name":"www","type":"A","ttl":300,"value":"192.0.2.2"},
-  {"name":"api","type":"AAAA","ttl":300,"value":"2001:db8::1"},
-  {"name":"@","type":"MX","ttl":3600,"value":"10 mail.example.com."}
-]')"
-
-curl -i -X PUT "${BASE}/zones/example.com." \
+curl -i -X POST "${BASE}/zones/example.com./records" \
   "${AUTH[@]}" \
   -H 'Content-Type: application/json' \
   -H "If-Match: ${etag}" \
-  --data-binary "${updated}"
+  -d '{"name":"www","type":"A","ttl":300,"value":"192.0.2.2"}'
+```
+
+レコード更新:
+
+```bash
+record_id="$(curl -s "${BASE}/zones/example.com./records" "${AUTH[@]}" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+curl -i -X PUT "${BASE}/zones/example.com./records/${record_id}" \
+  "${AUTH[@]}" \
+  -H 'Content-Type: application/json' \
+  -H "If-Match: ${etag}" \
+  -d '{"name":"www","type":"A","ttl":300,"value":"192.0.2.3"}'
+```
+
+レコード削除:
+
+```bash
+record_id="$(curl -s "${BASE}/zones/example.com./records" "${AUTH[@]}" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+etag="$(curl -sI "${BASE}/zones/example.com." "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+curl -i -X DELETE "${BASE}/zones/example.com./records/${record_id}" \
+  "${AUTH[@]}" \
+  -H "If-Match: ${etag}"
 ```
 
 条件付きリクエストで署名済みゾーンを取得:
@@ -229,4 +233,3 @@ curl -i -X PUT "${BASE}/zones/example.com." \
 etag="$(curl -sI "${BASE}/zones/example.com./signed" "${AUTH[@]}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
 curl -i "${BASE}/zones/example.com./signed" "${AUTH[@]}" -H "If-None-Match: ${etag}"
 ```
-
