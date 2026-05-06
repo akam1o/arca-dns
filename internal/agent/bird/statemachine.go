@@ -98,6 +98,10 @@ func (sm *StateMachine) ProcessSignal(signal HealthSignal) (shouldAnnounce, shou
 		sm.lastTransition = time.Now()
 	}
 
+	if signal.HardFail && (sm.state == StateHealthy || sm.state == StateDegraded) {
+		return false, false
+	}
+
 	// Determine route action with debounce
 	shouldAnnounce, shouldWithdraw = sm.determineRouteAction()
 
