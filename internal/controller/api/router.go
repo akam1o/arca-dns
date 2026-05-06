@@ -83,6 +83,7 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 		protected.POST("/zones", handler.CreateZone)
 		protected.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
 		protected.GET("/zones", handler.ListZones)
+		protected.HEAD("/zones/:name", handler.HeadZone)
 		protected.GET("/zones/:name", handler.GetZone)
 		protected.GET("/zones/:name/versions", handler.ListZoneVersions)
 		protected.GET("/zones/:name/versions/:version", handler.GetZoneRevision)
@@ -95,6 +96,7 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 		protected.DELETE("/zones/:name/records/:id", handler.DeleteRecord)
 
 		// Zone file download (for agents)
+		protected.HEAD("/zones/:name/signed", handler.HeadSignedZone)
 		protected.GET("/zones/:name/signed", handler.GetSignedZone)
 		protected.GET("/zones/:name/signed/metadata", handler.GetSignedZoneMetadata)
 		protected.GET("/zones/:name/ds", handler.GetDSRecords)

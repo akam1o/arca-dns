@@ -101,6 +101,75 @@ func TestCreateZone(t *testing.T) {
 	assert.NotZero(t, created.SOA.Serial)
 }
 
+func TestHeadZoneReturnsETagWithoutBody(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.Background(), zone))
+
+	resp, err := http.Head(server.URL + "/api/v1/zones/example.com.")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	etag := resp.Header.Get("ETag")
+	assert.NotEmpty(t, etag)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Empty(t, body)
+
+	req, err := http.NewRequest(http.MethodHead, server.URL+"/api/v1/zones/example.com.", nil)
+	require.NoError(t, err)
+	req.Header.Set("If-None-Match", etag)
+	conditionalResp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer conditionalResp.Body.Close()
+
+	assert.Equal(t, http.StatusNotModified, conditionalResp.StatusCode)
+	assert.Equal(t, etag, conditionalResp.Header.Get("ETag"))
+}
+
+func TestHeadSignedZoneReturnsArtifactHeadersWithoutBody(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.Background(), zone))
+
+	resp, err := http.Head(server.URL + "/api/v1/zones/example.com./signed")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	etag := resp.Header.Get("ETag")
+	assert.NotEmpty(t, etag)
+	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash"))
+	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash8"))
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Empty(t, body)
+
+	req, err := http.NewRequest(http.MethodHead, server.URL+"/api/v1/zones/example.com./signed", nil)
+	require.NoError(t, err)
+	req.Header.Set("If-None-Match", etag)
+	conditionalResp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer conditionalResp.Body.Close()
+
+	assert.Equal(t, http.StatusNotModified, conditionalResp.StatusCode)
+	assert.Equal(t, etag, conditionalResp.Header.Get("ETag"))
+}
+
 func TestCreateZone_Duplicate(t *testing.T) {
 	_, _, server := setupTest(t)
 	defer server.Close()

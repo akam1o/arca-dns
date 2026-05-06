@@ -234,6 +234,30 @@ func (h *Handler) GetZone(c *gin.Context) {
 	c.JSON(http.StatusOK, zone)
 }
 
+// HeadZone handles HEAD /api/v1/zones/:name.
+func (h *Handler) HeadZone(c *gin.Context) {
+	name := c.Param("name")
+
+	zone, err := h.store.GetZone(c.Request.Context(), name)
+	if err != nil {
+		if err == model.ErrZoneNotFound {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		h.logger.Error("Failed to get zone", zap.String("zone", name), zap.Error(err))
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	c.Header("ETag", formatETag(zone.Version))
+	if ifNoneMatch := c.GetHeader("If-None-Match"); ifNoneMatch != "" && etagMatches(ifNoneMatch, zone.Version) {
+		c.Status(http.StatusNotModified)
+		return
+	}
+
+	c.Status(http.StatusOK)
+}
+
 func etagMatches(ifNoneMatch, current string) bool {
 	// Handle wildcard
 	if strings.TrimSpace(ifNoneMatch) == "*" {
@@ -795,6 +819,49 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 
 	h.logger.Info("Signed zone file served", zap.String("zone", name), zap.String("version", zone.Version))
 	c.String(http.StatusOK, zoneFile)
+}
+
+// HeadSignedZone handles HEAD /api/v1/zones/:name/signed.
+func (h *Handler) HeadSignedZone(c *gin.Context) {
+	name := c.Param("name")
+
+	zone, err := h.store.GetZone(c.Request.Context(), name)
+	if err != nil {
+		if err == model.ErrZoneNotFound {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		h.logger.Error("Failed to get zone", zap.String("zone", name), zap.Error(err))
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	zoneFile, _, err := h.signedZoneFile(c.Request.Context(), name, zone)
+	if err != nil {
+		h.logger.Error("Failed to get signed zone", zap.String("zone", name), zap.Error(err))
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	hashHex, hash8 := sha256HexAndHash8(zoneFile)
+	artifactETag := formatETag(hashHex)
+	c.Header("ETag", artifactETag)
+	c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
+	c.Header("X-Zone-Hash", hashHex)
+	c.Header("X-Zone-Hash8", hash8)
+	if h.artifactSignatureKey != "" {
+		c.Header("X-Zone-Signature", signArtifact(zoneFile, h.artifactSignatureKey))
+	}
+
+	if match := c.GetHeader("If-None-Match"); match != "" && etagMatches(match, hashHex) {
+		c.Status(http.StatusNotModified)
+		return
+	}
+
+	c.Header("Content-Type", "text/plain; charset=utf-8")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone.signed", strings.TrimSuffix(zone.Name, ".")))
+	c.Header("Content-Length", strconv.Itoa(len(zoneFile)))
+	c.Status(http.StatusOK)
 }
 
 // GetSignedZoneMetadata handles GET /api/v1/zones/:name/signed/metadata
