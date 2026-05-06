@@ -21,6 +21,7 @@ import (
 	"github.com/akam1o/arca-dns/internal/agent/plugin"
 	zonesync "github.com/akam1o/arca-dns/internal/agent/sync"
 	"github.com/akam1o/arca-dns/internal/agent/unbound"
+	applogging "github.com/akam1o/arca-dns/internal/logging"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
@@ -64,17 +65,11 @@ manages NSD/Unbound, controls BGP routes via BIRD, and provides observability.`,
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
-	// Initialize logger
-	logger, err := zap.NewProduction()
+	// Initialize a bootstrap logger until configuration is loaded.
+	bootstrapLogger, err := zap.NewProduction()
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
-	defer func() { _ = logger.Sync() }()
-
-	logger.Info("arca-dns-agent starting",
-		zap.String("version", version),
-		zap.String("commit", commit),
-		zap.String("date", date))
 
 	// Load configuration
 	var cfg *config.AgentConfig
@@ -84,13 +79,29 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to load config: %w", loadErr)
 		}
 		cfg = loadedCfg
-		logger.Info("Configuration loaded from file", zap.String("config_file", configFile))
 	} else {
 		loadedCfg, loadErr := config.LoadAgentConfig("")
 		if loadErr != nil {
 			return fmt.Errorf("failed to load default config: %w", loadErr)
 		}
 		cfg = loadedCfg
+	}
+
+	logger, err := applogging.NewLogger(cfg.Logging)
+	if err != nil {
+		bootstrapLogger.Error("Failed to initialize configured logger", zap.Error(err))
+		return fmt.Errorf("failed to initialize configured logger: %w", err)
+	}
+	defer func() { _ = logger.Sync() }()
+	_ = bootstrapLogger.Sync()
+
+	logger.Info("arca-dns-agent starting",
+		zap.String("version", version),
+		zap.String("commit", commit),
+		zap.String("date", date))
+	if configFile != "" {
+		logger.Info("Configuration loaded from file", zap.String("config_file", configFile))
+	} else {
 		logger.Info("Using default configuration with environment overrides")
 	}
 

@@ -14,6 +14,7 @@ import (
 	"github.com/akam1o/arca-dns/internal/controller/api"
 	ctrlmetrics "github.com/akam1o/arca-dns/internal/controller/metrics"
 	"github.com/akam1o/arca-dns/internal/controller/service"
+	applogging "github.com/akam1o/arca-dns/internal/logging"
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/dnssec"
@@ -62,26 +63,32 @@ performs DNSSEC signing, and distributes zone artifacts to agents.`,
 }
 
 func runServe(cmd *cobra.Command, args []string) {
-	// Initialize logger
-	logger, err := zap.NewProduction()
+	// Initialize a bootstrap logger until configuration is loaded.
+	bootstrapLogger, err := zap.NewProduction()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
-	defer func() { _ = logger.Sync() }()
-
-	logger.Info("arca-dns-controller starting",
-		zap.String("version", version),
-		zap.String("commit", commit),
-		zap.String("listen", listenAddr))
 
 	// Load configuration (defaults < YAML file < environment variables)
 	cfg, err := config.LoadControllerConfig(configFile)
 	if err != nil {
-		logger.Fatal("Failed to load configuration", zap.Error(err))
+		bootstrapLogger.Fatal("Failed to load configuration", zap.Error(err))
 	}
 
 	applyServeFlagOverrides(cmd, cfg)
+
+	logger, err := applogging.NewLogger(cfg.Logging)
+	if err != nil {
+		bootstrapLogger.Fatal("Failed to initialize configured logger", zap.Error(err))
+	}
+	defer func() { _ = logger.Sync() }()
+	_ = bootstrapLogger.Sync()
+
+	logger.Info("arca-dns-controller starting",
+		zap.String("version", version),
+		zap.String("commit", commit),
+		zap.String("listen", cfg.API.Listen))
 
 	// Initialize backend from configuration
 	store, err := newStoreFromConfig(cfg)
