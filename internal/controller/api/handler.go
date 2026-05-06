@@ -36,9 +36,8 @@ type BuildInfo struct {
 }
 
 type updateZoneRequest struct {
-	Name   string              `json:"name"`
-	SOA    model.SOARecord     `json:"soa"`
-	DNSSEC *model.DNSSECConfig `json:"dnssec,omitempty"`
+	Name string          `json:"name"`
+	SOA  model.SOARecord `json:"soa"`
 }
 
 // NewHandler creates a new API handler.
@@ -454,9 +453,8 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	}
 
 	zone := model.Zone{
-		Name:   req.Name,
-		SOA:    req.SOA,
-		DNSSEC: req.DNSSEC,
+		Name: req.Name,
+		SOA:  req.SOA,
 	}
 
 	// Ensure zone name matches URL
@@ -516,6 +514,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	}
 
 	zone.Records = current.Records
+	zone.DNSSEC = current.DNSSEC
 
 	// Validate zone after defaulting omitted fields.
 	if err := model.ValidateZone(&zone); err != nil {

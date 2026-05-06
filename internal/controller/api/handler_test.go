@@ -325,6 +325,57 @@ func TestUpdateZone_EmptyRecordsPreservesExistingRecords(t *testing.T) {
 	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
 }
 
+func TestUpdateZone_PreservesDNSSECMetadata(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		DNSSEC: &model.DNSSECConfig{
+			Enabled:         true,
+			Algorithm:       13,
+			KSKKeyTag:       12345,
+			ZSKKeyTag:       23456,
+			NSEC3Enabled:    true,
+			NSEC3Iterations: 1,
+			NSEC3Salt:       "abcd",
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	soa := retrieved.SOA
+	soa.Refresh = 7200
+
+	body, err := json.Marshal(map[string]interface{}{
+		"name": "example.com.",
+		"soa":  soa,
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", retrieved.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.NotNil(t, updated.DNSSEC)
+	assert.True(t, updated.DNSSEC.Enabled)
+	assert.Equal(t, uint8(13), updated.DNSSEC.Algorithm)
+	assert.Equal(t, uint16(12345), updated.DNSSEC.KSKKeyTag)
+	assert.Equal(t, uint16(23456), updated.DNSSEC.ZSKKeyTag)
+	assert.True(t, updated.DNSSEC.NSEC3Enabled)
+	assert.Equal(t, uint16(1), updated.DNSSEC.NSEC3Iterations)
+	assert.Equal(t, "abcd", updated.DNSSEC.NSEC3Salt)
+}
+
 func TestUpdateZone_Conflict(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
