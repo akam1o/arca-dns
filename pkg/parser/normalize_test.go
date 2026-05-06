@@ -169,6 +169,50 @@ func TestCanonicalizeDomain(t *testing.T) {
 	}
 }
 
+func TestNormalizeParsedZone_TXTChunksConcatenateWithoutSpaces(t *testing.T) {
+	parsed := &ParsedZone{
+		Origin:     "example.com.",
+		DefaultTTL: 3600,
+		Records: []dns.RR{
+			&dns.SOA{
+				Hdr: dns.RR_Header{
+					Name:   "example.com.",
+					Rrtype: dns.TypeSOA,
+					Class:  dns.ClassINET,
+					Ttl:    3600,
+				},
+				Ns:      "ns1.example.com.",
+				Mbox:    "admin.example.com.",
+				Serial:  2024010101,
+				Refresh: 3600,
+				Retry:   1800,
+				Expire:  604800,
+				Minttl:  86400,
+			},
+			&dns.TXT{
+				Hdr: dns.RR_Header{
+					Name:   "selector._domainkey.example.com.",
+					Rrtype: dns.TypeTXT,
+					Class:  dns.ClassINET,
+					Ttl:    3600,
+				},
+				Txt: []string{"v=DKIM1; p=abc", "def"},
+			},
+		},
+	}
+
+	zone, err := NormalizeParsedZone(parsed, DefaultNormalizeOptions())
+	if err != nil {
+		t.Fatalf("NormalizeParsedZone failed: %v", err)
+	}
+	if len(zone.Records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(zone.Records))
+	}
+	if zone.Records[0].Value != "v=DKIM1; p=abcdef" {
+		t.Fatalf("TXT value = %q, want %q", zone.Records[0].Value, "v=DKIM1; p=abcdef")
+	}
+}
+
 func TestDeduplicateRecords(t *testing.T) {
 	tests := []struct {
 		name   string

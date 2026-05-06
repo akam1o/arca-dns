@@ -143,12 +143,12 @@ func NormalizeParsedZone(parsed *ParsedZone, opts NormalizeOptions) (*model.Zone
 			})
 
 		case *dns.TXT:
-			// Join multiple strings with spaces (BIND format)
+			// Multiple TXT chunks represent one string split for DNS wire limits.
 			zone.Records = append(zone.Records, model.Record{
 				Name:  name,
 				Type:  "TXT",
 				TTL:   ttl,
-				Value: strings.Join(v.Txt, " "),
+				Value: strings.Join(v.Txt, ""),
 			})
 
 		case *dns.PTR:
