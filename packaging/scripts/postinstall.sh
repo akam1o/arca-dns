@@ -7,14 +7,20 @@ systemd_reload() {
   fi
 }
 
+sysusers_create() {
+  if command -v systemd-sysusers >/dev/null 2>&1; then
+    systemd-sysusers /usr/lib/sysusers.d/arca-dns.conf >/dev/null 2>&1 || true
+  fi
+}
+
 tmpfiles_create() {
   if command -v systemd-tmpfiles >/dev/null 2>&1; then
     systemd-tmpfiles --create /usr/lib/tmpfiles.d/arca-dns.conf >/dev/null 2>&1 || true
   fi
 }
 
+sysusers_create
 systemd_reload
 tmpfiles_create
 
 exit 0
-

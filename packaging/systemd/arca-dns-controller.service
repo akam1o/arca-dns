@@ -5,10 +5,35 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=arca-dns
+Group=arca-dns
+UMask=0077
 ExecStart=/usr/bin/arca-dns-controller serve --config /etc/arca-dns/controller.yaml
 Restart=on-failure
 RestartSec=2
+ConfigurationDirectory=arca-dns
+StateDirectory=arca-dns
+LogsDirectory=arca-dns
+RuntimeDirectory=arca-dns
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/arca-dns /var/log/arca-dns /run/arca-dns
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target
-

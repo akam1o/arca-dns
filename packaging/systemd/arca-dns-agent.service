@@ -8,7 +8,29 @@ Type=simple
 ExecStart=/usr/bin/arca-dns-agent daemon --config /etc/arca-dns/agent.yaml
 Restart=on-failure
 RestartSec=2
+# The agent may need root for local DNS daemon and BIRD control sockets; keep
+# host access constrained to the configured state, log, runtime, and DNS paths.
+UMask=0007
+ConfigurationDirectory=arca-dns
+StateDirectory=arca-dns
+LogsDirectory=arca-dns
+RuntimeDirectory=arca-dns
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=full
+ReadWritePaths=/etc/nsd /etc/unbound /var/lib/nsd /var/lib/unbound /var/lib/arca-dns /var/log/arca-dns /run /var/run
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
 
 [Install]
 WantedBy=multi-user.target
-
