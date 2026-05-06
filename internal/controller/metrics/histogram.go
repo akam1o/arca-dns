@@ -23,6 +23,19 @@ func NewHistogram(buckets []float64) *Histogram {
 	}
 }
 
+func (h *Histogram) Clone() *Histogram {
+	if h == nil {
+		return nil
+	}
+
+	return &Histogram{
+		buckets: append([]float64(nil), h.buckets...),
+		counts:  append([]uint64(nil), h.counts...),
+		count:   h.count,
+		sum:     h.sum,
+	}
+}
+
 func (h *Histogram) Observe(v float64) {
 	h.count++
 	h.sum += v

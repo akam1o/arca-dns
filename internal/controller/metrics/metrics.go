@@ -176,8 +176,7 @@ func (m *ControllerMetrics) Render(zonesTotal int) string {
 	}
 	apiLatency := make(map[apiDurKey]*Histogram, len(m.apiLatency))
 	for k, v := range m.apiLatency {
-		// Shallow copy is ok; Histogram is mutated only under lock.
-		apiLatency[k] = v
+		apiLatency[k] = v.Clone()
 	}
 	backendOps := make(map[backendKey]uint64, len(m.backendOps))
 	for k, v := range m.backendOps {
@@ -185,7 +184,7 @@ func (m *ControllerMetrics) Render(zonesTotal int) string {
 	}
 	signingDur := make(map[signKey]*Histogram, len(m.signingDur))
 	for k, v := range m.signingDur {
-		signingDur[k] = v
+		signingDur[k] = v.Clone()
 	}
 
 	schedulerLastRun := m.schedulerLastRun
