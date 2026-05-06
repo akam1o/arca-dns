@@ -198,7 +198,8 @@ Automated key rotation is not implemented in the current release. The DNSSEC sch
 
 **Manual rotation**:
 ```bash
-# Generate and activate new KSK/ZSK keys
+# Enter a maintenance window first: pause DNSSEC scheduling and zone/record writes.
+# generate-keys --rotate activates the new KSK/ZSK immediately.
 arca-dns-controller dnssec generate-keys --zone example.com. --rotate
 
 # Export new DS records
@@ -206,6 +207,7 @@ arca-dns-controller dnssec export-ds --zone example.com.
 
 # Submit the new DS at the parent zone and keep the old DS until propagation.
 # Then trigger re-signing as described in docs/dnssec.md.
+# Resume scheduling and writes only after the new DS is visible and re-signing succeeds.
 
 # After old signatures expire, remove inactive key files
 arca-dns-controller dnssec remove-old-keys --zone example.com.

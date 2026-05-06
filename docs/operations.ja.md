@@ -198,7 +198,8 @@ arca-dns-controller dnssec export-ds --zone example.com. --format json
 
 **手動ローテーション**:
 ```bash
-# 新しい KSK/ZSK を生成して active にする
+# 先に maintenance window に入り、DNSSEC scheduler と zone/record 書き込みを止める。
+# generate-keys --rotate は新しい KSK/ZSK を即 active にする。
 arca-dns-controller dnssec generate-keys --zone example.com. --rotate
 
 # 新しい DS を出力する
@@ -206,6 +207,7 @@ arca-dns-controller dnssec export-ds --zone example.com.
 
 # 親ゾーンに新 DS を提出し、伝播までは旧 DS も維持する。
 # その後 docs/dnssec.ja.md の手順に従って再署名を発生させる。
+# 新 DS が見えて再署名が成功してから scheduler と書き込みを再開する。
 
 # 旧署名の期限切れ後、inactive な鍵ファイルを削除する
 arca-dns-controller dnssec remove-old-keys --zone example.com.

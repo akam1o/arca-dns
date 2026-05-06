@@ -191,26 +191,34 @@ DNSSEC key rotation should be performed periodically for security best practices
 
 **Timeline**: Allow 2× parent zone TTL between steps.
 
-1. **Generate and activate a new key pair** (Day 0)
+The current release does not support a fully automatic pre-publish or double-signature rollover. `generate-keys --rotate` makes the new KSK/ZSK active immediately, so any scheduler run, zone update, record update, or on-demand re-sign before the parent publishes the new DS can break validation.
+
+1. **Enter a controlled maintenance window** (before Day 0)
+   - Disable the DNSSEC scheduler or stop controller instances that can re-sign zones.
+   - Prevent zone and record writes for the zone being rotated.
+   - Keep the existing signed artifact available; do not purge artifact storage during the DS publication window.
+
+2. **Generate and activate a new key pair** (Day 0)
    ```bash
    # --rotate always generates new active KSK and ZSK keys.
    arca-dns-controller dnssec generate-keys --zone example.com. --rotate
    ```
    This updates `active.json`; it does not by itself replace a cached signed zone artifact.
 
-2. **Export new DS record**
+3. **Export new DS record**
    ```bash
    arca-dns-controller dnssec export-ds --zone example.com. > new-ds.txt
    ```
 
-3. **Submit new DS to parent zone** (Day 0)
+4. **Submit new DS to parent zone** (Day 0)
    - Submit to registrar
    - Keep old DS record active (both old and new DS records should coexist)
 
-4. **Wait for parent zone propagation** (Day 0 + parent TTL)
+5. **Wait for parent zone propagation** (Day 0 + parent TTL)
    - Verify with: `dig +dnssec example.com DS`
+   - Do not resume scheduler or allow zone/record writes until the new DS is visible from public resolvers.
 
-5. **Trigger re-signing with the active keys** (after the new DS is visible)
+6. **Trigger re-signing with the active keys** (after the new DS is visible)
    ```bash
    BASE="https://controller/api/v1"
    API_KEY="your-api-key"
@@ -226,8 +234,9 @@ DNSSEC key rotation should be performed periodically for security best practices
        --data-binary @-
    ```
    `PUT /zones/:name` preserves records; it is used here only to bump the zone version and re-sign with the already rotated keys.
+   After verifying the new signed zone, resume the scheduler and normal zone/record writes.
 
-6. **Remove old DS from parent zone** (Day 0 + 3× parent TTL)
+7. **Remove old DS from parent zone** (Day 0 + 3× parent TTL)
    - Request removal from registrar
    - After old signatures have expired, remove inactive key files:
      ```bash
