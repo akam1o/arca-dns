@@ -439,7 +439,7 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 
 	// Advance from the stored SOA serial, not client input.
 	var currentSerial uint32
-	err = tx.QueryRowContext(ctx, "SELECT soa_serial FROM zones WHERE name = ?", zone.Name).Scan(&currentSerial)
+	err = tx.QueryRowContext(ctx, "SELECT soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -874,7 +874,7 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 
 	// Advance from the stored SOA serial, not client input.
 	var currentSerial uint32
-	err := t.tx.QueryRowContext(ctx, "SELECT soa_serial FROM zones WHERE name = ?", zone.Name).Scan(&currentSerial)
+	err := t.tx.QueryRowContext(ctx, "SELECT soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound

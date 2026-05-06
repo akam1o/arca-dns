@@ -209,7 +209,7 @@ func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expe
 	// Preserve CreatedAt and advance from the stored SOA serial, not client input.
 	var createdAt time.Time
 	var currentSerial uint32
-	err = tx.QueryRowContext(ctx, "SELECT created_at, soa_serial FROM zones WHERE name = $1", zone.Name).Scan(&createdAt, &currentSerial)
+	err = tx.QueryRowContext(ctx, "SELECT created_at, soa_serial FROM zones WHERE name = $1 FOR UPDATE", zone.Name).Scan(&createdAt, &currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -669,7 +669,7 @@ func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion
 
 	var createdAt time.Time
 	var currentSerial uint32
-	err := t.tx.QueryRowContext(ctx, "SELECT created_at, soa_serial FROM zones WHERE name = $1", zone.Name).Scan(&createdAt, &currentSerial)
+	err := t.tx.QueryRowContext(ctx, "SELECT created_at, soa_serial FROM zones WHERE name = $1 FOR UPDATE", zone.Name).Scan(&createdAt, &currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
