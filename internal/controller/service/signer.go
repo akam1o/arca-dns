@@ -524,6 +524,10 @@ func (s *SigningService) getSignedZoneLocked(ctx context.Context, zone *model.Zo
 
 // GetDSRecords returns DS records for the given zone (for parent zone delegation).
 func (s *SigningService) GetDSRecords(ctx context.Context, zoneName string) ([]string, error) {
+	lock := s.getZoneLock(model.NormalizeZoneName(zoneName))
+	lock.Lock()
+	defer lock.Unlock()
+
 	// Ensure keys exist
 	ksk, _, err := s.keyManager.EnsureZoneKeys(zoneName)
 	if err != nil {

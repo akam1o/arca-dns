@@ -524,6 +524,60 @@ func TestSigningService_GetDSRecords(t *testing.T) {
 	}
 }
 
+func TestSigningService_GetDSRecordsWaitsForZoneLock(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	if _, _, err := service.keyManager.EnsureZoneKeys(zone.Name); err != nil {
+		t.Fatalf("failed to create test zone keys: %v", err)
+	}
+
+	lock := service.getZoneLock(model.NormalizeZoneName(zone.Name))
+	lock.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			lock.Unlock()
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.GetDSRecords(ctx, zone.Name)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		lock.Unlock()
+		locked = false
+		if err != nil {
+			t.Fatalf("GetDSRecords returned before lock release with error: %v", err)
+		}
+		t.Fatal("GetDSRecords completed before the zone signing lock was released")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	lock.Unlock()
+	locked = false
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("GetDSRecords failed after lock release: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GetDSRecords did not complete after the zone signing lock was released")
+	}
+}
+
 func TestSigningService_GetEarliestExpiration(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
