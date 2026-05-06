@@ -301,6 +301,69 @@ func TestSigningService_PrepareSignedZoneWriteHoldsLockUntilAbort(t *testing.T) 
 	}
 }
 
+func TestSigningService_GetSignedZoneWaitsForZoneLockBeforeSigning(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+
+	// Pre-create keys so an unlocked on-demand signing path would finish quickly.
+	if _, _, err := service.keyManager.EnsureZoneKeys(zone.Name); err != nil {
+		t.Fatalf("failed to create test zone keys: %v", err)
+	}
+
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	lock := service.getZoneLock(model.NormalizeZoneName(zone.Name))
+	lock.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			lock.Unlock()
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.GetSignedZone(ctx, zone.Name)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		lock.Unlock()
+		locked = false
+		if err != nil {
+			t.Fatalf("GetSignedZone returned before lock release with error: %v", err)
+		}
+		t.Fatal("GetSignedZone completed before the zone signing lock was released")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	lock.Unlock()
+	locked = false
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("GetSignedZone failed after lock release: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GetSignedZone did not complete after the zone signing lock was released")
+	}
+
+	persisted, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone: %v", err)
+	}
+	if persisted.DNSSEC == nil || !persisted.DNSSEC.Enabled {
+		t.Fatal("GetSignedZone did not persist DNSSEC metadata")
+	}
+}
+
 func TestSigningService_SignAndStoreZone(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
