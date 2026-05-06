@@ -331,7 +331,13 @@ logging:
 func TestLoadAgentConfig_EnvOverrideWithYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_CONTROLLER_URL", "https://env-controller.example.com")
 	t.Setenv("ARCA_DNS_CONTROLLER_API_KEY", "env-api-key")
+	t.Setenv("ARCA_DNS_CONTROLLER_TLS_CERT_FILE", "/env/client.crt")
 	t.Setenv("ARCA_DNS_NSD_ENABLED", "false")
+	t.Setenv("ARCA_DNS_UNBOUND_STUB_ZONE_NSD_PORT", "5533")
+	t.Setenv("ARCA_DNS_SYNC_VERIFY_CHECKSUMS", "false")
+	t.Setenv("ARCA_DNS_HEALTH_QUERY_TIMEOUT", "2s")
+	t.Setenv("ARCA_DNS_METRICS_PATH", "/env-metrics")
+	t.Setenv("ARCA_DNS_LOGGING_ENABLE_CALLER", "true")
 
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "agent.yaml")
@@ -340,13 +346,24 @@ func TestLoadAgentConfig_EnvOverrideWithYAML(t *testing.T) {
 controller:
   url: "https://yaml-controller.example.com"
   api_key: "yaml-api-key"
+  tls:
+    cert_file: "/yaml/client.crt"
 nsd:
   enabled: true
   zone_directory: "/tmp/nsd-zones"
 unbound:
   enabled: false
+  stub_zone:
+    nsd_port: 5353
+sync:
+  verify_checksums: true
+health:
+  query_timeout: 5s
+metrics:
+  path: "/yaml-metrics"
 logging:
   level: "info"
+  enable_caller: false
 `
 	err := os.WriteFile(configPath, []byte(configContent), 0644)
 	require.NoError(t, err)
@@ -356,7 +373,13 @@ logging:
 
 	assert.Equal(t, "https://env-controller.example.com", cfg.Controller.URL)
 	assert.Equal(t, "env-api-key", cfg.Controller.APIKey)
+	assert.Equal(t, "/env/client.crt", cfg.Controller.TLS.CertFile)
 	assert.False(t, cfg.NSD.Enabled)
+	assert.Equal(t, 5533, cfg.Unbound.StubZoneConfig.NSDPort)
+	assert.False(t, cfg.Sync.VerifyChecksums)
+	assert.Equal(t, 2*time.Second, cfg.Health.QueryTimeout)
+	assert.Equal(t, "/env-metrics", cfg.Metrics.Path)
+	assert.True(t, cfg.Logging.EnableCaller)
 }
 
 func TestLoadAgentConfig_EnvOverrideWithoutFile(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -399,25 +400,57 @@ func bindControllerAPIKeyEnvVars(v *viper.Viper) {
 	}
 }
 
-// bindAgentEnvVars manually binds key environment variables for agent.
-// This is needed when no config file is provided.
+// bindAgentEnvVars binds all agent config leaves so environment variables are
+// visible to Unmarshal even when a key is absent from the YAML file.
 func bindAgentEnvVars(v *viper.Viper) {
-	// Bind key environment variables
-	envVars := []string{
-		"controller.url",
-		"controller.api_key",
-		"nsd.enabled",
-		"nsd.zone_directory",
-		"unbound.enabled",
-		"bird.enabled",
-		"sync.sync_interval",
-		"logging.level",
+	bindEnvVarsFromStruct(v, reflect.TypeOf(AgentConfig{}), "")
+}
+
+func bindEnvVarsFromStruct(v *viper.Viper, typ reflect.Type, prefix string) {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if typ.Kind() != reflect.Struct {
+		return
 	}
 
-	for _, key := range envVars {
-		envKey := "ARCA_DNS_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
-		if val := os.Getenv(envKey); val != "" {
-			v.Set(key, val)
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if field.PkgPath != "" {
+			continue
 		}
+
+		name := mapstructureName(field)
+		if name == "" {
+			continue
+		}
+
+		key := name
+		if prefix != "" {
+			key = prefix + "." + name
+		}
+
+		fieldType := field.Type
+		for fieldType.Kind() == reflect.Pointer {
+			fieldType = fieldType.Elem()
+		}
+		if fieldType.Kind() == reflect.Struct {
+			bindEnvVarsFromStruct(v, fieldType, key)
+			continue
+		}
+
+		_ = v.BindEnv(key)
 	}
+}
+
+func mapstructureName(field reflect.StructField) string {
+	tag := field.Tag.Get("mapstructure")
+	if tag == "-" {
+		return ""
+	}
+	if tag != "" {
+		name, _, _ := strings.Cut(tag, ",")
+		return name
+	}
+	return strings.ToLower(field.Name)
 }
