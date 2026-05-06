@@ -980,7 +980,7 @@ func TestDeleteZone_RejectsStaleIfMatch(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestDeleteZone_UnsupportedConditionalDeleteStore(t *testing.T) {
+func TestDeleteZone_FallsBackWithoutConditionalDeleteStore(t *testing.T) {
 	inner := backend.NewMemoryBackend()
 	store := &zoneStoreWithoutConditionalDelete{inner: inner}
 	_, server := setupTestWithStore(t, store)
@@ -1001,9 +1001,9 @@ func TestDeleteZone_UnsupportedConditionalDeleteStore(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 	_, err = store.GetZone(context.TODO(), "example.com.")
-	assert.NoError(t, err)
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
 }
 
 func TestGetSignedZone(t *testing.T) {

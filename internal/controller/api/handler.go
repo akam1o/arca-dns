@@ -733,7 +733,10 @@ func (h *Handler) deleteZoneWithVersion(ctx context.Context, name string, expect
 		return conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
 	}
 
-	return fmt.Errorf("zone store does not support conditional delete")
+	// Custom backends may only implement the core ZoneStore contract. The
+	// handler has already verified If-Match against the current version; without
+	// ConditionalDeleteStore this fallback is best-effort rather than atomic.
+	return h.store.DeleteZone(ctx, name)
 }
 
 // GetSignedZone handles GET /api/v1/zones/:name/signed
