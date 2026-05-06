@@ -261,6 +261,46 @@ func TestValidateRecord(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "valid SRV owner labels",
+			record: &Record{
+				Name:  "_sip._tcp",
+				Type:  "SRV",
+				TTL:   300,
+				Value: "10 20 5060 sip.example.com.",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid wildcard owner",
+			record: &Record{
+				Name:  "*.www",
+				Type:  "A",
+				TTL:   300,
+				Value: "192.0.2.1",
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid newline in name",
+			record: &Record{
+				Name:  "www\nbad",
+				Type:  "A",
+				TTL:   300,
+				Value: "192.0.2.1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid wildcard position",
+			record: &Record{
+				Name:  "www.*",
+				Type:  "A",
+				TTL:   300,
+				Value: "192.0.2.1",
+			},
+			wantErr: true,
+		},
+		{
 			name:    "nil record",
 			record:  nil,
 			wantErr: true,
@@ -277,6 +317,28 @@ func TestValidateRecord(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateZone_RecordNameMustStayInZone(t *testing.T) {
+	zone := &Zone{
+		Name: "example.com.",
+		SOA: SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []Record{
+			{Name: "www.other.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+
+	err := ValidateZone(zone)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "outside zone")
 }
 
 func TestValidateSOA(t *testing.T) {

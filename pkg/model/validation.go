@@ -10,7 +10,9 @@ import (
 
 var (
 	// DNS name regex: alphanumeric, hyphens, dots, must end with dot for FQDN
-	dnsNameRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.?$`)
+	dnsNameRegex     = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.?$`)
+	recordLabelRegex = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_-]*$`)
+	controlOrSpaceRe = regexp.MustCompile(`[\x00-\x20\x7f]`)
 )
 
 // ValidateZone validates a complete zone.
@@ -33,6 +35,11 @@ func ValidateZone(zone *Zone) error {
 	for i, record := range zone.Records {
 		if err := ValidateRecord(&record); err != nil {
 			return fmt.Errorf("invalid record at index %d: %w", i, err)
+		}
+		if record.Type != RecordTypePTR {
+			if err := ValidateRecordNameInZone(record.Name, zone.Name); err != nil {
+				return fmt.Errorf("invalid record at index %d: %w", i, err)
+			}
 		}
 	}
 
@@ -79,8 +86,8 @@ func ValidateRecord(record *Record) error {
 	}
 
 	// Validate name (can be relative)
-	if record.Name == "" {
-		return fmt.Errorf("record name is empty")
+	if err := ValidateRecordName(record.Name); err != nil {
+		return fmt.Errorf("invalid record name: %w", err)
 	}
 
 	// Validate type
@@ -102,6 +109,80 @@ func ValidateRecord(record *Record) error {
 	}
 
 	return nil
+}
+
+// ValidateRecordName validates a DNS record owner name. Record names may be
+// relative to a zone, absolute FQDNs, "@", or wildcard owners.
+func ValidateRecordName(name string) error {
+	if name == "" {
+		return fmt.Errorf("record name is empty")
+	}
+	if name == "@" {
+		return nil
+	}
+	if name == "." {
+		return fmt.Errorf("record name must not be root")
+	}
+	if len(name) > 253 {
+		return fmt.Errorf("record name too long (max 253 characters)")
+	}
+	if controlOrSpaceRe.MatchString(name) {
+		return fmt.Errorf("record name contains whitespace or control characters")
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("record name contains empty label")
+	}
+
+	trimmed := strings.TrimSuffix(name, ".")
+	if trimmed == "" {
+		return fmt.Errorf("record name is empty")
+	}
+
+	labels := strings.Split(trimmed, ".")
+	for i, label := range labels {
+		if label == "" {
+			return fmt.Errorf("record name contains empty label")
+		}
+		if len(label) > 63 {
+			return fmt.Errorf("label too long (max 63 characters): %s", label)
+		}
+		if label == "*" {
+			if i != 0 {
+				return fmt.Errorf("wildcard label must be leftmost")
+			}
+			continue
+		}
+		if strings.Contains(label, "*") {
+			return fmt.Errorf("wildcard must occupy a full label")
+		}
+		if !recordLabelRegex.MatchString(label) {
+			return fmt.Errorf("invalid record label: %s", label)
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return fmt.Errorf("record label must not start or end with hyphen: %s", label)
+		}
+	}
+
+	return nil
+}
+
+// ValidateRecordNameInZone ensures absolute record owner names are within the
+// zone. Relative names are accepted because they are interpreted under the zone.
+func ValidateRecordNameInZone(recordName, zoneName string) error {
+	if err := ValidateRecordName(recordName); err != nil {
+		return err
+	}
+	if recordName == "@" || !strings.HasSuffix(recordName, ".") {
+		return nil
+	}
+
+	owner := NormalizeZoneName(recordName)
+	zone := NormalizeZoneName(zoneName)
+	if owner == zone || strings.HasSuffix(owner, "."+zone) {
+		return nil
+	}
+
+	return fmt.Errorf("record name %s is outside zone %s", recordName, zoneName)
 }
 
 // ValidateRecordValue validates a record value based on its type.
