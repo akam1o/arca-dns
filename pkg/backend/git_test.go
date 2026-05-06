@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -31,6 +32,20 @@ func setupGitBackend(t *testing.T) (*GitBackend, func()) {
 	}
 
 	return backend, cleanup
+}
+
+func runGitCommand(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git command not available")
+	}
+
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	output, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %v failed:\n%s", args, string(output))
 }
 
 func TestGitBackend_CreateZone(t *testing.T) {
@@ -236,6 +251,47 @@ func TestGitBackend_DeleteZone(t *testing.T) {
 	zonePath := filepath.Join(backend.repoPath, "zones", "example.com..json")
 	_, err = os.Stat(zonePath)
 	assert.True(t, os.IsNotExist(err), "Zone file should not exist")
+}
+
+func TestGitBackend_AutoPullUsesConfiguredBranch(t *testing.T) {
+	remotePath := t.TempDir()
+	runGitCommand(t, "", "init", remotePath)
+	runGitCommand(t, remotePath, "checkout", "-b", "main")
+	runGitCommand(t, remotePath, "config", "user.name", "Test User")
+	runGitCommand(t, remotePath, "config", "user.email", "test@example.com")
+
+	require.NoError(t, os.WriteFile(filepath.Join(remotePath, "README.md"), []byte("main\n"), 0644))
+	runGitCommand(t, remotePath, "add", "README.md")
+	runGitCommand(t, remotePath, "commit", "-m", "init main")
+
+	runGitCommand(t, remotePath, "checkout", "-b", "zones")
+	zonesDir := filepath.Join(remotePath, "zones")
+	require.NoError(t, os.MkdirAll(zonesDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(zonesDir, "initial.example.com..json"), []byte(`{"name":"initial.example.com."}`), 0644))
+	runGitCommand(t, remotePath, "add", "zones/initial.example.com..json")
+	runGitCommand(t, remotePath, "commit", "-m", "add initial zone")
+	runGitCommand(t, remotePath, "checkout", "main")
+
+	localPath := filepath.Join(t.TempDir(), "local")
+	runGitCommand(t, "", "clone", remotePath, localPath)
+	runGitCommand(t, localPath, "checkout", "zones")
+
+	runGitCommand(t, remotePath, "checkout", "zones")
+	require.NoError(t, os.WriteFile(filepath.Join(zonesDir, "pulled.example.com..json"), []byte(`{"name":"pulled.example.com."}`), 0644))
+	runGitCommand(t, remotePath, "add", "zones/pulled.example.com..json")
+	runGitCommand(t, remotePath, "commit", "-m", "add pulled zone")
+	runGitCommand(t, remotePath, "checkout", "main")
+
+	backend, err := NewGitBackendWithOptions(localPath, GitBackendOptions{
+		Branch:    "zones",
+		RemoteURL: remotePath,
+		AutoPull:  true,
+	})
+	require.NoError(t, err)
+	defer backend.Close()
+
+	require.NoError(t, backend.pullIfNeeded(context.Background()))
+	assert.FileExists(t, filepath.Join(localPath, "zones", "pulled.example.com..json"))
 }
 
 func TestGitBackend_ListZones(t *testing.T) {

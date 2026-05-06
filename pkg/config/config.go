@@ -202,8 +202,8 @@ type GitBackendConfig struct {
 	// AutoPush enables automatic pushing to remote
 	AutoPush bool `mapstructure:"auto_push"`
 
-	// AutoPull enables automatic pulling from remote
-	AutoPull bool `mapstructure:"auto_pull"`
+	// AutoPull enables automatic pulling from remote. Nil means not explicitly configured.
+	AutoPull *bool `mapstructure:"auto_pull"`
 
 	// PullInterval is the interval for automatic pulling
 	PullInterval time.Duration `mapstructure:"pull_interval"`

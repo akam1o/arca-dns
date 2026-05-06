@@ -317,7 +317,9 @@ func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error)
 			configMap["remote_url"] = cfg.Backend.Git.RemoteURL
 		}
 		configMap["auto_push"] = cfg.Backend.Git.AutoPush
-		configMap["auto_pull"] = cfg.Backend.Git.AutoPull
+		if cfg.Backend.Git.AutoPull != nil {
+			configMap["auto_pull"] = *cfg.Backend.Git.AutoPull
+		}
 		if cfg.Backend.Git.PullInterval > 0 {
 			configMap["pull_interval"] = cfg.Backend.Git.PullInterval
 		}

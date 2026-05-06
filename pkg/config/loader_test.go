@@ -110,6 +110,69 @@ logging:
 	assert.Equal(t, "debug", cfg.Logging.Level)
 }
 
+func TestLoadControllerConfig_GitAutoPullOptional(t *testing.T) {
+	testCases := []struct {
+		name         string
+		gitYAML      string
+		expectNil    bool
+		expectedPull bool
+	}{
+		{
+			name: "omitted",
+			gitYAML: `
+    repository_path: "/tmp/git"
+    auto_push: true
+`,
+			expectNil: true,
+		},
+		{
+			name: "explicit false",
+			gitYAML: `
+    repository_path: "/tmp/git"
+    auto_push: true
+    auto_pull: false
+`,
+		},
+		{
+			name: "explicit true",
+			gitYAML: `
+    repository_path: "/tmp/git"
+    auto_push: false
+    auto_pull: true
+`,
+			expectedPull: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configPath := filepath.Join(tmpDir, "controller.yaml")
+
+			configContent := `
+api:
+  auth:
+    enabled: false
+backend:
+  type: "git"
+  git:` + tc.gitYAML + `
+`
+			err := os.WriteFile(configPath, []byte(configContent), 0644)
+			require.NoError(t, err)
+
+			cfg, err := LoadControllerConfig(configPath)
+			require.NoError(t, err)
+
+			if tc.expectNil {
+				assert.Nil(t, cfg.Backend.Git.AutoPull)
+				return
+			}
+			require.NotNil(t, cfg.Backend.Git.AutoPull)
+			assert.Equal(t, tc.expectedPull, *cfg.Backend.Git.AutoPull)
+		})
+	}
+}
+
 func TestLoadControllerConfig_EnvOverride(t *testing.T) {
 	// Set environment variables
 	os.Setenv("ARCA_DNS_API_LISTEN", "0.0.0.0:7070")

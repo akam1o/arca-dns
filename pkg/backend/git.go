@@ -344,8 +344,9 @@ func (g *GitBackend) pullIfNeeded(ctx context.Context) error {
 	}
 
 	err := g.worktree.PullContext(ctx, &git.PullOptions{
-		RemoteName: "origin",
-		Force:      false, // Fast-forward only
+		RemoteName:    "origin",
+		ReferenceName: plumbing.NewBranchReferenceName(g.branch),
+		Force:         false, // Fast-forward only
 	})
 
 	if err == git.NoErrAlreadyUpToDate {
