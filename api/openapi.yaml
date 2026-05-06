@@ -450,7 +450,7 @@ paths:
       parameters:
         - name: If-None-Match
           in: header
-          description: Zone version - returns 304 if version matches
+          description: Signed artifact ETag - returns 304 if the artifact matches
           schema:
             type: string
       responses:
@@ -458,7 +458,7 @@ paths:
           description: Signed zone file
           headers:
             ETag:
-              description: Zone version
+              description: Signed artifact SHA256 ETag
               schema:
                 type: string
             X-Zone-Serial:
@@ -482,27 +482,8 @@ paths:
               schema:
                 type: string
                 description: DNSSEC-signed zone file in BIND format
-            application/json:
-              schema:
-                type: object
-                properties:
-                  zone:
-                    type: string
-                    description: Zone file content
-                  metadata:
-                    type: object
-                    properties:
-                      version:
-                        type: string
-                      serial:
-                        type: integer
-                      hash:
-                        type: string
-                      timestamp:
-                        type: string
-                        format: date-time
         '304':
-          description: Not modified (zone version matches If-None-Match)
+          description: Not modified (signed artifact matches If-None-Match)
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -529,7 +510,7 @@ paths:
       parameters:
         - name: If-None-Match
           in: header
-          description: Zone version - returns 304 if version matches
+          description: Signed artifact ETag - returns 304 if the artifact matches
           schema:
             type: string
       responses:
@@ -537,7 +518,7 @@ paths:
           description: Signed zone metadata
           headers:
             ETag:
-              description: Zone version
+              description: Signed artifact SHA256 ETag
               schema:
                 type: string
             X-Zone-Serial:
@@ -570,7 +551,7 @@ paths:
                   dnssec_enabled:
                     type: boolean
         '304':
-          description: Not modified (zone version matches If-None-Match)
+          description: Not modified (signed artifact matches If-None-Match)
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -684,26 +665,6 @@ paths:
         '200':
           description: DS records
           content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ds_records:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        key_tag:
-                          type: integer
-                        algorithm:
-                          type: integer
-                        digest_type:
-                          type: integer
-                        digest:
-                          type: string
-                  formatted:
-                    type: string
-                    description: DS records in BIND format
             text/plain:
               schema:
                 type: string
@@ -960,7 +921,12 @@ components:
 
     UpdateZoneRequest:
       type: object
+      required:
+        - name
+        - soa
       properties:
+        name:
+          type: string
         soa:
           $ref: '#/components/schemas/SOARecord'
         records:
