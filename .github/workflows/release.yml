@@ -73,6 +73,7 @@ jobs:
 
           ghcr_controller="ghcr.io/${GHCR_OWNER}/arca-dns-controller"
           ghcr_agent="ghcr.io/${GHCR_OWNER}/arca-dns-agent"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
           tags_controller="--tag ${ghcr_controller}:${TAG} --tag ${ghcr_controller}:latest"
           tags_agent="--tag ${ghcr_agent}:${TAG} --tag ${ghcr_agent}:latest"
@@ -87,6 +88,9 @@ jobs:
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --file deployments/docker/Dockerfile.controller \
+            --build-arg VERSION="${TAG}" \
+            --build-arg COMMIT="${{ github.sha }}" \
+            --build-arg DATE="${build_date}" \
             ${tags_controller} \
             --cache-from type=gha \
             --cache-to type=gha,mode=max \
@@ -100,6 +104,9 @@ jobs:
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --file deployments/docker/Dockerfile.agent \
+            --build-arg VERSION="${TAG}" \
+            --build-arg COMMIT="${{ github.sha }}" \
+            --build-arg DATE="${build_date}" \
             ${tags_agent} \
             --cache-from type=gha \
             --cache-to type=gha,mode=max \
