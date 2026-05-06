@@ -407,8 +407,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '412':
-          description: Precondition failed - If-Match header required
+        '428':
+          description: Precondition required - If-Match header required
           content:
             application/json:
               schema:
@@ -909,6 +909,7 @@ components:
       required:
         - name
         - soa
+        - records
       properties:
         name:
           type: string
