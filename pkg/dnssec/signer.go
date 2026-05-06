@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -321,14 +322,18 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 
 	case model.RecordTypeCAA:
 		hdr.Rrtype = dns.TypeCAA
-		// Format: flag tag value
-		var flag uint8
-		var tag, value string
-		n, err := fmt.Sscanf(record.Value, "%d %s %s", &flag, &tag, &value)
-		if err != nil || n != 3 {
+		parts := strings.Fields(record.Value)
+		if len(parts) < 3 {
 			return nil, fmt.Errorf("invalid CAA value: %s", record.Value)
 		}
-		return &dns.CAA{Hdr: hdr, Flag: flag, Tag: tag, Value: value}, nil
+		flag, err := strconv.Atoi(parts[0])
+		if err != nil || flag < 0 || flag > 255 {
+			return nil, fmt.Errorf("invalid CAA flag: %s", parts[0])
+		}
+		tag := parts[1]
+		value := strings.Join(parts[2:], " ")
+		value = strings.Trim(value, "\"")
+		return &dns.CAA{Hdr: hdr, Flag: uint8(flag), Tag: tag, Value: value}, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported record type: %s", record.Type)

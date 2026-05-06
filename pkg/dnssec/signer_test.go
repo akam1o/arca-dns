@@ -170,6 +170,28 @@ func TestZoneSigner_SignZone(t *testing.T) {
 	}
 }
 
+func TestZoneSigner_CAAValueWithSpaces(t *testing.T) {
+	signer := &ZoneSigner{}
+	rr, err := signer.recordToRR("example.com.", &model.Record{
+		Name:  "@",
+		Type:  model.RecordTypeCAA,
+		TTL:   3600,
+		Value: `0 issue "letsencrypt.org; accounturi=https://example.com/acct"`,
+	})
+	if err != nil {
+		t.Fatalf("failed to convert CAA record: %v", err)
+	}
+
+	caa, ok := rr.(*dns.CAA)
+	if !ok {
+		t.Fatalf("recordToRR returned %T, want *dns.CAA", rr)
+	}
+	want := "letsencrypt.org; accounturi=https://example.com/acct"
+	if caa.Value != want {
+		t.Fatalf("CAA value = %q, want %q", caa.Value, want)
+	}
+}
+
 func TestZoneSigner_SignRRset(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
