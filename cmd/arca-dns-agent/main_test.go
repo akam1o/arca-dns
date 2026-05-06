@@ -101,7 +101,32 @@ func TestStatusRouter_MetricsEnabledUsesConfiguredPath(t *testing.T) {
 	}
 }
 
+func TestNewStatusServer_HasTimeouts(t *testing.T) {
+	server := newTestStatusServer(config.MetricsConfig{
+		Listen:  "127.0.0.1:0",
+		Enabled: true,
+		Path:    "/metrics",
+	})
+
+	if server.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("ReadHeaderTimeout=%s, want 5s", server.ReadHeaderTimeout)
+	}
+	if server.ReadTimeout != 15*time.Second {
+		t.Fatalf("ReadTimeout=%s, want 15s", server.ReadTimeout)
+	}
+	if server.WriteTimeout != 15*time.Second {
+		t.Fatalf("WriteTimeout=%s, want 15s", server.WriteTimeout)
+	}
+	if server.IdleTimeout != 60*time.Second {
+		t.Fatalf("IdleTimeout=%s, want 60s", server.IdleTimeout)
+	}
+}
+
 func newTestStatusRouter(metrics config.MetricsConfig) http.Handler {
+	return newTestStatusServer(metrics).Handler
+}
+
+func newTestStatusServer(metrics config.MetricsConfig) *http.Server {
 	logger := zap.NewNop()
 	cfg := &config.AgentConfig{
 		Metrics: metrics,
@@ -112,5 +137,5 @@ func newTestStatusRouter(metrics config.MetricsConfig) http.Handler {
 	checker := health.NewCheckerWithOptions(config.HealthConfig{
 		QueryTimeout: time.Millisecond,
 	}, health.CheckerOptions{}, logger)
-	return newStatusRouter(cfg, syncer, checker, nil, nil, logger)
+	return newStatusServer(cfg, syncer, checker, nil, nil, logger)
 }

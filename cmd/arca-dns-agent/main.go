@@ -529,12 +529,7 @@ func reexecSelf() error {
 
 // startStatusServer starts an HTTP server for status and metrics.
 func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
-	router := newStatusRouter(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
-
-	server := &http.Server{
-		Addr:    cfg.Metrics.Listen,
-		Handler: router,
-	}
+	server := newStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
 
 	go func() {
 		logger.Info("Starting status server", zap.String("listen", cfg.Metrics.Listen))
@@ -544,6 +539,19 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 	}()
 
 	return server
+}
+
+func newStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
+	router := newStatusRouter(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+
+	return &http.Server{
+		Addr:              cfg.Metrics.Listen,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 }
 
 func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *gin.Engine {
