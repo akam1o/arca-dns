@@ -503,3 +503,72 @@ func TestValidateZone(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateZone_CNAMEConstraints(t *testing.T) {
+	tests := []struct {
+		name       string
+		records    []Record
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name: "cname without sibling records",
+			records: []Record{
+				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+			},
+		},
+		{
+			name: "cname cannot coexist with a record",
+			records: []Record{
+				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+				{Name: "www", Type: RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+			},
+			wantErr:    true,
+			errContain: "cannot coexist",
+		},
+		{
+			name: "absolute cname owner cannot coexist with relative sibling",
+			records: []Record{
+				{Name: "www.example.com.", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+				{Name: "www", Type: RecordTypeAAAA, TTL: 300, Value: "2001:db8::1"},
+			},
+			wantErr:    true,
+			errContain: "cannot coexist",
+		},
+		{
+			name: "multiple cname records for one owner",
+			records: []Record{
+				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target1.example.com."},
+				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target2.example.com."},
+			},
+			wantErr:    true,
+			errContain: "multiple CNAME",
+		},
+		{
+			name: "apex cname",
+			records: []Record{
+				{Name: "@", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+			},
+			wantErr:    true,
+			errContain: "zone apex",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			zone := &Zone{
+				Name:    "example.com.",
+				SOA:     DefaultSOA("ns1.example.com.", "admin.example.com."),
+				Records: tt.records,
+			}
+
+			err := ValidateZone(zone)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContain)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}

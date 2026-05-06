@@ -41,7 +41,65 @@ func ValidateZone(zone *Zone) error {
 		}
 	}
 
+	if err := ValidateRecordSetConstraints(zone); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// ValidateRecordSetConstraints validates rules that depend on multiple records.
+func ValidateRecordSetConstraints(zone *Zone) error {
+	if zone == nil {
+		return fmt.Errorf("zone is nil")
+	}
+
+	zoneName := NormalizeZoneName(zone.Name)
+	type ownerState struct {
+		cnameIndex int
+		types      map[string]int
+	}
+
+	owners := make(map[string]ownerState)
+	for i, record := range zone.Records {
+		owner := canonicalRecordOwnerName(record.Name, zoneName)
+		state, exists := owners[owner]
+		if !exists {
+			state.cnameIndex = -1
+			state.types = make(map[string]int)
+		}
+
+		if record.Type == RecordTypeCNAME {
+			if owner == zoneName {
+				return fmt.Errorf("invalid record at index %d: CNAME is not allowed at zone apex %s", i, zoneName)
+			}
+			if state.cnameIndex >= 0 {
+				return fmt.Errorf("invalid record at index %d: multiple CNAME records for owner %s", i, owner)
+			}
+			state.cnameIndex = i
+		}
+
+		state.types[record.Type]++
+		owners[owner] = state
+	}
+
+	for owner, state := range owners {
+		if state.cnameIndex >= 0 && len(state.types) > 1 {
+			return fmt.Errorf("invalid record at index %d: CNAME for owner %s cannot coexist with other record types", state.cnameIndex, owner)
+		}
+	}
+
+	return nil
+}
+
+func canonicalRecordOwnerName(recordName, zoneName string) string {
+	if recordName == "@" {
+		return zoneName
+	}
+	if strings.HasSuffix(recordName, ".") {
+		return NormalizeZoneName(recordName)
+	}
+	return NormalizeZoneName(recordName + "." + strings.TrimSuffix(zoneName, "."))
 }
 
 // ValidateSOA validates an SOA record.
