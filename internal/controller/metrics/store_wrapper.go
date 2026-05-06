@@ -21,14 +21,29 @@ func WrapZoneStore(inner backend.ZoneStore, metrics *ControllerMetrics) backend.
 	base := &InstrumentedZoneStore{inner: inner, metrics: metrics}
 	_, hasDNSSECMetadata := inner.(backend.DNSSECMetadataStore)
 	_, hasRevisions := inner.(backend.RevisionStore)
+	_, hasConditionalDelete := inner.(backend.ConditionalDeleteStore)
 
 	switch {
+	case hasDNSSECMetadata && hasRevisions && hasConditionalDelete:
+		return &instrumentedMetadataRevisionConditionalDeleteStore{
+			instrumentedMetadataRevisionStore: &instrumentedMetadataRevisionStore{InstrumentedZoneStore: base},
+		}
 	case hasDNSSECMetadata && hasRevisions:
 		return &instrumentedMetadataRevisionStore{InstrumentedZoneStore: base}
+	case hasDNSSECMetadata && hasConditionalDelete:
+		return &instrumentedMetadataConditionalDeleteStore{
+			instrumentedMetadataStore: &instrumentedMetadataStore{InstrumentedZoneStore: base},
+		}
 	case hasDNSSECMetadata:
 		return &instrumentedMetadataStore{InstrumentedZoneStore: base}
+	case hasRevisions && hasConditionalDelete:
+		return &instrumentedRevisionConditionalDeleteStore{
+			instrumentedRevisionStore: &instrumentedRevisionStore{InstrumentedZoneStore: base},
+		}
 	case hasRevisions:
 		return &instrumentedRevisionStore{InstrumentedZoneStore: base}
+	case hasConditionalDelete:
+		return &instrumentedConditionalDeleteStore{InstrumentedZoneStore: base}
 	default:
 		return base
 	}
@@ -64,34 +79,17 @@ func (s *InstrumentedZoneStore) DeleteZone(ctx context.Context, name string) err
 	return err
 }
 
-func (s *InstrumentedZoneStore) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
-	conditionalStore, ok := s.inner.(backend.ConditionalDeleteStore)
-	if !ok {
-		err := deleteZoneWithVersionFallback(ctx, s.inner, name, expectedVersion)
-		s.metrics.IncBackendOperation("delete_zone", statusLabel(err))
-		return err
-	}
-
-	err := conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
-	s.metrics.IncBackendOperation("delete_zone", statusLabel(err))
-	return err
-}
-
 func (s *InstrumentedZoneStore) Close() error {
 	err := s.inner.Close()
 	s.metrics.IncBackendOperation("close", statusLabel(err))
 	return err
 }
 
-func deleteZoneWithVersionFallback(ctx context.Context, store backend.ZoneStore, name string, expectedVersion string) error {
-	zone, err := store.GetZone(ctx, name)
-	if err != nil {
-		return err
-	}
-	if expectedVersion != "" && zone.Version != expectedVersion {
-		return model.ErrConflict
-	}
-	return store.DeleteZone(ctx, name)
+func recordConditionalDelete(ctx context.Context, store backend.ZoneStore, metrics *ControllerMetrics, name string, expectedVersion string) error {
+	conditionalStore := store.(backend.ConditionalDeleteStore)
+	err := conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
+	metrics.IncBackendOperation("delete_zone", statusLabel(err))
+	return err
 }
 
 func statusLabel(err error) string {
@@ -167,4 +165,36 @@ func (s *instrumentedMetadataRevisionStore) GetCurrentVersion(ctx context.Contex
 	version, err := revisionStore.GetCurrentVersion(ctx, zoneName)
 	s.metrics.IncBackendOperation("get_current_version", statusLabel(err))
 	return version, err
+}
+
+type instrumentedConditionalDeleteStore struct {
+	*InstrumentedZoneStore
+}
+
+func (s *instrumentedConditionalDeleteStore) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	return recordConditionalDelete(ctx, s.inner, s.metrics, name, expectedVersion)
+}
+
+type instrumentedMetadataConditionalDeleteStore struct {
+	*instrumentedMetadataStore
+}
+
+func (s *instrumentedMetadataConditionalDeleteStore) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	return recordConditionalDelete(ctx, s.inner, s.metrics, name, expectedVersion)
+}
+
+type instrumentedRevisionConditionalDeleteStore struct {
+	*instrumentedRevisionStore
+}
+
+func (s *instrumentedRevisionConditionalDeleteStore) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	return recordConditionalDelete(ctx, s.inner, s.metrics, name, expectedVersion)
+}
+
+type instrumentedMetadataRevisionConditionalDeleteStore struct {
+	*instrumentedMetadataRevisionStore
+}
+
+func (s *instrumentedMetadataRevisionConditionalDeleteStore) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	return recordConditionalDelete(ctx, s.inner, s.metrics, name, expectedVersion)
 }

@@ -43,6 +43,34 @@ func setupTest(t *testing.T) (*Handler, *backend.MemoryBackend, *httptest.Server
 	return handler, store, server
 }
 
+type zoneStoreWithoutConditionalDelete struct {
+	inner backend.ZoneStore
+}
+
+func (s *zoneStoreWithoutConditionalDelete) GetZone(ctx context.Context, name string) (*model.Zone, error) {
+	return s.inner.GetZone(ctx, name)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	return s.inner.ListZones(ctx, opts)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) CreateZone(ctx context.Context, zone *model.Zone) error {
+	return s.inner.CreateZone(ctx, zone)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
+	return s.inner.UpdateZone(ctx, zone, expectedVersion)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) DeleteZone(ctx context.Context, name string) error {
+	return s.inner.DeleteZone(ctx, name)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) Close() error {
+	return s.inner.Close()
+}
+
 func TestCreateZone(t *testing.T) {
 	_, _, server := setupTest(t)
 	defer server.Close()
@@ -893,6 +921,32 @@ func TestDeleteZone_RejectsStaleIfMatch(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	_, err = store.GetZone(context.TODO(), "example.com.")
+	assert.NoError(t, err)
+}
+
+func TestDeleteZone_UnsupportedConditionalDeleteStore(t *testing.T) {
+	inner := backend.NewMemoryBackend()
+	store := &zoneStoreWithoutConditionalDelete{inner: inner}
+	_, server := setupTestWithStore(t, store)
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
+	req.Header.Set("If-Match", current.Version)
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 	_, err = store.GetZone(context.TODO(), "example.com.")
 	assert.NoError(t, err)
 }

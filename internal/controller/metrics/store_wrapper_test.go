@@ -18,6 +18,34 @@ type revisionMetadataStore struct {
 	versions       []*model.ZoneVersion
 }
 
+type zoneStoreWithoutConditionalDelete struct {
+	inner backend.ZoneStore
+}
+
+func (s *zoneStoreWithoutConditionalDelete) GetZone(ctx context.Context, name string) (*model.Zone, error) {
+	return s.inner.GetZone(ctx, name)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	return s.inner.ListZones(ctx, opts)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) CreateZone(ctx context.Context, zone *model.Zone) error {
+	return s.inner.CreateZone(ctx, zone)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
+	return s.inner.UpdateZone(ctx, zone, expectedVersion)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) DeleteZone(ctx context.Context, name string) error {
+	return s.inner.DeleteZone(ctx, name)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) Close() error {
+	return s.inner.Close()
+}
+
 func (s *revisionMetadataStore) GetRevision(ctx context.Context, zoneName, version string) (*model.Zone, error) {
 	if version != s.currentVersion {
 		return nil, model.ErrVersionNotFound
@@ -75,6 +103,9 @@ func TestWrapZoneStorePreservesRevisionStore(t *testing.T) {
 
 	_, ok = wrapped.(backend.DNSSECMetadataStore)
 	assert.True(t, ok)
+
+	_, ok = wrapped.(backend.ConditionalDeleteStore)
+	assert.True(t, ok)
 }
 
 func TestWrapZoneStoreDoesNotInventRevisionStore(t *testing.T) {
@@ -84,5 +115,22 @@ func TestWrapZoneStoreDoesNotInventRevisionStore(t *testing.T) {
 	assert.False(t, ok)
 
 	_, ok = wrapped.(backend.DNSSECMetadataStore)
+	assert.True(t, ok)
+
+	_, ok = wrapped.(backend.ConditionalDeleteStore)
+	assert.True(t, ok)
+}
+
+func TestWrapZoneStoreDoesNotInventConditionalDeleteStore(t *testing.T) {
+	wrapped := WrapZoneStore(&zoneStoreWithoutConditionalDelete{inner: backend.NewMemoryBackend()}, NewControllerMetrics())
+
+	_, ok := wrapped.(backend.ConditionalDeleteStore)
+	assert.False(t, ok)
+}
+
+func TestWrapZoneStorePreservesConditionalDeleteStore(t *testing.T) {
+	wrapped := WrapZoneStore(backend.NewMemoryBackend(), NewControllerMetrics())
+
+	_, ok := wrapped.(backend.ConditionalDeleteStore)
 	assert.True(t, ok)
 }

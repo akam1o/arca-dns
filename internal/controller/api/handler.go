@@ -702,9 +702,7 @@ func (h *Handler) deleteZoneWithVersion(ctx context.Context, name string, expect
 		return conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
 	}
 
-	// Fallback for custom stores that have not implemented conditional delete.
-	// Built-in stores support ConditionalDeleteStore, so production paths keep CAS semantics.
-	return h.store.DeleteZone(ctx, name)
+	return fmt.Errorf("zone store does not support conditional delete")
 }
 
 // GetSignedZone handles GET /api/v1/zones/:name/signed
