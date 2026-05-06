@@ -539,6 +539,10 @@ func (s *SigningService) getSignedZoneLocked(ctx context.Context, zone *model.Zo
 	if err != nil {
 		return nil, err
 	}
+	if err := s.persistDNSSECMetadata(ctx, zone.Name, artifact.DNSSEC); err != nil {
+		return nil, err
+	}
+	zone.DNSSEC = cloneDNSSECConfig(artifact.DNSSEC)
 	s.completeSignedZoneWrite(artifact)
 	return artifact, nil
 }

@@ -540,6 +540,17 @@ func TestSigningService_GetSignedZone_StaleCacheIsResigned(t *testing.T) {
 	if freshArtifact.Metadata.Expiration <= uint32(time.Now().Unix()) {
 		t.Fatalf("re-signed artifact still expired: %d", freshArtifact.Metadata.Expiration)
 	}
+
+	persistedZone, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone: %v", err)
+	}
+	if persistedZone.DNSSEC == nil || persistedZone.DNSSEC.SignatureExpiration == nil {
+		t.Fatal("re-signed zone did not persist DNSSEC signature expiration")
+	}
+	if got, want := persistedZone.DNSSEC.SignatureExpiration.Unix(), int64(freshArtifact.Metadata.Expiration); got != want {
+		t.Fatalf("persisted signature expiration = %d, want %d", got, want)
+	}
 }
 
 func TestSigningService_GetDSRecords(t *testing.T) {
