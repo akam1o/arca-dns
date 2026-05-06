@@ -34,6 +34,7 @@ type SigningService struct {
 type SignedZoneArtifact struct {
 	ZoneName    string
 	Version     string
+	Serial      uint32
 	SignedZone  string // BIND format zone file with DNSSEC records
 	UnsignedRRs []dns.RR
 	SignedRRs   []dns.RR
@@ -196,6 +197,7 @@ func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*Signe
 	artifact := &SignedZoneArtifact{
 		ZoneName:    zone.Name,
 		Version:     signedZone.Version,
+		Serial:      signedZone.SOA.Serial,
 		SignedZone:  signedZoneFile,
 		UnsignedRRs: unsignedRRs,
 		SignedRRs:   signedRRs,
@@ -254,6 +256,7 @@ func signedArtifactFromCache(zone *model.Zone, signed []byte) (*SignedZoneArtifa
 	return &SignedZoneArtifact{
 		ZoneName:   zone.Name,
 		Version:    zone.Version,
+		Serial:     zone.SOA.Serial,
 		SignedZone: signedZone,
 		SignedRRs:  parsed.Records,
 		Metadata:   metadata,

@@ -787,7 +787,7 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 		return
 	}
 
-	zoneFile, _, err := h.signedZoneFile(c.Request.Context(), name, zone)
+	signedZone, err := h.signedZoneFile(c.Request.Context(), name, zone)
 	if err != nil {
 		h.logger.Error("Failed to get signed zone", zap.String("zone", name), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
@@ -799,14 +799,14 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 	}
 
 	// Set headers for successful response
-	hashHex, hash8 := sha256HexAndHash8(zoneFile)
+	hashHex, hash8 := sha256HexAndHash8(signedZone.zoneFile)
 	artifactETag := formatETag(hashHex)
 	c.Header("ETag", artifactETag)
-	c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
+	c.Header("X-Zone-Serial", fmt.Sprintf("%d", signedZone.serial))
 	c.Header("X-Zone-Hash", hashHex)
 	c.Header("X-Zone-Hash8", hash8)
 	if h.artifactSignatureKey != "" {
-		c.Header("X-Zone-Signature", signArtifact(zoneFile, h.artifactSignatureKey))
+		c.Header("X-Zone-Signature", signArtifact(signedZone.zoneFile, h.artifactSignatureKey))
 	}
 
 	if match := c.GetHeader("If-None-Match"); match != "" && etagMatches(match, hashHex) {
@@ -815,10 +815,10 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone.signed", strings.TrimSuffix(zone.Name, ".")))
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone.signed", strings.TrimSuffix(signedZone.zoneName, ".")))
 
-	h.logger.Info("Signed zone file served", zap.String("zone", name), zap.String("version", zone.Version))
-	c.String(http.StatusOK, zoneFile)
+	h.logger.Info("Signed zone file served", zap.String("zone", name), zap.String("version", signedZone.version))
+	c.String(http.StatusOK, signedZone.zoneFile)
 }
 
 // HeadSignedZone handles HEAD /api/v1/zones/:name/signed.
@@ -836,21 +836,21 @@ func (h *Handler) HeadSignedZone(c *gin.Context) {
 		return
 	}
 
-	zoneFile, _, err := h.signedZoneFile(c.Request.Context(), name, zone)
+	signedZone, err := h.signedZoneFile(c.Request.Context(), name, zone)
 	if err != nil {
 		h.logger.Error("Failed to get signed zone", zap.String("zone", name), zap.Error(err))
 		c.Status(http.StatusInternalServerError)
 		return
 	}
 
-	hashHex, hash8 := sha256HexAndHash8(zoneFile)
+	hashHex, hash8 := sha256HexAndHash8(signedZone.zoneFile)
 	artifactETag := formatETag(hashHex)
 	c.Header("ETag", artifactETag)
-	c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
+	c.Header("X-Zone-Serial", fmt.Sprintf("%d", signedZone.serial))
 	c.Header("X-Zone-Hash", hashHex)
 	c.Header("X-Zone-Hash8", hash8)
 	if h.artifactSignatureKey != "" {
-		c.Header("X-Zone-Signature", signArtifact(zoneFile, h.artifactSignatureKey))
+		c.Header("X-Zone-Signature", signArtifact(signedZone.zoneFile, h.artifactSignatureKey))
 	}
 
 	if match := c.GetHeader("If-None-Match"); match != "" && etagMatches(match, hashHex) {
@@ -859,8 +859,8 @@ func (h *Handler) HeadSignedZone(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone.signed", strings.TrimSuffix(zone.Name, ".")))
-	c.Header("Content-Length", strconv.Itoa(len(zoneFile)))
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone.signed", strings.TrimSuffix(signedZone.zoneName, ".")))
+	c.Header("Content-Length", strconv.Itoa(len(signedZone.zoneFile)))
 	c.Status(http.StatusOK)
 }
 
@@ -888,7 +888,7 @@ func (h *Handler) GetSignedZoneMetadata(c *gin.Context) {
 		return
 	}
 
-	zoneFile, dnssecConfig, err := h.signedZoneFile(c.Request.Context(), name, zone)
+	signedZone, err := h.signedZoneFile(c.Request.Context(), name, zone)
 	if err != nil {
 		h.logger.Error("Failed to get signed zone for metadata", zap.String("zone", name), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
@@ -899,9 +899,9 @@ func (h *Handler) GetSignedZoneMetadata(c *gin.Context) {
 		return
 	}
 
-	hashHex, hash8 := sha256HexAndHash8(zoneFile)
+	hashHex, hash8 := sha256HexAndHash8(signedZone.zoneFile)
 	c.Header("ETag", formatETag(hashHex))
-	c.Header("X-Zone-Serial", fmt.Sprintf("%d", zone.SOA.Serial))
+	c.Header("X-Zone-Serial", fmt.Sprintf("%d", signedZone.serial))
 	c.Header("X-Zone-Hash", hashHex)
 	c.Header("X-Zone-Hash8", hash8)
 
@@ -911,29 +911,49 @@ func (h *Handler) GetSignedZoneMetadata(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"zone":           zone.Name,
-		"version":        zone.Version,
-		"serial":         zone.SOA.Serial,
+		"zone":           signedZone.zoneName,
+		"version":        signedZone.version,
+		"serial":         signedZone.serial,
 		"hash":           hashHex,
 		"hash8":          hash8,
-		"dnssec_enabled": dnssecConfig != nil && dnssecConfig.Enabled,
+		"dnssec_enabled": signedZone.dnssecConfig != nil && signedZone.dnssecConfig.Enabled,
 	})
 }
 
-func (h *Handler) signedZoneFile(ctx context.Context, name string, zone *model.Zone) (string, *model.DNSSECConfig, error) {
+type signedZoneResult struct {
+	zoneName     string
+	version      string
+	serial       uint32
+	zoneFile     string
+	dnssecConfig *model.DNSSECConfig
+}
+
+func (h *Handler) signedZoneFile(ctx context.Context, name string, zone *model.Zone) (*signedZoneResult, error) {
 	if h.signingService != nil {
 		artifact, err := h.signingService.GetSignedZone(ctx, name)
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
-		return artifact.SignedZone, artifact.DNSSEC, nil
+		return &signedZoneResult{
+			zoneName:     artifact.ZoneName,
+			version:      artifact.Version,
+			serial:       artifact.Serial,
+			zoneFile:     artifact.SignedZone,
+			dnssecConfig: artifact.DNSSEC,
+		}, nil
 	}
 
 	zoneFile, err := parser.GenerateBINDZoneFile(zone)
 	if err != nil {
-		return "", nil, fmt.Errorf("generate zone file: %w", err)
+		return nil, fmt.Errorf("generate zone file: %w", err)
 	}
-	return zoneFile, zone.DNSSEC, nil
+	return &signedZoneResult{
+		zoneName:     zone.Name,
+		version:      zone.Version,
+		serial:       zone.SOA.Serial,
+		zoneFile:     zoneFile,
+		dnssecConfig: zone.DNSSEC,
+	}, nil
 }
 
 func (h *Handler) prepareSignedZoneCreate(c *gin.Context, zone *model.Zone, operation string) (*service.SignedZoneWrite, bool) {
