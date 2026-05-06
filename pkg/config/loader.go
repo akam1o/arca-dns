@@ -347,6 +347,13 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid metrics.listen: empty")
 	}
 
+	if cfg.Metrics.Enabled {
+		path := normalizeHTTPPath(cfg.Metrics.Path, "/metrics")
+		if isReservedAgentStatusPath(path) {
+			return fmt.Errorf("invalid metrics.path: conflicts with reserved status endpoint %q", path)
+		}
+	}
+
 	if cfg.Health.CheckInterval <= 0 {
 		return fmt.Errorf("invalid health.check_interval: must be positive")
 	}
@@ -370,6 +377,26 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	return nil
+}
+
+func normalizeHTTPPath(path string, defaultPath string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return defaultPath
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
+}
+
+func isReservedAgentStatusPath(path string) bool {
+	switch path {
+	case "/health", "/ready", "/status":
+		return true
+	default:
+		return false
+	}
 }
 
 // bindControllerEnvVars binds all controller config leaves so environment

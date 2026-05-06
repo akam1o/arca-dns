@@ -520,6 +520,33 @@ func TestValidateAgentConfig_StatusServerRequiresListen(t *testing.T) {
 	assert.Contains(t, err.Error(), "metrics.listen")
 }
 
+func TestValidateAgentConfig_MetricsPathCannotConflictWithStatusEndpoints(t *testing.T) {
+	tests := []string{
+		"/health",
+		"ready",
+		"  /status  ",
+	}
+
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			cfg := DefaultAgentConfig()
+			cfg.Metrics.Enabled = true
+			cfg.Metrics.Path = path
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "metrics.path")
+		})
+	}
+}
+
+func TestValidateAgentConfig_MetricsPathIgnoredWhenMetricsDisabled(t *testing.T) {
+	cfg := DefaultAgentConfig()
+	cfg.Metrics.Enabled = false
+	cfg.Metrics.Path = "/health"
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
+}
+
 func TestValidateAgentConfig_InvalidLogLevel(t *testing.T) {
 	cfg := DefaultAgentConfig()
 	cfg.Logging.Level = "invalid"
