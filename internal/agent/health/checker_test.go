@@ -247,6 +247,59 @@ func TestChecker_CheckAll_NoComponentsEnabled(t *testing.T) {
 	assert.Empty(t, status.Checks)
 }
 
+func TestChecker_CheckAll_AdditionalCheck(t *testing.T) {
+	logger := zap.NewNop()
+
+	checker := NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout:     2 * time.Second,
+		LatencyThreshold: 100 * time.Millisecond,
+		TestRecord:       "example.com",
+	}, CheckerOptions{}, logger)
+	checker.AddCheck(func(ctx context.Context) CheckResult {
+		return CheckResult{
+			Type:      CheckTypeSync,
+			Success:   true,
+			Timestamp: time.Now(),
+		}
+	})
+
+	status := checker.CheckAll(context.Background())
+
+	assert.True(t, status.Healthy)
+	assert.Contains(t, status.Checks, CheckTypeSync)
+	assert.True(t, status.Checks[CheckTypeSync].Success)
+}
+
+func TestChecker_CheckAll_AdditionalCheckFailureMakesUnhealthy(t *testing.T) {
+	logger := zap.NewNop()
+
+	server, addr := startTestDNSServer(t, dns.RcodeSuccess)
+	defer func() { _ = server.Shutdown() }()
+
+	checker := NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout:     2 * time.Second,
+		LatencyThreshold: 100 * time.Millisecond,
+		TestRecord:       "example.com",
+		NSDServer:        addr,
+	}, CheckerOptions{
+		CheckAuthoritative: true,
+	}, logger)
+	checker.AddCheck(func(ctx context.Context) CheckResult {
+		return CheckResult{
+			Type:      CheckTypeSync,
+			Success:   false,
+			Error:     errors.New("sync failed"),
+			Timestamp: time.Now(),
+		}
+	})
+
+	status := checker.CheckAll(context.Background())
+
+	assert.False(t, status.Healthy)
+	assert.True(t, status.Checks[CheckTypeQuery].Success)
+	assert.False(t, status.Checks[CheckTypeSync].Success)
+}
+
 func TestChecker_Run(t *testing.T) {
 	logger := zap.NewNop()
 

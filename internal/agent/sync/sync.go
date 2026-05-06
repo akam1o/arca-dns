@@ -184,8 +184,8 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	successCount += deleteCount
 	errorCount += deleteErrorCount
 
-	// Update last success time if the cycle made progress, or if an empty controller list was reconciled.
-	if successCount > 0 || (len(zones) == 0 && errorCount == 0) {
+	// Update last success time only after a fully clean reconciliation.
+	if errorCount == 0 && (successCount > 0 || len(zones) == 0) {
 		s.mu.Lock()
 		s.lastSuccess = time.Now()
 		s.mu.Unlock()
@@ -197,18 +197,16 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 		zap.Int("errors", errorCount),
 		zap.Int("total", len(zones)))
 
-	// Return error if all active controller zones failed, or if reconciliation had no success.
-	if zoneErrorCount > 0 && zoneErrorCount == len(zones) {
+	// Return error for any failed active zone so callers do not treat a
+	// partially-applied reconciliation as healthy.
+	if zoneErrorCount > 0 {
 		if deleteErrorCount > 0 {
-			return fmt.Errorf("all zones failed to sync (%d errors); failed to delete removed zones (%d errors)", zoneErrorCount, deleteErrorCount)
+			return fmt.Errorf("zones failed to sync (%d errors); failed to delete removed zones (%d errors)", zoneErrorCount, deleteErrorCount)
 		}
-		return fmt.Errorf("all zones failed to sync (%d errors)", zoneErrorCount)
+		return fmt.Errorf("zones failed to sync (%d errors)", zoneErrorCount)
 	}
 	if deleteErrorCount > 0 {
 		return fmt.Errorf("failed to delete removed zones (%d errors)", deleteErrorCount)
-	}
-	if errorCount > 0 && successCount == 0 {
-		return fmt.Errorf("sync failed (%d errors)", errorCount)
 	}
 
 	return nil
@@ -478,6 +476,20 @@ func (s *Syncer) GetLastSuccessTime() time.Time {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.lastSuccess
+}
+
+// FailedZoneCount returns the number of zones with outstanding sync failures.
+func (s *Syncer) FailedZoneCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	count := 0
+	for _, state := range s.zoneStates {
+		if state.FailCount > 0 {
+			count++
+		}
+	}
+	return count
 }
 
 // IsStale returns true if sync is stale (exceeds MaxStaleness).

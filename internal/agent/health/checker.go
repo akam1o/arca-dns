@@ -18,6 +18,7 @@ const (
 	CheckTypeQuery    CheckType = "query"
 	CheckTypeFullPath CheckType = "full_path"
 	CheckTypeLatency  CheckType = "latency"
+	CheckTypeSync     CheckType = "sync"
 )
 
 // CheckResult contains the result of a health check.
@@ -49,6 +50,7 @@ type Checker struct {
 
 	checkAuthoritative bool
 	checkResolver      bool
+	additionalChecks   []func(context.Context) CheckResult
 }
 
 // CheckerOptions controls which DNS paths are considered active for health.
@@ -97,6 +99,15 @@ func NewCheckerWithOptions(cfg config.HealthConfig, opts CheckerOptions, logger 
 		checkAuthoritative: opts.CheckAuthoritative,
 		checkResolver:      opts.CheckResolver,
 	}
+}
+
+// AddCheck registers an additional health check.
+// It should be called during startup before Run or CheckAll is used concurrently.
+func (c *Checker) AddCheck(fn func(context.Context) CheckResult) {
+	if fn == nil {
+		return
+	}
+	c.additionalChecks = append(c.additionalChecks, fn)
 }
 
 // Run starts the health check loop.
@@ -161,8 +172,14 @@ func (c *Checker) CheckAll(ctx context.Context) HealthStatus {
 		checksRun++
 	}
 
-	// Determine overall health:
-	// DNS checks are the source of truth for routing decisions.
+	for _, check := range c.additionalChecks {
+		result := check(ctx)
+		checks[result.Type] = result
+		healthy = healthy && result.Success
+		checksRun++
+	}
+
+	// At least one enabled check must pass for the agent to be considered healthy.
 	if checksRun == 0 {
 		healthy = false
 	}

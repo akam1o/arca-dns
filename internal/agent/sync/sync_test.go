@@ -176,6 +176,93 @@ func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
 	assert.FileExists(t, zonePath)
 }
 
+func TestSyncer_SyncAll_PartialFailureKeepsSyncUnhealthy(t *testing.T) {
+	requireTCPListener(t)
+
+	goodZoneContent := "$ORIGIN good.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n"
+	goodHash := sha256.Sum256([]byte(goodZoneContent))
+	goodHashHex := hex.EncodeToString(goodHash[:])
+
+	badZoneContent := "$ORIGIN bad.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n"
+	badHash := sha256.Sum256([]byte(badZoneContent))
+	badHashHex := hex.EncodeToString(badHash[:])
+
+	var badFixed atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/zones":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"zones":[{"name":"bad.com","version":"v1-bad","soa":{"mname":"ns1.bad.com","rname":"admin.bad.com","serial":2024010101,"refresh":3600,"retry":1800,"expire":604800,"minimum":86400},"records":[]},{"name":"good.com","version":"v1-good","soa":{"mname":"ns1.good.com","rname":"admin.good.com","serial":2024010101,"refresh":3600,"retry":1800,"expire":604800,"minimum":86400},"records":[]}]}`)
+
+		case "/api/v1/zones/good.com/signed":
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("ETag", "v1-good")
+			w.Header().Set("X-Zone-Serial", "2024010101")
+			w.Header().Set("X-Zone-Hash", goodHashHex)
+			w.Header().Set("X-Zone-Hash8", goodHashHex[:8])
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, goodZoneContent)
+
+		case "/api/v1/zones/bad.com/signed":
+			if !badFixed.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprint(w, "signing failed")
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("ETag", "v1-bad")
+			w.Header().Set("X-Zone-Serial", "2024010101")
+			w.Header().Set("X-Zone-Hash", badHashHex)
+			w.Header().Set("X-Zone-Hash8", badHashHex[:8])
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, badZoneContent)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	zoneDir := filepath.Join(tmpDir, "zones")
+	require.NoError(t, os.MkdirAll(zoneDir, 0755))
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 0,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	logger := zap.NewNop()
+	fileMgr := NewFileManager(zoneDir, 3, logger)
+	require.NoError(t, fileMgr.EnsureDirectory())
+
+	syncer := NewSyncer(client, fileMgr, config.SyncConfig{
+		SyncInterval:    30 * time.Second,
+		Jitter:          5 * time.Second,
+		MaxStaleness:    5 * time.Minute,
+		BackupVersions:  3,
+		VerifyChecksums: true,
+	}, logger)
+
+	err = syncer.SyncAll(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zones failed to sync (1 errors)")
+	assert.FileExists(t, fileMgr.GetZonePath("good.com"))
+	assert.NoFileExists(t, fileMgr.GetZonePath("bad.com"))
+	assert.True(t, syncer.GetLastSuccessTime().IsZero())
+	assert.Equal(t, 1, syncer.FailedZoneCount())
+
+	badFixed.Store(true)
+	require.NoError(t, syncer.SyncAll(context.Background()))
+	assert.FileExists(t, fileMgr.GetZonePath("bad.com"))
+	assert.False(t, syncer.GetLastSuccessTime().IsZero())
+	assert.Equal(t, 0, syncer.FailedZoneCount())
+}
+
 func TestSyncer_SyncAll_ForcesFetchWhenLocalZoneFileMissing(t *testing.T) {
 	requireTCPListener(t)
 

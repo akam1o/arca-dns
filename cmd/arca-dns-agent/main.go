@@ -180,6 +180,38 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		CheckAuthoritative: cfg.NSD.Enabled,
 		CheckResolver:      cfg.Unbound.Enabled,
 	}, logger)
+	checker.AddCheck(func(ctx context.Context) health.CheckResult {
+		now := time.Now()
+		if failedZones := syncer.FailedZoneCount(); failedZones > 0 {
+			return health.CheckResult{
+				Type:      health.CheckTypeSync,
+				Success:   false,
+				Error:     fmt.Errorf("%d zone sync failures", failedZones),
+				Timestamp: now,
+			}
+		}
+		if syncer.GetLastSuccessTime().IsZero() {
+			return health.CheckResult{
+				Type:      health.CheckTypeSync,
+				Success:   false,
+				Error:     fmt.Errorf("no successful sync yet"),
+				Timestamp: now,
+			}
+		}
+		if syncer.IsStale() {
+			return health.CheckResult{
+				Type:      health.CheckTypeSync,
+				Success:   false,
+				Error:     fmt.Errorf("sync is stale"),
+				Timestamp: now,
+			}
+		}
+		return health.CheckResult{
+			Type:      health.CheckTypeSync,
+			Success:   true,
+			Timestamp: now,
+		}
+	})
 	logger.Info("Health checker initialized")
 
 	// Create BIRD BGP control components (M5)
@@ -528,6 +560,7 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 			"status":            "running",
 			"version":           version,
 			"zone_count":        len(zoneStates),
+			"failed_zones":      syncer.FailedZoneCount(),
 			"zones":             zoneStates,
 			"last_sync":         syncer.GetLastSuccessTime(),
 			"is_stale":          syncer.IsStale(),
@@ -570,6 +603,15 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 			return
 		}
 
+		if failedZones := syncer.FailedZoneCount(); failedZones > 0 {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status":       "not ready",
+				"reason":       "zone sync failures",
+				"failed_zones": failedZones,
+			})
+			return
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"status": "ready",
 		})
@@ -592,6 +634,10 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 		sb.WriteString("\n# HELP arca_dns_agent_sync_stale Whether sync is currently considered stale (1/0).\n")
 		sb.WriteString("# TYPE arca_dns_agent_sync_stale gauge\n")
 		sb.WriteString(fmt.Sprintf("arca_dns_agent_sync_stale %d\n", boolToInt(syncer.IsStale())))
+
+		sb.WriteString("\n# HELP arca_dns_agent_sync_failed_zones Number of zones with outstanding sync failures.\n")
+		sb.WriteString("# TYPE arca_dns_agent_sync_failed_zones gauge\n")
+		sb.WriteString(fmt.Sprintf("arca_dns_agent_sync_failed_zones %d\n", syncer.FailedZoneCount()))
 
 		lastSuccess := syncer.GetLastSuccessTime()
 		sb.WriteString("\n# HELP arca_dns_agent_sync_last_success_timestamp_seconds Unix timestamp of the last successful sync (0 if none).\n")
