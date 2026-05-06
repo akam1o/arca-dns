@@ -220,7 +220,7 @@ func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) erro
 	if err != nil {
 		return err
 	}
-	if err := p.insertRecordsPGTx(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := p.insertRecordsPGTx(ctx, tx, zoneID, zone.Records, nil); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -325,10 +325,14 @@ func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expe
 	if err := tx.QueryRowContext(ctx, "SELECT id FROM zones WHERE name = $1", zone.Name).Scan(&zoneID); err != nil {
 		return fmt.Errorf("get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, tx, "SELECT id FROM records WHERE zone_id = $1", zoneID)
+	if err != nil {
+		return fmt.Errorf("load record IDs: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = $1", zoneID); err != nil {
 		return fmt.Errorf("delete records: %w", err)
 	}
-	if err := p.insertRecordsPGTx(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := p.insertRecordsPGTx(ctx, tx, zoneID, zone.Records, recordIDs); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -618,7 +622,7 @@ func (p *PostgresBackend) insertZonePGTx(ctx context.Context, tx *sql.Tx, zone *
 	return zoneID, nil
 }
 
-func (p *PostgresBackend) insertRecordsPGTx(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record) error {
+func (p *PostgresBackend) insertRecordsPGTx(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record, allowedRecordIDs sqlRecordIDSet) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -645,7 +649,7 @@ func (p *PostgresBackend) insertRecordsPGTx(ctx context.Context, tx *sql.Tx, zon
 			priority = *rec.Priority
 		}
 
-		if recordID, ok := parseSQLRecordID(rec.ID); ok {
+		if recordID, ok := parseSQLRecordID(rec.ID); ok && allowedRecordIDs.allows(recordID) {
 			if _, err := explicitIDStmt.ExecContext(ctx, recordID, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
 				return fmt.Errorf("insert record: %w", err)
 			}
@@ -780,7 +784,7 @@ func (t *pgTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	if err != nil {
 		return err
 	}
-	return t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, zone.Records, nil)
 }
 
 func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
@@ -869,10 +873,14 @@ func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion
 	if err := t.tx.QueryRowContext(ctx, "SELECT id FROM zones WHERE name = $1", zone.Name).Scan(&zoneID); err != nil {
 		return fmt.Errorf("get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, t.tx, "SELECT id FROM records WHERE zone_id = $1", zoneID)
+	if err != nil {
+		return fmt.Errorf("load record IDs: %w", err)
+	}
 	if _, err := t.tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = $1", zoneID); err != nil {
 		return fmt.Errorf("delete records: %w", err)
 	}
-	return t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, zone.Records, recordIDs)
 }
 
 func (t *pgTx) DeleteZone(ctx context.Context, name string) error {

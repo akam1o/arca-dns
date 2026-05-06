@@ -58,3 +58,34 @@ func TestSQLiteBackend_PreservesRecordIDOnUpdate(t *testing.T) {
 	assert.Equal(t, originalID, updated.Records[0].ID)
 	assert.Equal(t, "192.0.2.2", updated.Records[0].Value)
 }
+
+func TestSQLiteBackend_IgnoresClientRecordIDsOnCreate(t *testing.T) {
+	store, err := NewSQLiteBackend(":memory:")
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.InitSchema())
+
+	ctx := context.Background()
+	first := &model.Zone{
+		Name: "first-record-id.example.com.",
+		SOA:  model.DefaultSOA("ns1.first-record-id.example.com.", "admin.first-record-id.example.com."),
+		Records: []model.Record{
+			{ID: "1", Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(ctx, first))
+
+	second := &model.Zone{
+		Name: "second-record-id.example.com.",
+		SOA:  model.DefaultSOA("ns1.second-record-id.example.com.", "admin.second-record-id.example.com."),
+		Records: []model.Record{
+			{ID: "1", Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.2"},
+		},
+	}
+	require.NoError(t, store.CreateZone(ctx, second))
+
+	created, err := store.GetZone(ctx, second.Name)
+	require.NoError(t, err)
+	require.Len(t, created.Records, 1)
+	assert.NotEqual(t, "1", created.Records[0].ID)
+}

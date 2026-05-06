@@ -400,7 +400,7 @@ func (m *MySQLBackend) createZone(ctx context.Context, zone *model.Zone) error {
 	}
 
 	// Insert records
-	if err := m.insertRecords(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := m.insertRecords(ctx, tx, zoneID, zone.Records, nil); err != nil {
 		return err
 	}
 
@@ -570,6 +570,10 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 	if err != nil {
 		return fmt.Errorf("failed to get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, tx, "SELECT id FROM records WHERE zone_id = ?", zoneID)
+	if err != nil {
+		return fmt.Errorf("failed to load record IDs: %w", err)
+	}
 
 	// Delete old records
 	_, err = tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = ?", zoneID)
@@ -578,7 +582,7 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 	}
 
 	// Insert new records
-	if err := m.insertRecords(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := m.insertRecords(ctx, tx, zoneID, zone.Records, recordIDs); err != nil {
 		return err
 	}
 
@@ -982,7 +986,7 @@ func (t *MySQLTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	}
 
 	// Insert records
-	return t.backend.insertRecords(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecords(ctx, t.tx, zoneID, zone.Records, nil)
 }
 
 // UpdateZone updates an existing zone within the transaction.
@@ -1090,6 +1094,10 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 	if err != nil {
 		return fmt.Errorf("failed to get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, t.tx, "SELECT id FROM records WHERE zone_id = ?", zoneID)
+	if err != nil {
+		return fmt.Errorf("failed to load record IDs: %w", err)
+	}
 
 	// Delete old records
 	_, err = t.tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = ?", zoneID)
@@ -1098,7 +1106,7 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 	}
 
 	// Insert new records
-	return t.backend.insertRecords(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecords(ctx, t.tx, zoneID, zone.Records, recordIDs)
 }
 
 // DeleteZone removes a zone within the transaction.
@@ -1172,7 +1180,7 @@ func (t *MySQLTx) Rollback(ctx context.Context) error {
 }
 
 // insertRecords inserts records for a zone within a transaction.
-func (m *MySQLBackend) insertRecords(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record) error {
+func (m *MySQLBackend) insertRecords(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record, allowedRecordIDs sqlRecordIDSet) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -1206,7 +1214,7 @@ func (m *MySQLBackend) insertRecords(ctx context.Context, tx *sql.Tx, zoneID int
 			priority = *rec.Priority
 		}
 
-		if recordID, ok := parseSQLRecordID(rec.ID); ok {
+		if recordID, ok := parseSQLRecordID(rec.ID); ok && allowedRecordIDs.allows(recordID) {
 			if _, err := explicitIDStmt.ExecContext(ctx, recordID, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
 				return fmt.Errorf("failed to insert record: %w", err)
 			}

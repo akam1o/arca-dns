@@ -238,7 +238,7 @@ func (s *SQLiteBackend) CreateZone(ctx context.Context, zone *model.Zone) error 
 		return err
 	}
 
-	if err := s.insertRecordsTx(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := s.insertRecordsTx(ctx, tx, zoneID, zone.Records, nil); err != nil {
 		return err
 	}
 
@@ -320,12 +320,16 @@ func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 	if err := tx.QueryRowContext(ctx, "SELECT id FROM zones WHERE name = ?", zone.Name).Scan(&zoneID); err != nil {
 		return fmt.Errorf("get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, tx, "SELECT id FROM records WHERE zone_id = ?", zoneID)
+	if err != nil {
+		return fmt.Errorf("load record IDs: %w", err)
+	}
 
 	// Replace records
 	if _, err := tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = ?", zoneID); err != nil {
 		return fmt.Errorf("delete old records: %w", err)
 	}
-	if err := s.insertRecordsTx(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := s.insertRecordsTx(ctx, tx, zoneID, zone.Records, recordIDs); err != nil {
 		return err
 	}
 
@@ -635,7 +639,7 @@ func (s *SQLiteBackend) insertZoneTx(ctx context.Context, tx *sql.Tx, zone *mode
 	return result.LastInsertId()
 }
 
-func (s *SQLiteBackend) insertRecordsTx(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record) error {
+func (s *SQLiteBackend) insertRecordsTx(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record, allowedRecordIDs sqlRecordIDSet) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -662,7 +666,7 @@ func (s *SQLiteBackend) insertRecordsTx(ctx context.Context, tx *sql.Tx, zoneID 
 			priority = *rec.Priority
 		}
 
-		if recordID, ok := parseSQLRecordID(rec.ID); ok {
+		if recordID, ok := parseSQLRecordID(rec.ID); ok && allowedRecordIDs.allows(recordID) {
 			if _, err := explicitIDStmt.ExecContext(ctx, recordID, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
 				return fmt.Errorf("insert record: %w", err)
 			}
@@ -857,7 +861,7 @@ func (t *sqliteTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	if err != nil {
 		return err
 	}
-	return t.backend.insertRecordsTx(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecordsTx(ctx, t.tx, zoneID, zone.Records, nil)
 }
 
 func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
@@ -923,10 +927,14 @@ func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVer
 	if err := t.tx.QueryRowContext(ctx, "SELECT id FROM zones WHERE name = ?", zone.Name).Scan(&zoneID); err != nil {
 		return fmt.Errorf("get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, t.tx, "SELECT id FROM records WHERE zone_id = ?", zoneID)
+	if err != nil {
+		return fmt.Errorf("load record IDs: %w", err)
+	}
 	if _, err := t.tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = ?", zoneID); err != nil {
 		return fmt.Errorf("delete records: %w", err)
 	}
-	return t.backend.insertRecordsTx(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecordsTx(ctx, t.tx, zoneID, zone.Records, recordIDs)
 }
 
 func (t *sqliteTx) DeleteZone(ctx context.Context, name string) error {
