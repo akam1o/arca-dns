@@ -150,6 +150,40 @@ func TestFileManager_BackupCleanup(t *testing.T) {
 	}
 }
 
+func TestFileManager_NegativeBackupVersionsKeepsNoBackups(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, -1, logger)
+
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	content1 := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	content2 := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122802 3600 1800 604800 86400`
+
+	if err := fm.WriteZoneFile(zoneName, content1); err != nil {
+		t.Fatalf("WriteZoneFile failed: %v", err)
+	}
+	if err := fm.WriteZoneFile(zoneName, content2); err != nil {
+		t.Fatalf("WriteZoneFile failed: %v", err)
+	}
+
+	backups, err := fm.listBackups(zoneName)
+	if err != nil {
+		t.Fatalf("listBackups failed: %v", err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("Expected 0 backups, got %d", len(backups))
+	}
+}
+
 func TestFileManager_WriteZoneFileValidatedFailurePreservesCurrent(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
 	if err != nil {

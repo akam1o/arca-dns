@@ -335,6 +335,10 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid sync.sync_interval: must be positive")
 	}
 
+	if cfg.Sync.BackupVersions < 0 {
+		return fmt.Errorf("invalid sync.backup_versions: must be non-negative")
+	}
+
 	if cfg.Sync.VerifySignatures && strings.TrimSpace(cfg.Sync.ControllerPublicKey) == "" {
 		return fmt.Errorf("invalid sync.controller_public_key: required when sync.verify_signatures is true")
 	}

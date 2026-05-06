@@ -27,6 +27,9 @@ type managedZonesIndex struct {
 
 // NewFileManager creates a new file manager.
 func NewFileManager(zoneDir string, backupVersions int, logger *zap.Logger) *FileManager {
+	if backupVersions < 0 {
+		backupVersions = 0
+	}
 	return &FileManager{
 		zoneDir:        zoneDir,
 		backupVersions: backupVersions,

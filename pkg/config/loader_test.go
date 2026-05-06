@@ -575,6 +575,14 @@ func TestValidateAgentConfig_InvalidSyncInterval(t *testing.T) {
 	assert.Contains(t, err.Error(), "sync_interval")
 }
 
+func TestValidateAgentConfig_InvalidBackupVersions(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Sync.BackupVersions = -1
+	err := ValidateAgentConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "sync.backup_versions")
+}
+
 func TestValidateAgentConfig_VerifySignaturesRequiresKey(t *testing.T) {
 	cfg := DefaultAgentConfig()
 	cfg.Sync.VerifySignatures = true
