@@ -428,6 +428,29 @@ func TestValidateZone_PTRRecordNameAllowsReverseZone(t *testing.T) {
 	assert.NoError(t, ValidateZone(zone))
 }
 
+func TestValidateZone_RejectsInconsistentRRsetTTL(t *testing.T) {
+	zone := &Zone{
+		Name: "example.com.",
+		SOA: SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
+			{Name: "www.example.com.", Type: "A", TTL: 600, Value: "192.0.2.2"},
+		},
+	}
+
+	err := ValidateZone(zone)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "inconsistent TTL")
+}
+
 func TestValidateSOA(t *testing.T) {
 	tests := []struct {
 		name    string

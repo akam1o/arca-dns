@@ -65,6 +65,8 @@ func ValidateRecordSetConstraints(zone *Zone) error {
 	type ownerState struct {
 		cnameIndex int
 		types      map[string]int
+		rrsetTTLs  map[string]uint32
+		rrsetIndex map[string]int
 	}
 
 	owners := make(map[string]ownerState)
@@ -74,6 +76,8 @@ func ValidateRecordSetConstraints(zone *Zone) error {
 		if !exists {
 			state.cnameIndex = -1
 			state.types = make(map[string]int)
+			state.rrsetTTLs = make(map[string]uint32)
+			state.rrsetIndex = make(map[string]int)
 		}
 
 		if record.Type == RecordTypeCNAME {
@@ -84,6 +88,14 @@ func ValidateRecordSetConstraints(zone *Zone) error {
 				return fmt.Errorf("invalid record at index %d: multiple CNAME records for owner %s", i, owner)
 			}
 			state.cnameIndex = i
+		}
+
+		if ttl, ok := state.rrsetTTLs[record.Type]; ok && ttl != record.TTL {
+			return fmt.Errorf("invalid record at index %d: RRset %s/%s has inconsistent TTL: first record at index %d has TTL %d, got %d", i, owner, record.Type, state.rrsetIndex[record.Type], ttl, record.TTL)
+		}
+		if _, ok := state.rrsetTTLs[record.Type]; !ok {
+			state.rrsetTTLs[record.Type] = record.TTL
+			state.rrsetIndex[record.Type] = i
 		}
 
 		state.types[record.Type]++
