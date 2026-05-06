@@ -171,6 +171,17 @@ func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*Signe
 	return artifact, nil
 }
 
+// PrepareSignedZoneWrite signs a zone before it is persisted and attaches the
+// generated DNSSEC metadata to the zone so the backend write is self-contained.
+func (s *SigningService) PrepareSignedZoneWrite(ctx context.Context, zone *model.Zone) (*SignedZoneArtifact, error) {
+	artifact, err := s.SignZone(ctx, zone)
+	if err != nil {
+		return nil, err
+	}
+	zone.DNSSEC = cloneDNSSECConfig(artifact.DNSSEC)
+	return artifact, nil
+}
+
 func (s *SigningService) unsignedRRsFromZone(zone *model.Zone) ([]dns.RR, error) {
 	zoneFile, err := parser.GenerateBINDZoneFile(zone)
 	if err != nil {
@@ -277,8 +288,6 @@ func (s *SigningService) SignAndStoreZone(ctx context.Context, zone *model.Zone)
 		return err
 	}
 
-	dnskeyAdded, rrsigAdded, nsec3Added, nsec3paramAdded := diffDNSSECTypes(artifact.UnsignedRRs, artifact.SignedRRs)
-
 	if err := s.persistDNSSECMetadata(ctx, zone.Name, artifact.DNSSEC); err != nil {
 		s.logger.Error("Failed to persist DNSSEC metadata",
 			zap.String("zone", zone.Name),
@@ -287,18 +296,31 @@ func (s *SigningService) SignAndStoreZone(ctx context.Context, zone *model.Zone)
 	}
 	zone.DNSSEC = cloneDNSSECConfig(artifact.DNSSEC)
 
-	// Store signed artifact (implementation depends on backend)
+	s.CompleteSignedZoneWrite(artifact)
+
+	return nil
+}
+
+// CompleteSignedZoneWrite stores the optional signed artifact cache and emits
+// the signing audit log after the backend write has succeeded.
+func (s *SigningService) CompleteSignedZoneWrite(artifact *SignedZoneArtifact) {
+	if artifact == nil {
+		return
+	}
+
+	dnskeyAdded, rrsigAdded, nsec3Added, nsec3paramAdded := diffDNSSECTypes(artifact.UnsignedRRs, artifact.SignedRRs)
+
 	if s.artifactDir != "" {
-		if err := s.storeArtifact(zone.Name, artifact.Version, []byte(artifact.SignedZone)); err != nil {
+		if err := s.storeArtifact(artifact.ZoneName, artifact.Version, []byte(artifact.SignedZone)); err != nil {
 			s.logger.Warn("Failed to store signed artifact (continuing without cache)",
-				zap.String("zone", zone.Name),
+				zap.String("zone", artifact.ZoneName),
 				zap.String("version", artifact.Version),
 				zap.Error(err))
 		}
 	}
 
 	s.logger.Info("Zone signed successfully",
-		zap.String("zone", zone.Name),
+		zap.String("zone", artifact.ZoneName),
 		zap.String("version", artifact.Version),
 		zap.Uint16("ksk_keytag", artifact.Metadata.KSKKeyTag),
 		zap.Uint16("zsk_keytag", artifact.Metadata.ZSKKeyTag),
@@ -306,8 +328,6 @@ func (s *SigningService) SignAndStoreZone(ctx context.Context, zone *model.Zone)
 		zap.Int("dnssec_added_rrsig", rrsigAdded),
 		zap.Int("dnssec_added_nsec3", nsec3Added),
 		zap.Int("dnssec_added_nsec3param", nsec3paramAdded))
-
-	return nil
 }
 
 func (s *SigningService) persistDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
