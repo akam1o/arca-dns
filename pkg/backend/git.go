@@ -555,8 +555,7 @@ func (g *GitBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.
 		zoneName := strings.TrimSuffix(entry.Name(), ".json")
 		zone, err := g.readZone(zoneName)
 		if err != nil {
-			// Skip corrupted files
-			continue
+			return nil, fmt.Errorf("failed to read zone %q from git backend: %w", zoneName, err)
 		}
 
 		zones = append(zones, zone)

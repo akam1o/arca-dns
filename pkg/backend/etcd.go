@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -190,10 +189,7 @@ func (e *EtcdBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model
 	for _, kv := range resp.Kvs {
 		var zone model.Zone
 		if err := json.Unmarshal(kv.Value, &zone); err != nil {
-			// Log warning but continue - don't fail the entire list operation
-			// In production, this should use proper logging (zap/slog)
-			fmt.Fprintf(os.Stderr, "Warning: skipping malformed zone at key %s: %v\n", string(kv.Key), err)
-			continue
+			return nil, fmt.Errorf("failed to unmarshal zone at key %s: %w", string(kv.Key), err)
 		}
 		zones = append(zones, &zone)
 	}
@@ -568,9 +564,7 @@ func (e *EtcdBackend) ListRevisions(ctx context.Context, zoneName string, opts L
 	for _, kv := range resp.Kvs {
 		var zone model.Zone
 		if err := json.Unmarshal(kv.Value, &zone); err != nil {
-			// Log warning but continue
-			fmt.Fprintf(os.Stderr, "Warning: skipping malformed revision at key %s: %v\n", string(kv.Key), err)
-			continue
+			return nil, fmt.Errorf("failed to unmarshal revision at key %s: %w", string(kv.Key), err)
 		}
 
 		hashHex, err := ComputeZoneHash(&zone)

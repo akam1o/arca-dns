@@ -318,6 +318,20 @@ func TestEtcdBackend_ListZones_Empty(t *testing.T) {
 	assert.Len(t, zones, 0)
 }
 
+func TestEtcdBackend_ListZones_ReturnsErrorForMalformedZone(t *testing.T) {
+	backend, cleanup := setupEtcdBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	_, err := backend.client.Put(ctx, backend.zoneKey("bad.example.com."), "{")
+	require.NoError(t, err)
+
+	zones, err := backend.ListZones(ctx, ListOptions{})
+	require.Error(t, err)
+	assert.Nil(t, zones)
+	assert.Contains(t, err.Error(), "bad.example.com.")
+}
+
 func TestEtcdBackend_GetRevision(t *testing.T) {
 	backend, cleanup := setupEtcdBackend(t)
 	defer cleanup()

@@ -354,6 +354,20 @@ func TestGitBackend_ListZones_Empty(t *testing.T) {
 	assert.Len(t, result, 0)
 }
 
+func TestGitBackend_ListZones_ReturnsErrorForMalformedZoneFile(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zonesDir := filepath.Join(backend.repoPath, "zones")
+	require.NoError(t, os.MkdirAll(zonesDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(zonesDir, "bad.example.com..json"), []byte("{"), 0644))
+
+	zones, err := backend.ListZones(context.Background(), ListOptions{})
+	require.Error(t, err)
+	assert.Nil(t, zones)
+	assert.Contains(t, err.Error(), "bad.example.com.")
+}
+
 func TestGitBackend_GetRevision(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
