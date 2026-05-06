@@ -86,8 +86,12 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		cfg = loadedCfg
 		logger.Info("Configuration loaded from file", zap.String("config_file", configFile))
 	} else {
-		cfg = config.DefaultAgentConfig()
-		logger.Info("Using default configuration")
+		loadedCfg, loadErr := config.LoadAgentConfig("")
+		if loadErr != nil {
+			return fmt.Errorf("failed to load default config: %w", loadErr)
+		}
+		cfg = loadedCfg
+		logger.Info("Using default configuration with environment overrides")
 	}
 
 	// Create controller client

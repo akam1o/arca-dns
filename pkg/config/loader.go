@@ -79,6 +79,9 @@ func LoadAgentConfig(path string) (*AgentConfig, error) {
 			return nil, fmt.Errorf("load agent config: %w", err)
 		}
 
+		// Manually apply environment variables that need explicit binding.
+		bindAgentEnvVars(v)
+
 		// Unmarshal into config struct
 		if err := v.Unmarshal(cfg); err != nil {
 			return nil, fmt.Errorf("unmarshal agent config: %w", err)

@@ -328,6 +328,48 @@ logging:
 	assert.Equal(t, "debug", cfg.Logging.Level)
 }
 
+func TestLoadAgentConfig_EnvOverrideWithYAML(t *testing.T) {
+	t.Setenv("ARCA_DNS_CONTROLLER_URL", "https://env-controller.example.com")
+	t.Setenv("ARCA_DNS_CONTROLLER_API_KEY", "env-api-key")
+	t.Setenv("ARCA_DNS_NSD_ENABLED", "false")
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "agent.yaml")
+
+	configContent := `
+controller:
+  url: "https://yaml-controller.example.com"
+  api_key: "yaml-api-key"
+nsd:
+  enabled: true
+  zone_directory: "/tmp/nsd-zones"
+unbound:
+  enabled: false
+logging:
+  level: "info"
+`
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	cfg, err := LoadAgentConfig(configPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "https://env-controller.example.com", cfg.Controller.URL)
+	assert.Equal(t, "env-api-key", cfg.Controller.APIKey)
+	assert.False(t, cfg.NSD.Enabled)
+}
+
+func TestLoadAgentConfig_EnvOverrideWithoutFile(t *testing.T) {
+	t.Setenv("ARCA_DNS_CONTROLLER_URL", "https://env-only-controller.example.com")
+	t.Setenv("ARCA_DNS_CONTROLLER_API_KEY", "env-only-api-key")
+
+	cfg, err := LoadAgentConfig("")
+	require.NoError(t, err)
+
+	assert.Equal(t, "https://env-only-controller.example.com", cfg.Controller.URL)
+	assert.Equal(t, "env-only-api-key", cfg.Controller.APIKey)
+}
+
 func TestValidateAgentConfig_Valid(t *testing.T) {
 	cfg := DefaultAgentConfig()
 	err := ValidateAgentConfig(cfg)
