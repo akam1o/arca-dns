@@ -488,6 +488,15 @@ func TestValidateAgentConfig_InvalidSyncInterval(t *testing.T) {
 	assert.Contains(t, err.Error(), "sync_interval")
 }
 
+func TestValidateAgentConfig_VerifySignaturesRequiresKey(t *testing.T) {
+	cfg := DefaultAgentConfig()
+	cfg.Sync.VerifySignatures = true
+	cfg.Sync.ControllerPublicKey = ""
+	err := ValidateAgentConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "sync.controller_public_key")
+}
+
 func TestValidateAgentConfig_InvalidLogLevel(t *testing.T) {
 	cfg := DefaultAgentConfig()
 	cfg.Logging.Level = "invalid"

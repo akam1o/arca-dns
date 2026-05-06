@@ -475,6 +475,20 @@ func TestSyncer_IsStale(t *testing.T) {
 	assert.True(t, syncer.IsStale())
 }
 
+func TestNewSyncer_AppliesSignatureVerification(t *testing.T) {
+	client := &Client{}
+	syncer := NewSyncer(client, nil, config.SyncConfig{
+		VerifyChecksums:     true,
+		VerifySignatures:    true,
+		ControllerPublicKey: "test-signature-key",
+	}, zap.NewNop())
+
+	require.NotNil(t, syncer)
+	assert.True(t, client.verifyChecksums)
+	assert.True(t, client.verifySignatures)
+	assert.Equal(t, "test-signature-key", client.signatureKey)
+}
+
 func TestSyncer_GetAllZoneStates(t *testing.T) {
 	tmpDir := t.TempDir()
 	zoneDir := filepath.Join(tmpDir, "zones")

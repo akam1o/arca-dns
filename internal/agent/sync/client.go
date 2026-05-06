@@ -1,9 +1,11 @@
 package sync
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -22,11 +24,13 @@ const listZonesPageLimit = 1000
 
 // Client is an HTTP client for communicating with the arca-dns controller.
 type Client struct {
-	httpClient      *http.Client
-	baseURL         string
-	apiKey          string
-	config          config.ControllerClientConfig
-	verifyChecksums bool
+	httpClient       *http.Client
+	baseURL          string
+	apiKey           string
+	config           config.ControllerClientConfig
+	verifyChecksums  bool
+	verifySignatures bool
+	signatureKey     string
 }
 
 // ZoneInfo contains information about a zone from the controller.
@@ -134,6 +138,13 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 // match controller checksum headers.
 func (c *Client) SetVerifyChecksums(enabled bool) {
 	c.verifyChecksums = enabled
+}
+
+// SetSignatureVerification controls whether signed zone downloads must include
+// a valid X-Zone-Signature header. The signature is base64(HMAC-SHA256(body, key)).
+func (c *Client) SetSignatureVerification(enabled bool, key string) {
+	c.verifySignatures = enabled
+	c.signatureKey = key
 }
 
 // ListZones retrieves the list of zones from the controller.
@@ -272,6 +283,7 @@ func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, s
 	zoneSerial := resp.Header.Get("X-Zone-Serial")
 	zoneHash := resp.Header.Get("X-Zone-Hash")
 	zoneHash8 := resp.Header.Get("X-Zone-Hash8")
+	zoneSignature := resp.Header.Get("X-Zone-Signature")
 
 	// Verify SHA256 checksum when enabled. Missing checksum headers are an error
 	// because the agent otherwise cannot detect truncated or altered artifacts.
@@ -314,10 +326,50 @@ func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, s
 		}
 	}
 
+	if c.verifySignatures {
+		if err := verifyArtifactSignature(body, zoneSignature, c.signatureKey); err != nil {
+			return "", "", false, err
+		}
+	}
+
 	// Log integrity metadata for debugging
 	_ = zoneSerial // Available for logging if needed
 
 	return string(body), newETag, false, nil
+}
+
+func artifactSignature(body []byte, key string) string {
+	mac := hmac.New(sha256.New, []byte(key))
+	_, _ = mac.Write(body)
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func verifyArtifactSignature(body []byte, signatureHeader string, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("signature verification enabled but controller public key is empty")
+	}
+
+	signatureHeader = strings.TrimSpace(signatureHeader)
+	if signatureHeader == "" {
+		return fmt.Errorf("missing signature header in response")
+	}
+
+	signatureHeader = strings.TrimPrefix(signatureHeader, "sha256=")
+	signatureHeader = strings.TrimPrefix(signatureHeader, "hmac-sha256=")
+
+	actual, err := base64.StdEncoding.DecodeString(signatureHeader)
+	if err != nil {
+		return fmt.Errorf("invalid signature header: %w", err)
+	}
+
+	expected := hmac.New(sha256.New, []byte(key))
+	_, _ = expected.Write(body)
+	if !hmac.Equal(actual, expected.Sum(nil)) {
+		return fmt.Errorf("signature verification failed")
+	}
+
+	return nil
 }
 
 // doWithRetry executes an HTTP request with retry logic.
