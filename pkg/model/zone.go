@@ -173,7 +173,6 @@ var SupportedRecordTypes = []string{
 	RecordTypeNS,
 	RecordTypeTXT,
 	RecordTypePTR,
-	RecordTypeSOA,
 	RecordTypeSRV,
 	RecordTypeCAA,
 }

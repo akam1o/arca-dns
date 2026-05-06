@@ -231,6 +231,16 @@ func TestValidateRecord(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "SOA is not allowed as a regular record",
+			record: &Record{
+				Name:  "@",
+				Type:  RecordTypeSOA,
+				TTL:   3600,
+				Value: "ns1.example.com. admin.example.com. 2024010101 3600 1800 604800 86400",
+			},
+			wantErr: true,
+		},
+		{
 			name: "invalid type",
 			record: &Record{
 				Name:  "www",
