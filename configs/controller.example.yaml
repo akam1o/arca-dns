@@ -24,7 +24,7 @@ api:
 backend:
   type: "sqlite" # sqlite|postgres|mysql|git|etcd|memory
   sqlite:
-    dsn: "file:arca-dns.db" # file path or ":memory:" for testing
+    dsn: "file:/var/lib/arca-dns/arca-dns.db" # persistent path or ":memory:" for testing
   postgres:
     dsn: "postgres://user:pass@localhost:5432/arca_dns?sslmode=disable"
     max_open_conns: 25
