@@ -18,6 +18,7 @@ type Receiver struct {
 	socketPath string
 	logger     *zap.Logger
 	listener   net.Listener
+	conns      map[net.Conn]struct{}
 	bufferSize int
 	mu         sync.Mutex
 	closed     bool
@@ -61,10 +62,25 @@ func (r *Receiver) Run(ctx context.Context, frameChan chan<- Frame) error {
 	if err != nil {
 		return fmt.Errorf("failed to create unix socket listener: %w", err)
 	}
+
+	r.mu.Lock()
 	r.listener = listener
+	r.conns = make(map[net.Conn]struct{})
+	r.closed = false
+	r.mu.Unlock()
 	defer r.cleanup()
 
 	r.logger.Info("DNSTap receiver started", zap.String("socket", r.socketPath))
+
+	stopCleanupWatcher := make(chan struct{})
+	defer close(stopCleanupWatcher)
+	go func() {
+		select {
+		case <-ctx.Done():
+			r.cleanup()
+		case <-stopCleanupWatcher:
+		}
+	}()
 
 	// Accept connections in a goroutine
 	connChan := make(chan net.Conn)
@@ -94,6 +110,7 @@ func (r *Receiver) Run(ctx context.Context, frameChan chan<- Frame) error {
 	for {
 		select {
 		case <-ctx.Done():
+			r.cleanup()
 			wg.Wait()
 			return ctx.Err()
 
@@ -102,6 +119,9 @@ func (r *Receiver) Run(ctx context.Context, frameChan chan<- Frame) error {
 			if r.closed {
 				r.mu.Unlock()
 				wg.Wait()
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				return nil
 			}
 			r.mu.Unlock()
@@ -110,9 +130,11 @@ func (r *Receiver) Run(ctx context.Context, frameChan chan<- Frame) error {
 			return err
 
 		case conn := <-connChan:
+			r.addConn(conn)
 			wg.Add(1)
 			go func(c net.Conn) {
 				defer wg.Done()
+				defer r.removeConn(c)
 				defer c.Close()
 				r.handleConnection(ctx, c, frameChan)
 			}(conn)
@@ -181,6 +203,27 @@ func (r *Receiver) handleConnection(ctx context.Context, conn net.Conn, frameCha
 	}
 }
 
+func (r *Receiver) addConn(conn net.Conn) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		_ = conn.Close()
+		return
+	}
+	if r.conns == nil {
+		r.conns = make(map[net.Conn]struct{})
+	}
+	r.conns[conn] = struct{}{}
+}
+
+func (r *Receiver) removeConn(conn net.Conn) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.conns, conn)
+}
+
 // cleanup closes the listener and removes the socket file.
 func (r *Receiver) cleanup() {
 	r.mu.Lock()
@@ -193,6 +236,10 @@ func (r *Receiver) cleanup() {
 
 	if r.listener != nil {
 		r.listener.Close()
+	}
+	for conn := range r.conns {
+		_ = conn.Close()
+		delete(r.conns, conn)
 	}
 
 	// Explicitly remove socket file on shutdown
