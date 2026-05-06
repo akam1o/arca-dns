@@ -519,6 +519,14 @@ func TestRecordIDsDerivedWhenBackendIDMissing(t *testing.T) {
 	assert.Equal(t, 0, findRecordByID(records, withIDs[0].ID))
 }
 
+func TestFindRecordByIDAcceptsStoredAndDerivedID(t *testing.T) {
+	record := model.Record{ID: "42", Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"}
+	records := []model.Record{record}
+
+	assert.Equal(t, 0, findRecordByID(records, "42"))
+	assert.Equal(t, 0, findRecordByID(records, derivedRecordID(record)))
+}
+
 func TestCreateRecord(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
@@ -591,6 +599,49 @@ func TestUpdateRecord(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
 	require.Len(t, updated.Records, 1)
 	assert.Equal(t, recordID, updated.Records[0].ID)
+	assert.Equal(t, "192.0.2.9", updated.Records[0].Value)
+}
+
+func TestUpdateRecordAcceptsDerivedIDForStoredRecordID(t *testing.T) {
+	store, err := backend.NewSQLiteBackend(":memory:")
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.InitSchema())
+	_, server := setupTestWithStore(t, store)
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, current.Records, 1)
+	storedID := current.Records[0].ID
+	derivedID := derivedRecordID(current.Records[0])
+	require.NotEmpty(t, storedID)
+	require.NotEqual(t, storedID, derivedID)
+
+	record := model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.9"}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com./records/"+derivedID, bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.Len(t, updated.Records, 1)
+	assert.Equal(t, storedID, updated.Records[0].ID)
 	assert.Equal(t, "192.0.2.9", updated.Records[0].Value)
 }
 

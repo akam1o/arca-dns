@@ -175,8 +175,6 @@ func (h *Handler) UpdateRecord(c *gin.Context) {
 		))
 		return
 	}
-	record.ID = id
-
 	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
 	if !ok {
 		return
@@ -194,6 +192,7 @@ func (h *Handler) UpdateRecord(c *gin.Context) {
 	if !h.validateRecordForZone(c, zone.Name, &record) {
 		return
 	}
+	record.ID = preserveRecordID(zone.Records[idx], id)
 	if recordExists(zone.Records, record, idx) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeAlreadyExists,
@@ -255,27 +254,33 @@ func (h *Handler) applyBulkRecordOperations(c *gin.Context, zoneName string, cur
 	records := append([]model.Record(nil), current...)
 
 	deleteIDs := make(map[string]struct{}, len(req.Delete))
+	deleteIndexes := make(map[int]struct{}, len(req.Delete))
 	for i, op := range req.Delete {
 		id := strings.TrimSpace(op.ID)
 		if id == "" {
 			h.recordBatchError(c, http.StatusBadRequest, "Delete operation is missing record id", i, "delete", map[string]interface{}{"index": i})
 			return nil, false
 		}
-		if _, exists := deleteIDs[id]; exists {
-			h.recordBatchError(c, http.StatusBadRequest, "Duplicate record id in delete operations", i, "delete", map[string]interface{}{"record_id": id})
-			return nil, false
-		}
-		if findRecordByID(records, id) == -1 {
+		idx := findRecordByID(records, id)
+		if idx == -1 {
 			h.recordBatchError(c, http.StatusNotFound, "Record not found", i, "delete", map[string]interface{}{"record_id": id})
 			return nil, false
 		}
+		canonicalID := recordID(records[idx])
+		if _, exists := deleteIDs[canonicalID]; exists {
+			h.recordBatchError(c, http.StatusBadRequest, "Duplicate record id in delete operations", i, "delete", map[string]interface{}{"record_id": id})
+			return nil, false
+		}
+		deleteIDs[canonicalID] = struct{}{}
+		deleteIDs[derivedRecordID(records[idx])] = struct{}{}
 		deleteIDs[id] = struct{}{}
+		deleteIndexes[idx] = struct{}{}
 	}
 
-	if len(deleteIDs) > 0 {
+	if len(deleteIndexes) > 0 {
 		filtered := records[:0]
-		for _, record := range records {
-			if _, deleted := deleteIDs[recordID(record)]; deleted {
+		for i, record := range records {
+			if _, deleted := deleteIndexes[i]; deleted {
 				continue
 			}
 			filtered = append(filtered, record)
@@ -294,18 +299,19 @@ func (h *Handler) applyBulkRecordOperations(c *gin.Context, zoneName string, cur
 			h.recordBatchError(c, http.StatusBadRequest, "Record cannot be updated and deleted in the same batch", i, "update", map[string]interface{}{"record_id": id})
 			return nil, false
 		}
-		if _, exists := updateIDs[id]; exists {
-			h.recordBatchError(c, http.StatusBadRequest, "Duplicate record id in update operations", i, "update", map[string]interface{}{"record_id": id})
-			return nil, false
-		}
 		idx := findRecordByID(records, id)
 		if idx == -1 {
 			h.recordBatchError(c, http.StatusNotFound, "Record not found", i, "update", map[string]interface{}{"record_id": id})
 			return nil, false
 		}
+		canonicalID := recordID(records[idx])
+		if _, exists := updateIDs[canonicalID]; exists {
+			h.recordBatchError(c, http.StatusBadRequest, "Duplicate record id in update operations", i, "update", map[string]interface{}{"record_id": id})
+			return nil, false
+		}
 
 		record := model.Record{
-			ID:       id,
+			ID:       preserveRecordID(records[idx], id),
 			Name:     op.Name,
 			Type:     op.Type,
 			TTL:      op.TTL,
@@ -316,7 +322,7 @@ func (h *Handler) applyBulkRecordOperations(c *gin.Context, zoneName string, cur
 			return nil, false
 		}
 		records[idx] = record
-		updateIDs[id] = struct{}{}
+		updateIDs[canonicalID] = struct{}{}
 	}
 
 	for i := range req.Create {
@@ -493,11 +499,28 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 
 func findRecordByID(records []model.Record, id string) int {
 	for i, record := range records {
-		if recordID(record) == id {
+		if recordIDMatches(record, id) {
 			return i
 		}
 	}
 	return -1
+}
+
+func recordIDMatches(record model.Record, id string) bool {
+	if id == "" {
+		return false
+	}
+	if recordID(record) == id {
+		return true
+	}
+	return derivedRecordID(record) == id
+}
+
+func preserveRecordID(record model.Record, requestedID string) string {
+	if record.ID != "" {
+		return record.ID
+	}
+	return requestedID
 }
 
 func recordExists(records []model.Record, record model.Record, skip int) bool {
