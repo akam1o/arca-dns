@@ -56,8 +56,8 @@ func NewFileManager(zoneDir string, backupVersions int, logger *zap.Logger) *Fil
 // 2. Write to temporary file
 // 3. Fsync the temporary file
 // 4. Backup old version (if exists)
-// 5. Rename temporary file to target (atomic operation)
-// 6. Record the file as agent-managed
+// 5. Record the file as agent-managed
+// 6. Rename temporary file to target (atomic operation)
 // 7. Clean up old backups
 func (fm *FileManager) WriteZoneFile(zoneName string, content string) error {
 	return fm.WriteZoneFileValidated(zoneName, content, nil)
@@ -100,13 +100,21 @@ func (fm *FileManager) WriteZoneFileValidated(zoneName string, content string, v
 		}
 	}
 
-	// Atomic rename (this is the commit point)
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		return fmt.Errorf("failed to rename temporary file: %w", err)
+	rollbackManagedZone, err := fm.recordManagedZoneWithRollback(zoneName)
+	if err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to record managed zone: %w", err)
 	}
 
-	if err := fm.recordManagedZone(zoneName); err != nil {
-		return fmt.Errorf("failed to record managed zone: %w", err)
+	// Atomic rename (this is the commit point)
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		_ = os.Remove(tmpPath)
+		if rollbackErr := rollbackManagedZone(); rollbackErr != nil {
+			fm.logger.Warn("Failed to roll back managed zone index",
+				zap.String("zone", zoneName),
+				zap.Error(rollbackErr))
+		}
+		return fmt.Errorf("failed to rename temporary file: %w", err)
 	}
 
 	// Clean up old backups
@@ -342,12 +350,35 @@ func (fm *FileManager) writeManagedZones(zones map[string]string) error {
 }
 
 func (fm *FileManager) recordManagedZone(zoneName string) error {
+	_, err := fm.recordManagedZoneWithRollback(zoneName)
+	return err
+}
+
+func (fm *FileManager) recordManagedZoneWithRollback(zoneName string) (func() error, error) {
 	zones, err := fm.readManagedZones()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	zones[SafeZoneFilename(zoneName)] = model.NormalizeZoneName(zoneName)
-	return fm.writeManagedZones(zones)
+
+	safeName := SafeZoneFilename(zoneName)
+	previousZoneName, hadPrevious := zones[safeName]
+	zones[safeName] = model.NormalizeZoneName(zoneName)
+	if err := fm.writeManagedZones(zones); err != nil {
+		return nil, err
+	}
+
+	return func() error {
+		zones, err := fm.readManagedZones()
+		if err != nil {
+			return err
+		}
+		if hadPrevious {
+			zones[safeName] = previousZoneName
+		} else {
+			delete(zones, safeName)
+		}
+		return fm.writeManagedZones(zones)
+	}, nil
 }
 
 func (fm *FileManager) removeManagedZone(zoneName string) error {

@@ -57,6 +57,37 @@ func TestFileManager_WriteZoneFile(t *testing.T) {
 	}
 }
 
+func TestFileManager_WriteZoneFileManagedIndexFailureDoesNotPublish(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+	if err := os.Mkdir(fm.managedZonesIndexPath(), 0755); err != nil {
+		t.Fatalf("Failed to block managed index path: %v", err)
+	}
+
+	zoneName := "example.com."
+	content := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	if err := fm.WriteZoneFile(zoneName, content); err == nil {
+		t.Fatal("WriteZoneFile should fail when the managed zone index cannot be written")
+	}
+
+	if fm.ZoneExists(zoneName) {
+		t.Fatal("zone file should not be published when managed index recording fails")
+	}
+	if _, err := os.Stat(fm.GetZonePath(zoneName) + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temporary zone file should be removed, stat err=%v", err)
+	}
+}
+
 func TestFileManager_Backup(t *testing.T) {
 	// Create temporary directory
 	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
