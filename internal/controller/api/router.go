@@ -39,9 +39,6 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 	auditLogger := middleware.NewAuditLogger(logger)
 	router.Use(auditLogger.Middleware())
 
-	requestValidator := middleware.NewRequestValidator()
-	router.Use(requestValidator.Middleware())
-
 	// Rate limiting
 	if cfg != nil && cfg.RateLimit.Enabled {
 		rateLimiterConfig := middleware.DefaultRateLimiterConfig()
@@ -69,16 +66,18 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 		v1.GET("/metrics", handler.Metrics)
 	}
 
-	protected := v1
+	requestValidator := middleware.NewRequestValidator()
+
+	protected := v1.Group("")
 	if cfg != nil && cfg.Auth.Enabled {
 		authConfig := middleware.AuthConfig{
 			APIKeys:    cfg.Auth.APIKeys,
 			HeaderName: "X-API-Key",
 		}
 		authenticator := middleware.NewAuthenticator(authConfig)
-		protected = v1.Group("")
 		protected.Use(authenticator.Middleware())
 	}
+	protected.Use(requestValidator.Middleware())
 	{
 		// Zone management
 		protected.POST("/zones", handler.CreateZone)
