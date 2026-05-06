@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -28,9 +29,22 @@ func NewAuthenticator(config AuthConfig) *Authenticator {
 	if config.HeaderName == "" {
 		config.HeaderName = "X-API-Key"
 	}
+	config.APIKeys = normalizeConfiguredAPIKeys(config.APIKeys)
 	return &Authenticator{
 		config: config,
 	}
+}
+
+func normalizeConfiguredAPIKeys(apiKeys map[string]string) map[string]string {
+	if len(apiKeys) == 0 {
+		return apiKeys
+	}
+
+	normalized := make(map[string]string, len(apiKeys))
+	for name, hash := range apiKeys {
+		normalized[name] = strings.ToLower(strings.TrimSpace(hash))
+	}
+	return normalized
 }
 
 // Middleware returns a Gin middleware that enforces API key authentication.

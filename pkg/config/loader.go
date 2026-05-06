@@ -226,29 +226,39 @@ func validateControllerAuthConfig(auth AuthConfig) error {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("invalid api.auth.api_keys: key name must not be empty")
 		}
-		if !isSHA256APIKeyHash(hash) {
+		normalizedHash, ok := normalizeSHA256APIKeyHash(hash)
+		if !ok {
 			return fmt.Errorf("invalid api.auth.api_keys.%s: expected sha256:<64 hex characters>; generate with: echo -n '<api-key>' | sha256sum", name)
 		}
+		auth.APIKeys[name] = normalizedHash
 	}
 
 	return nil
 }
 
 func isSHA256APIKeyHash(hash string) bool {
+	_, ok := normalizeSHA256APIKeyHash(hash)
+	return ok
+}
+
+func normalizeSHA256APIKeyHash(hash string) (string, bool) {
 	const prefix = "sha256:"
 
 	value := strings.TrimSpace(hash)
 	if !strings.HasPrefix(value, prefix) {
-		return false
+		return "", false
 	}
 
 	hexPart := strings.TrimPrefix(value, prefix)
 	if len(hexPart) != 64 {
-		return false
+		return "", false
 	}
 
 	_, err := hex.DecodeString(hexPart)
-	return err == nil
+	if err != nil {
+		return "", false
+	}
+	return prefix + strings.ToLower(hexPart), true
 }
 
 func validateArtifactSignatureKey(field string, key string, required bool) error {

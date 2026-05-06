@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -281,6 +282,17 @@ api:
 	assert.Equal(t, validTestAPIKeyHash, cfg.API.Auth.APIKeys["readonly"])
 }
 
+func TestLoadControllerConfig_NormalizesAPIKeyHashes(t *testing.T) {
+	upperHash := "sha256:" + strings.Repeat("A", 64)
+	expectedHash := "sha256:" + strings.Repeat("a", 64)
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", "  "+upperHash+"  ")
+
+	cfg, err := LoadControllerConfig("")
+	require.NoError(t, err)
+
+	assert.Equal(t, expectedHash, cfg.API.Auth.APIKeys["admin"])
+}
+
 func TestLoadControllerConfig_InvalidFile(t *testing.T) {
 	cfg, err := LoadControllerConfig("/nonexistent/config.yaml")
 	assert.Error(t, err)
@@ -332,6 +344,19 @@ func TestValidateControllerConfig_AuthEnabledRejectsInvalidAPIKeyHash(t *testing
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "api.auth.api_keys.admin")
 	assert.Contains(t, err.Error(), "sha256:<64 hex characters>")
+}
+
+func TestValidateControllerConfig_AuthEnabledNormalizesAPIKeyHashes(t *testing.T) {
+	cfg := DefaultControllerConfig()
+	cfg.API.Auth.Enabled = true
+	cfg.API.Auth.APIKeys = map[string]string{
+		"admin": "  sha256:" + strings.Repeat("B", 64) + "  ",
+	}
+
+	err := ValidateControllerConfig(cfg)
+	require.NoError(t, err)
+
+	assert.Equal(t, "sha256:"+strings.Repeat("b", 64), cfg.API.Auth.APIKeys["admin"])
 }
 
 func TestValidateControllerConfig_AuthDisabledAllowsEmptyAPIKeys(t *testing.T) {
