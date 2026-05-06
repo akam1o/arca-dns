@@ -194,23 +194,20 @@ arca-dns-controller dnssec export-ds --zone example.com. --format json
 
 ### Key Rotation
 
-**Automated rotation** (recommended):
-1. Keys auto-rotate based on config (e.g., every 90 days)
-2. Scheduler maintains old+new keys during rollover
-3. Update DS at parent after new KSK published
+Automated key rotation is not implemented in the current release. The DNSSEC scheduler re-signs zones before signatures expire, but it does not create new KSK/ZSK material.
 
 **Manual rotation**:
 ```bash
-# Generate new keys
+# Generate and activate new KSK/ZSK keys
 arca-dns-controller dnssec generate-keys --zone example.com. --rotate
 
 # Export new DS records
 arca-dns-controller dnssec export-ds --zone example.com.
 
-# Update DS at parent zone
-# Wait for TTL + propagation (e.g., 24 hours)
+# Submit the new DS at the parent zone and keep the old DS until propagation.
+# Then trigger re-signing as described in docs/dnssec.md.
 
-# Remove old keys
+# After old signatures expire, remove inactive key files
 arca-dns-controller dnssec remove-old-keys --zone example.com.
 ```
 

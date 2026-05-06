@@ -194,23 +194,20 @@ arca-dns-controller dnssec export-ds --zone example.com. --format json
 
 ### 鍵ローテーション
 
-**自動ローテーション**（推奨）:
-1. 設定に応じて自動的にローテート（例: 90 日）
-2. スケジューラがロールオーバー期間は旧+新鍵を維持
-3. 新しい KSK を公開後、親ゾーンの DS を更新
+現在のリリースでは自動鍵ローテーションは未実装です。DNSSEC scheduler は署名期限前の再署名を行いますが、新しい KSK/ZSK は生成しません。
 
 **手動ローテーション**:
 ```bash
-# Generate new keys
+# 新しい KSK/ZSK を生成して active にする
 arca-dns-controller dnssec generate-keys --zone example.com. --rotate
 
-# Export new DS records
+# 新しい DS を出力する
 arca-dns-controller dnssec export-ds --zone example.com.
 
-# Update DS at parent zone
-# Wait for TTL + propagation (e.g., 24 hours)
+# 親ゾーンに新 DS を提出し、伝播までは旧 DS も維持する。
+# その後 docs/dnssec.ja.md の手順に従って再署名を発生させる。
 
-# Remove old keys
+# 旧署名の期限切れ後、inactive な鍵ファイルを削除する
 arca-dns-controller dnssec remove-old-keys --zone example.com.
 ```
 
