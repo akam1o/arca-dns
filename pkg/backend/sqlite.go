@@ -555,11 +555,11 @@ func (s *SQLiteBackend) scanZoneRow(row scannable) (*model.Zone, error) {
 
 func (s *SQLiteBackend) loadRecordsDB(ctx context.Context, q querier, zoneName string) ([]model.Record, error) {
 	query := `
-		SELECT r.name, r.type, r.ttl, r.value, r.priority
+		SELECT r.id, r.name, r.type, r.ttl, r.value, r.priority
 		FROM records r
 		JOIN zones z ON r.zone_id = z.id
 		WHERE z.name = ?
-		ORDER BY r.name, r.type
+		ORDER BY r.name, r.type, r.id
 	`
 	rows, err := q.QueryContext(ctx, query, zoneName)
 	if err != nil {
@@ -570,10 +570,12 @@ func (s *SQLiteBackend) loadRecordsDB(ctx context.Context, q querier, zoneName s
 	records := make([]model.Record, 0)
 	for rows.Next() {
 		var rec model.Record
+		var id int64
 		var priority sql.NullInt64
-		if err := rows.Scan(&rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
+		if err := rows.Scan(&id, &rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
 			return nil, fmt.Errorf("scan record: %w", err)
 		}
+		rec.ID = formatSQLRecordID(id)
 		if priority.Valid {
 			p := uint16(priority.Int64)
 			rec.Priority = &p
@@ -638,12 +640,19 @@ func (s *SQLiteBackend) insertRecordsTx(ctx context.Context, tx *sql.Tx, zoneID 
 		return nil
 	}
 
-	query := `INSERT INTO records (zone_id, name, type, ttl, value, value_hash, priority) VALUES (?, ?, ?, ?, ?, ?, ?)`
-	stmt, err := tx.PrepareContext(ctx, query)
+	autoIDQuery := `INSERT INTO records (zone_id, name, type, ttl, value, value_hash, priority) VALUES (?, ?, ?, ?, ?, ?, ?)`
+	autoIDStmt, err := tx.PrepareContext(ctx, autoIDQuery)
 	if err != nil {
 		return fmt.Errorf("prepare record insert: %w", err)
 	}
-	defer stmt.Close()
+	defer autoIDStmt.Close()
+
+	explicitIDQuery := `INSERT INTO records (id, zone_id, name, type, ttl, value, value_hash, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	explicitIDStmt, err := tx.PrepareContext(ctx, explicitIDQuery)
+	if err != nil {
+		return fmt.Errorf("prepare record insert with id: %w", err)
+	}
+	defer explicitIDStmt.Close()
 
 	for _, rec := range records {
 		hash := sha256.Sum256([]byte(rec.Value))
@@ -652,7 +661,15 @@ func (s *SQLiteBackend) insertRecordsTx(ctx context.Context, tx *sql.Tx, zoneID 
 		if rec.Priority != nil && *rec.Priority > 0 {
 			priority = *rec.Priority
 		}
-		if _, err := stmt.ExecContext(ctx, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
+
+		if recordID, ok := parseSQLRecordID(rec.ID); ok {
+			if _, err := explicitIDStmt.ExecContext(ctx, recordID, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
+				return fmt.Errorf("insert record: %w", err)
+			}
+			continue
+		}
+
+		if _, err := autoIDStmt.ExecContext(ctx, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
 			return fmt.Errorf("insert record: %w", err)
 		}
 	}

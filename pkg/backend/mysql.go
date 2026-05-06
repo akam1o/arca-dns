@@ -149,11 +149,11 @@ func (m *MySQLBackend) GetZone(ctx context.Context, name string) (*model.Zone, e
 // loadRecords loads all records for a zone.
 func (m *MySQLBackend) loadRecords(ctx context.Context, zoneName string) ([]model.Record, error) {
 	query := `
-		SELECT r.name, r.type, r.ttl, r.value, r.priority
+		SELECT r.id, r.name, r.type, r.ttl, r.value, r.priority
 		FROM records r
 		JOIN zones z ON r.zone_id = z.id
 		WHERE z.name = ?
-		ORDER BY r.name, r.type
+		ORDER BY r.name, r.type, r.id
 	`
 
 	rows, err := m.db.QueryContext(ctx, query, zoneName)
@@ -165,12 +165,14 @@ func (m *MySQLBackend) loadRecords(ctx context.Context, zoneName string) ([]mode
 	records := make([]model.Record, 0)
 	for rows.Next() {
 		var rec model.Record
+		var id int64
 		var priority sql.NullInt64
 
-		if err := rows.Scan(&rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
+		if err := rows.Scan(&id, &rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
 			return nil, fmt.Errorf("failed to scan record: %w", err)
 		}
 
+		rec.ID = formatSQLRecordID(id)
 		if priority.Valid {
 			p := uint16(priority.Int64)
 			rec.Priority = &p
@@ -741,11 +743,11 @@ func (t *MySQLTx) GetZone(ctx context.Context, name string) (*model.Zone, error)
 // loadRecords loads all records for a zone within the transaction.
 func (t *MySQLTx) loadRecords(ctx context.Context, zoneName string) ([]model.Record, error) {
 	query := `
-		SELECT r.name, r.type, r.ttl, r.value, r.priority
+		SELECT r.id, r.name, r.type, r.ttl, r.value, r.priority
 		FROM records r
 		JOIN zones z ON r.zone_id = z.id
 		WHERE z.name = ?
-		ORDER BY r.name, r.type
+		ORDER BY r.name, r.type, r.id
 	`
 
 	rows, err := t.tx.QueryContext(ctx, query, zoneName)
@@ -757,12 +759,14 @@ func (t *MySQLTx) loadRecords(ctx context.Context, zoneName string) ([]model.Rec
 	records := make([]model.Record, 0)
 	for rows.Next() {
 		var rec model.Record
+		var id int64
 		var priority sql.NullInt64
 
-		if err := rows.Scan(&rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
+		if err := rows.Scan(&id, &rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
 			return nil, fmt.Errorf("failed to scan record: %w", err)
 		}
 
+		rec.ID = formatSQLRecordID(id)
 		if priority.Valid {
 			p := uint16(priority.Int64)
 			rec.Priority = &p
@@ -1173,16 +1177,27 @@ func (m *MySQLBackend) insertRecords(ctx context.Context, tx *sql.Tx, zoneID int
 		return nil
 	}
 
-	recordQuery := `
+	autoIDQuery := `
 		INSERT INTO records (zone_id, name, type, ttl, value, value_hash, priority)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
 
-	stmt, err := tx.PrepareContext(ctx, recordQuery)
+	autoIDStmt, err := tx.PrepareContext(ctx, autoIDQuery)
 	if err != nil {
 		return fmt.Errorf("failed to prepare record statement: %w", err)
 	}
-	defer stmt.Close()
+	defer autoIDStmt.Close()
+
+	explicitIDQuery := `
+		INSERT INTO records (id, zone_id, name, type, ttl, value, value_hash, priority)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	explicitIDStmt, err := tx.PrepareContext(ctx, explicitIDQuery)
+	if err != nil {
+		return fmt.Errorf("failed to prepare record statement with id: %w", err)
+	}
+	defer explicitIDStmt.Close()
 
 	for _, rec := range records {
 		valueHash := computeValueHash(rec.Value)
@@ -1191,8 +1206,14 @@ func (m *MySQLBackend) insertRecords(ctx context.Context, tx *sql.Tx, zoneID int
 			priority = *rec.Priority
 		}
 
-		_, err := stmt.ExecContext(ctx, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority)
-		if err != nil {
+		if recordID, ok := parseSQLRecordID(rec.ID); ok {
+			if _, err := explicitIDStmt.ExecContext(ctx, recordID, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
+				return fmt.Errorf("failed to insert record: %w", err)
+			}
+			continue
+		}
+
+		if _, err := autoIDStmt.ExecContext(ctx, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
 			return fmt.Errorf("failed to insert record: %w", err)
 		}
 	}
