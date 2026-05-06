@@ -151,10 +151,11 @@ func (h *Handler) CreateZone(c *gin.Context) {
 	}
 	zone.Version = version
 
-	signedArtifact, ok := h.prepareSignedZoneCreate(c, &zone, "creation")
+	signedWrite, ok := h.prepareSignedZoneCreate(c, &zone, "creation")
 	if !ok {
 		return
 	}
+	defer signedWrite.Abort()
 
 	// Create zone in backend
 	if err := h.store.CreateZone(c.Request.Context(), &zone); err != nil {
@@ -187,7 +188,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		return
 	}
 
-	h.completeSignedZoneWrite(signedArtifact)
+	h.completeSignedZoneWrite(signedWrite)
 
 	// Set ETag header
 	c.Header("ETag", formatETag(created.Version))
@@ -565,10 +566,11 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	}
 	zone.Version = newVersion
 
-	signedArtifact, ok := h.prepareSignedZoneUpdate(c, &zone, current.SOA.Serial, "update")
+	signedWrite, ok := h.prepareSignedZoneUpdate(c, &zone, current.SOA.Serial, "update")
 	if !ok {
 		return
 	}
+	defer signedWrite.Abort()
 
 	// Update zone in backend
 	if err := h.store.UpdateZone(c.Request.Context(), &zone, expectedVersion); err != nil {
@@ -609,7 +611,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
-	h.completeSignedZoneWrite(signedArtifact)
+	h.completeSignedZoneWrite(signedWrite)
 
 	// Set ETag header
 	c.Header("ETag", formatETag(updated.Version))
@@ -774,10 +776,11 @@ func (h *Handler) signedZoneFile(ctx context.Context, name string, zone *model.Z
 	return zoneFile, zone.DNSSEC, nil
 }
 
-func (h *Handler) prepareSignedZoneCreate(c *gin.Context, zone *model.Zone, operation string) (*service.SignedZoneArtifact, bool) {
+func (h *Handler) prepareSignedZoneCreate(c *gin.Context, zone *model.Zone, operation string) (*service.SignedZoneWrite, bool) {
 	if h.signingService == nil {
 		return nil, true
 	}
+	zone.Name = model.NormalizeZoneName(zone.Name)
 	if !h.ensureZoneAbsentBeforeSigning(c, zone.Name) {
 		return nil, false
 	}
@@ -809,20 +812,21 @@ func (h *Handler) ensureZoneAbsentBeforeSigning(c *gin.Context, name string) boo
 	return true
 }
 
-func (h *Handler) prepareSignedZoneUpdate(c *gin.Context, zone *model.Zone, currentSerial uint32, operation string) (*service.SignedZoneArtifact, bool) {
+func (h *Handler) prepareSignedZoneUpdate(c *gin.Context, zone *model.Zone, currentSerial uint32, operation string) (*service.SignedZoneWrite, bool) {
 	if h.signingService == nil {
 		return nil, true
 	}
+	zone.Name = model.NormalizeZoneName(zone.Name)
 	zone.SOA.Serial = backend.NextSOASerial(currentSerial)
 	return h.prepareSignedZoneWrite(c, zone, operation)
 }
 
-func (h *Handler) prepareSignedZoneWrite(c *gin.Context, zone *model.Zone, operation string) (*service.SignedZoneArtifact, bool) {
+func (h *Handler) prepareSignedZoneWrite(c *gin.Context, zone *model.Zone, operation string) (*service.SignedZoneWrite, bool) {
 	if h.signingService == nil {
 		return nil, true
 	}
 
-	artifact, err := h.signingService.PrepareSignedZoneWrite(c.Request.Context(), zone)
+	signedWrite, err := h.signingService.PrepareSignedZoneWrite(c.Request.Context(), zone)
 	if err != nil {
 		h.logger.Error("Failed to sign zone before "+operation,
 			zap.String("zone", zone.Name),
@@ -835,14 +839,14 @@ func (h *Handler) prepareSignedZoneWrite(c *gin.Context, zone *model.Zone, opera
 		return nil, false
 	}
 
-	return artifact, true
+	return signedWrite, true
 }
 
-func (h *Handler) completeSignedZoneWrite(artifact *service.SignedZoneArtifact) {
-	if h.signingService == nil || artifact == nil {
+func (h *Handler) completeSignedZoneWrite(signedWrite *service.SignedZoneWrite) {
+	if h.signingService == nil || signedWrite == nil {
 		return
 	}
-	h.signingService.CompleteSignedZoneWrite(artifact)
+	signedWrite.Complete()
 }
 
 // GetDSRecords handles GET /api/v1/zones/:name/ds

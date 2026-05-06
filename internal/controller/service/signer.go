@@ -41,6 +41,41 @@ type SignedZoneArtifact struct {
 	DNSSEC      *model.DNSSECConfig
 }
 
+// SignedZoneWrite is a prepared DNSSEC write with the zone signing lock held.
+// Call Complete after the backend write succeeds, or Abort on every error path.
+type SignedZoneWrite struct {
+	service  *SigningService
+	artifact *SignedZoneArtifact
+	unlock   func()
+	once     sync.Once
+}
+
+// Complete stores the signed artifact cache, logs the signing result, and
+// releases the zone signing lock.
+func (w *SignedZoneWrite) Complete() {
+	if w == nil {
+		return
+	}
+	w.once.Do(func() {
+		if w.unlock != nil {
+			defer w.unlock()
+		}
+		w.service.completeSignedZoneWrite(w.artifact)
+	})
+}
+
+// Abort releases the zone signing lock without storing the prepared artifact.
+func (w *SignedZoneWrite) Abort() {
+	if w == nil {
+		return
+	}
+	w.once.Do(func() {
+		if w.unlock != nil {
+			w.unlock()
+		}
+	})
+}
+
 // SigningMetadata tracks signing parameters and timing.
 type SigningMetadata struct {
 	KSKKeyTag   uint16
@@ -171,15 +206,24 @@ func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*Signe
 	return artifact, nil
 }
 
-// PrepareSignedZoneWrite signs a zone before it is persisted and attaches the
-// generated DNSSEC metadata to the zone so the backend write is self-contained.
-func (s *SigningService) PrepareSignedZoneWrite(ctx context.Context, zone *model.Zone) (*SignedZoneArtifact, error) {
+// PrepareSignedZoneWrite signs a zone before it is persisted, attaches the
+// generated DNSSEC metadata to the zone, and keeps the per-zone signing lock
+// held until the returned write is completed or aborted.
+func (s *SigningService) PrepareSignedZoneWrite(ctx context.Context, zone *model.Zone) (*SignedZoneWrite, error) {
+	lock := s.getZoneLock(model.NormalizeZoneName(zone.Name))
+	lock.Lock()
+
 	artifact, err := s.SignZone(ctx, zone)
 	if err != nil {
+		lock.Unlock()
 		return nil, err
 	}
 	zone.DNSSEC = cloneDNSSECConfig(artifact.DNSSEC)
-	return artifact, nil
+	return &SignedZoneWrite{
+		service:  s,
+		artifact: artifact,
+		unlock:   lock.Unlock,
+	}, nil
 }
 
 func (s *SigningService) unsignedRRsFromZone(zone *model.Zone) ([]dns.RR, error) {
@@ -275,10 +319,14 @@ func signingMetadataFromRRs(rrs []dns.RR, dnssecConfig *model.DNSSECConfig) Sign
 // NOTE: This acquires per-zone lock to prevent concurrent signing.
 func (s *SigningService) SignAndStoreZone(ctx context.Context, zone *model.Zone) error {
 	// Acquire per-zone lock to prevent concurrent signing (M4.4 fix)
-	lock := s.getZoneLock(zone.Name)
+	lock := s.getZoneLock(model.NormalizeZoneName(zone.Name))
 	lock.Lock()
 	defer lock.Unlock()
 
+	return s.signAndStoreZoneLocked(ctx, zone)
+}
+
+func (s *SigningService) signAndStoreZoneLocked(ctx context.Context, zone *model.Zone) error {
 	// Sign the zone
 	artifact, err := s.SignZone(ctx, zone)
 	if err != nil {
@@ -296,14 +344,14 @@ func (s *SigningService) SignAndStoreZone(ctx context.Context, zone *model.Zone)
 	}
 	zone.DNSSEC = cloneDNSSECConfig(artifact.DNSSEC)
 
-	s.CompleteSignedZoneWrite(artifact)
+	s.completeSignedZoneWrite(artifact)
 
 	return nil
 }
 
-// CompleteSignedZoneWrite stores the optional signed artifact cache and emits
+// completeSignedZoneWrite stores the optional signed artifact cache and emits
 // the signing audit log after the backend write has succeeded.
-func (s *SigningService) CompleteSignedZoneWrite(artifact *SignedZoneArtifact) {
+func (s *SigningService) completeSignedZoneWrite(artifact *SignedZoneArtifact) {
 	if artifact == nil {
 		return
 	}
@@ -511,6 +559,10 @@ func (s *SigningService) GetEarliestExpiration(ctx context.Context, zoneName str
 // ResignZone safely re-signs a zone with per-zone locking.
 // This is the method used by the scheduler (M4.4) to avoid racing with update hooks.
 func (s *SigningService) ResignZone(ctx context.Context, zoneName string) error {
+	lock := s.getZoneLock(model.NormalizeZoneName(zoneName))
+	lock.Lock()
+	defer lock.Unlock()
+
 	// Fetch latest zone from backend
 	zone, err := s.store.GetZone(ctx, zoneName)
 	if err != nil {
@@ -522,8 +574,7 @@ func (s *SigningService) ResignZone(ctx context.Context, zoneName string) error 
 		return fmt.Errorf("DNSSEC not enabled for zone %s", zoneName)
 	}
 
-	// Sign and store the zone (locking handled inside SignAndStoreZone)
-	return s.SignAndStoreZone(ctx, zone)
+	return s.signAndStoreZoneLocked(ctx, zone)
 }
 
 // getZoneLock returns the mutex for a given zone name, creating it if needed.

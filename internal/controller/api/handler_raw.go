@@ -152,10 +152,11 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 	}
 	modelZone.Version = version
 
-	signedArtifact, ok := h.prepareSignedZoneCreate(c, modelZone, "raw creation")
+	signedWrite, ok := h.prepareSignedZoneCreate(c, modelZone, "raw creation")
 	if !ok {
 		return
 	}
+	defer signedWrite.Abort()
 
 	// Create zone in backend (same pattern as CreateZone)
 	if err := h.store.CreateZone(c.Request.Context(), modelZone); err != nil {
@@ -189,7 +190,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		return
 	}
 
-	h.completeSignedZoneWrite(signedArtifact)
+	h.completeSignedZoneWrite(signedWrite)
 
 	// Set response headers
 	c.Header("ETag", formatETag(createdZone.Version))

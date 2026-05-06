@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/dnssec"
@@ -259,6 +260,44 @@ func TestSigningService_UsesNSECWhenNSEC3Disabled(t *testing.T) {
 	}
 	if !hasNSEC {
 		t.Fatal("no NSEC records found")
+	}
+}
+
+func TestSigningService_PrepareSignedZoneWriteHoldsLockUntilAbort(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	write, err := service.PrepareSignedZoneWrite(context.Background(), zone)
+	if err != nil {
+		t.Fatalf("PrepareSignedZoneWrite failed: %v", err)
+	}
+	if zone.DNSSEC == nil || !zone.DNSSEC.Enabled {
+		t.Fatal("PrepareSignedZoneWrite did not attach DNSSEC metadata")
+	}
+
+	started := make(chan struct{})
+	acquired := make(chan struct{})
+	go func() {
+		close(started)
+		lock := service.getZoneLock(model.NormalizeZoneName(zone.Name))
+		lock.Lock()
+		defer lock.Unlock()
+		close(acquired)
+	}()
+
+	<-started
+	select {
+	case <-acquired:
+		t.Fatal("zone signing lock was released before the write completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	write.Abort()
+	select {
+	case <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("zone signing lock was not released after abort")
 	}
 }
 
