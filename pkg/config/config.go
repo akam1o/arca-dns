@@ -728,7 +728,7 @@ func DefaultAgentConfig() *AgentConfig {
 			MaxStaleness:     5 * time.Minute,
 			BackupVersions:   3,
 			VerifyChecksums:  true,
-			VerifySignatures: false, // Disabled by default
+			VerifySignatures: true,
 		},
 		Logging: LoggingConfig{
 			Level:            "info",

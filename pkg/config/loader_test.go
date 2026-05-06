@@ -21,6 +21,12 @@ func validControllerConfigForTest() *ControllerConfig {
 	return cfg
 }
 
+func validAgentConfigForTest() *AgentConfig {
+	cfg := DefaultAgentConfig()
+	cfg.Sync.ControllerPublicKey = "test-signature-key"
+	return cfg
+}
+
 func TestLoadControllerConfig_DefaultsRequireAPIKeys(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_ENABLED", "true")
 
@@ -338,6 +344,8 @@ func TestValidateControllerConfig_InvalidNSEC3SaltLength(t *testing.T) {
 }
 
 func TestLoadAgentConfig_Defaults(t *testing.T) {
+	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", "test-signature-key")
+
 	cfg, err := LoadAgentConfig("")
 	require.NoError(t, err)
 
@@ -345,6 +353,8 @@ func TestLoadAgentConfig_Defaults(t *testing.T) {
 	assert.True(t, cfg.NSD.Enabled)
 	assert.True(t, cfg.Unbound.Enabled)
 	assert.Equal(t, 1232, cfg.Unbound.EDNSBufferSize)
+	assert.True(t, cfg.Sync.VerifySignatures)
+	assert.Equal(t, "test-signature-key", cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, "info", cfg.Logging.Level)
 }
 
@@ -361,6 +371,8 @@ nsd:
   zone_directory: "/tmp/nsd-zones"
 unbound:
   enabled: false
+sync:
+  controller_public_key: "yaml-signature-key"
 logging:
   level: "debug"
 `
@@ -374,6 +386,8 @@ logging:
 	assert.Equal(t, "test-key", cfg.Controller.APIKey)
 	assert.Equal(t, "/tmp/nsd-zones", cfg.NSD.ZoneDirectory)
 	assert.False(t, cfg.Unbound.Enabled)
+	assert.True(t, cfg.Sync.VerifySignatures)
+	assert.Equal(t, "yaml-signature-key", cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, "debug", cfg.Logging.Level)
 }
 
@@ -384,6 +398,7 @@ func TestLoadAgentConfig_EnvOverrideWithYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_NSD_ENABLED", "false")
 	t.Setenv("ARCA_DNS_UNBOUND_STUB_ZONE_NSD_PORT", "5533")
 	t.Setenv("ARCA_DNS_SYNC_VERIFY_CHECKSUMS", "false")
+	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", "env-signature-key")
 	t.Setenv("ARCA_DNS_HEALTH_QUERY_TIMEOUT", "2s")
 	t.Setenv("ARCA_DNS_METRICS_PATH", "/env-metrics")
 	t.Setenv("ARCA_DNS_LOGGING_ENABLE_CALLER", "true")
@@ -406,6 +421,7 @@ unbound:
     nsd_port: 5353
 sync:
   verify_checksums: true
+  controller_public_key: "yaml-signature-key"
 health:
   query_timeout: 5s
 metrics:
@@ -426,6 +442,7 @@ logging:
 	assert.False(t, cfg.NSD.Enabled)
 	assert.Equal(t, 5533, cfg.Unbound.StubZoneConfig.NSDPort)
 	assert.False(t, cfg.Sync.VerifyChecksums)
+	assert.Equal(t, "env-signature-key", cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, 2*time.Second, cfg.Health.QueryTimeout)
 	assert.Equal(t, "/env-metrics", cfg.Metrics.Path)
 	assert.True(t, cfg.Logging.EnableCaller)
@@ -434,22 +451,24 @@ logging:
 func TestLoadAgentConfig_EnvOverrideWithoutFile(t *testing.T) {
 	t.Setenv("ARCA_DNS_CONTROLLER_URL", "https://env-only-controller.example.com")
 	t.Setenv("ARCA_DNS_CONTROLLER_API_KEY", "env-only-api-key")
+	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", "env-signature-key")
 
 	cfg, err := LoadAgentConfig("")
 	require.NoError(t, err)
 
 	assert.Equal(t, "https://env-only-controller.example.com", cfg.Controller.URL)
 	assert.Equal(t, "env-only-api-key", cfg.Controller.APIKey)
+	assert.Equal(t, "env-signature-key", cfg.Sync.ControllerPublicKey)
 }
 
 func TestValidateAgentConfig_Valid(t *testing.T) {
-	cfg := DefaultAgentConfig()
+	cfg := validAgentConfigForTest()
 	err := ValidateAgentConfig(cfg)
 	assert.NoError(t, err)
 }
 
 func TestValidateAgentConfig_EmptyControllerURL(t *testing.T) {
-	cfg := DefaultAgentConfig()
+	cfg := validAgentConfigForTest()
 	cfg.Controller.URL = ""
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
@@ -457,7 +476,7 @@ func TestValidateAgentConfig_EmptyControllerURL(t *testing.T) {
 }
 
 func TestValidateAgentConfig_NSDMissingConfig(t *testing.T) {
-	cfg := DefaultAgentConfig()
+	cfg := validAgentConfigForTest()
 	cfg.NSD.Enabled = true
 	cfg.NSD.ConfigPath = ""
 	err := ValidateAgentConfig(cfg)
@@ -466,7 +485,7 @@ func TestValidateAgentConfig_NSDMissingConfig(t *testing.T) {
 }
 
 func TestValidateAgentConfig_UnboundMissingConfig(t *testing.T) {
-	cfg := DefaultAgentConfig()
+	cfg := validAgentConfigForTest()
 	cfg.Unbound.Enabled = true
 	cfg.Unbound.ConfigPath = ""
 	err := ValidateAgentConfig(cfg)
@@ -477,7 +496,7 @@ func TestValidateAgentConfig_UnboundMissingConfig(t *testing.T) {
 func TestValidateAgentConfig_BIRDMissingPrefixes(t *testing.T) {
 	// Note: anycast_prefixes is now optional (M5 uses protocol enable/disable)
 	// This test now verifies that protocol_name is required
-	cfg := DefaultAgentConfig()
+	cfg := validAgentConfigForTest()
 	cfg.BIRD.Enabled = true
 	cfg.BIRD.ProtocolName = "" // Missing required field
 	err := ValidateAgentConfig(cfg)
@@ -486,7 +505,7 @@ func TestValidateAgentConfig_BIRDMissingPrefixes(t *testing.T) {
 }
 
 func TestValidateAgentConfig_InvalidSyncInterval(t *testing.T) {
-	cfg := DefaultAgentConfig()
+	cfg := validAgentConfigForTest()
 	cfg.Sync.SyncInterval = 0
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
@@ -503,7 +522,7 @@ func TestValidateAgentConfig_VerifySignaturesRequiresKey(t *testing.T) {
 }
 
 func TestValidateAgentConfig_InvalidDNSTapSampleRate(t *testing.T) {
-	cfg := DefaultAgentConfig()
+	cfg := validAgentConfigForTest()
 	cfg.DNSTap.Enabled = true
 	cfg.DNSTap.SampleRate = 0
 	err := ValidateAgentConfig(cfg)
@@ -512,7 +531,7 @@ func TestValidateAgentConfig_InvalidDNSTapSampleRate(t *testing.T) {
 }
 
 func TestValidateAgentConfig_StatusServerRequiresListen(t *testing.T) {
-	cfg := DefaultAgentConfig()
+	cfg := validAgentConfigForTest()
 	cfg.Metrics.Enabled = false
 	cfg.Metrics.Listen = ""
 	err := ValidateAgentConfig(cfg)
@@ -529,7 +548,7 @@ func TestValidateAgentConfig_MetricsPathCannotConflictWithStatusEndpoints(t *tes
 
 	for _, path := range tests {
 		t.Run(path, func(t *testing.T) {
-			cfg := DefaultAgentConfig()
+			cfg := validAgentConfigForTest()
 			cfg.Metrics.Enabled = true
 			cfg.Metrics.Path = path
 			err := ValidateAgentConfig(cfg)
@@ -549,7 +568,7 @@ func TestValidateAgentConfig_MetricsPathMustBeStatic(t *testing.T) {
 
 	for _, path := range tests {
 		t.Run(path, func(t *testing.T) {
-			cfg := DefaultAgentConfig()
+			cfg := validAgentConfigForTest()
 			cfg.Metrics.Enabled = true
 			cfg.Metrics.Path = path
 			err := ValidateAgentConfig(cfg)
@@ -560,7 +579,7 @@ func TestValidateAgentConfig_MetricsPathMustBeStatic(t *testing.T) {
 }
 
 func TestValidateAgentConfig_MetricsPathIgnoredWhenMetricsDisabled(t *testing.T) {
-	cfg := DefaultAgentConfig()
+	cfg := validAgentConfigForTest()
 	cfg.Metrics.Enabled = false
 	cfg.Metrics.Path = "/health"
 	err := ValidateAgentConfig(cfg)
@@ -568,7 +587,7 @@ func TestValidateAgentConfig_MetricsPathIgnoredWhenMetricsDisabled(t *testing.T)
 }
 
 func TestValidateAgentConfig_InvalidLogLevel(t *testing.T) {
-	cfg := DefaultAgentConfig()
+	cfg := validAgentConfigForTest()
 	cfg.Logging.Level = "invalid"
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)

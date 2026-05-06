@@ -13,10 +13,10 @@ sync:
   max_staleness: "5m"
   backup_versions: 3
   verify_checksums: true
-  verify_signatures: false
+  verify_signatures: true
   # Required when verify_signatures is true. Must match controller
   # api.artifact_signature_key.
-  controller_public_key: ""
+  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 health:
   check_interval: "10s"
