@@ -29,6 +29,7 @@ Example:
 export ARCA_DNS_API_KEY="$(openssl rand -hex 32)"
 export ARCA_DNS_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_API_KEY" | sha256sum | awk '{print $1}')"
 export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
+export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$(openssl rand -base64 32)"
 
 docker compose \
   -f deployments/compose/controller-mysql/docker-compose.yaml \
@@ -54,7 +55,7 @@ Kustomize entrypoints:
 
 Before applying, replace:
 
-- `deployments/kubernetes/controller/base/controller-secret.yaml` (`dnssec-master-key-b64`)
+- `deployments/kubernetes/controller/base/controller-secret.yaml` (`dnssec-master-key-b64`, `artifact-signature-key`)
 - `deployments/kubernetes/controller/base/controller.yaml` (`api.auth.api_keys`, etcd endpoints, backend prefix)
 - `deployments/kubernetes/controller/base/controller-pvc.yaml` storage class and size if needed
 - `deployments/kubernetes/controller/overlays/demo-etcd/controller.yaml` API key hash if using the demo overlay

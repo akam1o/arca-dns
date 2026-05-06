@@ -27,6 +27,11 @@ spec:
                 secretKeyRef:
                   name: arca-dns-secrets
                   key: dnssec-master-key-b64
+            - name: ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: arca-dns-secrets
+                  key: artifact-signature-key
           volumeMounts:
             - name: config
               mountPath: /etc/arca-dns/controller.yaml
@@ -40,4 +45,3 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: arca-dns-controller-data
-
