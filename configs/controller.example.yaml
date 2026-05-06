@@ -32,12 +32,18 @@ backend:
     conn_max_lifetime: "5m"
   mysql:
     dsn: "root:pass@tcp(mysql:3306)/arca_dns?parseTime=true"
+    max_open_conns: 25
+    max_idle_conns: 5
+    conn_max_lifetime: "5m"
   git:
     repository_path: "/var/lib/arca-dns/git"
+    remote_url: ""
     branch: "main"
     author: "arca-dns-controller"
     email: "noreply@arca-dns"
     auto_push: false
+    auto_pull: false
+    pull_interval: "1m"
   etcd:
     endpoints: ["etcd:2379"]
     prefix: "/arca-dns"

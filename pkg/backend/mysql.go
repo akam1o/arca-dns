@@ -27,15 +27,17 @@ type MySQLBackend struct {
 // NewMySQLBackend creates a new MySQL backend.
 // DSN format: user:password@tcp(host:port)/dbname?parseTime=true
 func NewMySQLBackend(dsn string) (*MySQLBackend, error) {
+	return NewMySQLBackendWithPool(dsn, SQLPoolConfig{})
+}
+
+// NewMySQLBackendWithPool creates a new MySQL backend with connection pool settings.
+func NewMySQLBackendWithPool(dsn string, pool SQLPoolConfig) (*MySQLBackend, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open MySQL connection: %w", err)
 	}
 
-	// Configure connection pool
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	applySQLPoolConfig(db, pool)
 
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1095,6 +1097,6 @@ func init() {
 		if !ok {
 			return nil, fmt.Errorf("MySQL DSN is required")
 		}
-		return NewMySQLBackend(dsn)
+		return NewMySQLBackendWithPool(dsn, sqlPoolConfigFromMap(cfg))
 	})
 }

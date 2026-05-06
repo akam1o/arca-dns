@@ -14,6 +14,7 @@ import (
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
+	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -51,18 +52,44 @@ func init() {
 			authorEmail = "noreply@arca-dns"
 		}
 
-		// Support both old name (auto_sync) and new name (auto_push)
-		// Priority: new name (auto_push) > old name (auto_sync) > default (false)
-		var autoSync bool
-		if val, ok := cfg["auto_push"]; ok {
-			autoSync, _ = val.(bool)
-		} else if val, ok := cfg["auto_sync"]; ok {
-			autoSync, _ = val.(bool)
-		}
-		// Default: false (local-only)
+		remoteURL, _ := cfg["remote_url"].(string)
 
-		return NewGitBackend(repoPath, branch, authorName, authorEmail, autoSync)
+		autoPush, autoPushSet := boolFromConfig(cfg["auto_push"])
+		autoPull, autoPullSet := boolFromConfig(cfg["auto_pull"])
+		if autoSync, ok := boolFromConfig(cfg["auto_sync"]); ok {
+			if !autoPushSet {
+				autoPush = autoSync
+			}
+			if !autoPullSet {
+				autoPull = autoSync
+			}
+		} else if autoPushSet && !autoPullSet {
+			autoPull = autoPush
+		}
+
+		pullInterval, _ := durationFromConfig(cfg["pull_interval"])
+
+		return NewGitBackendWithOptions(repoPath, GitBackendOptions{
+			Branch:       branch,
+			AuthorName:   authorName,
+			AuthorEmail:  authorEmail,
+			RemoteURL:    remoteURL,
+			AutoPush:     autoPush,
+			AutoPull:     autoPull,
+			PullInterval: pullInterval,
+		})
 	})
+}
+
+// GitBackendOptions configures a Git-backed zone store.
+type GitBackendOptions struct {
+	Branch       string
+	AuthorName   string
+	AuthorEmail  string
+	RemoteURL    string
+	AutoPush     bool
+	AutoPull     bool
+	PullInterval time.Duration
 }
 
 // GitBackend implements ZoneStore and RevisionStore using a Git repository
@@ -71,7 +98,12 @@ type GitBackend struct {
 	branch      string
 	authorName  string
 	authorEmail string
-	autoSync    bool // If true, pull before operations and push after commits
+	remoteURL   string
+
+	autoPush     bool
+	autoPull     bool
+	pullInterval time.Duration
+	lastPull     time.Time
 
 	repo      *git.Repository
 	worktree  *git.Worktree
@@ -83,15 +115,42 @@ type GitBackend struct {
 // NewGitBackend creates a new Git backend
 // If the repository doesn't exist, it will be initialized
 func NewGitBackend(repoPath, branch, authorName, authorEmail string, autoSync bool) (*GitBackend, error) {
+	return NewGitBackendWithOptions(repoPath, GitBackendOptions{
+		Branch:      branch,
+		AuthorName:  authorName,
+		AuthorEmail: authorEmail,
+		AutoPush:    autoSync,
+		AutoPull:    autoSync,
+	})
+}
+
+// NewGitBackendWithOptions creates a new Git backend with explicit options.
+func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitBackend, error) {
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve repository path: %w", err)
 	}
 
+	if options.Branch == "" {
+		options.Branch = "main"
+	}
+	if options.AuthorName == "" {
+		options.AuthorName = "arca-dns-controller"
+	}
+	if options.AuthorEmail == "" {
+		options.AuthorEmail = "noreply@arca-dns"
+	}
+
 	// Initialize or open repository
-	repo, err := openOrInitRepo(absPath, branch)
+	repo, err := openOrInitRepo(absPath, options.Branch)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open/init repository: %w", err)
+	}
+
+	if options.RemoteURL != "" {
+		if err := ensureRemote(repo, "origin", options.RemoteURL); err != nil {
+			return nil, err
+		}
 	}
 
 	worktree, err := repo.Worktree()
@@ -110,14 +169,17 @@ func NewGitBackend(repoPath, branch, authorName, authorEmail string, autoSync bo
 	fileLock := flock.New(lockPath)
 
 	return &GitBackend{
-		repoPath:    absPath,
-		branch:      branch,
-		authorName:  authorName,
-		authorEmail: authorEmail,
-		autoSync:    autoSync,
-		repo:        repo,
-		worktree:    worktree,
-		fileLock:    fileLock,
+		repoPath:     absPath,
+		branch:       options.Branch,
+		authorName:   options.AuthorName,
+		authorEmail:  options.AuthorEmail,
+		remoteURL:    options.RemoteURL,
+		autoPush:     options.AutoPush,
+		autoPull:     options.AutoPull,
+		pullInterval: options.PullInterval,
+		repo:         repo,
+		worktree:     worktree,
+		fileLock:     fileLock,
 	}, nil
 }
 
@@ -178,6 +240,29 @@ func openOrInitRepo(path, branch string) (*git.Repository, error) {
 	}
 
 	return repo, nil
+}
+
+func ensureRemote(repo *git.Repository, name, remoteURL string) error {
+	cfg, err := repo.Config()
+	if err != nil {
+		return fmt.Errorf("failed to read git config: %w", err)
+	}
+	if cfg.Remotes == nil {
+		cfg.Remotes = make(map[string]*gitconfig.RemoteConfig)
+	}
+	cfg.Remotes[name] = &gitconfig.RemoteConfig{
+		Name: name,
+		URLs: []string{remoteURL},
+	}
+	if err := repo.SetConfig(cfg); err != nil {
+		return fmt.Errorf("failed to configure git remote %s: %w", name, err)
+	}
+	return nil
+}
+
+func boolFromConfig(value interface{}) (bool, bool) {
+	v, ok := value.(bool)
+	return v, ok
 }
 
 // acquireLock acquires both file lock and per-zone mutex
@@ -249,9 +334,12 @@ func (g *GitBackend) zoneFilePath(zoneName string) (string, error) {
 	return relPath, nil
 }
 
-// pullIfNeeded performs a fast-forward-only pull if autoSync is enabled
+// pullIfNeeded performs a fast-forward-only pull if auto-pull is enabled
 func (g *GitBackend) pullIfNeeded(ctx context.Context) error {
-	if !g.autoSync {
+	if !g.autoPull {
+		return nil
+	}
+	if g.pullInterval > 0 && !g.lastPull.IsZero() && time.Since(g.lastPull) < g.pullInterval {
 		return nil
 	}
 
@@ -261,6 +349,7 @@ func (g *GitBackend) pullIfNeeded(ctx context.Context) error {
 	})
 
 	if err == git.NoErrAlreadyUpToDate {
+		g.lastPull = time.Now()
 		return nil
 	}
 
@@ -271,6 +360,7 @@ func (g *GitBackend) pullIfNeeded(ctx context.Context) error {
 		return fmt.Errorf("git pull failed: %w", err)
 	}
 
+	g.lastPull = time.Now()
 	return nil
 }
 
@@ -302,8 +392,8 @@ func (g *GitBackend) commitZone(ctx context.Context, zoneName, operation, summar
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 
-	// Push if autoSync is enabled
-	if g.autoSync {
+	// Push if auto-push is enabled
+	if g.autoPush {
 		err = g.repo.PushContext(ctx, &git.PushOptions{
 			RemoteName: "origin",
 		})
@@ -343,8 +433,8 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 		return fmt.Errorf("failed to commit deletion: %w", err)
 	}
 
-	// Push if autoSync is enabled
-	if g.autoSync {
+	// Push if auto-push is enabled
+	if g.autoPush {
 		err = g.repo.PushContext(ctx, &git.PushOptions{
 			RemoteName: "origin",
 		})
@@ -525,7 +615,7 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	}
 	defer g.releaseLock(zoneMu)
 
-	// Pull if autoSync is enabled
+	// Pull if auto-pull is enabled
 	if err := g.pullIfNeeded(ctx); err != nil {
 		return err
 	}
@@ -560,7 +650,7 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 	}
 	defer g.releaseLock(zoneMu)
 
-	// Pull if autoSync is enabled
+	// Pull if auto-pull is enabled
 	if err := g.pullIfNeeded(ctx); err != nil {
 		return err
 	}
@@ -649,7 +739,7 @@ func (g *GitBackend) DeleteZone(ctx context.Context, name string) error {
 	}
 	defer g.releaseLock(zoneMu)
 
-	// Pull if autoSync is enabled
+	// Pull if auto-pull is enabled
 	if err := g.pullIfNeeded(ctx); err != nil {
 		return err
 	}

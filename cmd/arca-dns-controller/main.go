@@ -272,6 +272,15 @@ func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error)
 			return nil, fmt.Errorf("postgres backend requires backend.postgres.dsn")
 		}
 		configMap["dsn"] = cfg.Backend.Postgres.DSN
+		if cfg.Backend.Postgres.MaxOpenConns > 0 {
+			configMap["max_open_conns"] = cfg.Backend.Postgres.MaxOpenConns
+		}
+		if cfg.Backend.Postgres.MaxIdleConns > 0 {
+			configMap["max_idle_conns"] = cfg.Backend.Postgres.MaxIdleConns
+		}
+		if cfg.Backend.Postgres.ConnMaxLifetime > 0 {
+			configMap["conn_max_lifetime"] = cfg.Backend.Postgres.ConnMaxLifetime
+		}
 		return backend.NewBackend("postgres", configMap)
 
 	case "mysql":
@@ -279,6 +288,15 @@ func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error)
 			return nil, fmt.Errorf("mysql backend requires backend.mysql.dsn")
 		}
 		configMap["dsn"] = cfg.Backend.MySQL.DSN
+		if cfg.Backend.MySQL.MaxOpenConns > 0 {
+			configMap["max_open_conns"] = cfg.Backend.MySQL.MaxOpenConns
+		}
+		if cfg.Backend.MySQL.MaxIdleConns > 0 {
+			configMap["max_idle_conns"] = cfg.Backend.MySQL.MaxIdleConns
+		}
+		if cfg.Backend.MySQL.ConnMaxLifetime > 0 {
+			configMap["conn_max_lifetime"] = cfg.Backend.MySQL.ConnMaxLifetime
+		}
 		return backend.NewBackend("mysql", configMap)
 
 	case "git":
@@ -295,7 +313,14 @@ func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error)
 		if cfg.Backend.Git.Email != "" {
 			configMap["email"] = cfg.Backend.Git.Email
 		}
+		if cfg.Backend.Git.RemoteURL != "" {
+			configMap["remote_url"] = cfg.Backend.Git.RemoteURL
+		}
 		configMap["auto_push"] = cfg.Backend.Git.AutoPush
+		configMap["auto_pull"] = cfg.Backend.Git.AutoPull
+		if cfg.Backend.Git.PullInterval > 0 {
+			configMap["pull_interval"] = cfg.Backend.Git.PullInterval
+		}
 		return backend.NewBackend("git", configMap)
 
 	case "etcd":

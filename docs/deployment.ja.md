@@ -200,10 +200,13 @@ backend:
   type: "git"
   git:
     repository_path: "/var/lib/arca-dns/git"
+    remote_url: "git@example.com:infra/arca-dns-zones.git"
     branch: "main"
     author: "arca-dns-controller"
     email: "noreply@arca-dns"
     auto_push: false
+    auto_pull: false
+    pull_interval: "1m"
 ```
 
 ## DEB/RPM + systemd

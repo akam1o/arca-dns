@@ -24,14 +24,17 @@ type PostgresBackend struct {
 // NewPostgresBackend creates a new PostgreSQL backend.
 // DSN format: "postgres://user:password@host:port/dbname?sslmode=disable"
 func NewPostgresBackend(dsn string) (*PostgresBackend, error) {
+	return NewPostgresBackendWithPool(dsn, SQLPoolConfig{})
+}
+
+// NewPostgresBackendWithPool creates a new PostgreSQL backend with connection pool settings.
+func NewPostgresBackendWithPool(dsn string, pool SQLPoolConfig) (*PostgresBackend, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open PostgreSQL connection: %w", err)
 	}
 
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	applySQLPoolConfig(db, pool)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -770,6 +773,6 @@ func init() {
 		if !ok {
 			return nil, fmt.Errorf("PostgreSQL DSN is required")
 		}
-		return NewPostgresBackend(dsn)
+		return NewPostgresBackendWithPool(dsn, sqlPoolConfigFromMap(cfg))
 	})
 }
