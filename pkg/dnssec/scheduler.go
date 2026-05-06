@@ -2,6 +2,7 @@ package dnssec
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"sync"
 	"time"
@@ -10,6 +11,10 @@ import (
 	"github.com/akam1o/arca-dns/pkg/model"
 	"go.uber.org/zap"
 )
+
+// ErrSignatureExpirationUnavailable indicates that a zone has no stored
+// signature expiration metadata or readable signed artifact.
+var ErrSignatureExpirationUnavailable = errors.New("signature expiration unavailable")
 
 // Clock provides the current time (injectable for testing).
 type Clock interface {
@@ -187,6 +192,19 @@ func (s *Scheduler) run(ctx context.Context) {
 		// Get earliest RRSIG expiration for this zone
 		expiration, err := s.signer.GetEarliestExpiration(ctx, zone.Name)
 		if err != nil {
+			if errors.Is(err, ErrSignatureExpirationUnavailable) {
+				resigned, skipped := s.attemptResign(ctx, zone.Name, now,
+					"Re-signing zone because signature expiration is unavailable",
+					zap.Error(err))
+				if skipped {
+					zonesSkipped++
+				}
+				if resigned {
+					zonesResigned++
+				}
+				continue
+			}
+
 			s.logger.Warn("Failed to get expiration for zone",
 				zap.String("zone", zone.Name),
 				zap.Error(err))
@@ -204,31 +222,14 @@ func (s *Scheduler) run(ctx context.Context) {
 
 		// Check if re-sign is needed
 		if remaining < s.config.ResignThreshold {
-			// Check backoff gate
-			if s.isBackedOff(zone.Name, now) {
-				zonesSkipped++
-				s.logger.Debug("Zone skipped due to backoff",
-					zap.String("zone", zone.Name))
-				continue
-			}
-
-			// Attempt re-sign
-			s.logger.Info("Re-signing zone due to expiring signatures",
-				zap.String("zone", zone.Name),
+			resigned, skipped := s.attemptResign(ctx, zone.Name, now,
+				"Re-signing zone due to expiring signatures",
 				zap.Duration("remaining", remaining),
 				zap.Time("expiration", expirationTime))
-
-			if err := s.signer.ResignZone(ctx, zone.Name); err != nil {
-				s.logger.Error("Failed to re-sign zone",
-					zap.String("zone", zone.Name),
-					zap.Error(err))
-				s.metrics.IncResign("error")
-				s.recordFailure(zone.Name, now)
-			} else {
-				s.logger.Info("Successfully re-signed zone",
-					zap.String("zone", zone.Name))
-				s.metrics.IncResign("success")
-				s.clearBackoff(zone.Name)
+			if skipped {
+				zonesSkipped++
+			}
+			if resigned {
 				zonesResigned++
 			}
 		}
@@ -246,6 +247,32 @@ func (s *Scheduler) run(ctx context.Context) {
 		zap.Int("zones_resigned", zonesResigned),
 		zap.Int("zones_skipped", zonesSkipped),
 		zap.Time("earliest_expiration", earliestExpiration))
+}
+
+func (s *Scheduler) attemptResign(ctx context.Context, zoneName string, now time.Time, message string, fields ...zap.Field) (resigned bool, skipped bool) {
+	if s.isBackedOff(zoneName, now) {
+		s.logger.Debug("Zone skipped due to backoff",
+			zap.String("zone", zoneName))
+		return false, true
+	}
+
+	logFields := append([]zap.Field{zap.String("zone", zoneName)}, fields...)
+	s.logger.Info(message, logFields...)
+
+	if err := s.signer.ResignZone(ctx, zoneName); err != nil {
+		s.logger.Error("Failed to re-sign zone",
+			zap.String("zone", zoneName),
+			zap.Error(err))
+		s.metrics.IncResign("error")
+		s.recordFailure(zoneName, now)
+		return false, false
+	}
+
+	s.logger.Info("Successfully re-signed zone",
+		zap.String("zone", zoneName))
+	s.metrics.IncResign("success")
+	s.clearBackoff(zoneName)
+	return true, false
 }
 
 // isBackedOff checks if a zone is currently backed off due to previous failures.

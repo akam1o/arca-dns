@@ -652,6 +652,11 @@ func TestSigningService_GetEarliestExpiration(t *testing.T) {
 		t.Fatalf("failed to create zone: %v", err)
 	}
 
+	artifact, err := service.GetSignedZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetSignedZone failed: %v", err)
+	}
+
 	// Get earliest expiration
 	expiration, err := service.GetEarliestExpiration(ctx, zone.Name)
 	if err != nil {
@@ -661,10 +666,77 @@ func TestSigningService_GetEarliestExpiration(t *testing.T) {
 	if expiration == 0 {
 		t.Error("Expiration is zero")
 	}
+	if expiration != artifact.Metadata.Expiration {
+		t.Errorf("Expiration = %d, want %d", expiration, artifact.Metadata.Expiration)
+	}
 
 	// Expiration should be in the future (roughly 30 days from now)
 	// RRSIG expiration is in UNIX timestamp format
 	t.Logf("Earliest expiration: %d", expiration)
+}
+
+func TestSigningService_GetEarliestExpiration_UsesCachedArtifactWithoutResigning(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+
+	artifact, err := service.SignZone(ctx, zone)
+	if err != nil {
+		t.Fatalf("SignZone failed: %v", err)
+	}
+	zone.DNSSEC = artifact.DNSSEC
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	parsed, err := parser.ParseBINDZone(strings.NewReader(artifact.SignedZone), zone.Name, parser.DefaultParseOptions())
+	if err != nil {
+		t.Fatalf("failed to parse signed artifact: %v", err)
+	}
+	expiredAt := uint32(time.Now().Add(-time.Hour).Unix())
+	for _, rr := range parsed.Records {
+		if sig, ok := rr.(*dns.RRSIG); ok {
+			sig.Expiration = expiredAt
+		}
+	}
+
+	expiredZoneFile, err := parser.GenerateBINDZoneFileFromRRs(zone.Name, artifact.Version, parsed.Records)
+	if err != nil {
+		t.Fatalf("failed to generate expired signed artifact: %v", err)
+	}
+
+	const staleCacheMarker = "; expiration-cache-marker"
+	if err := service.storeArtifact(zone.Name, artifact.Version, []byte(expiredZoneFile+"\n"+staleCacheMarker+"\n")); err != nil {
+		t.Fatalf("failed to store expired signed artifact: %v", err)
+	}
+
+	metadataStore, ok := service.store.(backend.DNSSECMetadataStore)
+	if !ok {
+		t.Fatal("store does not support DNSSEC metadata persistence")
+	}
+	dnssecConfig := cloneDNSSECConfig(zone.DNSSEC)
+	dnssecConfig.SignatureExpiration = nil
+	if err := metadataStore.UpdateDNSSECMetadata(ctx, zone.Name, dnssecConfig); err != nil {
+		t.Fatalf("failed to clear signature expiration metadata: %v", err)
+	}
+
+	expiration, err := service.GetEarliestExpiration(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetEarliestExpiration failed: %v", err)
+	}
+	if expiration != expiredAt {
+		t.Fatalf("Expiration = %d, want cached artifact expiration %d", expiration, expiredAt)
+	}
+
+	cached, err := service.loadArtifact(zone.Name, artifact.Version)
+	if err != nil {
+		t.Fatalf("failed to load signed artifact cache: %v", err)
+	}
+	if !strings.Contains(string(cached), staleCacheMarker) {
+		t.Fatal("expected GetEarliestExpiration to leave cached artifact unchanged")
+	}
 }
 
 func TestSigningService_GetSignedZone_NotFound(t *testing.T) {

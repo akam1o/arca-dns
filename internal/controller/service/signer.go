@@ -262,21 +262,8 @@ func signedArtifactFromCache(zone *model.Zone, signed []byte) (*SignedZoneArtifa
 }
 
 func (s *SigningService) cachedSignedZoneArtifact(zone *model.Zone) (*SignedZoneArtifact, bool) {
-	if s.artifactDir == "" || zone.Version == "" {
-		return nil, false
-	}
-
-	signed, err := s.loadArtifact(zone.Name, zone.Version)
-	if err != nil || signed == nil {
-		return nil, false
-	}
-
-	artifact, err := signedArtifactFromCache(zone, signed)
+	artifact, err := s.loadCachedSignedZoneArtifact(zone)
 	if err != nil {
-		s.logger.Warn("Failed to load cached signed artifact (re-signing)",
-			zap.String("zone", zone.Name),
-			zap.String("version", zone.Version),
-			zap.Error(err))
 		return nil, false
 	}
 	if !s.cachedArtifactFresh(artifact) {
@@ -288,6 +275,31 @@ func (s *SigningService) cachedSignedZoneArtifact(zone *model.Zone) (*SignedZone
 	}
 
 	return artifact, true
+}
+
+func (s *SigningService) loadCachedSignedZoneArtifact(zone *model.Zone) (*SignedZoneArtifact, error) {
+	if s.artifactDir == "" {
+		return nil, fmt.Errorf("artifact cache disabled")
+	}
+	if zone.Version == "" {
+		return nil, fmt.Errorf("zone version is empty")
+	}
+
+	signed, err := s.loadArtifact(zone.Name, zone.Version)
+	if err != nil {
+		return nil, err
+	}
+
+	artifact, err := signedArtifactFromCache(zone, signed)
+	if err != nil {
+		s.logger.Warn("Failed to load cached signed artifact",
+			zap.String("zone", zone.Name),
+			zap.String("version", zone.Version),
+			zap.Error(err))
+		return nil, err
+	}
+
+	return artifact, nil
 }
 
 func (s *SigningService) cachedArtifactFresh(artifact *SignedZoneArtifact) bool {
@@ -580,27 +592,25 @@ func (s *SigningService) GetDSRecords(ctx context.Context, zoneName string) ([]s
 // GetEarliestExpiration returns the earliest RRSIG expiration time for a zone.
 // This is used by the scheduler to determine when to re-sign.
 func (s *SigningService) GetEarliestExpiration(ctx context.Context, zoneName string) (uint32, error) {
-	// Get the signed zone
-	artifact, err := s.GetSignedZone(ctx, zoneName)
+	zone, err := s.store.GetZone(ctx, zoneName)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get signed zone: %w", err)
+		return 0, err
 	}
 
-	// Find earliest expiration from RRSIGs
-	var earliestExpiration uint32 = ^uint32(0) // max uint32
-	for _, rr := range artifact.SignedRRs {
-		if rrsig, ok := rr.(*dns.RRSIG); ok {
-			if rrsig.Expiration < earliestExpiration {
-				earliestExpiration = rrsig.Expiration
-			}
-		}
+	if zone.DNSSEC == nil || !zone.DNSSEC.Enabled {
+		return 0, fmt.Errorf("DNSSEC not enabled for zone %s", zoneName)
 	}
 
-	if earliestExpiration == ^uint32(0) {
-		return 0, fmt.Errorf("no RRSIG records found in signed zone")
+	if zone.DNSSEC.SignatureExpiration != nil && !zone.DNSSEC.SignatureExpiration.IsZero() {
+		return uint32(zone.DNSSEC.SignatureExpiration.Unix()), nil
 	}
 
-	return earliestExpiration, nil
+	artifact, err := s.loadCachedSignedZoneArtifact(zone)
+	if err == nil {
+		return artifact.Metadata.Expiration, nil
+	}
+
+	return 0, fmt.Errorf("%w for zone %s: %v", dnssec.ErrSignatureExpirationUnavailable, zoneName, err)
 }
 
 // ResignZone safely re-signs a zone with per-zone locking.
