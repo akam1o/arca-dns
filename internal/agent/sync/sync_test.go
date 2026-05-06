@@ -536,3 +536,20 @@ func TestSyncer_addJitter(t *testing.T) {
 	result := syncerNoJitter.addJitter(baseDuration)
 	assert.Equal(t, baseDuration, result)
 }
+
+func TestSyncer_addJitterClampsToPositiveDuration(t *testing.T) {
+	logger := zap.NewNop()
+	fileMgr := NewFileManager("", 3, logger)
+
+	syncer := NewSyncer(nil, fileMgr, config.SyncConfig{
+		Jitter: 10 * time.Second,
+	}, logger)
+
+	baseDuration := 1 * time.Second
+	for i := 0; i < 100; i++ {
+		result := syncer.addJitter(baseDuration)
+		assert.GreaterOrEqual(t, result, baseDuration/2)
+	}
+
+	assert.Equal(t, time.Nanosecond, syncer.addJitter(0))
+}

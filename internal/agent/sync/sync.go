@@ -509,6 +509,9 @@ func (s *Syncer) getOrCreateStateLocked(zoneName string) *ZoneSyncState {
 
 // addJitter adds random jitter to prevent thundering herd.
 func (s *Syncer) addJitter(duration time.Duration) time.Duration {
+	if duration <= 0 {
+		return time.Nanosecond
+	}
 	if s.config.Jitter <= 0 {
 		return duration
 	}
@@ -517,5 +520,13 @@ func (s *Syncer) addJitter(duration time.Duration) time.Duration {
 	jitterNanos := s.config.Jitter.Nanoseconds()
 	randomJitter := rand.Int63n(jitterNanos) - (jitterNanos / 2)
 
-	return duration + time.Duration(randomJitter)
+	next := duration + time.Duration(randomJitter)
+	minDuration := duration / 2
+	if minDuration <= 0 {
+		minDuration = time.Nanosecond
+	}
+	if next < minDuration {
+		return minDuration
+	}
+	return next
 }
