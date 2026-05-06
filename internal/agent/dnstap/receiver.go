@@ -1,8 +1,8 @@
 package dnstap
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,8 +10,12 @@ import (
 	"sync"
 	"time"
 
+	dnstaplib "github.com/dnstap/golang-dnstap"
+	framestream "github.com/farsightsec/golang-framestream"
 	"go.uber.org/zap"
 )
+
+const maxDNSTapFrameSize = 1024 * 1024
 
 // Receiver listens on a Unix socket and receives DNSTap frames from DNS servers.
 type Receiver struct {
@@ -146,7 +150,17 @@ func (r *Receiver) Run(ctx context.Context, frameChan chan<- Frame) error {
 func (r *Receiver) handleConnection(ctx context.Context, conn net.Conn, frameChan chan<- Frame) {
 	r.logger.Debug("New DNSTap connection", zap.String("remote", conn.RemoteAddr().String()))
 
-	reader := bufio.NewReader(conn)
+	reader, err := dnstaplib.NewReader(conn, &dnstaplib.ReaderOptions{
+		Bidirectional: true,
+	})
+	if err != nil {
+		if ctx.Err() == nil {
+			r.logger.Warn("Failed to establish DNSTap Frame Streams session", zap.Error(err))
+		}
+		return
+	}
+
+	buf := make([]byte, maxDNSTapFrameSize)
 	dropped := 0
 
 	for {
@@ -156,33 +170,22 @@ func (r *Receiver) handleConnection(ctx context.Context, conn net.Conn, frameCha
 		default:
 		}
 
-		// Read frame length (4 bytes, big-endian)
-		var lengthBytes [4]byte
-		if _, err := io.ReadFull(reader, lengthBytes[:]); err != nil {
-			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				r.logger.Debug("Connection closed", zap.Error(err))
+		n, err := reader.ReadFrame(buf)
+		if err != nil {
+			switch {
+			case errors.Is(err, io.EOF):
+				r.logger.Debug("DNSTap connection closed")
+			case errors.Is(err, framestream.ErrDataFrameTooLarge):
+				r.logger.Warn("DNSTap frame too large, dropping frame")
+				continue
+			default:
+				r.logger.Warn("Failed to read DNSTap frame", zap.Error(err))
 			}
 			return
 		}
 
-		// Parse length
-		length := uint32(lengthBytes[0])<<24 |
-			uint32(lengthBytes[1])<<16 |
-			uint32(lengthBytes[2])<<8 |
-			uint32(lengthBytes[3])
-
-		// Sanity check: max frame size 1MB
-		if length > 1024*1024 {
-			r.logger.Warn("Frame too large, closing connection", zap.Uint32("length", length))
-			return
-		}
-
-		// Read frame data
-		data := make([]byte, length)
-		if _, err := io.ReadFull(reader, data); err != nil {
-			r.logger.Warn("Failed to read frame data", zap.Error(err))
-			return
-		}
+		data := make([]byte, n)
+		copy(data, buf[:n])
 
 		// Send frame to channel (non-blocking)
 		frame := Frame{
