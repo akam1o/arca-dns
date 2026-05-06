@@ -1,6 +1,8 @@
 package sync
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 )
@@ -74,7 +76,7 @@ func TestSafeZoneFilename(t *testing.T) {
 		{
 			name:     "very long name",
 			input:    strings.Repeat("a", 300) + ".com.",
-			expected: strings.Repeat("a", 200),
+			expected: expectedLongSafeZoneFilename(strings.Repeat("a", 300) + ".com"),
 		},
 	}
 
@@ -97,6 +99,26 @@ func TestSafeZoneFilename(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSafeZoneFilename_LongNamesDoNotCollideAfterTruncation(t *testing.T) {
+	prefix := strings.Repeat("a", 220)
+
+	first := SafeZoneFilename(prefix + "x.example.")
+	second := SafeZoneFilename(prefix + "y.example.")
+
+	if first == second {
+		t.Fatalf("long zone filenames collided: %q", first)
+	}
+	if len(first) > 200 || len(second) > 200 {
+		t.Fatalf("long zone filenames exceeded length limit: %d %d", len(first), len(second))
+	}
+}
+
+func expectedLongSafeZoneFilename(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	hash := hex.EncodeToString(sum[:])[:12]
+	return name[:187] + "-" + hash
 }
 
 func TestZoneFilePath(t *testing.T) {
