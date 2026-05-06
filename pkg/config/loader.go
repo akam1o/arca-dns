@@ -349,6 +349,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 
 	if cfg.Metrics.Enabled {
 		path := normalizeHTTPPath(cfg.Metrics.Path, "/metrics")
+		if strings.ContainsAny(path, ":*") {
+			return fmt.Errorf("invalid metrics.path: must be a static HTTP path without ':' or '*'")
+		}
 		if isReservedAgentStatusPath(path) {
 			return fmt.Errorf("invalid metrics.path: conflicts with reserved status endpoint %q", path)
 		}

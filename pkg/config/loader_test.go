@@ -539,6 +539,26 @@ func TestValidateAgentConfig_MetricsPathCannotConflictWithStatusEndpoints(t *tes
 	}
 }
 
+func TestValidateAgentConfig_MetricsPathMustBeStatic(t *testing.T) {
+	tests := []string{
+		"/*metrics",
+		"/*metrics/rest",
+		"/:metrics",
+		"/metrics/:name",
+	}
+
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			cfg := DefaultAgentConfig()
+			cfg.Metrics.Enabled = true
+			cfg.Metrics.Path = path
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "metrics.path")
+		})
+	}
+}
+
 func TestValidateAgentConfig_MetricsPathIgnoredWhenMetricsDisabled(t *testing.T) {
 	cfg := DefaultAgentConfig()
 	cfg.Metrics.Enabled = false
