@@ -1032,7 +1032,7 @@ func TestGetSignedZone_AgentClientVerifiesArtifactSignature(t *testing.T) {
 	defer client.Close()
 	client.SetSignatureVerification(true, "test-signature-key")
 
-	zoneFile, _, notModified, err := client.FetchSignedZone("example.com.", "")
+	zoneFile, _, notModified, err := client.FetchSignedZone(context.Background(), "example.com.", "")
 	require.NoError(t, err)
 	assert.False(t, notModified)
 	assert.Contains(t, zoneFile, "192.0.2.1")

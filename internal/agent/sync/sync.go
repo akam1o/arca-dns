@@ -133,7 +133,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	s.logger.Debug("Starting sync cycle")
 
 	// Step 1: Fetch zone list from controller
-	zones, err := s.client.ListZones()
+	zones, err := s.client.ListZones(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list zones: %w", err)
 	}
@@ -258,25 +258,26 @@ func (s *Syncer) deleteRemovedZones(ctx context.Context, controllerZones map[str
 		deletedCount++
 	}
 
-	managedZoneFiles, err := s.fileMgr.listManagedZoneFiles()
+	managedZones, err := s.fileMgr.listManagedZones()
 	if err != nil {
 		s.logger.Error("Failed to list managed zone files", zap.Error(err))
 		return deletedCount, errorCount + 1
 	}
 
-	for _, zoneFile := range managedZoneFiles {
-		if _, exists := controllerZoneFiles[zoneFile]; exists {
+	for _, managedZone := range managedZones {
+		if _, exists := controllerZoneFiles[managedZone.SafeName]; exists {
 			continue
 		}
-		if _, attempted := attemptedFiles[zoneFile]; attempted {
+		if _, attempted := attemptedFiles[managedZone.SafeName]; attempted {
 			continue
 		}
 
-		if err := s.deleteRemovedZone(ctx, zoneFile); err != nil {
+		if err := s.deleteRemovedZone(ctx, managedZone.ZoneName); err != nil {
 			s.logger.Error("Failed to delete orphaned zone file",
-				zap.String("zone_file", zoneFile),
+				zap.String("zone", managedZone.ZoneName),
+				zap.String("zone_file", managedZone.SafeName),
 				zap.Error(err))
-			s.recordDeleteFailure(zoneFile)
+			s.recordDeleteFailure(managedZone.ZoneName)
 			errorCount++
 			continue
 		}
@@ -333,7 +334,7 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 	}
 
 	// Step 3: Conditional fetch using ETag
-	zoneContent, newETag, notModified, err := s.client.FetchSignedZone(zone.Name, currentETag)
+	zoneContent, newETag, notModified, err := s.client.FetchSignedZone(ctx, zone.Name, currentETag)
 	if err != nil {
 		return fmt.Errorf("failed to fetch zone: %w", err)
 	}
@@ -420,7 +421,7 @@ func isHex(s string) bool {
 // Useful for on-demand sync or testing.
 func (s *Syncer) SyncZone(ctx context.Context, zoneName string) error {
 	// Fetch zone info from controller
-	zones, err := s.client.ListZones()
+	zones, err := s.client.ListZones(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list zones: %w", err)
 	}

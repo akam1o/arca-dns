@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
@@ -148,11 +149,15 @@ func (c *Client) SetSignatureVerification(enabled bool, key string) {
 }
 
 // ListZones retrieves the list of zones from the controller.
-func (c *Client) ListZones() ([]ZoneInfo, error) {
+func (c *Client) ListZones(ctx context.Context) ([]ZoneInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	var zones []ZoneInfo
 
 	for offset := 0; ; {
-		result, err := c.listZonesPage(offset, listZonesPageLimit)
+		result, err := c.listZonesPage(ctx, offset, listZonesPageLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -189,7 +194,7 @@ func (c *Client) ListZones() ([]ZoneInfo, error) {
 	return zones, nil
 }
 
-func (c *Client) listZonesPage(offset, limit int) (*listZonesResponse, error) {
+func (c *Client) listZonesPage(ctx context.Context, offset, limit int) (*listZonesResponse, error) {
 	endpoint, err := url.Parse(fmt.Sprintf("%s/api/v1/zones", c.baseURL))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse request URL: %w", err)
@@ -199,7 +204,7 @@ func (c *Client) listZonesPage(offset, limit int) (*listZonesResponse, error) {
 	query.Set("limit", fmt.Sprintf("%d", limit))
 	endpoint.RawQuery = query.Encode()
 
-	req, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -231,10 +236,14 @@ func (c *Client) listZonesPage(offset, limit int) (*listZonesResponse, error) {
 // FetchSignedZone fetches a signed zone file from the controller.
 // If currentETag is provided, it performs a conditional fetch using If-None-Match.
 // Returns (zoneContent, newETag, isNotModified, error).
-func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, string, bool, error) {
+func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentETag string) (string, string, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	url := fmt.Sprintf("%s/api/v1/zones/%s/signed", c.baseURL, zoneName)
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", "", false, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -389,8 +398,18 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 
 	for attempt := 0; attempt <= c.config.RetryAttempts; attempt++ {
 		if attempt > 0 {
-			// Wait before retry
-			time.Sleep(c.config.RetryDelay)
+			timer := time.NewTimer(c.config.RetryDelay)
+			select {
+			case <-timer.C:
+			case <-req.Context().Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return nil, req.Context().Err()
+			}
 		}
 
 		resp, err := c.httpClient.Do(req)

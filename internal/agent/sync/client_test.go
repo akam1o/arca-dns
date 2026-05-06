@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -97,7 +98,7 @@ func TestListZones(t *testing.T) {
 	}
 	defer client.Close()
 
-	zones, err := client.ListZones()
+	zones, err := client.ListZones(context.Background())
 	if err != nil {
 		t.Fatalf("ListZones failed: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestListZones_Paginates(t *testing.T) {
 	}
 	defer client.Close()
 
-	zones, err := client.ListZones()
+	zones, err := client.ListZones(context.Background())
 	if err != nil {
 		t.Fatalf("ListZones failed: %v", err)
 	}
@@ -244,7 +245,7 @@ www.example.com. 300 IN A 192.0.2.1
 	}
 	defer client.Close()
 
-	content, etag, notModified, err := client.FetchSignedZone("example.com.", "")
+	content, etag, notModified, err := client.FetchSignedZone(context.Background(), "example.com.", "")
 	if err != nil {
 		t.Fatalf("FetchSignedZone failed: %v", err)
 	}
@@ -291,7 +292,7 @@ func TestFetchSignedZone_NotModified(t *testing.T) {
 	}
 	defer client.Close()
 
-	content, etag, notModified, err := client.FetchSignedZone("example.com.", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	content, etag, notModified, err := client.FetchSignedZone(context.Background(), "example.com.", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
 	if err != nil {
 		t.Fatalf("FetchSignedZone failed: %v", err)
 	}
@@ -332,7 +333,7 @@ func TestFetchSignedZone_NotModifiedRejectsMissingETag(t *testing.T) {
 	}
 	defer client.Close()
 
-	_, _, _, err = client.FetchSignedZone("example.com.", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
 	if err == nil {
 		t.Fatal("Expected missing ETag in 304 response to fail")
 	}
@@ -365,7 +366,7 @@ func TestFetchSignedZone_NotModifiedRejectsMismatchedETag(t *testing.T) {
 	}
 	defer client.Close()
 
-	_, _, _, err = client.FetchSignedZone("example.com.", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
 	if err == nil {
 		t.Fatal("Expected mismatched ETag in 304 response to fail")
 	}
@@ -402,7 +403,7 @@ func TestFetchSignedZone_ChecksumVerification(t *testing.T) {
 	}
 	defer client.Close()
 
-	_, _, _, err = client.FetchSignedZone("example.com.", "")
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "")
 	if err == nil {
 		t.Fatal("Expected checksum verification to fail")
 	}
@@ -438,7 +439,7 @@ func TestFetchSignedZone_MissingChecksumRejected(t *testing.T) {
 	}
 	defer client.Close()
 
-	_, _, _, err = client.FetchSignedZone("example.com.", "")
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "")
 	if err == nil {
 		t.Fatal("Expected missing checksum header to fail")
 	}
@@ -472,7 +473,7 @@ func TestFetchSignedZone_ChecksumVerificationDisabled(t *testing.T) {
 	defer client.Close()
 	client.SetVerifyChecksums(false)
 
-	content, _, _, err := client.FetchSignedZone("example.com.", "")
+	content, _, _, err := client.FetchSignedZone(context.Background(), "example.com.", "")
 	if err != nil {
 		t.Fatalf("FetchSignedZone failed with checksum verification disabled: %v", err)
 	}
@@ -513,7 +514,7 @@ func TestFetchSignedZone_SignatureVerification(t *testing.T) {
 	defer client.Close()
 	client.SetSignatureVerification(true, signatureKey)
 
-	content, _, _, err := client.FetchSignedZone("example.com.", "")
+	content, _, _, err := client.FetchSignedZone(context.Background(), "example.com.", "")
 	if err != nil {
 		t.Fatalf("FetchSignedZone failed with valid signature: %v", err)
 	}
@@ -552,7 +553,7 @@ func TestFetchSignedZone_MissingSignatureRejected(t *testing.T) {
 	defer client.Close()
 	client.SetSignatureVerification(true, "test-signature-key")
 
-	_, _, _, err = client.FetchSignedZone("example.com.", "")
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "")
 	if err == nil {
 		t.Fatal("Expected missing signature header to fail")
 	}
@@ -592,7 +593,7 @@ func TestFetchSignedZone_InvalidSignatureRejected(t *testing.T) {
 	defer client.Close()
 	client.SetSignatureVerification(true, "test-signature-key")
 
-	_, _, _, err = client.FetchSignedZone("example.com.", "")
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "")
 	if err == nil {
 		t.Fatal("Expected invalid signature to fail")
 	}
@@ -632,12 +633,44 @@ func TestRetryLogic(t *testing.T) {
 	}
 	defer client.Close()
 
-	_, err = client.ListZones()
+	_, err = client.ListZones(context.Background())
 	if err != nil {
 		t.Fatalf("ListZones failed after retries: %v", err)
 	}
 
 	if attempts != 3 {
 		t.Errorf("Expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestRetryDelayHonorsContextCancellation(t *testing.T) {
+	requireTCPListener(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 3,
+		RetryDelay:    time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = client.ListZones(ctx)
+	if err == nil {
+		t.Fatal("expected ListZones to fail after context cancellation")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("ListZones ignored context during retry delay; elapsed=%s", elapsed)
 	}
 }

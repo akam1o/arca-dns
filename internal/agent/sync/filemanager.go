@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/akam1o/arca-dns/pkg/model"
 	"go.uber.org/zap"
 )
 
@@ -22,7 +24,18 @@ type FileManager struct {
 const managedZonesIndexFile = ".arca-dns-managed-zones.json"
 
 type managedZonesIndex struct {
-	Zones []string `json:"zones"`
+	Zones   []string           `json:"zones,omitempty"`
+	Entries []managedZoneEntry `json:"entries,omitempty"`
+}
+
+type managedZoneEntry struct {
+	Name string `json:"name"`
+	File string `json:"file"`
+}
+
+type managedZoneRef struct {
+	ZoneName string
+	SafeName string
 }
 
 // NewFileManager creates a new file manager.
@@ -237,12 +250,12 @@ func (fm *FileManager) managedZonesIndexPath() string {
 	return filepath.Join(fm.zoneDir, managedZonesIndexFile)
 }
 
-func (fm *FileManager) readManagedZones() (map[string]struct{}, error) {
+func (fm *FileManager) readManagedZones() (map[string]string, error) {
 	path := fm.managedZonesIndexPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]struct{}{}, nil
+			return map[string]string{}, nil
 		}
 		return nil, fmt.Errorf("read managed zone index: %w", err)
 	}
@@ -252,25 +265,51 @@ func (fm *FileManager) readManagedZones() (map[string]struct{}, error) {
 		return nil, fmt.Errorf("parse managed zone index: %w", err)
 	}
 
-	zones := make(map[string]struct{}, len(index.Zones))
+	zones := make(map[string]string, len(index.Zones)+len(index.Entries))
+	for _, entry := range index.Entries {
+		fileName := entry.File
+		if strings.TrimSpace(fileName) == "" {
+			fileName = entry.Name
+		}
+		safeName := SafeZoneFilename(fileName)
+		if safeName == "" {
+			continue
+		}
+		zoneName := strings.TrimSpace(entry.Name)
+		if zoneName == "" {
+			zoneName = safeName
+		} else {
+			zoneName = model.NormalizeZoneName(zoneName)
+		}
+		zones[safeName] = zoneName
+	}
 	for _, zone := range index.Zones {
 		safeName := SafeZoneFilename(zone)
 		if safeName == "" {
 			continue
 		}
-		zones[safeName] = struct{}{}
+		// Backward compatibility for the previous index format, which only
+		// stored the safe filename and cannot recover truncated long FQDNs.
+		if _, exists := zones[safeName]; !exists {
+			zones[safeName] = safeName
+		}
 	}
 	return zones, nil
 }
 
-func (fm *FileManager) writeManagedZones(zones map[string]struct{}) error {
-	names := make([]string, 0, len(zones))
-	for zone := range zones {
-		names = append(names, zone)
+func (fm *FileManager) writeManagedZones(zones map[string]string) error {
+	entries := make([]managedZoneEntry, 0, len(zones))
+	for safeName, zoneName := range zones {
+		entries = append(entries, managedZoneEntry{
+			Name: zoneName,
+			File: safeName,
+		})
 	}
-	sort.Strings(names)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].File < entries[j].File
+	})
 
-	data, err := json.MarshalIndent(managedZonesIndex{Zones: names}, "", "  ")
+	data, err := json.MarshalIndent(managedZonesIndex{Entries: entries}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal managed zone index: %w", err)
 	}
@@ -297,7 +336,7 @@ func (fm *FileManager) recordManagedZone(zoneName string) error {
 	if err != nil {
 		return err
 	}
-	zones[SafeZoneFilename(zoneName)] = struct{}{}
+	zones[SafeZoneFilename(zoneName)] = model.NormalizeZoneName(zoneName)
 	return fm.writeManagedZones(zones)
 }
 
@@ -310,15 +349,34 @@ func (fm *FileManager) removeManagedZone(zoneName string) error {
 	return fm.writeManagedZones(zones)
 }
 
-func (fm *FileManager) listManagedZoneFiles() ([]string, error) {
+func (fm *FileManager) listManagedZones() ([]managedZoneRef, error) {
 	zones, err := fm.readManagedZones()
 	if err != nil {
 		return nil, err
 	}
 
+	refs := make([]managedZoneRef, 0, len(zones))
+	for safeName, zoneName := range zones {
+		refs = append(refs, managedZoneRef{
+			ZoneName: zoneName,
+			SafeName: safeName,
+		})
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		return refs[i].SafeName < refs[j].SafeName
+	})
+	return refs, nil
+}
+
+func (fm *FileManager) listManagedZoneFiles() ([]string, error) {
+	zones, err := fm.listManagedZones()
+	if err != nil {
+		return nil, err
+	}
+
 	zoneNames := make([]string, 0, len(zones))
-	for zoneName := range zones {
-		zoneNames = append(zoneNames, zoneName)
+	for _, zone := range zones {
+		zoneNames = append(zoneNames, zone.SafeName)
 	}
 	sort.Strings(zoneNames)
 	return zoneNames, nil

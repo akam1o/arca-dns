@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -89,6 +90,41 @@ func TestSyncer_SyncAll(t *testing.T) {
 	assert.Equal(t, "example.com", state.ZoneName)
 	assert.Equal(t, "v1-abc123", state.Version)
 	assert.Equal(t, 0, state.FailCount)
+}
+
+func TestSyncer_DeleteRemovedZonesUsesCanonicalManagedZoneName(t *testing.T) {
+	zoneDir := filepath.Join(t.TempDir(), "zones")
+	fileMgr := NewFileManager(zoneDir, 3, zap.NewNop())
+
+	labels := make([]string, 0, 30)
+	for i := 0; i < 30; i++ {
+		labels = append(labels, fmt.Sprintf("label%02d", i))
+	}
+	longZone := strings.Join(labels, ".") + ".example.com."
+	if len(SafeZoneFilename(longZone)) >= len(strings.TrimSuffix(longZone, ".")) {
+		t.Fatal("test zone name was not long enough to exercise filename truncation")
+	}
+	if err := fileMgr.recordManagedZone(longZone); err != nil {
+		t.Fatalf("recordManagedZone failed: %v", err)
+	}
+
+	syncer := NewSyncer(nil, fileMgr, config.SyncConfig{}, zap.NewNop())
+	deletedZone := ""
+	syncer.SetOnZoneDeleted(func(ctx context.Context, zoneName string) error {
+		deletedZone = zoneName
+		return nil
+	})
+
+	deletedCount, errorCount := syncer.deleteRemovedZones(context.Background(), map[string]struct{}{}, map[string]struct{}{})
+	if errorCount != 0 {
+		t.Fatalf("deleteRemovedZones errors = %d, want 0", errorCount)
+	}
+	if deletedCount != 1 {
+		t.Fatalf("deleteRemovedZones deleted = %d, want 1", deletedCount)
+	}
+	if deletedZone != longZone {
+		t.Fatalf("delete hook zone = %q, want %q", deletedZone, longZone)
+	}
 }
 
 func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
@@ -462,7 +498,7 @@ func TestSyncer_SyncAll_RemovesOrphanZoneFiles(t *testing.T) {
 	backups, err := fileMgr.listBackups("deleted.com")
 	require.NoError(t, err)
 	assert.Empty(t, backups)
-	assert.Equal(t, []string{"deleted.com"}, deletedZones)
+	assert.Equal(t, []string{"deleted.com."}, deletedZones)
 }
 
 func TestSyncer_SyncZone(t *testing.T) {
