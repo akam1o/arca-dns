@@ -479,12 +479,8 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 		return nil, false
 	}
 
-	if h.signingService != nil {
-		if err := h.signingService.SignAndStoreZone(c.Request.Context(), updated); err != nil {
-			h.logger.Warn("Failed to sign zone after record mutation",
-				zap.String("zone", updated.Name),
-				zap.Error(err))
-		}
+	if !h.signZoneForResponse(c, updated, "record mutation") {
+		return nil, false
 	}
 
 	c.Header("ETag", formatETag(updated.Version))

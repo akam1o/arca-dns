@@ -183,13 +183,8 @@ func (h *Handler) CreateZone(c *gin.Context) {
 	}
 
 	// Sign zone automatically (M4.5: auto-signing after create)
-	if h.signingService != nil {
-		if err := h.signingService.SignAndStoreZone(c.Request.Context(), created); err != nil {
-			// Log error but don't fail the request - zone was created successfully
-			h.logger.Warn("Failed to sign zone after creation",
-				zap.String("zone", created.Name),
-				zap.Error(err))
-		}
+	if !h.signZoneForResponse(c, created, "creation") {
+		return
 	}
 
 	// Set ETag header
@@ -608,13 +603,8 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	}
 
 	// Sign zone automatically (M4.5: auto-signing after update)
-	if h.signingService != nil {
-		if err := h.signingService.SignAndStoreZone(c.Request.Context(), updated); err != nil {
-			// Log error but don't fail the request - zone was updated successfully
-			h.logger.Warn("Failed to sign zone after update",
-				zap.String("zone", updated.Name),
-				zap.Error(err))
-		}
+	if !h.signZoneForResponse(c, updated, "update") {
+		return
 	}
 
 	// Set ETag header
@@ -778,6 +768,26 @@ func (h *Handler) signedZoneFile(ctx context.Context, name string, zone *model.Z
 		return "", nil, fmt.Errorf("generate zone file: %w", err)
 	}
 	return zoneFile, zone.DNSSEC, nil
+}
+
+func (h *Handler) signZoneForResponse(c *gin.Context, zone *model.Zone, operation string) bool {
+	if h.signingService == nil {
+		return true
+	}
+
+	if err := h.signingService.SignAndStoreZone(c.Request.Context(), zone); err != nil {
+		h.logger.Error("Failed to sign zone after "+operation,
+			zap.String("zone", zone.Name),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to sign zone",
+			map[string]interface{}{"error": "signing failed"},
+		))
+		return false
+	}
+
+	return true
 }
 
 // GetDSRecords handles GET /api/v1/zones/:name/ds
