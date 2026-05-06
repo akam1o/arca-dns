@@ -210,7 +210,6 @@ func (s *SQLiteBackend) CreateZone(ctx context.Context, zone *model.Zone) error 
 // UpdateZone updates an existing zone.
 func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
 
 	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
 		v, err := model.NewZoneVersion()
@@ -227,9 +226,10 @@ func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Preserve CreatedAt
+	// Preserve CreatedAt and advance from the stored SOA serial, not client input.
 	var createdAt string
-	err = tx.QueryRowContext(ctx, "SELECT created_at FROM zones WHERE name = ?", zone.Name).Scan(&createdAt)
+	var currentSerial uint32
+	err = tx.QueryRowContext(ctx, "SELECT created_at, soa_serial FROM zones WHERE name = ?", zone.Name).Scan(&createdAt, &currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -237,6 +237,7 @@ func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 		return fmt.Errorf("query zone: %w", err)
 	}
 	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	zone.SOA.Serial = generateSerial(currentSerial)
 
 	// CAS update
 	query := `
@@ -732,7 +733,6 @@ func (t *sqliteTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 
 func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
 
 	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
 		v, err := model.NewZoneVersion()
@@ -743,9 +743,10 @@ func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVer
 	}
 	zone.UpdatedAt = time.Now()
 
-	// Preserve CreatedAt
+	// Preserve CreatedAt and advance from the stored SOA serial, not client input.
 	var createdAt string
-	err := t.tx.QueryRowContext(ctx, "SELECT created_at FROM zones WHERE name = ?", zone.Name).Scan(&createdAt)
+	var currentSerial uint32
+	err := t.tx.QueryRowContext(ctx, "SELECT created_at, soa_serial FROM zones WHERE name = ?", zone.Name).Scan(&createdAt, &currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -753,6 +754,7 @@ func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVer
 		return fmt.Errorf("query zone: %w", err)
 	}
 	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	zone.SOA.Serial = generateSerial(currentSerial)
 
 	query := `
 		UPDATE zones SET

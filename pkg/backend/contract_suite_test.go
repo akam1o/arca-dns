@@ -157,6 +157,27 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		assert.Len(t, updated.Records, 1)
 	})
 
+	t.Run("UpdateZone_IgnoresClientSerialRollback", func(t *testing.T) {
+		zone := createTestZone("serial-rollback.example.com.")
+		err := store.CreateZone(ctx, zone)
+		require.NoError(t, err)
+
+		originalVersion := zone.Version
+		originalSerial := zone.SOA.Serial
+
+		zone.SOA.Serial = 1
+		zone.Records = []model.Record{
+			{Name: "test.serial-rollback.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		}
+		err = store.UpdateZone(ctx, zone, originalVersion)
+		require.NoError(t, err)
+
+		updated, err := store.GetZone(ctx, "serial-rollback.example.com.")
+		require.NoError(t, err)
+		assert.Greater(t, updated.SOA.Serial, originalSerial,
+			"UpdateZone must advance from the stored serial, not a stale client serial")
+	})
+
 	t.Run("UpdateZone_OptimisticLocking", func(t *testing.T) {
 		zone := createTestZone("locking.example.com.")
 		err := store.CreateZone(ctx, zone)

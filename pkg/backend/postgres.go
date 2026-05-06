@@ -190,7 +190,6 @@ func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) erro
 // UpdateZone updates an existing zone.
 func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
 
 	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
 		v, err := model.NewZoneVersion()
@@ -207,9 +206,10 @@ func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expe
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Preserve CreatedAt
+	// Preserve CreatedAt and advance from the stored SOA serial, not client input.
 	var createdAt time.Time
-	err = tx.QueryRowContext(ctx, "SELECT created_at FROM zones WHERE name = $1", zone.Name).Scan(&createdAt)
+	var currentSerial uint32
+	err = tx.QueryRowContext(ctx, "SELECT created_at, soa_serial FROM zones WHERE name = $1", zone.Name).Scan(&createdAt, &currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -217,6 +217,7 @@ func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expe
 		return fmt.Errorf("query zone: %w", err)
 	}
 	zone.CreatedAt = createdAt
+	zone.SOA.Serial = generateSerial(currentSerial)
 
 	// CAS update
 	dnssecEnabled := false
@@ -657,7 +658,6 @@ func (t *pgTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 
 func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
 	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
 		v, err := model.NewZoneVersion()
 		if err != nil {
@@ -668,7 +668,8 @@ func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion
 	zone.UpdatedAt = time.Now()
 
 	var createdAt time.Time
-	err := t.tx.QueryRowContext(ctx, "SELECT created_at FROM zones WHERE name = $1", zone.Name).Scan(&createdAt)
+	var currentSerial uint32
+	err := t.tx.QueryRowContext(ctx, "SELECT created_at, soa_serial FROM zones WHERE name = $1", zone.Name).Scan(&createdAt, &currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -676,6 +677,7 @@ func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion
 		return fmt.Errorf("query zone: %w", err)
 	}
 	zone.CreatedAt = createdAt
+	zone.SOA.Serial = generateSerial(currentSerial)
 
 	dnssecEnabled := false
 	var dnssecAlgo, dnssecKSK, dnssecZSK interface{}

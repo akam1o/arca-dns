@@ -418,9 +418,6 @@ func (m *MySQLBackend) updateDNSSECMetadata(ctx context.Context, zoneName string
 func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
 
-	// Auto-increment serial
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
-
 	// Ensure version changes on update (normally issued by controller).
 	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
 		newVersion, err := model.NewZoneVersion()
@@ -439,6 +436,17 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Advance from the stored SOA serial, not client input.
+	var currentSerial uint32
+	err = tx.QueryRowContext(ctx, "SELECT soa_serial FROM zones WHERE name = ?", zone.Name).Scan(&currentSerial)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ErrZoneNotFound
+		}
+		return fmt.Errorf("failed to query zone serial: %w", err)
+	}
+	zone.SOA.Serial = generateSerial(currentSerial)
 
 	// Update zone. Add CAS condition only when an expected version is provided.
 	zoneQuery := `
@@ -852,9 +860,6 @@ func (t *MySQLTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
 
-	// Auto-increment serial
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
-
 	// Ensure version changes on update (normally issued by controller).
 	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
 		newVersion, err := model.NewZoneVersion()
@@ -866,6 +871,17 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
+
+	// Advance from the stored SOA serial, not client input.
+	var currentSerial uint32
+	err := t.tx.QueryRowContext(ctx, "SELECT soa_serial FROM zones WHERE name = ?", zone.Name).Scan(&currentSerial)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ErrZoneNotFound
+		}
+		return fmt.Errorf("failed to query zone serial: %w", err)
+	}
+	zone.SOA.Serial = generateSerial(currentSerial)
 
 	// Update zone. Add CAS condition only when an expected version is provided.
 	zoneQuery := `
