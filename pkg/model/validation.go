@@ -22,7 +22,7 @@ func ValidateZone(zone *Zone) error {
 	}
 
 	// Validate zone name
-	if err := ValidateDomainName(zone.Name); err != nil {
+	if err := ValidateZoneName(zone.Name); err != nil {
 		return fmt.Errorf("invalid zone name: %w", err)
 	}
 
@@ -108,11 +108,11 @@ func ValidateSOA(soa *SOARecord) error {
 		return fmt.Errorf("SOA is nil")
 	}
 
-	if err := ValidateDomainName(soa.MName); err != nil {
+	if err := ValidateDomainTarget(soa.MName); err != nil {
 		return fmt.Errorf("invalid MName: %w", err)
 	}
 
-	if err := ValidateDomainName(soa.RName); err != nil {
+	if err := ValidateDomainTarget(soa.RName); err != nil {
 		return fmt.Errorf("invalid RName: %w", err)
 	}
 
@@ -253,7 +253,7 @@ func ValidateRecordValue(recordType, value string) error {
 	case RecordTypeAAAA:
 		return ValidateIPv6(value)
 	case RecordTypeCNAME, RecordTypeNS, RecordTypePTR:
-		return ValidateDomainName(value)
+		return ValidateDomainTarget(value)
 	case RecordTypeMX:
 		return ValidateMXValue(value)
 	case RecordTypeTXT:
@@ -266,6 +266,24 @@ func ValidateRecordValue(recordType, value string) error {
 		// Unknown type, basic validation
 		return nil
 	}
+}
+
+// ValidateDomainTarget validates a DNS RDATA domain target. Unlike record
+// owner names, targets must not use "@" as an apex shorthand.
+func ValidateDomainTarget(name string) error {
+	if name == "@" {
+		return fmt.Errorf("domain target must not be @")
+	}
+	return ValidateDomainName(name)
+}
+
+// ValidateZoneName validates a DNS zone name. Zones must use a real domain
+// name, not owner-name shorthand.
+func ValidateZoneName(name string) error {
+	if name == "@" {
+		return fmt.Errorf("zone name must not be @")
+	}
+	return ValidateDomainName(name)
 }
 
 // ValidateDomainName validates a DNS domain name.
@@ -344,7 +362,7 @@ func ValidateMXValue(value string) error {
 	}
 
 	// Validate domain
-	return ValidateDomainName(parts[1])
+	return ValidateDomainTarget(parts[1])
 }
 
 // ValidateTXTValue validates a TXT record value.
@@ -383,7 +401,7 @@ func ValidateSRVValue(value string) error {
 	}
 
 	// Validate target
-	return ValidateDomainName(parts[3])
+	return ValidateDomainTarget(parts[3])
 }
 
 // ValidateCAAValue validates a CAA record value (flags tag value).

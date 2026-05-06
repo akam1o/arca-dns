@@ -38,6 +38,18 @@ func TestValidateDomainName(t *testing.T) {
 	}
 }
 
+func TestValidateDomainTargetRejectsApexShorthand(t *testing.T) {
+	assert.Error(t, ValidateDomainTarget("@"))
+	assert.NoError(t, ValidateDomainTarget("."))
+	assert.NoError(t, ValidateDomainTarget("example.com."))
+}
+
+func TestValidateZoneNameRejectsApexShorthand(t *testing.T) {
+	assert.Error(t, ValidateZoneName("@"))
+	assert.NoError(t, ValidateZoneName("."))
+	assert.NoError(t, ValidateZoneName("example.com."))
+}
+
 func TestValidateIPv4(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -101,6 +113,7 @@ func TestValidateMXValue(t *testing.T) {
 		{"negative priority", "-1 mail.example.com.", true},
 		{"priority too high", "65536 mail.example.com.", true},
 		{"invalid domain", "10 invalid!.com", true},
+		{"apex shorthand target", "10 @", true},
 	}
 
 	for _, tt := range tests {
@@ -153,6 +166,7 @@ func TestValidateSRVValue(t *testing.T) {
 		{"invalid port", "10 60 abc sip.example.com.", true},
 		{"port too high", "10 60 65536 sip.example.com.", true},
 		{"invalid domain", "10 60 5060 invalid!.com", true},
+		{"apex shorthand target", "10 60 5060 @", true},
 	}
 
 	for _, tt := range tests {
@@ -237,6 +251,16 @@ func TestValidateRecord(t *testing.T) {
 				Type:  RecordTypeSOA,
 				TTL:   3600,
 				Value: "ns1.example.com. admin.example.com. 2024010101 3600 1800 604800 86400",
+			},
+			wantErr: true,
+		},
+		{
+			name: "CNAME target cannot use apex shorthand",
+			record: &Record{
+				Name:  "www",
+				Type:  "CNAME",
+				TTL:   300,
+				Value: "@",
 			},
 			wantErr: true,
 		},
@@ -422,6 +446,18 @@ func TestValidateSOA(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "apex shorthand mname",
+			soa: &SOARecord{
+				MName:   "@",
+				RName:   "admin.example.com.",
+				Refresh: 3600,
+				Retry:   1800,
+				Expire:  604800,
+				Minimum: 86400,
+			},
+			wantErr: true,
+		},
+		{
 			name:    "nil",
 			soa:     nil,
 			wantErr: true,
@@ -475,6 +511,14 @@ func TestValidateZone(t *testing.T) {
 			name: "invalid zone name",
 			zone: &Zone{
 				Name: "invalid!.com",
+				SOA:  DefaultSOA("ns1.example.com.", "admin.example.com."),
+			},
+			wantErr: true,
+		},
+		{
+			name: "apex shorthand zone name",
+			zone: &Zone{
+				Name: "@",
 				SOA:  DefaultSOA("ns1.example.com.", "admin.example.com."),
 			},
 			wantErr: true,
