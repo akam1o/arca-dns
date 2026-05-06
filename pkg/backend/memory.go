@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -239,10 +240,11 @@ func copyZone(zone *model.Zone) *model.Zone {
 func generateSerial(currentSerial uint32) uint32 {
 	now := time.Now()
 	today := uint32(now.Year()*10000 + int(now.Month())*100 + now.Day())
+	todayFirst := today*100 + 1
 
 	if currentSerial == 0 {
 		// First serial for this zone
-		return today*100 + 1
+		return todayFirst
 	}
 
 	currentDate := currentSerial / 100
@@ -253,8 +255,18 @@ func generateSerial(currentSerial uint32) uint32 {
 		return currentSerial + 1
 	}
 
-	// New day or counter maxed out, reset to today01
-	return today*100 + 1
+	if currentDate < today && todayFirst > currentSerial {
+		// New day, move to today's first serial while preserving monotonicity.
+		return todayFirst
+	}
+
+	if currentSerial < math.MaxUint32 {
+		// Future serials or exhausted date counters must still move forward.
+		return currentSerial + 1
+	}
+
+	// No larger uint32 value exists. Avoid moving backwards.
+	return currentSerial
 }
 
 // memoryBackendFactory is the factory function for memory backend.
