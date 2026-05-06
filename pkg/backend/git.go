@@ -109,7 +109,6 @@ type GitBackend struct {
 	worktree  *git.Worktree
 	fileLock  *flock.Flock
 	zoneMutex sync.Map // map[string]*sync.Mutex (per-zone locking)
-	mu        sync.RWMutex
 }
 
 // NewGitBackend creates a new Git backend
@@ -274,9 +273,8 @@ func boolFromConfig(value interface{}) (bool, bool) {
 	return v, ok
 }
 
-// acquireLock acquires both file lock and per-zone mutex
-func (g *GitBackend) acquireLock(ctx context.Context, zoneName string) (*sync.Mutex, error) {
-	// Acquire file lock (cross-process)
+// acquireFileLock acquires the repository file lock.
+func (g *GitBackend) acquireFileLock(ctx context.Context) error {
 	locked := false
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -284,20 +282,30 @@ func (g *GitBackend) acquireLock(ctx context.Context, zoneName string) (*sync.Mu
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return ctx.Err()
 		case <-ticker.C:
 			var err error
 			locked, err = g.fileLock.TryLock()
 			if err != nil {
-				return nil, fmt.Errorf("failed to acquire file lock: %w", err)
+				return fmt.Errorf("failed to acquire file lock: %w", err)
 			}
 			if locked {
-				goto haveLock
+				return nil
 			}
 		}
 	}
+}
 
-haveLock:
+func (g *GitBackend) releaseFileLock() {
+	_ = g.fileLock.Unlock()
+}
+
+// acquireLock acquires both file lock and per-zone mutex.
+func (g *GitBackend) acquireLock(ctx context.Context, zoneName string) (*sync.Mutex, error) {
+	if err := g.acquireFileLock(ctx); err != nil {
+		return nil, err
+	}
+
 	// Acquire per-zone mutex (in-process)
 	muInterface, _ := g.zoneMutex.LoadOrStore(zoneName, &sync.Mutex{})
 	zoneMu := muInterface.(*sync.Mutex)
@@ -311,7 +319,7 @@ func (g *GitBackend) releaseLock(zoneMu *sync.Mutex) {
 	if zoneMu != nil {
 		zoneMu.Unlock()
 	}
-	_ = g.fileLock.Unlock()
+	g.releaseFileLock()
 }
 
 // zoneFilePath returns the path to the zone JSON file
@@ -542,16 +550,29 @@ func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 func (g *GitBackend) GetZone(ctx context.Context, name string) (*model.Zone, error) {
 	normalized := model.NormalizeZoneName(name)
 
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	zoneMu, err := g.acquireLock(ctx, normalized)
+	if err != nil {
+		return nil, err
+	}
+	defer g.releaseLock(zoneMu)
+
+	if err := g.pullIfNeeded(ctx); err != nil {
+		return nil, err
+	}
 
 	return g.readZone(normalized)
 }
 
 // ListZones returns all zones with pagination
 func (g *GitBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	if err := g.acquireFileLock(ctx); err != nil {
+		return nil, err
+	}
+	defer g.releaseFileLock()
+
+	if err := g.pullIfNeeded(ctx); err != nil {
+		return nil, err
+	}
 
 	zonesDir := filepath.Join(g.repoPath, "zones")
 	entries, err := os.ReadDir(zonesDir)
@@ -842,8 +863,15 @@ func (g *GitBackend) Close() error {
 func (g *GitBackend) GetRevision(ctx context.Context, zoneName, version string) (*model.Zone, error) {
 	normalized := model.NormalizeZoneName(zoneName)
 
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	zoneMu, err := g.acquireLock(ctx, normalized)
+	if err != nil {
+		return nil, err
+	}
+	defer g.releaseLock(zoneMu)
+
+	if err := g.pullIfNeeded(ctx); err != nil {
+		return nil, err
+	}
 
 	// Get commit history for the zone file
 	filePath, err := g.zoneFilePath(normalized)
@@ -906,8 +934,15 @@ func (g *GitBackend) GetRevision(ctx context.Context, zoneName, version string) 
 func (g *GitBackend) ListRevisions(ctx context.Context, zoneName string, opts ListOptions) ([]*model.ZoneVersion, error) {
 	normalized := model.NormalizeZoneName(zoneName)
 
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	zoneMu, err := g.acquireLock(ctx, normalized)
+	if err != nil {
+		return nil, err
+	}
+	defer g.releaseLock(zoneMu)
+
+	if err := g.pullIfNeeded(ctx); err != nil {
+		return nil, err
+	}
 
 	// Get commit history for the zone file
 	filePath, err := g.zoneFilePath(normalized)

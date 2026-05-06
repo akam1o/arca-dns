@@ -328,8 +328,29 @@ func TestGitBackend_AutoPullUsesConfiguredBranch(t *testing.T) {
 	require.NoError(t, err)
 	defer backend.Close()
 
-	require.NoError(t, backend.pullIfNeeded(context.Background()))
+	ctx := context.Background()
+	pulled, err := backend.GetZone(ctx, "pulled.example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, "pulled.example.com.", pulled.Name)
 	assert.FileExists(t, filepath.Join(localPath, "zones", "pulled.example.com..json"))
+
+	runGitCommand(t, remotePath, "checkout", "zones")
+	require.NoError(t, os.WriteFile(filepath.Join(zonesDir, "listed.example.com..json"), []byte(`{"name":"listed.example.com."}`), 0644))
+	runGitCommand(t, remotePath, "add", "zones/listed.example.com..json")
+	runGitCommand(t, remotePath, "commit", "-m", "add listed zone")
+	runGitCommand(t, remotePath, "checkout", "main")
+
+	zones, err := backend.ListZones(ctx, ListOptions{})
+	require.NoError(t, err)
+	assert.Contains(t, zoneNames(zones), "listed.example.com.")
+}
+
+func zoneNames(zones []*model.Zone) []string {
+	names := make([]string, 0, len(zones))
+	for _, zone := range zones {
+		names = append(names, zone.Name)
+	}
+	return names
 }
 
 func TestGitBackend_ListZones(t *testing.T) {
