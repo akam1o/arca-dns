@@ -191,6 +191,38 @@ func TestApplyZoneServiceReferences_ReturnsFlushError(t *testing.T) {
 	}
 }
 
+func TestRestoreZoneServiceReferences_FlushesAfterReload(t *testing.T) {
+	authServer := newFakeAuthoritativeServer()
+	resolver := newFakeResolver()
+
+	err := restoreZoneServiceReferences(context.Background(), "example.com.", authServer, resolver, true, true)
+	if err != nil {
+		t.Fatalf("restoreZoneServiceReferences failed: %v", err)
+	}
+
+	wantAuthCalls := "ensure,reload-zone"
+	if got := strings.Join(authServer.calls, ","); got != wantAuthCalls {
+		t.Fatalf("auth calls = %s, want %s", got, wantAuthCalls)
+	}
+
+	wantResolverCalls := "update-stub,check,reload,flush"
+	if got := strings.Join(resolver.calls, ","); got != wantResolverCalls {
+		t.Fatalf("resolver calls = %s, want %s", got, wantResolverCalls)
+	}
+}
+
+func TestRestoreZoneServiceReferences_ReturnsFlushError(t *testing.T) {
+	authServer := newFakeAuthoritativeServer()
+	resolver := newFakeResolver()
+	resolver.failAt["flush"] = 1
+	resolver.failErr["flush"] = errors.New("flush failed")
+
+	err := restoreZoneServiceReferences(context.Background(), "example.com.", authServer, resolver, true, true)
+	if err == nil || !strings.Contains(err.Error(), "flush failed") {
+		t.Fatalf("expected flush error, got %v", err)
+	}
+}
+
 func TestDeleteZoneServiceReferences_RollsBackWhenResolverReloadFails(t *testing.T) {
 	authServer := newFakeAuthoritativeServer()
 	resolver := newFakeResolver()
@@ -207,7 +239,7 @@ func TestDeleteZoneServiceReferences_RollsBackWhenResolverReloadFails(t *testing
 		t.Fatalf("auth calls = %s, want %s", got, wantAuthCalls)
 	}
 
-	wantResolverCalls := "delete-stub,check,reload,update-stub,check,reload"
+	wantResolverCalls := "delete-stub,check,reload,update-stub,check,reload,flush"
 	if got := strings.Join(resolver.calls, ","); got != wantResolverCalls {
 		t.Fatalf("resolver calls = %s, want %s", got, wantResolverCalls)
 	}

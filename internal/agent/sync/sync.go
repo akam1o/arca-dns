@@ -409,13 +409,11 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 	// Step 7: NSD/Unbound reload is handled by the caller (main agent loop) via hook.
 	if s.onZoneApplied != nil {
 		if err := s.onZoneApplied(ctx, zone.Name); err != nil {
-			rollbackErr := rollbackZoneFile()
-			hookRollbackErr := s.rollbackAppliedZone(ctx, zone.Name, hadPreviousZoneFile)
-			if rollbackErr != nil || hookRollbackErr != nil {
+			rollbackErr := s.rollbackFailedApply(ctx, zone.Name, hadPreviousZoneFile, rollbackZoneFile)
+			if rollbackErr != nil {
 				return errors.Join(
 					fmt.Errorf("post-apply hook failed: %w", err),
 					rollbackErr,
-					hookRollbackErr,
 				)
 			}
 			return fmt.Errorf("post-apply hook failed: %w", err)
@@ -433,6 +431,23 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+func (s *Syncer) rollbackFailedApply(ctx context.Context, zoneName string, hadPrevious bool, rollbackZoneFile func() error) error {
+	if hadPrevious {
+		return errors.Join(
+			rollbackZoneFile(),
+			s.rollbackAppliedZone(ctx, zoneName, hadPrevious),
+		)
+	}
+
+	if err := s.rollbackAppliedZone(ctx, zoneName, hadPrevious); err != nil {
+		s.logger.Warn("Keeping newly applied zone file because service reference rollback failed",
+			zap.String("zone", zoneName),
+			zap.Error(err))
+		return err
+	}
+	return rollbackZoneFile()
 }
 
 func (s *Syncer) rollbackAppliedZone(ctx context.Context, zoneName string, hadPrevious bool) error {

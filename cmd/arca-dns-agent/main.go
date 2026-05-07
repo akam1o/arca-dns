@@ -661,6 +661,8 @@ func restoreZoneServiceReferences(ctx context.Context, zoneName string, authServ
 			}
 			if err := resolver.Reload(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("reload restored resolver config: %w", err))
+			} else if err := resolver.FlushZone(ctx, zoneName); err != nil {
+				errs = append(errs, fmt.Errorf("flush restored resolver cache: %w", err))
 			}
 		}
 	}

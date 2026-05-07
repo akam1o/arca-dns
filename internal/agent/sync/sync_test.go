@@ -430,6 +430,7 @@ func TestSyncer_SyncZone_RollsBackNewZoneFileWhenApplyHookFails(t *testing.T) {
 	syncer.SetOnZoneApplyRollback(func(ctx context.Context, zoneName string, hadPrevious bool) error {
 		rollbackCalled = true
 		rollbackHadPrevious = hadPrevious
+		assert.FileExists(t, fileMgr.GetZonePath("example.com"))
 		return nil
 	})
 
@@ -444,6 +445,36 @@ func TestSyncer_SyncZone_RollsBackNewZoneFileWhenApplyHookFails(t *testing.T) {
 	managedZones, err := fileMgr.listManagedZones()
 	require.NoError(t, err)
 	assert.Empty(t, managedZones)
+}
+
+func TestSyncer_RollbackFailedApply_KeepsNewZoneFileWhenServiceRollbackFails(t *testing.T) {
+	zoneDir := filepath.Join(t.TempDir(), "zones")
+	require.NoError(t, os.MkdirAll(zoneDir, 0755))
+
+	logger := zap.NewNop()
+	fileMgr := NewFileManager(zoneDir, 3, logger)
+	require.NoError(t, fileMgr.EnsureDirectory())
+
+	zoneContent := "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n"
+	rollbackZoneFile, err := fileMgr.WriteZoneFileValidatedWithRollback("example.com", zoneContent, nil)
+	require.NoError(t, err)
+
+	syncer := NewSyncer(nil, fileMgr, config.SyncConfig{}, logger)
+	syncer.SetOnZoneApplyRollback(func(ctx context.Context, zoneName string, hadPrevious bool) error {
+		assert.False(t, hadPrevious)
+		assert.FileExists(t, fileMgr.GetZonePath(zoneName))
+		return errors.New("delete services failed")
+	})
+
+	err = syncer.rollbackFailedApply(context.Background(), "example.com", false, rollbackZoneFile)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete services failed")
+	assert.FileExists(t, fileMgr.GetZonePath("example.com"))
+
+	managedZones, err := fileMgr.listManagedZones()
+	require.NoError(t, err)
+	require.Len(t, managedZones, 1)
+	assert.Equal(t, "example.com.", managedZones[0].ZoneName)
 }
 
 func TestSyncer_SyncZone_RestoresPreviousZoneFileWhenApplyHookFails(t *testing.T) {
@@ -501,6 +532,9 @@ func TestSyncer_SyncZone_RestoresPreviousZoneFileWhenApplyHookFails(t *testing.T
 	syncer.SetOnZoneApplyRollback(func(ctx context.Context, zoneName string, hadPrevious bool) error {
 		rollbackCalled = true
 		rollbackHadPrevious = hadPrevious
+		content, err := fileMgr.ReadZoneFile("example.com")
+		require.NoError(t, err)
+		assert.Equal(t, oldZoneContent, content)
 		return nil
 	})
 
