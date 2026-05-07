@@ -102,6 +102,9 @@ bird:
 dnstap:
   enabled: false
   socket_path: "/var/run/dnstap.sock"
+  # Use a shared group that the DNS daemon user belongs to.
+  socket_mode: "0660"
+  socket_group: "arca-dns"
   log_file: "/var/log/arca-dns/dnstap.jsonl"
   sample_rate: 10
   always_log_errors: true

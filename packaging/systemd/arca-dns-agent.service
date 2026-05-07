@@ -10,6 +10,7 @@ Restart=on-failure
 RestartSec=2
 # The agent may need root for local DNS daemon and BIRD control sockets; keep
 # host access constrained to the configured state, log, runtime, and DNS paths.
+Group=arca-dns
 UMask=0007
 ConfigurationDirectory=arca-dns
 StateDirectory=arca-dns

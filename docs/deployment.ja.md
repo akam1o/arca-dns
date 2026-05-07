@@ -268,6 +268,13 @@ sudo dnf install bird nsd unbound arca-dns
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
 - `health.nsd_server`, `health.unbound_server`, `health.test_record`
 
+DNSTap を有効にする場合は、`dnstap.socket_mode` を `0660` のままにし、
+`dnstap.socket_group` には DNS daemon user（`nsd`, `unbound`、または環境に
+合わせた user）が所属する共有 group を設定するか、パッケージ版 agent の
+primary group を使ってください。パッケージ版 agent は primary group
+`arca-dns` で起動するため、DNS daemon user を `arca-dns` group に追加する
+構成を標準とします。
+
 BIRD config を agent から生成する場合は、メインの `bird.conf` に生成ファイルを include してください。
 
 ```bird

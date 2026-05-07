@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"os"
+	osuser "os/user"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,24 +20,30 @@ import (
 
 const (
 	maxDNSTapFrameSize = 1024 * 1024
-	dnstapSocketMode   = 0o660
+	defaultSocketMode  = 0o660
 )
 
 // Receiver listens on a Unix socket and receives DNSTap frames from DNS servers.
 type Receiver struct {
-	socketPath string
-	logger     *zap.Logger
-	listener   net.Listener
-	conns      map[net.Conn]struct{}
-	bufferSize int
-	mu         sync.Mutex
-	closed     bool
+	socketPath  string
+	socketMode  os.FileMode
+	socketOwner string
+	socketGroup string
+	logger      *zap.Logger
+	listener    net.Listener
+	conns       map[net.Conn]struct{}
+	bufferSize  int
+	mu          sync.Mutex
+	closed      bool
 }
 
 // ReceiverConfig configures the DNSTap receiver.
 type ReceiverConfig struct {
-	SocketPath string
-	BufferSize int // Buffer size for the frame channel
+	SocketPath  string
+	SocketMode  os.FileMode
+	SocketOwner string
+	SocketGroup string
+	BufferSize  int // Buffer size for the frame channel
 }
 
 // Frame represents a DNSTap frame.
@@ -49,11 +57,17 @@ func NewReceiver(config ReceiverConfig, logger *zap.Logger) *Receiver {
 	if config.BufferSize <= 0 {
 		config.BufferSize = 1000 // Default buffer size
 	}
+	if config.SocketMode == 0 {
+		config.SocketMode = defaultSocketMode
+	}
 
 	return &Receiver{
-		socketPath: config.SocketPath,
-		logger:     logger,
-		bufferSize: config.BufferSize,
+		socketPath:  config.SocketPath,
+		socketMode:  config.SocketMode,
+		socketOwner: config.SocketOwner,
+		socketGroup: config.SocketGroup,
+		logger:      logger,
+		bufferSize:  config.BufferSize,
 	}
 }
 
@@ -69,10 +83,10 @@ func (r *Receiver) Run(ctx context.Context, frameChan chan<- Frame) error {
 	if err != nil {
 		return fmt.Errorf("failed to create unix socket listener: %w", err)
 	}
-	if err := os.Chmod(r.socketPath, dnstapSocketMode); err != nil {
+	if err := setSocketPermissions(r.socketPath, r.socketOwner, r.socketGroup, r.socketMode); err != nil {
 		_ = listener.Close()
 		_ = os.Remove(r.socketPath)
-		return fmt.Errorf("failed to set dnstap socket permissions: %w", err)
+		return err
 	}
 
 	r.mu.Lock()
@@ -175,6 +189,89 @@ func removeStaleSocket(socketPath string) error {
 		return fmt.Errorf("failed to remove stale dnstap socket: %w", err)
 	}
 	return nil
+}
+
+func setSocketPermissions(socketPath, owner, group string, mode os.FileMode) error {
+	uid, gid, err := resolveSocketOwnership(owner, group)
+	if err != nil {
+		return err
+	}
+
+	if uid != -1 || gid != -1 {
+		if err := os.Chown(socketPath, uid, gid); err != nil {
+			return fmt.Errorf("failed to set dnstap socket ownership: %w", err)
+		}
+	}
+
+	if err := os.Chmod(socketPath, mode.Perm()); err != nil {
+		return fmt.Errorf("failed to set dnstap socket permissions: %w", err)
+	}
+	return nil
+}
+
+func resolveSocketOwnership(owner, group string) (int, int, error) {
+	uid := -1
+	gid := -1
+
+	owner = strings.TrimSpace(owner)
+	if owner != "" {
+		resolvedUID, err := lookupUID(owner)
+		if err != nil {
+			return -1, -1, err
+		}
+		uid = resolvedUID
+	}
+
+	group = strings.TrimSpace(group)
+	if group != "" {
+		resolvedGID, err := lookupGID(group)
+		if err != nil {
+			return -1, -1, err
+		}
+		gid = resolvedGID
+	}
+
+	return uid, gid, nil
+}
+
+func lookupUID(value string) (int, error) {
+	if id, err := strconv.Atoi(value); err == nil {
+		if id < 0 {
+			return -1, fmt.Errorf("invalid negative uid for dnstap socket owner %q", value)
+		}
+		return id, nil
+	}
+
+	u, err := osuser.Lookup(value)
+	if err != nil {
+		return -1, fmt.Errorf("failed to resolve dnstap socket owner %q: %w", value, err)
+	}
+
+	id, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return -1, fmt.Errorf("invalid uid for dnstap socket owner %q: %w", value, err)
+	}
+	return id, nil
+}
+
+func lookupGID(value string) (int, error) {
+	if id, err := strconv.Atoi(value); err == nil {
+		if id < 0 {
+			return -1, fmt.Errorf("invalid negative gid for dnstap socket group %q", value)
+		}
+		return id, nil
+	}
+
+	g, err := osuser.LookupGroup(value)
+	if err != nil {
+		return -1, fmt.Errorf("failed to resolve dnstap socket group %q: %w", value, err)
+	}
+
+	id, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return -1, fmt.Errorf("invalid gid for dnstap socket group %q: %w", value, err)
+	}
+	return id, nil
 }
 
 // handleConnection reads DNSTap frames from a connection.

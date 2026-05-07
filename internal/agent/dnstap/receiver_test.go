@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -117,10 +118,54 @@ func TestReceiver_RunRestrictsSocketPermissions(t *testing.T) {
 
 	info, err := os.Lstat(socketPath)
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(dnstapSocketMode), info.Mode().Perm())
+	require.Equal(t, os.FileMode(defaultSocketMode), info.Mode().Perm())
 
 	cancel()
 	requireRunCanceled(t, errCh)
+}
+
+func TestReceiver_RunUsesConfiguredSocketMode(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	socketPath := filepath.Join(tmpDir, "d.sock")
+	receiver := NewReceiver(ReceiverConfig{
+		SocketPath: socketPath,
+		SocketMode: 0o600,
+		BufferSize: 1,
+	}, zap.NewNop())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	frameChan := make(chan Frame, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- receiver.Run(ctx, frameChan)
+	}()
+
+	waitForSocket(t, socketPath, errCh)
+
+	info, err := os.Lstat(socketPath)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	cancel()
+	requireRunCanceled(t, errCh)
+}
+
+func TestResolveSocketOwnership_NumericIDs(t *testing.T) {
+	uid, gid, err := resolveSocketOwnership(strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()))
+	require.NoError(t, err)
+	require.Equal(t, os.Getuid(), uid)
+	require.Equal(t, os.Getgid(), gid)
+}
+
+func TestResolveSocketOwnership_EmptyKeepsCurrentOwnership(t *testing.T) {
+	uid, gid, err := resolveSocketOwnership("", "")
+	require.NoError(t, err)
+	require.Equal(t, -1, uid)
+	require.Equal(t, -1, gid)
 }
 
 func TestRemoveStaleSocket_RemovesUnixSocket(t *testing.T) {

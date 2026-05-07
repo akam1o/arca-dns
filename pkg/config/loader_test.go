@@ -551,6 +551,8 @@ func TestLoadAgentConfig_Defaults(t *testing.T) {
 	assert.True(t, cfg.NSD.Enabled)
 	assert.True(t, cfg.Unbound.Enabled)
 	assert.Equal(t, 1232, cfg.Unbound.EDNSBufferSize)
+	assert.Equal(t, DefaultDNSTapSocketModeString, cfg.DNSTap.SocketMode)
+	assert.Empty(t, cfg.DNSTap.SocketGroup)
 	assert.True(t, cfg.Sync.VerifySignatures)
 	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, "info", cfg.Logging.Level)
@@ -569,6 +571,9 @@ nsd:
   zone_directory: "/tmp/nsd-zones"
 unbound:
   enabled: false
+dnstap:
+  socket_mode: "0600"
+  socket_group: "nsd"
 sync:
   controller_public_key: "` + validYAMLArtifactSignatureKey + `"
 logging:
@@ -584,6 +589,8 @@ logging:
 	assert.Equal(t, "test-key", cfg.Controller.APIKey)
 	assert.Equal(t, "/tmp/nsd-zones", cfg.NSD.ZoneDirectory)
 	assert.False(t, cfg.Unbound.Enabled)
+	assert.Equal(t, "0600", cfg.DNSTap.SocketMode)
+	assert.Equal(t, "nsd", cfg.DNSTap.SocketGroup)
 	assert.True(t, cfg.Sync.VerifySignatures)
 	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, "debug", cfg.Logging.Level)
@@ -599,6 +606,8 @@ func TestLoadAgentConfig_EnvOverrideWithYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", validEnvArtifactSignatureKey)
 	t.Setenv("ARCA_DNS_HEALTH_QUERY_TIMEOUT", "2s")
 	t.Setenv("ARCA_DNS_METRICS_PATH", "/env-metrics")
+	t.Setenv("ARCA_DNS_DNSTAP_SOCKET_MODE", "0600")
+	t.Setenv("ARCA_DNS_DNSTAP_SOCKET_GROUP", "unbound")
 	t.Setenv("ARCA_DNS_LOGGING_ENABLE_CALLER", "true")
 
 	tmpDir := t.TempDir()
@@ -643,6 +652,8 @@ logging:
 	assert.Equal(t, validEnvArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, 2*time.Second, cfg.Health.QueryTimeout)
 	assert.Equal(t, "/env-metrics", cfg.Metrics.Path)
+	assert.Equal(t, "0600", cfg.DNSTap.SocketMode)
+	assert.Equal(t, "unbound", cfg.DNSTap.SocketGroup)
 	assert.True(t, cfg.Logging.EnableCaller)
 }
 
@@ -905,6 +916,73 @@ func TestValidateAgentConfig_InvalidDNSTapSampleRate(t *testing.T) {
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "dnstap.sample_rate")
+}
+
+func TestValidateAgentConfig_InvalidDNSTapSocketSettings(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+		want   string
+	}{
+		{
+			name: "empty socket path",
+			mutate: func(cfg *AgentConfig) {
+				cfg.DNSTap.SocketPath = ""
+			},
+			want: "dnstap.socket_path",
+		},
+		{
+			name: "empty socket mode",
+			mutate: func(cfg *AgentConfig) {
+				cfg.DNSTap.SocketMode = ""
+			},
+			want: "dnstap.socket_mode",
+		},
+		{
+			name: "world writable socket mode",
+			mutate: func(cfg *AgentConfig) {
+				cfg.DNSTap.SocketMode = "0666"
+			},
+			want: "dnstap.socket_mode",
+		},
+		{
+			name: "invalid socket mode",
+			mutate: func(cfg *AgentConfig) {
+				cfg.DNSTap.SocketMode = "invalid"
+			},
+			want: "dnstap.socket_mode",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.DNSTap.Enabled = true
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestParseDNSTapSocketMode(t *testing.T) {
+	tests := []struct {
+		value string
+		want  os.FileMode
+	}{
+		{value: "0660", want: 0o660},
+		{value: "660", want: 0o660},
+		{value: "0o600", want: 0o600},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.value, func(t *testing.T) {
+			mode, err := ParseDNSTapSocketMode(tc.value)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, mode)
+		})
+	}
 }
 
 func TestValidateAgentConfig_StatusServerRequiresListen(t *testing.T) {

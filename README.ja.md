@@ -184,6 +184,12 @@ bird:
       neighbor_address: "10.0.0.1"
       neighbor_asn: 64512
 
+dnstap:
+  enabled: false
+  socket_path: "/var/run/dnstap.sock"
+  socket_mode: "0660"
+  socket_group: "arca-dns" # DNS daemon user をこの共有 group に追加してください
+
 health:
   check_interval: "10s"
   failure_threshold: 3

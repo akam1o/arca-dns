@@ -270,6 +270,12 @@ Set at least:
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
 - `health.nsd_server`, `health.unbound_server`, `health.test_record`
 
+If DNSTap is enabled, keep `dnstap.socket_mode` at `0660` and either set
+`dnstap.socket_group` to a shared group that contains the DNS daemon user
+(`nsd`, `unbound`, or your local equivalent), or rely on the packaged agent's
+primary group. The packaged agent runs with primary group `arca-dns`, so adding
+the DNS daemon user to `arca-dns` is the default packaged layout.
+
 If the agent generates BIRD config, include the generated file from the main `bird.conf`:
 
 ```bird

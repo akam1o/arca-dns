@@ -335,10 +335,18 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Create DNSTap processor (M6)
 	var dnstapProcessor *dnstap.Processor
 	if cfg.DNSTap.Enabled {
+		socketMode, err := cfg.DNSTap.SocketFileMode()
+		if err != nil {
+			return fmt.Errorf("invalid dnstap socket mode: %w", err)
+		}
+
 		processorConfig := dnstap.ProcessorConfig{
 			ReceiverConfig: dnstap.ReceiverConfig{
-				SocketPath: cfg.DNSTap.SocketPath,
-				BufferSize: cfg.DNSTap.BufferSize,
+				SocketPath:  cfg.DNSTap.SocketPath,
+				SocketMode:  socketMode,
+				SocketOwner: cfg.DNSTap.SocketOwner,
+				SocketGroup: cfg.DNSTap.SocketGroup,
+				BufferSize:  cfg.DNSTap.BufferSize,
 			},
 			LoggerConfig: dnstap.LoggerConfig{
 				LogFile:    cfg.DNSTap.LogFile,

@@ -1,9 +1,15 @@
 package config
 
 import (
+	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
+
+const DefaultDNSTapSocketMode = os.FileMode(0o660)
+const DefaultDNSTapSocketModeString = "0660"
 
 // ControllerConfig is the configuration for the arca-dns-controller.
 type ControllerConfig struct {
@@ -494,6 +500,15 @@ type DNSTapConfig struct {
 	// SocketPath is the path to DNSTap Unix socket
 	SocketPath string `mapstructure:"socket_path"`
 
+	// SocketMode is the octal permission mode for the DNSTap Unix socket.
+	SocketMode string `mapstructure:"socket_mode"`
+
+	// SocketOwner is the optional user or numeric UID for the DNSTap socket.
+	SocketOwner string `mapstructure:"socket_owner"`
+
+	// SocketGroup is the optional group or numeric GID for the DNSTap socket.
+	SocketGroup string `mapstructure:"socket_group"`
+
 	// LogFile is the path to the DNSTap log file
 	LogFile string `mapstructure:"log_file"`
 
@@ -663,6 +678,45 @@ func DefaultControllerConfig() *ControllerConfig {
 	}
 }
 
+// SocketFileMode parses the configured DNSTap socket permission mode.
+func (c DNSTapConfig) SocketFileMode() (os.FileMode, error) {
+	return ParseDNSTapSocketMode(c.SocketMode)
+}
+
+// ParseDNSTapSocketMode parses a DNSTap Unix socket permission mode from an
+// octal string such as "0660" or "0o660".
+func ParseDNSTapSocketMode(value string) (os.FileMode, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, fmt.Errorf("empty")
+	}
+
+	trimmed = strings.TrimPrefix(trimmed, "0o")
+	trimmed = strings.TrimPrefix(trimmed, "0O")
+	trimmed = strings.TrimPrefix(trimmed, "0")
+	if trimmed == "" {
+		return 0, fmt.Errorf("must include permission bits")
+	}
+
+	parsed, err := strconv.ParseUint(trimmed, 8, 32)
+	if err != nil {
+		return 0, fmt.Errorf("must be an octal permission string: %w", err)
+	}
+
+	mode := os.FileMode(parsed)
+	if mode&^os.ModePerm != 0 {
+		return 0, fmt.Errorf("must contain only permission bits")
+	}
+	if mode&0o600 != 0o600 {
+		return 0, fmt.Errorf("must grant owner read and write")
+	}
+	if mode&0o007 != 0 {
+		return 0, fmt.Errorf("must not grant permissions to other users")
+	}
+
+	return mode, nil
+}
+
 // DefaultAgentConfig returns the default agent configuration.
 func DefaultAgentConfig() *AgentConfig {
 	return &AgentConfig{
@@ -708,6 +762,7 @@ func DefaultAgentConfig() *AgentConfig {
 		DNSTap: DNSTapConfig{
 			Enabled:    true,
 			SocketPath: "/var/run/dnstap.sock",
+			SocketMode: DefaultDNSTapSocketModeString,
 			LogFile:    "/var/log/arca-dns/dnstap.log",
 			LogRotation: LogRotationConfig{
 				MaxSize:    100, // 100 MB
