@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -378,6 +379,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigChan)
 
 	// Create wait group for goroutines
 	var wg sync.WaitGroup
@@ -515,8 +517,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if routeManager != nil {
 		routeCtrl = bird.NewAdapter(routeManager)
 	}
+	statusServer, err := startStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+	if err != nil {
+		cancel()
+		wg.Wait()
+		return fmt.Errorf("start status server: %w", err)
+	}
 	wg.Add(1)
-	statusServer := startStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
 	go func() {
 		defer wg.Done()
 		<-ctx.Done()
@@ -659,17 +666,22 @@ func reexecSelf() error {
 }
 
 // startStatusServer starts an HTTP server for status and metrics.
-func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
+func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) (*http.Server, error) {
 	server := newStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
 
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen %s: %w", server.Addr, err)
+	}
+
 	go func() {
-		logger.Info("Starting status server", zap.String("listen", cfg.Metrics.Listen))
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Info("Starting status server", zap.String("listen", listener.Addr().String()))
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			logger.Error("Status server failed", zap.Error(err))
 		}
 	}()
 
-	return server
+	return server, nil
 }
 
 func newStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {

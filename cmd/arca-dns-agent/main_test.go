@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -121,6 +122,40 @@ func TestNewStatusServer_HasTimeouts(t *testing.T) {
 	}
 	if server.IdleTimeout != 60*time.Second {
 		t.Fatalf("IdleTimeout=%s, want 60s", server.IdleTimeout)
+	}
+}
+
+func TestStartStatusServer_ReturnsBindError(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen test socket: %v", err)
+	}
+	defer listener.Close()
+
+	logger := zap.NewNop()
+	cfg := &config.AgentConfig{
+		Metrics: config.MetricsConfig{
+			Listen:  listener.Addr().String(),
+			Enabled: true,
+			Path:    "/metrics",
+		},
+	}
+	syncer := zonesync.NewSyncer(nil, nil, config.SyncConfig{
+		MaxStaleness: time.Hour,
+	}, logger)
+	checker := health.NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout: time.Millisecond,
+	}, health.CheckerOptions{}, logger)
+
+	server, err := startStatusServer(cfg, syncer, checker, nil, nil, logger)
+	if err == nil {
+		if server != nil {
+			_ = server.Close()
+		}
+		t.Fatalf("expected bind error")
+	}
+	if !strings.Contains(err.Error(), "listen") {
+		t.Fatalf("expected listen error, got %v", err)
 	}
 }
 
