@@ -144,7 +144,7 @@ func TestSyncer_DeleteRemovedZonesKeepsManagedIndexWhenHookFails(t *testing.T) {
 	deletedCount, errorCount := syncer.deleteRemovedZones(context.Background(), map[string]struct{}{}, map[string]struct{}{})
 	require.Equal(t, 0, deletedCount)
 	require.Equal(t, 1, errorCount)
-	assert.False(t, fileMgr.ZoneExists(zoneName), "zone file should be removed before retry")
+	assert.True(t, fileMgr.ZoneExists(zoneName), "zone file should remain active when the delete hook fails")
 
 	managedZones, err := fileMgr.listManagedZones()
 	require.NoError(t, err)
