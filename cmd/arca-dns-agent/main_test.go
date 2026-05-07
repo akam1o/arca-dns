@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-dns/internal/agent/health"
+	"github.com/akam1o/arca-dns/internal/agent/plugin"
 	zonesync "github.com/akam1o/arca-dns/internal/agent/sync"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"go.uber.org/zap"
@@ -121,6 +123,142 @@ func TestNewStatusServer_HasTimeouts(t *testing.T) {
 		t.Fatalf("IdleTimeout=%s, want 60s", server.IdleTimeout)
 	}
 }
+
+func TestDeleteZoneServiceReferences_RollsBackWhenResolverReloadFails(t *testing.T) {
+	authServer := newFakeAuthoritativeServer()
+	resolver := newFakeResolver()
+	resolver.failAt["reload"] = 1
+	resolver.failErr["reload"] = errors.New("reload failed")
+
+	err := deleteZoneServiceReferences(context.Background(), "example.com.", authServer, resolver, zap.NewNop())
+	if err == nil || !strings.Contains(err.Error(), "reload failed") {
+		t.Fatalf("expected resolver reload error, got %v", err)
+	}
+
+	wantAuthCalls := "delete,ensure,reload-zone"
+	if got := strings.Join(authServer.calls, ","); got != wantAuthCalls {
+		t.Fatalf("auth calls = %s, want %s", got, wantAuthCalls)
+	}
+
+	wantResolverCalls := "delete-stub,check,reload,update-stub,check,reload"
+	if got := strings.Join(resolver.calls, ","); got != wantResolverCalls {
+		t.Fatalf("resolver calls = %s, want %s", got, wantResolverCalls)
+	}
+}
+
+func TestDeleteZoneServiceReferences_RollsBackAuthoritativeWhenStubDeleteFails(t *testing.T) {
+	authServer := newFakeAuthoritativeServer()
+	resolver := newFakeResolver()
+	resolver.failAt["delete-stub"] = 1
+	resolver.failErr["delete-stub"] = errors.New("delete stub failed")
+
+	err := deleteZoneServiceReferences(context.Background(), "example.com.", authServer, resolver, zap.NewNop())
+	if err == nil || !strings.Contains(err.Error(), "delete stub failed") {
+		t.Fatalf("expected resolver delete error, got %v", err)
+	}
+
+	wantAuthCalls := "delete,ensure,reload-zone"
+	if got := strings.Join(authServer.calls, ","); got != wantAuthCalls {
+		t.Fatalf("auth calls = %s, want %s", got, wantAuthCalls)
+	}
+
+	wantResolverCalls := "delete-stub"
+	if got := strings.Join(resolver.calls, ","); got != wantResolverCalls {
+		t.Fatalf("resolver calls = %s, want %s", got, wantResolverCalls)
+	}
+}
+
+func TestDeleteZoneServiceReferences_RollsBackAuthoritativeWhenDeleteFails(t *testing.T) {
+	authServer := newFakeAuthoritativeServer()
+	resolver := newFakeResolver()
+	authServer.failAt["delete"] = 1
+	authServer.failErr["delete"] = errors.New("delete authoritative failed")
+
+	err := deleteZoneServiceReferences(context.Background(), "example.com.", authServer, resolver, zap.NewNop())
+	if err == nil || !strings.Contains(err.Error(), "delete authoritative failed") {
+		t.Fatalf("expected authoritative delete error, got %v", err)
+	}
+
+	wantAuthCalls := "delete,ensure,reload-zone"
+	if got := strings.Join(authServer.calls, ","); got != wantAuthCalls {
+		t.Fatalf("auth calls = %s, want %s", got, wantAuthCalls)
+	}
+	if got := strings.Join(resolver.calls, ","); got != "" {
+		t.Fatalf("resolver calls = %s, want empty", got)
+	}
+}
+
+type fakeAuthoritativeServer struct {
+	calls   []string
+	counts  map[string]int
+	failAt  map[string]int
+	failErr map[string]error
+}
+
+func newFakeAuthoritativeServer() *fakeAuthoritativeServer {
+	return &fakeAuthoritativeServer{
+		counts:  map[string]int{},
+		failAt:  map[string]int{},
+		failErr: map[string]error{},
+	}
+}
+
+func (f *fakeAuthoritativeServer) call(method string) error {
+	f.calls = append(f.calls, method)
+	f.counts[method]++
+	if f.failAt[method] == f.counts[method] {
+		return f.failErr[method]
+	}
+	return nil
+}
+
+func (f *fakeAuthoritativeServer) EnsureZone(context.Context, string) error { return f.call("ensure") }
+func (f *fakeAuthoritativeServer) ReloadZone(context.Context, string) error {
+	return f.call("reload-zone")
+}
+func (f *fakeAuthoritativeServer) CheckZone(context.Context, string, string) error {
+	return f.call("check-zone")
+}
+func (f *fakeAuthoritativeServer) DeleteZone(context.Context, string) error { return f.call("delete") }
+func (f *fakeAuthoritativeServer) Reload(context.Context) error             { return f.call("reload") }
+func (f *fakeAuthoritativeServer) Status(context.Context) (plugin.ServerStatus, error) {
+	return plugin.ServerStatus{}, nil
+}
+func (f *fakeAuthoritativeServer) Type() string { return "fake" }
+
+type fakeResolver struct {
+	calls   []string
+	counts  map[string]int
+	failAt  map[string]int
+	failErr map[string]error
+}
+
+func newFakeResolver() *fakeResolver {
+	return &fakeResolver{
+		counts:  map[string]int{},
+		failAt:  map[string]int{},
+		failErr: map[string]error{},
+	}
+}
+
+func (f *fakeResolver) call(method string) error {
+	f.calls = append(f.calls, method)
+	f.counts[method]++
+	if f.failAt[method] == f.counts[method] {
+		return f.failErr[method]
+	}
+	return nil
+}
+
+func (f *fakeResolver) Reload(context.Context) error                 { return f.call("reload") }
+func (f *fakeResolver) CheckConfig(context.Context) error            { return f.call("check") }
+func (f *fakeResolver) FlushZone(context.Context, string) error      { return f.call("flush") }
+func (f *fakeResolver) UpdateStubZone(context.Context, string) error { return f.call("update-stub") }
+func (f *fakeResolver) DeleteStubZone(context.Context, string) error { return f.call("delete-stub") }
+func (f *fakeResolver) Status(context.Context) (plugin.ServerStatus, error) {
+	return plugin.ServerStatus{}, nil
+}
+func (f *fakeResolver) Type() string { return "fake" }
 
 func newTestStatusRouter(metrics config.MetricsConfig) http.Handler {
 	return newTestStatusServer(metrics).Handler

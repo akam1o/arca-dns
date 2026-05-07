@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -34,9 +35,10 @@ type Syncer struct {
 	lastSuccess time.Time                 // Last successful sync (any zone)
 	mu          sync.RWMutex              // Protects zoneStates and lastSuccess
 
-	onZoneApplied    func(ctx context.Context, zoneName string) error
-	onZoneDeleted    func(ctx context.Context, zoneName string) error
-	validateZoneFile func(ctx context.Context, zoneName string, zonePath string) error
+	onZoneApplied        func(ctx context.Context, zoneName string) error
+	onZoneDeleted        func(ctx context.Context, zoneName string) error
+	onZoneDeleteRollback func(ctx context.Context, zoneName string) error
+	validateZoneFile     func(ctx context.Context, zoneName string, zonePath string) error
 }
 
 // NewSyncer creates a new zone syncer.
@@ -62,10 +64,16 @@ func (s *Syncer) SetOnZoneApplied(fn func(ctx context.Context, zoneName string) 
 	s.onZoneApplied = fn
 }
 
-// SetOnZoneDeleted sets a hook to be called after a zone file is deleted successfully.
-// Returning an error will keep the zone state so the deletion reload can be retried.
+// SetOnZoneDeleted sets a hook to be called before removing the local zone file.
+// Returning an error keeps the zone file and state so the deletion can be retried.
 func (s *Syncer) SetOnZoneDeleted(fn func(ctx context.Context, zoneName string) error) {
 	s.onZoneDeleted = fn
+}
+
+// SetOnZoneDeleteRollback sets a hook that restores service references when
+// local zone file removal fails after SetOnZoneDeleted has already succeeded.
+func (s *Syncer) SetOnZoneDeleteRollback(fn func(ctx context.Context, zoneName string) error) {
+	s.onZoneDeleteRollback = fn
 }
 
 // SetValidateZoneFile sets a hook used to validate the temporary zone file
@@ -295,7 +303,11 @@ func (s *Syncer) deleteRemovedZone(ctx context.Context, zoneName string) error {
 	}
 
 	if err := s.fileMgr.deleteZoneFiles(zoneName); err != nil {
-		return fmt.Errorf("failed to delete zone file: %w", err)
+		deleteErr := fmt.Errorf("failed to delete zone file: %w", err)
+		if rollbackErr := s.rollbackDeletedZone(ctx, zoneName); rollbackErr != nil {
+			return errors.Join(deleteErr, fmt.Errorf("rollback deleted zone: %w", rollbackErr))
+		}
+		return deleteErr
 	}
 
 	if err := s.fileMgr.removeManagedZone(zoneName); err != nil {
@@ -309,6 +321,21 @@ func (s *Syncer) deleteRemovedZone(ctx context.Context, zoneName string) error {
 	s.logger.Info("Deleted removed zone",
 		zap.String("zone", zoneName))
 
+	return nil
+}
+
+func (s *Syncer) rollbackDeletedZone(ctx context.Context, zoneName string) error {
+	if s.onZoneDeleteRollback == nil {
+		return nil
+	}
+	if err := s.onZoneDeleteRollback(ctx, zoneName); err != nil {
+		s.logger.Error("Failed to roll back deleted zone service references",
+			zap.String("zone", zoneName),
+			zap.Error(err))
+		return err
+	}
+	s.logger.Info("Rolled back deleted zone service references",
+		zap.String("zone", zoneName))
 	return nil
 }
 

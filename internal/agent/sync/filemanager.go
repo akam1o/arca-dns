@@ -184,7 +184,10 @@ func (fm *FileManager) deleteZoneFiles(zoneName string) error {
 	// Delete backups
 	backups, err := fm.listBackups(zoneName)
 	if err != nil {
-		return fmt.Errorf("failed to list backups: %w", err)
+		fm.logger.Warn("Failed to list backups after deleting zone file",
+			zap.String("zone", zoneName),
+			zap.Error(err))
+		return nil
 	}
 
 	for _, backup := range backups {

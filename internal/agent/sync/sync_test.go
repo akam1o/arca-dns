@@ -168,6 +168,43 @@ func TestSyncer_DeleteRemovedZonesKeepsManagedIndexWhenHookFails(t *testing.T) {
 	assert.Empty(t, managedZones)
 }
 
+func TestSyncer_DeleteRemovedZonesRollsBackWhenZoneFileDeleteFails(t *testing.T) {
+	zoneDir := filepath.Join(t.TempDir(), "zones")
+	fileMgr := NewFileManager(zoneDir, 3, zap.NewNop())
+	require.NoError(t, fileMgr.EnsureDirectory())
+
+	zoneName := "example.com."
+	require.NoError(t, fileMgr.WriteZoneFile(zoneName, "$ORIGIN example.com.\n"))
+
+	zonePath := fileMgr.GetZonePath(zoneName)
+	require.NoError(t, os.Remove(zonePath))
+	require.NoError(t, os.Mkdir(zonePath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(zonePath, "child"), []byte("block remove"), 0644))
+
+	syncer := NewSyncer(nil, fileMgr, config.SyncConfig{}, zap.NewNop())
+	deleteHookCalled := false
+	var rollbackZone string
+	syncer.SetOnZoneDeleted(func(ctx context.Context, zoneName string) error {
+		deleteHookCalled = true
+		return nil
+	})
+	syncer.SetOnZoneDeleteRollback(func(ctx context.Context, zoneName string) error {
+		rollbackZone = zoneName
+		return nil
+	})
+
+	deletedCount, errorCount := syncer.deleteRemovedZones(context.Background(), map[string]struct{}{}, map[string]struct{}{})
+	require.Equal(t, 0, deletedCount)
+	require.Equal(t, 1, errorCount)
+	assert.True(t, deleteHookCalled)
+	assert.Equal(t, zoneName, rollbackZone)
+
+	managedZones, err := fileMgr.listManagedZones()
+	require.NoError(t, err)
+	require.Len(t, managedZones, 1)
+	assert.Equal(t, zoneName, managedZones[0].ZoneName)
+}
+
 func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
 	requireTCPListener(t)
 	requestCount := 0

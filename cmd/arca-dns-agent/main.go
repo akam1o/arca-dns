@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -180,19 +181,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Wire zone-delete hook: remove service references before deleting the zone file.
 	syncer.SetOnZoneDeleted(func(ctx context.Context, zoneName string) error {
-		if err := authServer.DeleteZone(ctx, zoneName); err != nil {
-			return err
-		}
-		if err := resolver.DeleteStubZone(ctx, zoneName); err != nil {
-			return err
-		}
-		if err := resolver.CheckConfig(ctx); err != nil {
-			return err
-		}
-		if err := resolver.Reload(ctx); err != nil {
-			return err
-		}
-		return nil
+		return deleteZoneServiceReferences(ctx, zoneName, authServer, resolver, logger)
+	})
+	syncer.SetOnZoneDeleteRollback(func(ctx context.Context, zoneName string) error {
+		return restoreZoneServiceReferences(ctx, zoneName, authServer, resolver, true, true)
 	})
 
 	// Create health checker (DNS behavior is the source of truth).
@@ -570,6 +562,78 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func deleteZoneServiceReferences(ctx context.Context, zoneName string, authServer plugin.AuthoritativeServer, resolver plugin.Resolver, logger *zap.Logger) error {
+	authDeleted := false
+	resolverDeleted := false
+
+	if err := authServer.DeleteZone(ctx, zoneName); err != nil {
+		return rollbackZoneServiceDeletion(ctx, zoneName, authServer, resolver, true, resolverDeleted, logger,
+			fmt.Errorf("delete authoritative zone: %w", err))
+	}
+	authDeleted = true
+
+	if err := resolver.DeleteStubZone(ctx, zoneName); err != nil {
+		return rollbackZoneServiceDeletion(ctx, zoneName, authServer, resolver, authDeleted, resolverDeleted, logger,
+			fmt.Errorf("delete resolver stub zone: %w", err))
+	}
+	resolverDeleted = true
+
+	if err := resolver.CheckConfig(ctx); err != nil {
+		return rollbackZoneServiceDeletion(ctx, zoneName, authServer, resolver, authDeleted, resolverDeleted, logger,
+			fmt.Errorf("check resolver config after zone deletion: %w", err))
+	}
+
+	if err := resolver.Reload(ctx); err != nil {
+		return rollbackZoneServiceDeletion(ctx, zoneName, authServer, resolver, authDeleted, resolverDeleted, logger,
+			fmt.Errorf("reload resolver after zone deletion: %w", err))
+	}
+
+	return nil
+}
+
+func rollbackZoneServiceDeletion(ctx context.Context, zoneName string, authServer plugin.AuthoritativeServer, resolver plugin.Resolver, restoreAuth bool, restoreResolver bool, logger *zap.Logger, cause error) error {
+	if err := restoreZoneServiceReferences(ctx, zoneName, authServer, resolver, restoreAuth, restoreResolver); err != nil {
+		if logger != nil {
+			logger.Error("Failed to roll back zone service deletion",
+				zap.String("zone", zoneName),
+				zap.Error(err))
+		}
+		return errors.Join(cause, fmt.Errorf("rollback zone service deletion: %w", err))
+	}
+	if logger != nil {
+		logger.Info("Rolled back zone service deletion",
+			zap.String("zone", zoneName))
+	}
+	return cause
+}
+
+func restoreZoneServiceReferences(ctx context.Context, zoneName string, authServer plugin.AuthoritativeServer, resolver plugin.Resolver, restoreAuth bool, restoreResolver bool) error {
+	var errs []error
+
+	if restoreAuth {
+		if err := authServer.EnsureZone(ctx, zoneName); err != nil {
+			errs = append(errs, fmt.Errorf("restore authoritative zone: %w", err))
+		} else if err := authServer.ReloadZone(ctx, zoneName); err != nil {
+			errs = append(errs, fmt.Errorf("reload restored authoritative zone: %w", err))
+		}
+	}
+
+	if restoreResolver {
+		if err := resolver.UpdateStubZone(ctx, zoneName); err != nil {
+			errs = append(errs, fmt.Errorf("restore resolver stub zone: %w", err))
+		} else {
+			if err := resolver.CheckConfig(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("check restored resolver config: %w", err))
+			}
+			if err := resolver.Reload(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("reload restored resolver config: %w", err))
+			}
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 func sendHealthStatus(ctx context.Context, statusChan chan<- health.HealthStatus, status health.HealthStatus) bool {
