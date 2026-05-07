@@ -126,11 +126,6 @@ func (rm *RouteManager) WithdrawRoutes(ctx context.Context) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	if !rm.announced {
-		// Already withdrawn, no-op
-		return nil
-	}
-
 	for _, name := range rm.protocolNames {
 		cmd := fmt.Sprintf("disable %s", name)
 		resp, err := rm.client.Exec(ctx, cmd)
