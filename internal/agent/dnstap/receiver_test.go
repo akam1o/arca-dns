@@ -94,6 +94,35 @@ func TestReceiver_RunClosesActiveConnectionsOnCancel(t *testing.T) {
 	requireRunCanceled(t, errCh)
 }
 
+func TestReceiver_RunRestrictsSocketPermissions(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	socketPath := filepath.Join(tmpDir, "d.sock")
+	receiver := NewReceiver(ReceiverConfig{
+		SocketPath: socketPath,
+		BufferSize: 1,
+	}, zap.NewNop())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	frameChan := make(chan Frame, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- receiver.Run(ctx, frameChan)
+	}()
+
+	waitForSocket(t, socketPath, errCh)
+
+	info, err := os.Lstat(socketPath)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(dnstapSocketMode), info.Mode().Perm())
+
+	cancel()
+	requireRunCanceled(t, errCh)
+}
+
 func TestRemoveStaleSocket_RemovesUnixSocket(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
 	require.NoError(t, err)

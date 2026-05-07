@@ -16,7 +16,10 @@ import (
 	"go.uber.org/zap"
 )
 
-const maxDNSTapFrameSize = 1024 * 1024
+const (
+	maxDNSTapFrameSize = 1024 * 1024
+	dnstapSocketMode   = 0o660
+)
 
 // Receiver listens on a Unix socket and receives DNSTap frames from DNS servers.
 type Receiver struct {
@@ -65,6 +68,11 @@ func (r *Receiver) Run(ctx context.Context, frameChan chan<- Frame) error {
 	listener, err := net.Listen("unix", r.socketPath)
 	if err != nil {
 		return fmt.Errorf("failed to create unix socket listener: %w", err)
+	}
+	if err := os.Chmod(r.socketPath, dnstapSocketMode); err != nil {
+		_ = listener.Close()
+		_ = os.Remove(r.socketPath)
+		return fmt.Errorf("failed to set dnstap socket permissions: %w", err)
 	}
 
 	r.mu.Lock()
