@@ -20,6 +20,7 @@ type Query struct {
 	Transport    string  // "tcp" or "udp"
 	Latency      float64 // milliseconds
 	DNSSECValid  bool
+	IsResponse   bool
 }
 
 // Decoder decodes DNSTap protobuf messages.
@@ -60,7 +61,9 @@ func (d *Decoder) Decode(frameData []byte) (*Query, error) {
 	}
 
 	// Extract query details
-	query := &Query{}
+	query := &Query{
+		IsResponse: msgType == dnstap.Message_CLIENT_RESPONSE,
+	}
 
 	// Timestamp
 	if msg.QueryTimeSec != nil && msg.QueryTimeNsec != nil {
