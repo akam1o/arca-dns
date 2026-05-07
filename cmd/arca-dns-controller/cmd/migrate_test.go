@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,14 +15,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type deleteTrackingStore struct {
+type failingRecreateStore struct {
 	backend.ZoneStore
-	deletes int
+	deleted bool
+	failed  bool
 }
 
-func (s *deleteTrackingStore) DeleteZone(ctx context.Context, name string) error {
-	s.deletes++
+func (s *failingRecreateStore) DeleteZone(ctx context.Context, name string) error {
+	s.deleted = true
 	return s.ZoneStore.DeleteZone(ctx, name)
+}
+
+func (s *failingRecreateStore) CreateZone(ctx context.Context, zone *model.Zone) error {
+	if s.deleted && !s.failed {
+		s.failed = true
+		return errors.New("injected recreate failure")
+	}
+	return s.ZoneStore.CreateZone(ctx, zone)
 }
 
 // TestMigrateExportMemory tests exporting zones from memory backend to JSON files.
@@ -118,14 +128,16 @@ func TestMigrateImport(t *testing.T) {
 	assert.NotEmpty(t, imported.Version)
 }
 
-func TestMigrateImportOverwriteUpdatesWithoutDelete(t *testing.T) {
+func TestMigrateImportOverwritePreservesSourceSerial(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctx := context.Background()
 
+	sourceSOA := model.DefaultSOA("ns1.overwrite.example.com.", "admin.overwrite.example.com.")
+	sourceSOA.Serial = 2024010101
 	importZone := &model.Zone{
 		Name:    "overwrite.example.com.",
 		Version: "v2024010101-imported",
-		SOA:     model.DefaultSOA("ns1.overwrite.example.com.", "admin.overwrite.example.com."),
+		SOA:     sourceSOA,
 		Records: []model.Record{
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.10"},
 		},
@@ -134,13 +146,16 @@ func TestMigrateImportOverwriteUpdatesWithoutDelete(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "overwrite_example_com.json"), data, 0644))
 
-	memoryStore := backend.NewMemoryBackend()
-	defer memoryStore.Close()
-	store := &deleteTrackingStore{ZoneStore: memoryStore}
+	store, err := backend.NewSQLiteBackend(":memory:")
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.InitSchema())
 
+	existingSOA := model.DefaultSOA("ns1.overwrite.example.com.", "admin.overwrite.example.com.")
+	existingSOA.Serial = 2025010101
 	existingZone := &model.Zone{
 		Name: "overwrite.example.com.",
-		SOA:  model.DefaultSOA("ns1.overwrite.example.com.", "admin.overwrite.example.com."),
+		SOA:  existingSOA,
 		Records: []model.Record{
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
@@ -151,14 +166,58 @@ func TestMigrateImportOverwriteUpdatesWithoutDelete(t *testing.T) {
 	imported, err := importToStore(ctx, store, tmpDir, false, true)
 	require.NoError(t, err)
 	assert.Equal(t, 1, imported)
-	assert.Zero(t, store.deletes)
 
 	updated, err := store.GetZone(ctx, importZone.Name)
 	require.NoError(t, err)
 	require.Len(t, updated.Records, 1)
 	assert.Equal(t, "192.0.2.10", updated.Records[0].Value)
+	assert.Equal(t, sourceSOA.Serial, updated.SOA.Serial)
 	assert.NotEqual(t, existingVersion, updated.Version)
 	assert.NotEmpty(t, updated.Version)
+}
+
+func TestMigrateImportOverwriteRestoresExistingZoneOnRecreateFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := context.Background()
+
+	importZone := &model.Zone{
+		Name:    "restore.example.com.",
+		Version: "v2024010101-imported",
+		SOA:     model.DefaultSOA("ns1.restore.example.com.", "admin.restore.example.com."),
+		Records: []model.Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.10"},
+		},
+	}
+	data, err := json.MarshalIndent(importZone, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "restore_example_com.json"), data, 0644))
+
+	memoryStore := backend.NewMemoryBackend()
+	defer memoryStore.Close()
+
+	existingZone := &model.Zone{
+		Name: "restore.example.com.",
+		SOA:  model.DefaultSOA("ns1.restore.example.com.", "admin.restore.example.com."),
+		Records: []model.Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, memoryStore.CreateZone(ctx, existingZone))
+	before, err := memoryStore.GetZone(ctx, existingZone.Name)
+	require.NoError(t, err)
+
+	store := &failingRecreateStore{ZoneStore: memoryStore}
+	_, err = importToStore(ctx, store, tmpDir, false, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create replacement zone")
+	assert.True(t, store.failed)
+
+	restored, err := memoryStore.GetZone(ctx, existingZone.Name)
+	require.NoError(t, err)
+	require.Len(t, restored.Records, 1)
+	assert.Equal(t, "192.0.2.1", restored.Records[0].Value)
+	assert.Equal(t, before.Version, restored.Version)
+	assert.Equal(t, before.SOA.Serial, restored.SOA.Serial)
 }
 
 func TestMigrateImport_RejectsInvalidZone(t *testing.T) {

@@ -395,14 +395,69 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 }
 
 func overwriteZone(ctx context.Context, store backend.ZoneStore, zone *model.Zone) error {
+	if txStore, ok := store.(backend.TransactionalStore); ok {
+		return overwriteZoneInTransaction(ctx, txStore, zone)
+	}
+
+	return overwriteZoneWithRestore(ctx, store, zone)
+}
+
+func overwriteZoneInTransaction(ctx context.Context, store backend.TransactionalStore, zone *model.Zone) error {
+	tx, err := store.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin overwrite transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(context.WithoutCancel(ctx))
+		}
+	}()
+
+	current, err := tx.GetZone(ctx, zone.Name)
+	if err != nil {
+		return fmt.Errorf("get existing zone: %w", err)
+	}
+
+	if err := deleteZoneForOverwrite(ctx, tx, zone.Name, current.Version); err != nil {
+		return fmt.Errorf("delete existing zone: %w", err)
+	}
+	if err := tx.CreateZone(ctx, zone); err != nil {
+		return fmt.Errorf("create replacement zone: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit overwrite transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func overwriteZoneWithRestore(ctx context.Context, store backend.ZoneStore, zone *model.Zone) error {
 	current, err := store.GetZone(ctx, zone.Name)
 	if err != nil {
 		return fmt.Errorf("get existing zone: %w", err)
 	}
-	if err := store.UpdateZone(ctx, zone, current.Version); err != nil {
-		return fmt.Errorf("update existing zone: %w", err)
+
+	if err := deleteZoneForOverwrite(ctx, store, zone.Name, current.Version); err != nil {
+		return fmt.Errorf("delete existing zone: %w", err)
+	}
+	if err := store.CreateZone(ctx, zone); err != nil {
+		if restoreErr := store.CreateZone(context.WithoutCancel(ctx), current); restoreErr != nil {
+			return errors.Join(
+				fmt.Errorf("create replacement zone: %w", err),
+				fmt.Errorf("restore previous zone: %w", restoreErr),
+			)
+		}
+		return fmt.Errorf("create replacement zone: %w", err)
 	}
 	return nil
+}
+
+func deleteZoneForOverwrite(ctx context.Context, store backend.ZoneStore, name string, expectedVersion string) error {
+	if conditionalStore, ok := store.(backend.ConditionalDeleteStore); ok {
+		return conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
+	}
+	return store.DeleteZone(ctx, name)
 }
 
 // createBackendForCopy creates a backend with explicit DSN/path parameters.
