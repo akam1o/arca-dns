@@ -122,15 +122,19 @@ func validateDirectives(content string, opts ParseOptions) error {
 		}
 
 		// Convert to uppercase for case-insensitive directive matching
-		lineUpper := strings.ToUpper(line)
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		directive := strings.ToUpper(fields[0])
 
 		// Check for $GENERATE (explicitly unsupported) - case insensitive
-		if strings.HasPrefix(lineUpper, "$GENERATE") || strings.Contains(lineUpper, "$GENERATE") {
+		if directive == "$GENERATE" {
 			return fmt.Errorf("$GENERATE directive is not supported (line %d)", lineNum)
 		}
 
 		// Check for $INCLUDE - case insensitive
-		if strings.HasPrefix(lineUpper, "$INCLUDE") {
+		if directive == "$INCLUDE" {
 			if !opts.AllowIncludes {
 				return fmt.Errorf("$INCLUDE directive is not allowed (line %d)", lineNum)
 			}

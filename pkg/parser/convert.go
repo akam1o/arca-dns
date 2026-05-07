@@ -86,9 +86,13 @@ func extractOrigin(raw string) (string, error) {
 			continue
 		}
 
+		parts := strings.Fields(line)
+		if len(parts) == 0 {
+			continue
+		}
+
 		// Check for $ORIGIN directive
-		if strings.HasPrefix(line, "$ORIGIN") {
-			parts := strings.Fields(line)
+		if strings.EqualFold(parts[0], "$ORIGIN") {
 			if len(parts) >= 2 {
 				origin := parts[1]
 				// Ensure trailing dot
@@ -99,21 +103,25 @@ func extractOrigin(raw string) (string, error) {
 			}
 		}
 
+		if strings.HasPrefix(parts[0], "$") {
+			continue
+		}
+
 		// Check for SOA record (format: <origin> IN SOA ...)
-		if strings.Contains(line, " SOA ") || strings.Contains(line, "\tSOA\t") {
-			parts := strings.Fields(line)
-			if len(parts) > 0 {
-				origin := parts[0]
-				// Handle @ symbol
-				if origin == "@" {
-					return "", fmt.Errorf("cannot determine origin from @ symbol without $ORIGIN directive")
-				}
-				// Ensure trailing dot
-				if !strings.HasSuffix(origin, ".") {
-					origin += "."
-				}
-				return origin, nil
+		for _, part := range parts[1:] {
+			if !strings.EqualFold(part, "SOA") {
+				continue
 			}
+			origin := parts[0]
+			// Handle @ symbol
+			if origin == "@" {
+				return "", fmt.Errorf("cannot determine origin from @ symbol without $ORIGIN directive")
+			}
+			// Ensure trailing dot
+			if !strings.HasSuffix(origin, ".") {
+				origin += "."
+			}
+			return origin, nil
 		}
 	}
 

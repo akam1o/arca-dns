@@ -45,6 +45,28 @@ $ORIGIN example.com.
 			opts:    DefaultParseOptions(),
 			wantErr: false,
 		},
+		{
+			name: "$GENERATE in TXT data passes",
+			content: `$TTL 3600
+$ORIGIN example.com.
+@ IN SOA ns1 admin (2024010101 3600 1800 604800 86400)
+@ IN NS ns1
+@ IN TXT "literal $GENERATE text"
+`,
+			opts:    DefaultParseOptions(),
+			wantErr: false,
+		},
+		{
+			name: "$GENERATE in inline comment passes",
+			content: `$TTL 3600
+$ORIGIN example.com.
+@ IN SOA ns1 admin (2024010101 3600 1800 604800 86400)
+@ IN NS ns1
+@ IN A 192.0.2.1 ; mention $GENERATE in a comment
+`,
+			opts:    DefaultParseOptions(),
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
