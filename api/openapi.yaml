@@ -1111,28 +1111,28 @@ components:
         refresh:
           type: integer
           format: int64
-          minimum: 0
+          minimum: 1
           maximum: 4294967295
           description: Refresh interval in seconds
           example: 3600
         retry:
           type: integer
           format: int64
-          minimum: 0
+          minimum: 1
           maximum: 4294967295
           description: Retry interval in seconds
           example: 1800
         expire:
           type: integer
           format: int64
-          minimum: 0
+          minimum: 1
           maximum: 4294967295
           description: Expiration time in seconds
           example: 604800
         minimum:
           type: integer
           format: int64
-          minimum: 0
+          minimum: 1
           maximum: 4294967295
           description: Minimum TTL in seconds
           example: 86400
