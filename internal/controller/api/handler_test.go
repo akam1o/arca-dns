@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -41,6 +42,14 @@ func setupTest(t *testing.T) (*Handler, *backend.MemoryBackend, *httptest.Server
 	server.Listener = ln
 	server.Start()
 	return handler, store, server
+}
+
+type readinessFailingStore struct {
+	*backend.MemoryBackend
+}
+
+func (s *readinessFailingStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	return nil, errors.New("dial tcp db.internal:5432: schema path /var/lib/arca-dns")
 }
 
 type zoneStoreWithoutConditionalDelete struct {
@@ -99,6 +108,29 @@ func TestCreateZone(t *testing.T) {
 	assert.Equal(t, "example.com.", created.Name)
 	assert.NotEmpty(t, created.Version)
 	assert.NotZero(t, created.SOA.Serial)
+}
+
+func TestReadyRedactsBackendErrors(t *testing.T) {
+	logger := zap.NewNop()
+	store := &readinessFailingStore{MemoryBackend: backend.NewMemoryBackend()}
+	handler := NewHandler(store, nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = true
+	apiCfg.Auth.APIKeys = nil
+	apiCfg.RateLimit.Enabled = false
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "not_ready", body["status"])
+	assert.Equal(t, "backend unavailable", body["error"])
+	assert.NotContains(t, w.Body.String(), "db.internal")
+	assert.NotContains(t, w.Body.String(), "/var/lib/arca-dns")
 }
 
 func TestHeadZoneReturnsETagWithoutBody(t *testing.T) {

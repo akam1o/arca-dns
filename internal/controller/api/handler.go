@@ -76,7 +76,7 @@ func (h *Handler) Ready(c *gin.Context) {
 		h.logger.Warn("Readiness check failed", zap.Error(err))
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status": "not_ready",
-			"error":  err.Error(),
+			"error":  "backend unavailable",
 		})
 		return
 	}
