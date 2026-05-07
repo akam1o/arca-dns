@@ -181,10 +181,7 @@ func (c *Controller) UpdateStubZoneConfig(zoneName string) error {
 		return fmt.Errorf("failed to generate stub-zone config: %w", err)
 	}
 
-	// Write to stub-zone config file with safe filename
-	configDir := filepath.Dir(c.config.ConfigPath)
-	safeName := util.SafeZoneFilename(zoneName)
-	stubZoneFile := filepath.Join(configDir, fmt.Sprintf("stub-zone-%s.conf", safeName))
+	stubZoneFile := c.stubZoneConfigPath(zoneName)
 
 	if err := os.WriteFile(stubZoneFile, []byte(stubConfig), 0644); err != nil {
 		return fmt.Errorf("failed to write stub-zone config: %w", err)
@@ -195,6 +192,37 @@ func (c *Controller) UpdateStubZoneConfig(zoneName string) error {
 		zap.String("file", stubZoneFile))
 
 	return nil
+}
+
+// DeleteStubZoneConfig removes the generated stub-zone configuration file for a zone.
+func (c *Controller) DeleteStubZoneConfig(zoneName string) error {
+	if !c.config.Enabled {
+		c.logger.Debug("Unbound is disabled, skipping stub-zone deletion")
+		return nil
+	}
+
+	stubZoneFile := c.stubZoneConfigPath(zoneName)
+	if err := os.Remove(stubZoneFile); err != nil {
+		if os.IsNotExist(err) {
+			c.logger.Debug("Stub-zone configuration already absent",
+				zap.String("zone", zoneName),
+				zap.String("file", stubZoneFile))
+			return nil
+		}
+		return fmt.Errorf("failed to delete stub-zone config: %w", err)
+	}
+
+	c.logger.Info("Stub-zone configuration deleted",
+		zap.String("zone", zoneName),
+		zap.String("file", stubZoneFile))
+
+	return nil
+}
+
+func (c *Controller) stubZoneConfigPath(zoneName string) string {
+	configDir := filepath.Dir(c.config.ConfigPath)
+	safeName := util.SafeZoneFilename(zoneName)
+	return filepath.Join(configDir, fmt.Sprintf("stub-zone-%s.conf", safeName))
 }
 
 // EnsureEDNSBufferSize checks and logs a warning if EDNS buffer size is not set to 1232.

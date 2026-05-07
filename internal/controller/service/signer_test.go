@@ -4,12 +4,15 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/dnssec"
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/akam1o/arca-dns/pkg/parser"
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 )
@@ -88,6 +91,50 @@ func createTestZone() *model.Zone {
 		DNSSEC: &model.DNSSECConfig{
 			Enabled: false,
 		},
+	}
+}
+
+func TestSigningService_PruneArtifactsKeepsNewestVersions(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	service.SetMaxArtifactsPerZone(2)
+	zoneName := "example.com."
+	baseTime := time.Unix(1700000000, 0)
+
+	for i, version := range []string{"v1-old", "v2-middle", "v3-new"} {
+		if err := service.storeArtifact(zoneName, version, []byte(version)); err != nil {
+			t.Fatalf("storeArtifact(%s) failed: %v", version, err)
+		}
+		artifactPath := service.artifactPath(zoneName, version)
+		modTime := baseTime.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(artifactPath, modTime, modTime); err != nil {
+			t.Fatalf("chtimes(%s) failed: %v", version, err)
+		}
+	}
+
+	zoneDir := filepath.Dir(service.artifactPath(zoneName, "v3-new"))
+	if err := os.WriteFile(filepath.Join(zoneDir, "README"), []byte("keep"), 0644); err != nil {
+		t.Fatalf("write non-artifact file failed: %v", err)
+	}
+
+	if err := service.pruneArtifacts(zoneName); err != nil {
+		t.Fatalf("pruneArtifacts failed: %v", err)
+	}
+
+	entries, err := os.ReadDir(zoneDir)
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+
+	want := []string{"README", "v2-middle.zone.signed", "v3-new.zone.signed"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("artifact names = %v, want %v", names, want)
 	}
 }
 
@@ -262,6 +309,107 @@ func TestSigningService_UsesNSECWhenNSEC3Disabled(t *testing.T) {
 	}
 }
 
+func TestSigningService_PrepareSignedZoneWriteHoldsLockUntilAbort(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	write, err := service.PrepareSignedZoneWrite(context.Background(), zone)
+	if err != nil {
+		t.Fatalf("PrepareSignedZoneWrite failed: %v", err)
+	}
+	if zone.DNSSEC == nil || !zone.DNSSEC.Enabled {
+		t.Fatal("PrepareSignedZoneWrite did not attach DNSSEC metadata")
+	}
+
+	started := make(chan struct{})
+	acquired := make(chan struct{})
+	go func() {
+		close(started)
+		lock := service.getZoneLock(model.NormalizeZoneName(zone.Name))
+		lock.Lock()
+		defer lock.Unlock()
+		close(acquired)
+	}()
+
+	<-started
+	select {
+	case <-acquired:
+		t.Fatal("zone signing lock was released before the write completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	write.Abort()
+	select {
+	case <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("zone signing lock was not released after abort")
+	}
+}
+
+func TestSigningService_GetSignedZoneWaitsForZoneLockBeforeSigning(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+
+	// Pre-create keys so an unlocked on-demand signing path would finish quickly.
+	if _, _, err := service.keyManager.EnsureZoneKeys(zone.Name); err != nil {
+		t.Fatalf("failed to create test zone keys: %v", err)
+	}
+
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	lock := service.getZoneLock(model.NormalizeZoneName(zone.Name))
+	lock.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			lock.Unlock()
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.GetSignedZone(ctx, zone.Name)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		lock.Unlock()
+		locked = false
+		if err != nil {
+			t.Fatalf("GetSignedZone returned before lock release with error: %v", err)
+		}
+		t.Fatal("GetSignedZone completed before the zone signing lock was released")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	lock.Unlock()
+	locked = false
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("GetSignedZone failed after lock release: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GetSignedZone did not complete after the zone signing lock was released")
+	}
+
+	persisted, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone: %v", err)
+	}
+	if persisted.DNSSEC == nil || !persisted.DNSSEC.Enabled {
+		t.Fatal("GetSignedZone did not persist DNSSEC metadata")
+	}
+}
+
 func TestSigningService_SignAndStoreZone(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
@@ -389,6 +537,67 @@ func TestSigningService_GetSignedZone_CacheHitRestoresSignedRRs(t *testing.T) {
 	}
 }
 
+func TestSigningService_GetSignedZone_StaleCacheIsResigned(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+
+	artifact, err := service.SignZone(ctx, zone)
+	if err != nil {
+		t.Fatalf("SignZone failed: %v", err)
+	}
+	zone.DNSSEC = artifact.DNSSEC
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	parsed, err := parser.ParseBINDZone(strings.NewReader(artifact.SignedZone), zone.Name, parser.DefaultParseOptions())
+	if err != nil {
+		t.Fatalf("failed to parse signed artifact: %v", err)
+	}
+	expiredAt := uint32(time.Now().Add(-time.Hour).Unix())
+	for _, rr := range parsed.Records {
+		if sig, ok := rr.(*dns.RRSIG); ok {
+			sig.Expiration = expiredAt
+		}
+	}
+
+	expiredZoneFile, err := parser.GenerateBINDZoneFileFromRRs(zone.Name, artifact.Version, parsed.Records)
+	if err != nil {
+		t.Fatalf("failed to generate expired signed artifact: %v", err)
+	}
+
+	const staleCacheMarker = "; stale-cache-marker"
+	if err := service.storeArtifact(zone.Name, artifact.Version, []byte(expiredZoneFile+"\n"+staleCacheMarker+"\n")); err != nil {
+		t.Fatalf("failed to store expired signed artifact: %v", err)
+	}
+
+	freshArtifact, err := service.GetSignedZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetSignedZone failed: %v", err)
+	}
+
+	if strings.Contains(freshArtifact.SignedZone, staleCacheMarker) {
+		t.Fatal("expected stale cached signed artifact to be ignored")
+	}
+	if freshArtifact.Metadata.Expiration <= uint32(time.Now().Unix()) {
+		t.Fatalf("re-signed artifact still expired: %d", freshArtifact.Metadata.Expiration)
+	}
+
+	persistedZone, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone: %v", err)
+	}
+	if persistedZone.DNSSEC == nil || persistedZone.DNSSEC.SignatureExpiration == nil {
+		t.Fatal("re-signed zone did not persist DNSSEC signature expiration")
+	}
+	if got, want := persistedZone.DNSSEC.SignatureExpiration.Unix(), int64(freshArtifact.Metadata.Expiration); got != want {
+		t.Fatalf("persisted signature expiration = %d, want %d", got, want)
+	}
+}
+
 func TestSigningService_GetDSRecords(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
@@ -422,6 +631,60 @@ func TestSigningService_GetDSRecords(t *testing.T) {
 	}
 }
 
+func TestSigningService_GetDSRecordsWaitsForZoneLock(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	if _, _, err := service.keyManager.EnsureZoneKeys(zone.Name); err != nil {
+		t.Fatalf("failed to create test zone keys: %v", err)
+	}
+
+	lock := service.getZoneLock(model.NormalizeZoneName(zone.Name))
+	lock.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			lock.Unlock()
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.GetDSRecords(ctx, zone.Name)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		lock.Unlock()
+		locked = false
+		if err != nil {
+			t.Fatalf("GetDSRecords returned before lock release with error: %v", err)
+		}
+		t.Fatal("GetDSRecords completed before the zone signing lock was released")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	lock.Unlock()
+	locked = false
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("GetDSRecords failed after lock release: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GetDSRecords did not complete after the zone signing lock was released")
+	}
+}
+
 func TestSigningService_GetEarliestExpiration(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
@@ -434,6 +697,11 @@ func TestSigningService_GetEarliestExpiration(t *testing.T) {
 		t.Fatalf("failed to create zone: %v", err)
 	}
 
+	artifact, err := service.GetSignedZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetSignedZone failed: %v", err)
+	}
+
 	// Get earliest expiration
 	expiration, err := service.GetEarliestExpiration(ctx, zone.Name)
 	if err != nil {
@@ -443,10 +711,77 @@ func TestSigningService_GetEarliestExpiration(t *testing.T) {
 	if expiration == 0 {
 		t.Error("Expiration is zero")
 	}
+	if expiration != artifact.Metadata.Expiration {
+		t.Errorf("Expiration = %d, want %d", expiration, artifact.Metadata.Expiration)
+	}
 
 	// Expiration should be in the future (roughly 30 days from now)
 	// RRSIG expiration is in UNIX timestamp format
 	t.Logf("Earliest expiration: %d", expiration)
+}
+
+func TestSigningService_GetEarliestExpiration_UsesCachedArtifactWithoutResigning(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+
+	artifact, err := service.SignZone(ctx, zone)
+	if err != nil {
+		t.Fatalf("SignZone failed: %v", err)
+	}
+	zone.DNSSEC = artifact.DNSSEC
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	parsed, err := parser.ParseBINDZone(strings.NewReader(artifact.SignedZone), zone.Name, parser.DefaultParseOptions())
+	if err != nil {
+		t.Fatalf("failed to parse signed artifact: %v", err)
+	}
+	expiredAt := uint32(time.Now().Add(-time.Hour).Unix())
+	for _, rr := range parsed.Records {
+		if sig, ok := rr.(*dns.RRSIG); ok {
+			sig.Expiration = expiredAt
+		}
+	}
+
+	expiredZoneFile, err := parser.GenerateBINDZoneFileFromRRs(zone.Name, artifact.Version, parsed.Records)
+	if err != nil {
+		t.Fatalf("failed to generate expired signed artifact: %v", err)
+	}
+
+	const staleCacheMarker = "; expiration-cache-marker"
+	if err := service.storeArtifact(zone.Name, artifact.Version, []byte(expiredZoneFile+"\n"+staleCacheMarker+"\n")); err != nil {
+		t.Fatalf("failed to store expired signed artifact: %v", err)
+	}
+
+	metadataStore, ok := service.store.(backend.DNSSECMetadataStore)
+	if !ok {
+		t.Fatal("store does not support DNSSEC metadata persistence")
+	}
+	dnssecConfig := cloneDNSSECConfig(zone.DNSSEC)
+	dnssecConfig.SignatureExpiration = nil
+	if err := metadataStore.UpdateDNSSECMetadata(ctx, zone.Name, dnssecConfig); err != nil {
+		t.Fatalf("failed to clear signature expiration metadata: %v", err)
+	}
+
+	expiration, err := service.GetEarliestExpiration(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetEarliestExpiration failed: %v", err)
+	}
+	if expiration != expiredAt {
+		t.Fatalf("Expiration = %d, want cached artifact expiration %d", expiration, expiredAt)
+	}
+
+	cached, err := service.loadArtifact(zone.Name, artifact.Version)
+	if err != nil {
+		t.Fatalf("failed to load signed artifact cache: %v", err)
+	}
+	if !strings.Contains(string(cached), staleCacheMarker) {
+		t.Fatal("expected GetEarliestExpiration to leave cached artifact unchanged")
+	}
 }
 
 func TestSigningService_GetSignedZone_NotFound(t *testing.T) {

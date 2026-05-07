@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,6 +75,37 @@ func (m *MemoryBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mod
 	return zones, nil
 }
 
+// ListZoneSummaries returns zone metadata without copying record contents.
+func (m *MemoryBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	summaries := make([]*ZoneSummary, 0, len(m.zones))
+	for _, zone := range m.zones {
+		summaries = append(summaries, &ZoneSummary{
+			Name:    zone.Name,
+			Version: zone.Version,
+		})
+	}
+
+	sort.Slice(summaries, func(i, j int) bool {
+		return strings.ToLower(summaries[i].Name) < strings.ToLower(summaries[j].Name)
+	})
+
+	if opts.Offset > 0 {
+		if opts.Offset >= len(summaries) {
+			return []*ZoneSummary{}, nil
+		}
+		summaries = summaries[opts.Offset:]
+	}
+
+	if opts.Limit > 0 && opts.Limit < len(summaries) {
+		summaries = summaries[:opts.Limit]
+	}
+
+	return summaries, nil
+}
+
 // CreateZone creates a new zone.
 func (m *MemoryBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	m.mu.Lock()
@@ -106,6 +138,10 @@ func (m *MemoryBackend) CreateZone(ctx context.Context, zone *model.Zone) error 
 		zone.Version = version
 	}
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	// Assign IDs to records
 	for i := range zone.Records {
 		m.nextID++
@@ -135,8 +171,9 @@ func (m *MemoryBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 	// Normalize zone name in the zone object itself
 	zone.Name = normalized
 
-	// Auto-increment serial
-	zone.SOA.Serial = generateSerial(existing.SOA.Serial)
+	// Advance from the stored serial. A caller may provide a precomputed
+	// greater serial when another component already used it for a prepared artifact.
+	zone.SOA.Serial = updateSOASerial(existing.SOA.Serial, zone.SOA.Serial)
 
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
@@ -149,6 +186,10 @@ func (m *MemoryBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 			return fmt.Errorf("generate zone version: %w", err)
 		}
 		zone.Version = newVersion
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
 	}
 
 	// Assign IDs to new records
@@ -187,6 +228,24 @@ func (m *MemoryBackend) DeleteZone(ctx context.Context, name string) error {
 	normalized := model.NormalizeZoneName(name)
 	if _, exists := m.zones[normalized]; !exists {
 		return model.ErrZoneNotFound
+	}
+
+	delete(m.zones, normalized)
+	return nil
+}
+
+// DeleteZoneWithVersion removes a zone only when its current version matches.
+func (m *MemoryBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	normalized := model.NormalizeZoneName(name)
+	zone, exists := m.zones[normalized]
+	if !exists {
+		return model.ErrZoneNotFound
+	}
+	if expectedVersion != "" && zone.Version != expectedVersion {
+		return model.ErrConflict
 	}
 
 	delete(m.zones, normalized)
@@ -239,10 +298,11 @@ func copyZone(zone *model.Zone) *model.Zone {
 func generateSerial(currentSerial uint32) uint32 {
 	now := time.Now()
 	today := uint32(now.Year()*10000 + int(now.Month())*100 + now.Day())
+	todayFirst := today*100 + 1
 
 	if currentSerial == 0 {
 		// First serial for this zone
-		return today*100 + 1
+		return todayFirst
 	}
 
 	currentDate := currentSerial / 100
@@ -253,8 +313,18 @@ func generateSerial(currentSerial uint32) uint32 {
 		return currentSerial + 1
 	}
 
-	// New day or counter maxed out, reset to today01
-	return today*100 + 1
+	if currentDate < today && todayFirst > currentSerial {
+		// New day, move to today's first serial while preserving monotonicity.
+		return todayFirst
+	}
+
+	if currentSerial < math.MaxUint32 {
+		// Future serials or exhausted date counters must still move forward.
+		return currentSerial + 1
+	}
+
+	// No larger uint32 value exists. Avoid moving backwards.
+	return currentSerial
 }
 
 // memoryBackendFactory is the factory function for memory backend.

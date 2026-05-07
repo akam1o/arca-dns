@@ -16,6 +16,11 @@ func NewAdapter(ctrl *Controller) *Adapter {
 	return &Adapter{ctrl: ctrl}
 }
 
+// EnsureZone ensures NSD has a generated zone stanza for the zone.
+func (a *Adapter) EnsureZone(ctx context.Context, zoneName string) error {
+	return a.ctrl.EnsureZone(zoneName)
+}
+
 // ReloadZone reloads a specific zone in NSD.
 func (a *Adapter) ReloadZone(ctx context.Context, zoneName string) error {
 	return a.ctrl.ReloadZone(zoneName)
@@ -24,6 +29,11 @@ func (a *Adapter) ReloadZone(ctx context.Context, zoneName string) error {
 // CheckZone validates a zone file before loading it into NSD.
 func (a *Adapter) CheckZone(ctx context.Context, zoneName string, zoneFile string) error {
 	return a.ctrl.CheckZone(zoneName, zoneFile)
+}
+
+// DeleteZone removes the generated zone stanza for the zone.
+func (a *Adapter) DeleteZone(ctx context.Context, zoneName string) error {
+	return a.ctrl.DeleteZone(zoneName)
 }
 
 // Reload reloads all zones in NSD.

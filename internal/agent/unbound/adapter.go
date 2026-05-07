@@ -36,6 +36,11 @@ func (a *Adapter) UpdateStubZone(ctx context.Context, zoneName string) error {
 	return a.ctrl.UpdateStubZoneConfig(zoneName)
 }
 
+// DeleteStubZone removes generated stub-zone configuration for a zone.
+func (a *Adapter) DeleteStubZone(ctx context.Context, zoneName string) error {
+	return a.ctrl.DeleteStubZoneConfig(zoneName)
+}
+
 // Status returns the Unbound server status.
 func (a *Adapter) Status(ctx context.Context) (plugin.ServerStatus, error) {
 	statusText, err := a.ctrl.Status()

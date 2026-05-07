@@ -43,6 +43,11 @@ func (e *Engine) Run(ctx context.Context, signalChan chan<- bird.HealthSignal) e
 	// Start the checker
 	go func() { _ = e.checker.Run(ctx, statusChan) }()
 
+	return e.RunWithStatus(ctx, statusChan, signalChan)
+}
+
+// RunWithStatus processes health check results from an existing checker loop.
+func (e *Engine) RunWithStatus(ctx context.Context, statusChan <-chan HealthStatus, signalChan chan<- bird.HealthSignal) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -91,6 +96,11 @@ func (e *Engine) processHealthStatus(status HealthStatus) (bird.HealthSignal, bo
 				break
 			}
 		}
+	}
+
+	if !status.Healthy && !hasHardFailure && !hasLatencyIssue {
+		hasHardFailure = true
+		failureReason = "Health status is unhealthy"
 	}
 
 	// Build signal

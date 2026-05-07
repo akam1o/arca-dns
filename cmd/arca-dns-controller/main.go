@@ -14,6 +14,7 @@ import (
 	"github.com/akam1o/arca-dns/internal/controller/api"
 	ctrlmetrics "github.com/akam1o/arca-dns/internal/controller/metrics"
 	"github.com/akam1o/arca-dns/internal/controller/service"
+	applogging "github.com/akam1o/arca-dns/internal/logging"
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/dnssec"
@@ -62,29 +63,32 @@ performs DNSSEC signing, and distributes zone artifacts to agents.`,
 }
 
 func runServe(cmd *cobra.Command, args []string) {
-	// Initialize logger
-	logger, err := zap.NewProduction()
+	// Initialize a bootstrap logger until configuration is loaded.
+	bootstrapLogger, err := zap.NewProduction()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
-	defer func() { _ = logger.Sync() }()
-
-	logger.Info("arca-dns-controller starting",
-		zap.String("version", version),
-		zap.String("commit", commit),
-		zap.String("listen", listenAddr))
 
 	// Load configuration (defaults < YAML file < environment variables)
 	cfg, err := config.LoadControllerConfig(configFile)
 	if err != nil {
-		logger.Fatal("Failed to load configuration", zap.Error(err))
+		bootstrapLogger.Fatal("Failed to load configuration", zap.Error(err))
 	}
 
-	// Override listen address from flag if provided
-	if listenAddr != "" {
-		cfg.API.Listen = listenAddr
+	applyServeFlagOverrides(cmd, cfg)
+
+	logger, err := applogging.NewLogger(cfg.Logging)
+	if err != nil {
+		bootstrapLogger.Fatal("Failed to initialize configured logger", zap.Error(err))
 	}
+	defer func() { _ = logger.Sync() }()
+	_ = bootstrapLogger.Sync()
+
+	logger.Info("arca-dns-controller starting",
+		zap.String("version", version),
+		zap.String("commit", commit),
+		zap.String("listen", cfg.API.Listen))
 
 	// Initialize backend from configuration
 	store, err := newStoreFromConfig(cfg)
@@ -105,10 +109,11 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	if cfg.DNSSEC.Enabled {
 		logger.Info("Initializing DNSSEC signing service")
+		keyDirectory := cfg.DNSSECKeyDirectory()
 
 		// Load or generate master key
 		masterKey, src, err := dnssec.LoadMasterKey(dnssec.MasterKeyOptions{
-			KeyDirectory:      cfg.DNSSEC.KeyDirectory,
+			KeyDirectory:      keyDirectory,
 			AllowAutoGenerate: cfg.DNSSEC.MasterKeyAutoGenerate,
 		})
 		if err != nil {
@@ -118,7 +123,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 		// Initialize key manager
 		keyManager, err := dnssec.NewKeyManager(dnssec.KeyManagerOptions{
-			KeyDirectory: cfg.DNSSEC.KeyDirectory,
+			KeyDirectory: keyDirectory,
 			MasterKey:    masterKey,
 			Algorithm:    cfg.DNSSEC.Algorithm,
 			KSKBits:      cfg.DNSSEC.KSKKeySize,
@@ -136,6 +141,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			logger,
 			signerOptionsFromConfig(cfg.DNSSEC),
 		)
+		signingService.SetMaxArtifactsPerZone(cfg.Storage.MaxVersionsPerZone)
 		logger.Info("DNSSEC signing service initialized")
 
 		// Initialize scheduler if enabled
@@ -188,6 +194,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		Commit:  commit,
 		Date:    date,
 	}, logger)
+	handler.SetArtifactSignatureKey(cfg.API.ArtifactSignatureKey)
 
 	// Setup router
 	router := api.SetupRouter(handler, &cfg.API, logger)
@@ -250,6 +257,12 @@ func runServe(cmd *cobra.Command, args []string) {
 	logger.Info("Server stopped")
 }
 
+func applyServeFlagOverrides(cmd *cobra.Command, cfg *config.ControllerConfig) {
+	if cmd.Flags().Changed("listen") {
+		cfg.API.Listen = listenAddr
+	}
+}
+
 func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error) {
 	configMap := make(map[string]interface{})
 
@@ -268,6 +281,15 @@ func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error)
 			return nil, fmt.Errorf("postgres backend requires backend.postgres.dsn")
 		}
 		configMap["dsn"] = cfg.Backend.Postgres.DSN
+		if cfg.Backend.Postgres.MaxOpenConns > 0 {
+			configMap["max_open_conns"] = cfg.Backend.Postgres.MaxOpenConns
+		}
+		if cfg.Backend.Postgres.MaxIdleConns > 0 {
+			configMap["max_idle_conns"] = cfg.Backend.Postgres.MaxIdleConns
+		}
+		if cfg.Backend.Postgres.ConnMaxLifetime > 0 {
+			configMap["conn_max_lifetime"] = cfg.Backend.Postgres.ConnMaxLifetime
+		}
 		return backend.NewBackend("postgres", configMap)
 
 	case "mysql":
@@ -275,6 +297,15 @@ func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error)
 			return nil, fmt.Errorf("mysql backend requires backend.mysql.dsn")
 		}
 		configMap["dsn"] = cfg.Backend.MySQL.DSN
+		if cfg.Backend.MySQL.MaxOpenConns > 0 {
+			configMap["max_open_conns"] = cfg.Backend.MySQL.MaxOpenConns
+		}
+		if cfg.Backend.MySQL.MaxIdleConns > 0 {
+			configMap["max_idle_conns"] = cfg.Backend.MySQL.MaxIdleConns
+		}
+		if cfg.Backend.MySQL.ConnMaxLifetime > 0 {
+			configMap["conn_max_lifetime"] = cfg.Backend.MySQL.ConnMaxLifetime
+		}
 		return backend.NewBackend("mysql", configMap)
 
 	case "git":
@@ -291,7 +322,16 @@ func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error)
 		if cfg.Backend.Git.Email != "" {
 			configMap["email"] = cfg.Backend.Git.Email
 		}
+		if cfg.Backend.Git.RemoteURL != "" {
+			configMap["remote_url"] = cfg.Backend.Git.RemoteURL
+		}
 		configMap["auto_push"] = cfg.Backend.Git.AutoPush
+		if cfg.Backend.Git.AutoPull != nil {
+			configMap["auto_pull"] = *cfg.Backend.Git.AutoPull
+		}
+		if cfg.Backend.Git.PullInterval > 0 {
+			configMap["pull_interval"] = cfg.Backend.Git.PullInterval
+		}
 		return backend.NewBackend("git", configMap)
 
 	case "etcd":
@@ -325,6 +365,7 @@ func signerOptionsFromConfig(cfg config.DNSSECConfig) dnssec.SignerOptions {
 	options := dnssec.DefaultSignerOptions()
 	options.Inception = -cfg.SignatureInception
 	options.Expiration = cfg.SignatureValidity
+	options.ResignThreshold = cfg.ResignThreshold
 	options.NSEC3Enabled = cfg.NSEC3
 	options.NSEC3Iterations = cfg.NSEC3Iterations
 	options.NSEC3SaltLength = cfg.NSEC3SaltLength

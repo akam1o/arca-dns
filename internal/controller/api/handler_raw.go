@@ -152,6 +152,12 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 	}
 	modelZone.Version = version
 
+	signedWrite, ok := h.prepareSignedZoneCreate(c, modelZone, "raw creation")
+	if !ok {
+		return
+	}
+	defer signedWrite.Abort()
+
 	// Create zone in backend (same pattern as CreateZone)
 	if err := h.store.CreateZone(c.Request.Context(), modelZone); err != nil {
 		if err == model.ErrZoneAlreadyExists {
@@ -184,15 +190,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		return
 	}
 
-	// Sign zone automatically, matching the JSON create path.
-	if h.signingService != nil {
-		if err := h.signingService.SignAndStoreZone(c.Request.Context(), createdZone); err != nil {
-			// Log error but don't fail the request - zone was created successfully.
-			h.logger.Warn("Failed to sign zone after raw creation",
-				zap.String("zone", createdZone.Name),
-				zap.Error(err))
-		}
-	}
+	h.completeSignedZoneWrite(signedWrite)
 
 	// Set response headers
 	c.Header("ETag", formatETag(createdZone.Version))

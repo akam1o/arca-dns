@@ -41,6 +41,8 @@ Recommended production topology:
   - Debian/Ubuntu: the BIRD package is typically `bird2`
   - EL/RHEL: the BIRD package is typically `bird`
 - Ensure `nsd.zone_directory` is writable by the agent
+- Include the agent-managed NSD zone file from `nsd.conf`:
+  `include: "/etc/nsd/arca-dns-zones.conf"`
 - Ensure the agent can run NSD/Unbound/BIRD control and reload commands
 - Expose DNS 53/TCP+UDP from the edge node
 - Prepare BGP neighbor reachability, local ASN, neighbor ASN, and source IP
@@ -62,6 +64,7 @@ The controller default is `api.auth.enabled: true`. When auth is enabled, `api.a
 ```bash
 API_KEY="$(openssl rand -hex 32)"
 API_KEY_HASH="sha256:$(printf '%s' "$API_KEY" | sha256sum | awk '{print $1}')"
+SHARED_SIGNATURE_KEY="$(openssl rand -base64 32)"
 
 printf 'raw api key: %s\n' "$API_KEY"
 printf 'hash: %s\n' "$API_KEY_HASH"
@@ -71,6 +74,8 @@ Set the hash on the controller:
 
 ```yaml
 api:
+  # Generate with: openssl rand -base64 32
+  artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
   auth:
     enabled: true
     api_keys:
@@ -83,12 +88,18 @@ Set the raw API key on agents:
 controller:
   url: "https://controller.example.com"
   api_key: "REPLACE_WITH_RAW_API_KEY"
+
+sync:
+  verify_signatures: true
+  # Must match api.artifact_signature_key.
+  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 
 For env-only controller deployments, API keys can be supplied as:
 
 ```bash
 export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$API_KEY_HASH"
+export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$SHARED_SIGNATURE_KEY"
 ```
 
 The suffix becomes the lowercased principal name.
@@ -111,7 +122,7 @@ openssl rand -base64 32 | sudo tee /etc/arca-dns/master.key >/dev/null
 sudo chmod 600 /etc/arca-dns/master.key
 ```
 
-Most deployments should set `storage.key_directory` and `dnssec.key_directory` to the same path, such as `/var/lib/arca-dns/keys`.
+When both `storage.key_directory` and `dnssec.key_directory` are set, they must point to the same path, such as `/var/lib/arca-dns/keys`. `storage.key_directory` remains available as a compatibility alias for the DNSSEC key directory.
 
 ## Backend Preparation
 
@@ -194,10 +205,13 @@ backend:
   type: "git"
   git:
     repository_path: "/var/lib/arca-dns/git"
+    remote_url: "git@example.com:infra/arca-dns-zones.git"
     branch: "main"
     author: "arca-dns-controller"
     email: "noreply@arca-dns"
     auto_push: false
+    auto_pull: false
+    pull_interval: "1m"
 ```
 
 ## DEB/RPM + systemd
@@ -220,6 +234,7 @@ The package installs:
 - `/etc/arca-dns/agent.yaml`
 - `/usr/lib/systemd/system/arca-dns-controller.service`
 - `/usr/lib/systemd/system/arca-dns-agent.service`
+- `/usr/lib/sysusers.d/arca-dns.conf`
 
 `tmpfiles.d` creates:
 
@@ -240,7 +255,7 @@ Minimum production checks:
 - if DNSSEC is enabled, configure `/etc/arca-dns/master.key` or `ARCA_DNS_DNSSEC_MASTER_KEY_B64`
 - verify `storage.*` and `dnssec.key_directory` are writable by the service
 
-The current systemd units run as root. If you harden them to run as another user, also adjust permissions for NSD/Unbound/BIRD control commands and all key, artifact, and zone directories.
+The packaged controller runs as the `arca-dns` service user. The agent keeps root for NSD/Unbound/BIRD control, but its systemd unit is sandboxed and only the configured DNS, BIRD, state, log, and runtime paths are writable. If you customize those paths, add matching permissions or a systemd drop-in.
 
 ### 3. Configure the Agent
 
@@ -254,6 +269,12 @@ Set at least:
 - `unbound.enabled`, `unbound.control_path`
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
 - `health.nsd_server`, `health.unbound_server`, `health.test_record`
+
+If DNSTap is enabled, keep `dnstap.socket_mode` at `0660` and either set
+`dnstap.socket_group` to a shared group that contains the DNS daemon user
+(`nsd`, `unbound`, or your local equivalent), or rely on the packaged agent's
+primary group. The packaged agent runs with primary group `arca-dns`, so adding
+the DNS daemon user to `arca-dns` is the default packaged layout.
 
 If the agent generates BIRD config, include the generated file from the main `bird.conf`:
 
@@ -430,6 +451,10 @@ Agent HTTP endpoints:
 | `GET /status` | sync state, health, BGP announce state |
 | `GET /metrics` | Prometheus metrics |
 
+By default the agent status server listens on `127.0.0.1:9090`. Set
+`metrics.listen` to a remote address only when the endpoint is protected by
+network controls or an authenticated proxy.
+
 ## Post-Deployment Checks
 
 Controller:
@@ -444,10 +469,10 @@ curl http://controller:8080/metrics
 Agent:
 
 ```bash
-curl http://agent:9090/health
-curl http://agent:9090/ready
-curl http://agent:9090/status
-curl http://agent:9090/metrics
+curl http://localhost:9090/health
+curl http://localhost:9090/ready
+curl http://localhost:9090/status
+curl http://localhost:9090/metrics
 ```
 
 DNS:
@@ -470,7 +495,7 @@ birdc show route
 - Use DB dumps for SQL backends, repository backups for Git, and snapshots for etcd
 - Always back up the DNSSEC key directory and the master key together
 - Roll agents gradually and watch `/ready`, `/status`, and BGP announce state
-- Use `arca-dns-controller migrate` for supported backend migrations. The current migrate command targets `memory`, `mysql`, `git`, and `etcd`; `sqlite` and `postgres` are supported runtime backends but are not direct migrate command targets
+- Use `arca-dns-controller migrate` for supported backend migrations. The current migrate command targets `sqlite` (default), `postgres`, `mysql`, `git`, and `etcd`
 
 ## Troubleshooting
 

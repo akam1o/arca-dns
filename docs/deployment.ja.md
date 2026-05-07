@@ -41,6 +41,8 @@ arca-dns は control plane と data plane を分けてデプロイします。
   - Debian/Ubuntu: BIRD パッケージ名は通常 `bird2`
   - EL/RHEL: BIRD パッケージ名は通常 `bird`
 - `nsd.zone_directory` が agent から書き込み可能であること
+- `nsd.conf` から agent 管理の NSD zone file を include すること:
+  `include: "/etc/nsd/arca-dns-zones.conf"`
 - NSD/Unbound/BIRD の reload/control コマンドを agent 実行ユーザーが実行できること
 - DNS 53/TCP+UDP をエッジノードから公開できること
 - BGP セッション用の到達性、local ASN、neighbor ASN、source IP が決まっていること
@@ -62,6 +64,7 @@ controller の既定は `api.auth.enabled: true` です。認証が有効な場�
 ```bash
 API_KEY="$(openssl rand -hex 32)"
 API_KEY_HASH="sha256:$(printf '%s' "$API_KEY" | sha256sum | awk '{print $1}')"
+SHARED_SIGNATURE_KEY="$(openssl rand -base64 32)"
 
 printf 'raw api key: %s\n' "$API_KEY"
 printf 'hash: %s\n' "$API_KEY_HASH"
@@ -71,6 +74,8 @@ controller にはハッシュを設定します。
 
 ```yaml
 api:
+  # 生成例: openssl rand -base64 32
+  artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
   auth:
     enabled: true
     api_keys:
@@ -83,12 +88,18 @@ agent には生の API キーを設定します。
 controller:
   url: "https://controller.example.com"
   api_key: "REPLACE_WITH_RAW_API_KEY"
+
+sync:
+  verify_signatures: true
+  # api.artifact_signature_key と同じ値にしてください。
+  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 
 環境変数だけで controller の API キーを渡す場合は、次の形式を使えます。suffix は小文字化され、principal 名になります。
 
 ```bash
 export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$API_KEY_HASH"
+export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$SHARED_SIGNATURE_KEY"
 ```
 
 ### DNSSEC マスターキー
@@ -109,7 +120,7 @@ openssl rand -base64 32 | sudo tee /etc/arca-dns/master.key >/dev/null
 sudo chmod 600 /etc/arca-dns/master.key
 ```
 
-多くの環境では、`storage.key_directory` と `dnssec.key_directory` を同じディレクトリ（例: `/var/lib/arca-dns/keys`）にします。
+`storage.key_directory` と `dnssec.key_directory` の両方を設定する場合は、同じディレクトリ（例: `/var/lib/arca-dns/keys`）を指定してください。`storage.key_directory` は DNSSEC key directory の互換 alias として残しています。
 
 ## Backend の準備
 
@@ -192,10 +203,13 @@ backend:
   type: "git"
   git:
     repository_path: "/var/lib/arca-dns/git"
+    remote_url: "git@example.com:infra/arca-dns-zones.git"
     branch: "main"
     author: "arca-dns-controller"
     email: "noreply@arca-dns"
     auto_push: false
+    auto_pull: false
+    pull_interval: "1m"
 ```
 
 ## DEB/RPM + systemd
@@ -218,6 +232,7 @@ sudo dnf install bird nsd unbound arca-dns
 - `/etc/arca-dns/agent.yaml`
 - `/usr/lib/systemd/system/arca-dns-controller.service`
 - `/usr/lib/systemd/system/arca-dns-agent.service`
+- `/usr/lib/sysusers.d/arca-dns.conf`
 
 `tmpfiles.d` により次のディレクトリも作成されます。
 
@@ -238,7 +253,7 @@ sudo dnf install bird nsd unbound arca-dns
 - DNSSEC 有効時は `/etc/arca-dns/master.key` または `ARCA_DNS_DNSSEC_MASTER_KEY_B64` を設定する
 - `storage.*` と `dnssec.key_directory` が service から書き込み可能であることを確認する
 
-systemd service は現在 root で起動します。権限を絞る場合は、NSD/Unbound/BIRD の control command、zone directory、key/artifact directory への権限も合わせて設計してください。
+パッケージ版 controller は `arca-dns` service user で起動します。agent は NSD/Unbound/BIRD の制御のため root を維持しますが、systemd unit で sandboxing され、設定済みの DNS、BIRD、state、log、runtime path のみを書き込み可能にしています。path を変更する場合は、権限または systemd drop-in も合わせて調整してください。
 
 ### 3. agent を設定
 
@@ -252,6 +267,13 @@ systemd service は現在 root で起動します。権限を絞る場合は、N
 - `unbound.enabled`, `unbound.control_path`
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
 - `health.nsd_server`, `health.unbound_server`, `health.test_record`
+
+DNSTap を有効にする場合は、`dnstap.socket_mode` を `0660` のままにし、
+`dnstap.socket_group` には DNS daemon user（`nsd`, `unbound`、または環境に
+合わせた user）が所属する共有 group を設定するか、パッケージ版 agent の
+primary group を使ってください。パッケージ版 agent は primary group
+`arca-dns` で起動するため、DNS daemon user を `arca-dns` group に追加する
+構成を標準とします。
 
 BIRD config を agent から生成する場合は、メインの `bird.conf` に生成ファイルを include してください。
 
@@ -428,6 +450,10 @@ agent の HTTP endpoint:
 | `GET /status` | 同期状態、health、BGP announce 状態 |
 | `GET /metrics` | Prometheus metrics |
 
+agent の status server はデフォルトで `127.0.0.1:9090` を listen します。
+`metrics.listen` をリモートアドレスに変更する場合は、network control
+または認証付き proxy の背後に置いてください。
+
 ## デプロイ後の確認
 
 controller:
@@ -442,10 +468,10 @@ curl http://controller:8080/metrics
 agent:
 
 ```bash
-curl http://agent:9090/health
-curl http://agent:9090/ready
-curl http://agent:9090/status
-curl http://agent:9090/metrics
+curl http://localhost:9090/health
+curl http://localhost:9090/ready
+curl http://localhost:9090/status
+curl http://localhost:9090/metrics
 ```
 
 DNS:
@@ -468,7 +494,7 @@ birdc show route
 - SQL backend は DB dump、Git backend は repository backup、etcd は snapshot を使う
 - DNSSEC key directory と master key は必ず一緒にバックアップする
 - agent は複数台を少しずつ更新し、`/ready`, `/status`, BGP announce 状態を確認する
-- controller の backend を移行する場合は `arca-dns-controller migrate` を使える。ただし現時点の migrate command は `memory`, `mysql`, `git`, `etcd` を対象にしたツールで、`sqlite` と `postgres` は通常の backend としては利用できるが migrate command の直接対象ではない
+- controller の backend を移行する場合は `arca-dns-controller migrate` を使える。現時点の migrate command は `sqlite`（既定）、`postgres`, `mysql`, `git`, `etcd` を対象にしている
 
 ## よくある問題
 

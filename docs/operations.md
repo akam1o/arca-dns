@@ -25,14 +25,18 @@ curl http://controller:8080/status
 **Agent**:
 ```bash
 # Liveness check
-curl http://agent:9090/health
+curl http://localhost:9090/health
 
 # Readiness check (requires successful sync)
-curl http://agent:9090/ready
+curl http://localhost:9090/ready
 
 # Full status with zone states
-curl http://agent:9090/status
+curl http://localhost:9090/status
 ```
+
+The agent status server binds to `127.0.0.1:9090` by default because `/status`
+includes zone sync and BGP state. Expose `metrics.listen` remotely only behind
+network filtering, a tunnel, or another authenticated control plane.
 
 ### Prometheus Metrics
 
@@ -43,7 +47,7 @@ curl http://agent:9090/status
 - `dnssec_signing_duration_seconds`: DNSSEC signing latency
 - `backend_operations_total`: Backend operation count by type, status
 
-**Agent metrics** (`http://agent:9090/metrics`):
+**Agent metrics** (`http://localhost:9090/metrics`):
 - `dns_queries_total`: DNS query count by type, rcode
 - `dns_query_duration_seconds`: Query latency histogram
 - `dns_udp_queries_total`, `dns_tcp_queries_total`: Transport breakdown
@@ -113,23 +117,48 @@ curl -X POST http://controller:8080/api/v1/zones/raw \
 ### Updating a Zone
 
 ```bash
-# Update specific records
+# Update SOA metadata. Existing records are preserved by this endpoint.
+etag="$(curl -sI http://controller:8080/api/v1/zones/example.com. \
+  -H "X-API-Key: your-api-key" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
 curl -X PUT http://controller:8080/api/v1/zones/example.com. \
   -H "X-API-Key: your-api-key" \
   -H "Content-Type: application/json" \
-  -H "If-Match: v2024122801-a3f5c2e9" \
+  -H "If-Match: ${etag}" \
   -d '{
-    "records": [
-      {"name": "www", "type": "A", "ttl": 300, "value": "192.0.2.100"}
-    ]
+    "name": "example.com.",
+    "soa": {
+      "mname": "ns1.example.com.",
+      "rname": "admin.example.com.",
+      "refresh": 3600,
+      "retry": 600,
+      "expire": 604800,
+      "minimum": 300
+    }
   }'
+
+# Update a specific record through the record CRUD endpoint.
+record_id="$(curl -s http://controller:8080/api/v1/zones/example.com./records \
+  -H "X-API-Key: your-api-key" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+etag="$(curl -sI http://controller:8080/api/v1/zones/example.com. \
+  -H "X-API-Key: your-api-key" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+curl -X PUT "http://controller:8080/api/v1/zones/example.com./records/${record_id}" \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -H "If-Match: ${etag}" \
+  -d '{"name": "www", "type": "A", "ttl": 300, "value": "192.0.2.100"}'
 ```
 
 ### Deleting a Zone
 
 ```bash
+etag="$(curl -sI http://controller:8080/api/v1/zones/example.com. \
+  -H "X-API-Key: your-api-key" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
 curl -X DELETE http://controller:8080/api/v1/zones/example.com. \
-  -H "X-API-Key: your-api-key"
+  -H "X-API-Key: your-api-key" \
+  -H "If-Match: ${etag}"
 ```
 
 ### Viewing Zone Status
@@ -173,23 +202,22 @@ arca-dns-controller dnssec export-ds --zone example.com. --format json
 
 ### Key Rotation
 
-**Automated rotation** (recommended):
-1. Keys auto-rotate based on config (e.g., every 90 days)
-2. Scheduler maintains old+new keys during rollover
-3. Update DS at parent after new KSK published
+Automated key rotation is not implemented in the current release. The DNSSEC scheduler re-signs zones before signatures expire, but it does not create new KSK/ZSK material.
 
 **Manual rotation**:
 ```bash
-# Generate new keys
+# Enter a maintenance window first: pause DNSSEC scheduling and zone/record writes.
+# generate-keys --rotate activates the new KSK/ZSK immediately.
 arca-dns-controller dnssec generate-keys --zone example.com. --rotate
 
 # Export new DS records
 arca-dns-controller dnssec export-ds --zone example.com.
 
-# Update DS at parent zone
-# Wait for TTL + propagation (e.g., 24 hours)
+# Submit the new DS at the parent zone and keep the old DS until propagation.
+# Then trigger re-signing as described in docs/dnssec.md.
+# Resume scheduling and writes only after the new DS is visible and re-signing succeeds.
 
-# Remove old keys
+# After old signatures expire, remove inactive key files
 arca-dns-controller dnssec remove-old-keys --zone example.com.
 ```
 

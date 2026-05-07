@@ -3,11 +3,15 @@ package bird
 import (
 	"fmt"
 	"net"
+	"net/netip"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/akam1o/arca-dns/pkg/config"
 )
+
+var birdIdentifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // RenderAnycastConfig renders a BIRD configuration snippet for advertising anycast prefixes
 // to one or more upstream neighbors. The caller is responsible for writing it to disk and
@@ -28,18 +32,9 @@ func RenderAnycastConfig(cfg config.BIRDConfig) (string, []string, error) {
 		return "", nil, fmt.Errorf("invalid bird.config.source_ip: %q", gen.SourceIP)
 	}
 
-	var v4Prefixes []string
-	var v6Prefixes []string
-	for _, p := range cfg.AnycastPrefixes {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if strings.Contains(p, ":") {
-			v6Prefixes = append(v6Prefixes, p)
-		} else {
-			v4Prefixes = append(v4Prefixes, p)
-		}
+	v4Prefixes, v6Prefixes, err := classifyAnycastPrefixes(cfg.AnycastPrefixes)
+	if err != nil {
+		return "", nil, err
 	}
 	sort.Strings(v4Prefixes)
 	sort.Strings(v6Prefixes)
@@ -56,6 +51,9 @@ func RenderAnycastConfig(cfg config.BIRDConfig) (string, []string, error) {
 		protocolNames = make([]string, 0, len(cfg.Protocols))
 		neighbors = make([]neighbor, 0, len(cfg.Protocols))
 		for _, p := range cfg.Protocols {
+			if err := validateBIRDIdentifier("bird.protocols.name", p.Name); err != nil {
+				return "", nil, err
+			}
 			protocolNames = append(protocolNames, p.Name)
 			neighbors = append(neighbors, neighbor{address: p.NeighborAddress, asn: p.NeighborASN})
 		}
@@ -67,6 +65,9 @@ func RenderAnycastConfig(cfg config.BIRDConfig) (string, []string, error) {
 			baseName = "anycast"
 		}
 		if len(protocolNames) == 0 {
+			if err := validateBIRDIdentifier("bird.protocol_name", baseName); err != nil {
+				return "", nil, err
+			}
 			protocolNames = make([]string, 0, len(gen.Neighbors))
 			for i := range gen.Neighbors {
 				protocolNames = append(protocolNames, fmt.Sprintf("%s_%d", baseName, i+1))
@@ -75,6 +76,10 @@ func RenderAnycastConfig(cfg config.BIRDConfig) (string, []string, error) {
 		for _, n := range gen.Neighbors {
 			neighbors = append(neighbors, neighbor{address: n.Address, asn: n.ASN})
 		}
+	}
+
+	if err := validateBIRDIdentifiers("bird.protocol_names", protocolNames); err != nil {
+		return "", nil, err
 	}
 
 	b := &strings.Builder{}
@@ -162,4 +167,49 @@ func RenderAnycastConfig(cfg config.BIRDConfig) (string, []string, error) {
 	}
 
 	return b.String(), protocolNames, nil
+}
+
+func classifyAnycastPrefixes(prefixes []string) ([]string, []string, error) {
+	var v4Prefixes []string
+	var v6Prefixes []string
+
+	for _, raw := range prefixes {
+		p := strings.TrimSpace(raw)
+		if p == "" {
+			continue
+		}
+
+		parsed, err := netip.ParsePrefix(p)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid bird.anycast_prefixes entry %q: %w", p, err)
+		}
+
+		if parsed.Addr().Is4() {
+			v4Prefixes = append(v4Prefixes, p)
+			continue
+		}
+		if parsed.Addr().Is6() {
+			v6Prefixes = append(v6Prefixes, p)
+			continue
+		}
+		return nil, nil, fmt.Errorf("invalid bird.anycast_prefixes entry %q: unsupported IP family", p)
+	}
+
+	return v4Prefixes, v6Prefixes, nil
+}
+
+func validateBIRDIdentifiers(field string, names []string) error {
+	for _, name := range names {
+		if err := validateBIRDIdentifier(field, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateBIRDIdentifier(field, name string) error {
+	if !birdIdentifierRE.MatchString(name) {
+		return fmt.Errorf("invalid %s: %q must match %s", field, name, birdIdentifierRE.String())
+	}
+	return nil
 }

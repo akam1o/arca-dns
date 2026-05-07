@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,6 +33,81 @@ func setupGitBackend(t *testing.T) (*GitBackend, func()) {
 	}
 
 	return backend, cleanup
+}
+
+func testGitZone(name string) *model.Zone {
+	return &model.Zone{
+		Name: name,
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+}
+
+func gitHeadHash(t *testing.T, backend *GitBackend) plumbing.Hash {
+	t.Helper()
+
+	head, err := backend.repo.Head()
+	require.NoError(t, err)
+	return head.Hash()
+}
+
+func TestGitBackend_FreshRepoUsesConfiguredBranch(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "repo")
+
+	backend, err := NewGitBackendWithOptions(repoPath, GitBackendOptions{
+		Branch:      "main",
+		AuthorName:  "test-author",
+		AuthorEmail: "test@example.com",
+	})
+	require.NoError(t, err)
+	defer backend.Close()
+
+	head, err := backend.repo.Storer.Reference(plumbing.HEAD)
+	require.NoError(t, err)
+	assert.Equal(t, plumbing.NewBranchReferenceName("main"), head.Target())
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	require.NoError(t, backend.CreateZone(context.Background(), zone))
+
+	_, err = backend.repo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	_, err = backend.repo.Reference(plumbing.NewBranchReferenceName("master"), true)
+	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
+}
+
+func runGitCommand(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git command not available")
+	}
+
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	output, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %v failed:\n%s", args, string(output))
 }
 
 func TestGitBackend_CreateZone(t *testing.T) {
@@ -238,6 +315,199 @@ func TestGitBackend_DeleteZone(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "Zone file should not exist")
 }
 
+func TestGitBackend_CreateZone_RollsBackWhenAutoPushFails(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	backend.autoPush = true
+
+	err := backend.CreateZone(ctx, testGitZone("example.com."))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "git push failed")
+
+	_, err = backend.GetZone(ctx, "example.com.")
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+
+	_, err = backend.repo.Head()
+	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
+
+	backend.autoPush = false
+	require.NoError(t, backend.CreateZone(ctx, testGitZone("example.com.")))
+}
+
+func TestGitBackend_UpdateZone_RollsBackWhenAutoPushFails(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, backend.CreateZone(ctx, testGitZone("example.com.")))
+
+	created, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	headBefore := gitHeadHash(t, backend)
+
+	updated := *created
+	updated.Records = []model.Record{
+		{Name: "www.example.com.", Type: "A", TTL: 300, Value: "192.0.2.10"},
+	}
+
+	backend.autoPush = true
+	err = backend.UpdateZone(ctx, &updated, created.Version)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "git push failed")
+	assert.Equal(t, headBefore, gitHeadHash(t, backend))
+
+	retrieved, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, created.Version, retrieved.Version)
+	assert.Empty(t, retrieved.Records)
+}
+
+func TestGitBackend_DeleteZone_RollsBackWhenAutoPushFails(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, backend.CreateZone(ctx, testGitZone("example.com.")))
+	headBefore := gitHeadHash(t, backend)
+
+	backend.autoPush = true
+	err := backend.DeleteZone(ctx, "example.com.")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "git push failed")
+	assert.Equal(t, headBefore, gitHeadHash(t, backend))
+
+	_, err = backend.GetZone(ctx, "example.com.")
+	assert.NoError(t, err)
+	assert.FileExists(t, filepath.Join(backend.repoPath, "zones", "example.com..json"))
+}
+
+func TestGitBackend_AutoPullUsesConfiguredBranch(t *testing.T) {
+	remotePath := t.TempDir()
+	runGitCommand(t, "", "init", remotePath)
+	runGitCommand(t, remotePath, "checkout", "-b", "main")
+	runGitCommand(t, remotePath, "config", "user.name", "Test User")
+	runGitCommand(t, remotePath, "config", "user.email", "test@example.com")
+
+	require.NoError(t, os.WriteFile(filepath.Join(remotePath, "README.md"), []byte("main\n"), 0644))
+	runGitCommand(t, remotePath, "add", "README.md")
+	runGitCommand(t, remotePath, "commit", "-m", "init main")
+
+	runGitCommand(t, remotePath, "checkout", "-b", "zones")
+	zonesDir := filepath.Join(remotePath, "zones")
+	require.NoError(t, os.MkdirAll(zonesDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(zonesDir, "initial.example.com..json"), []byte(`{"name":"initial.example.com."}`), 0644))
+	runGitCommand(t, remotePath, "add", "zones/initial.example.com..json")
+	runGitCommand(t, remotePath, "commit", "-m", "add initial zone")
+	runGitCommand(t, remotePath, "checkout", "main")
+
+	localPath := filepath.Join(t.TempDir(), "local")
+	runGitCommand(t, "", "clone", remotePath, localPath)
+	runGitCommand(t, localPath, "checkout", "zones")
+
+	runGitCommand(t, remotePath, "checkout", "zones")
+	require.NoError(t, os.WriteFile(filepath.Join(zonesDir, "pulled.example.com..json"), []byte(`{"name":"pulled.example.com."}`), 0644))
+	runGitCommand(t, remotePath, "add", "zones/pulled.example.com..json")
+	runGitCommand(t, remotePath, "commit", "-m", "add pulled zone")
+	runGitCommand(t, remotePath, "checkout", "main")
+
+	backend, err := NewGitBackendWithOptions(localPath, GitBackendOptions{
+		Branch:    "zones",
+		RemoteURL: remotePath,
+		AutoPull:  true,
+	})
+	require.NoError(t, err)
+	defer backend.Close()
+
+	ctx := context.Background()
+	pulled, err := backend.GetZone(ctx, "pulled.example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, "pulled.example.com.", pulled.Name)
+	assert.FileExists(t, filepath.Join(localPath, "zones", "pulled.example.com..json"))
+
+	runGitCommand(t, remotePath, "checkout", "zones")
+	require.NoError(t, os.WriteFile(filepath.Join(zonesDir, "listed.example.com..json"), []byte(`{"name":"listed.example.com."}`), 0644))
+	runGitCommand(t, remotePath, "add", "zones/listed.example.com..json")
+	runGitCommand(t, remotePath, "commit", "-m", "add listed zone")
+	runGitCommand(t, remotePath, "checkout", "main")
+
+	zones, err := backend.ListZones(ctx, ListOptions{})
+	require.NoError(t, err)
+	assert.Contains(t, zoneNames(zones), "listed.example.com.")
+}
+
+func TestGitBackend_RepositoryLockSerializesWithinProcess(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	require.NoError(t, backend.acquireFileLock(context.Background()))
+	lockHeld := true
+	defer func() {
+		if lockHeld {
+			backend.releaseFileLock()
+		}
+	}()
+
+	acquired := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		err := backend.acquireFileLock(context.Background())
+		if err == nil {
+			close(acquired)
+			backend.releaseFileLock()
+		}
+		done <- err
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("second repository lock acquired while first lock was still held")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	backend.releaseFileLock()
+	lockHeld = false
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("second repository lock did not acquire after first lock was released")
+	}
+}
+
+func TestGitBackend_RepositoryLockHonorsContextCancellation(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	require.NoError(t, backend.acquireFileLock(context.Background()))
+	defer backend.releaseFileLock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- backend.acquireFileLock(ctx)
+	}()
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("repository lock wait did not return after context cancellation")
+	}
+}
+
+func zoneNames(zones []*model.Zone) []string {
+	names := make([]string, 0, len(zones))
+	for _, zone := range zones {
+		names = append(names, zone.Name)
+	}
+	return names
+}
+
 func TestGitBackend_ListZones(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
@@ -296,6 +566,20 @@ func TestGitBackend_ListZones_Empty(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, result, "Should return empty slice, not nil")
 	assert.Len(t, result, 0)
+}
+
+func TestGitBackend_ListZones_ReturnsErrorForMalformedZoneFile(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zonesDir := filepath.Join(backend.repoPath, "zones")
+	require.NoError(t, os.MkdirAll(zonesDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(zonesDir, "bad.example.com..json"), []byte("{"), 0644))
+
+	zones, err := backend.ListZones(context.Background(), ListOptions{})
+	require.Error(t, err)
+	assert.Nil(t, zones)
+	assert.Contains(t, err.Error(), "bad.example.com.")
 }
 
 func TestGitBackend_GetRevision(t *testing.T) {
@@ -404,6 +688,50 @@ func TestGitBackend_ListRevisions(t *testing.T) {
 		assert.NotZero(t, rev.Timestamp)
 		assert.NotZero(t, rev.Serial)
 	}
+}
+
+func TestGitBackend_UpdateDNSSECMetadataDoesNotAddRevision(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	require.NoError(t, backend.CreateZone(ctx, zone))
+	created, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+
+	require.NoError(t, backend.UpdateDNSSECMetadata(ctx, "example.com.", &model.DNSSECConfig{
+		Enabled:      true,
+		Algorithm:    13,
+		KSKKeyTag:    12345,
+		ZSKKeyTag:    23456,
+		NSEC3Enabled: true,
+		NSEC3Salt:    "ABCD",
+	}))
+
+	revisions, err := backend.ListRevisions(ctx, "example.com.", ListOptions{Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, revisions, 1)
+	assert.Equal(t, created.Version, revisions[0].Version)
+
+	updated, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	require.NotNil(t, updated.DNSSEC)
+	assert.Equal(t, created.Version, updated.Version)
+	assert.True(t, updated.DNSSEC.Enabled)
 }
 
 func TestGitBackend_GetCurrentVersion(t *testing.T) {
@@ -683,6 +1011,23 @@ func TestGitBackend_GetRevision_NotFound(t *testing.T) {
 	// Try to get non-existent version
 	_, err = backend.GetRevision(ctx, "example.com.", "v2024010101-nonexist")
 	assert.ErrorIs(t, err, model.ErrVersionNotFound, "Should return ErrVersionNotFound for missing version")
+}
+
+func TestGitBackend_GetRevision_RequiresExactVersionTrailer(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zone := testGitZone("example.com.")
+	require.NoError(t, backend.CreateZone(ctx, zone))
+
+	created, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	require.Greater(t, len(created.Version), 2)
+
+	versionPrefix := created.Version[:len(created.Version)-2]
+	_, err = backend.GetRevision(ctx, "example.com.", versionPrefix)
+	assert.ErrorIs(t, err, model.ErrVersionNotFound, "Should require an exact Version trailer match")
 }
 
 // TestGitBackend_PathTraversal tests path traversal protection

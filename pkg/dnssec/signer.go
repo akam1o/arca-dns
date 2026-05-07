@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,10 @@ type SignerOptions struct {
 	// Default: 30 days
 	Expiration time.Duration
 
+	// ResignThreshold is how soon before expiration cached signed artifacts
+	// should be refreshed. Default: 7 days.
+	ResignThreshold time.Duration
+
 	// NSEC3Enabled selects NSEC3 denial-of-existence records. When false, NSEC
 	// records are generated instead.
 	NSEC3Enabled bool
@@ -38,6 +43,7 @@ func DefaultSignerOptions() SignerOptions {
 	return SignerOptions{
 		Inception:       -1 * time.Hour,
 		Expiration:      30 * 24 * time.Hour,
+		ResignThreshold: 7 * 24 * time.Hour,
 		NSEC3Enabled:    true,
 		NSEC3Iterations: 1,
 		NSEC3SaltLength: 8,
@@ -58,6 +64,9 @@ func NewZoneSigner(keyManager *KeyManager, opts SignerOptions) *ZoneSigner {
 	}
 	if opts.Expiration <= 0 {
 		opts.Expiration = DefaultSignerOptions().Expiration
+	}
+	if opts.ResignThreshold < 0 {
+		opts.ResignThreshold = 0
 	}
 
 	return &ZoneSigner{
@@ -195,8 +204,8 @@ func (s *ZoneSigner) modelToRRs(zone *model.Zone, normalizedZoneName string) ([]
 			Class:  dns.ClassINET,
 			Ttl:    zone.SOA.Minimum,
 		},
-		Ns:      zone.SOA.MName,
-		Mbox:    zone.SOA.RName,
+		Ns:      model.NormalizeDomainName(zone.SOA.MName),
+		Mbox:    model.NormalizeDomainName(zone.SOA.RName),
 		Serial:  zone.SOA.Serial,
 		Refresh: zone.SOA.Refresh,
 		Retry:   zone.SOA.Retry,
@@ -219,13 +228,7 @@ func (s *ZoneSigner) modelToRRs(zone *model.Zone, normalizedZoneName string) ([]
 
 // recordToRR converts a model.Record to dns.RR.
 func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, error) {
-	// Convert relative name to FQDN
-	name := record.Name
-	if name == "@" {
-		name = origin
-	} else if !strings.HasSuffix(name, ".") {
-		name = name + "." + origin
-	}
+	name := model.NormalizeRecordOwnerName(record.Name, origin)
 
 	// Create RR header
 	hdr := dns.RR_Header{
@@ -278,7 +281,7 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 
 	case model.RecordTypeMX:
 		hdr.Rrtype = dns.TypeMX
-		parts := strings.SplitN(record.Value, " ", 2)
+		parts := strings.Fields(record.Value)
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("invalid MX value: %s", record.Value)
 		}
@@ -295,7 +298,7 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 
 	case model.RecordTypeTXT:
 		hdr.Rrtype = dns.TypeTXT
-		return &dns.TXT{Hdr: hdr, Txt: []string{record.Value}}, nil
+		return &dns.TXT{Hdr: hdr, Txt: model.SplitTXTValue(record.Value)}, nil
 
 	case model.RecordTypePTR:
 		hdr.Rrtype = dns.TypePTR
@@ -321,14 +324,18 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 
 	case model.RecordTypeCAA:
 		hdr.Rrtype = dns.TypeCAA
-		// Format: flag tag value
-		var flag uint8
-		var tag, value string
-		n, err := fmt.Sscanf(record.Value, "%d %s %s", &flag, &tag, &value)
-		if err != nil || n != 3 {
+		parts := strings.Fields(record.Value)
+		if len(parts) < 3 {
 			return nil, fmt.Errorf("invalid CAA value: %s", record.Value)
 		}
-		return &dns.CAA{Hdr: hdr, Flag: flag, Tag: tag, Value: value}, nil
+		flag, err := strconv.Atoi(parts[0])
+		if err != nil || flag < 0 || flag > 255 {
+			return nil, fmt.Errorf("invalid CAA flag: %s", parts[0])
+		}
+		tag := parts[1]
+		value := strings.Join(parts[2:], " ")
+		value = strings.Trim(value, "\"")
+		return &dns.CAA{Hdr: hdr, Flag: uint8(flag), Tag: tag, Value: value}, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported record type: %s", record.Type)
@@ -367,7 +374,7 @@ func (s *ZoneSigner) signRRset(rrset []dns.RR, key *KeyPair, zoneName string) (d
 		},
 		TypeCovered: rrset[0].Header().Rrtype,
 		Algorithm:   key.DNSKEY.Algorithm,
-		Labels:      uint8(dns.CountLabel(rrset[0].Header().Name)),
+		Labels:      rrsigLabelCount(rrset[0].Header().Name),
 		OrigTtl:     rrset[0].Header().Ttl,
 		Expiration:  expiration,
 		Inception:   inception,
@@ -388,6 +395,14 @@ func (s *ZoneSigner) signRRset(rrset []dns.RR, key *KeyPair, zoneName string) (d
 	}
 
 	return rrsig, nil
+}
+
+func rrsigLabelCount(owner string) uint8 {
+	labels := dns.CountLabel(owner)
+	if strings.HasPrefix(owner, "*.") && labels > 0 {
+		labels--
+	}
+	return uint8(labels)
 }
 
 // rrsToModel converts signed RRs back to model.Zone.

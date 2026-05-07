@@ -38,6 +38,18 @@ func TestValidateDomainName(t *testing.T) {
 	}
 }
 
+func TestValidateDomainTargetRejectsApexShorthand(t *testing.T) {
+	assert.Error(t, ValidateDomainTarget("@"))
+	assert.NoError(t, ValidateDomainTarget("."))
+	assert.NoError(t, ValidateDomainTarget("example.com."))
+}
+
+func TestValidateZoneNameRejectsApexShorthand(t *testing.T) {
+	assert.Error(t, ValidateZoneName("@"))
+	assert.NoError(t, ValidateZoneName("."))
+	assert.NoError(t, ValidateZoneName("example.com."))
+}
+
 func TestValidateIPv4(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -101,6 +113,7 @@ func TestValidateMXValue(t *testing.T) {
 		{"negative priority", "-1 mail.example.com.", true},
 		{"priority too high", "65536 mail.example.com.", true},
 		{"invalid domain", "10 invalid!.com", true},
+		{"apex shorthand target", "10 @", true},
 	}
 
 	for _, tt := range tests {
@@ -123,8 +136,9 @@ func TestValidateTXTValue(t *testing.T) {
 	}{
 		{"valid simple", "v=spf1 include:_spf.example.com ~all", false},
 		{"valid with quotes", "\"v=DKIM1; k=rsa; p=...\"", false},
+		{"valid long chunked value", strings.Repeat("a", MaxTXTValueLength), false},
 		{"empty", "", false}, // TXT records can be empty
-		{"too long", strings.Repeat("a", 65536), true},
+		{"too long", strings.Repeat("a", MaxTXTValueLength+1), true},
 	}
 
 	for _, tt := range tests {
@@ -137,6 +151,16 @@ func TestValidateTXTValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSplitTXTValue(t *testing.T) {
+	value := strings.Repeat("a", 300)
+	chunks := SplitTXTValue(value)
+
+	assert.Len(t, chunks, 2)
+	assert.Len(t, chunks[0], MaxTXTCharacterStringLength)
+	assert.Len(t, chunks[1], 45)
+	assert.Equal(t, value, strings.Join(chunks, ""))
 }
 
 func TestValidateSRVValue(t *testing.T) {
@@ -153,6 +177,7 @@ func TestValidateSRVValue(t *testing.T) {
 		{"invalid port", "10 60 abc sip.example.com.", true},
 		{"port too high", "10 60 65536 sip.example.com.", true},
 		{"invalid domain", "10 60 5060 invalid!.com", true},
+		{"apex shorthand target", "10 60 5060 @", true},
 	}
 
 	for _, tt := range tests {
@@ -231,6 +256,36 @@ func TestValidateRecord(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid empty TXT record",
+			record: &Record{
+				Name:  "@",
+				Type:  "TXT",
+				TTL:   3600,
+				Value: "",
+			},
+			wantErr: false,
+		},
+		{
+			name: "SOA is not allowed as a regular record",
+			record: &Record{
+				Name:  "@",
+				Type:  RecordTypeSOA,
+				TTL:   3600,
+				Value: "ns1.example.com. admin.example.com. 2024010101 3600 1800 604800 86400",
+			},
+			wantErr: true,
+		},
+		{
+			name: "CNAME target cannot use apex shorthand",
+			record: &Record{
+				Name:  "www",
+				Type:  "CNAME",
+				TTL:   300,
+				Value: "@",
+			},
+			wantErr: true,
+		},
+		{
 			name: "invalid type",
 			record: &Record{
 				Name:  "www",
@@ -261,6 +316,46 @@ func TestValidateRecord(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "valid SRV owner labels",
+			record: &Record{
+				Name:  "_sip._tcp",
+				Type:  "SRV",
+				TTL:   300,
+				Value: "10 20 5060 sip.example.com.",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid wildcard owner",
+			record: &Record{
+				Name:  "*.www",
+				Type:  "A",
+				TTL:   300,
+				Value: "192.0.2.1",
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid newline in name",
+			record: &Record{
+				Name:  "www\nbad",
+				Type:  "A",
+				TTL:   300,
+				Value: "192.0.2.1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid wildcard position",
+			record: &Record{
+				Name:  "www.*",
+				Type:  "A",
+				TTL:   300,
+				Value: "192.0.2.1",
+			},
+			wantErr: true,
+		},
+		{
 			name:    "nil record",
 			record:  nil,
 			wantErr: true,
@@ -275,6 +370,129 @@ func TestValidateRecord(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestValidateZone_RecordNameMustStayInZone(t *testing.T) {
+	zone := &Zone{
+		Name: "example.com.",
+		SOA: SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []Record{
+			{Name: "www.other.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+
+	err := ValidateZone(zone)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "outside zone")
+}
+
+func TestValidateZone_PTRRecordNameMustStayInZone(t *testing.T) {
+	zone := &Zone{
+		Name: "example.com.",
+		SOA: SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []Record{
+			{Name: "1.2.0.192.in-addr.arpa.", Type: "PTR", TTL: 300, Value: "host.example.com."},
+		},
+	}
+
+	err := ValidateZone(zone)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "outside zone")
+}
+
+func TestValidateZone_PTRRecordNameAllowsReverseZone(t *testing.T) {
+	zone := &Zone{
+		Name: "0.192.in-addr.arpa.",
+		SOA: SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []Record{
+			{Name: "1.2.0.192.in-addr.arpa.", Type: "PTR", TTL: 300, Value: "host.example.com."},
+		},
+	}
+
+	assert.NoError(t, ValidateZone(zone))
+}
+
+func TestValidateZone_RejectsInconsistentRRsetTTL(t *testing.T) {
+	zone := &Zone{
+		Name: "example.com.",
+		SOA: SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
+			{Name: "www.example.com.", Type: "A", TTL: 600, Value: "192.0.2.2"},
+		},
+	}
+
+	err := ValidateZone(zone)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "inconsistent TTL")
+}
+
+func TestValidateZone_RejectsDuplicateRecords(t *testing.T) {
+	tests := []struct {
+		name    string
+		records []Record
+	}{
+		{
+			name: "exact duplicate",
+			records: []Record{
+				{Name: "www", Type: RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+				{Name: "www", Type: RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+			},
+		},
+		{
+			name: "canonical duplicate",
+			records: []Record{
+				{Name: "@", Type: RecordTypeNS, TTL: 300, Value: "ns1.example.com."},
+				{Name: "example.com.", Type: RecordTypeNS, TTL: 300, Value: "ns1.example.com"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			zone := &Zone{
+				Name:    "example.com.",
+				SOA:     DefaultSOA("ns1.example.com.", "admin.example.com."),
+				Records: tt.records,
+			}
+
+			err := ValidateZone(zone)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "duplicate record")
 		})
 	}
 }
@@ -304,6 +522,18 @@ func TestValidateSOA(t *testing.T) {
 				MName:   "ns1.example.com.",
 				RName:   "admin.example.com.",
 				Refresh: 0,
+			},
+			wantErr: true,
+		},
+		{
+			name: "apex shorthand mname",
+			soa: &SOARecord{
+				MName:   "@",
+				RName:   "admin.example.com.",
+				Refresh: 3600,
+				Retry:   1800,
+				Expire:  604800,
+				Minimum: 86400,
 			},
 			wantErr: true,
 		},
@@ -366,6 +596,14 @@ func TestValidateZone(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "apex shorthand zone name",
+			zone: &Zone{
+				Name: "@",
+				SOA:  DefaultSOA("ns1.example.com.", "admin.example.com."),
+			},
+			wantErr: true,
+		},
+		{
 			name: "invalid record",
 			zone: &Zone{
 				Name: "example.com.",
@@ -386,6 +624,75 @@ func TestValidateZone(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestValidateZone_CNAMEConstraints(t *testing.T) {
+	tests := []struct {
+		name       string
+		records    []Record
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name: "cname without sibling records",
+			records: []Record{
+				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+			},
+		},
+		{
+			name: "cname cannot coexist with a record",
+			records: []Record{
+				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+				{Name: "www", Type: RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+			},
+			wantErr:    true,
+			errContain: "cannot coexist",
+		},
+		{
+			name: "absolute cname owner cannot coexist with relative sibling",
+			records: []Record{
+				{Name: "www.example.com.", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+				{Name: "www", Type: RecordTypeAAAA, TTL: 300, Value: "2001:db8::1"},
+			},
+			wantErr:    true,
+			errContain: "cannot coexist",
+		},
+		{
+			name: "multiple cname records for one owner",
+			records: []Record{
+				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target1.example.com."},
+				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target2.example.com."},
+			},
+			wantErr:    true,
+			errContain: "multiple CNAME",
+		},
+		{
+			name: "apex cname",
+			records: []Record{
+				{Name: "@", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+			},
+			wantErr:    true,
+			errContain: "zone apex",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			zone := &Zone{
+				Name:    "example.com.",
+				SOA:     DefaultSOA("ns1.example.com.", "admin.example.com."),
+				Records: tt.records,
+			}
+
+			err := ValidateZone(zone)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContain)
+				return
+			}
+			assert.NoError(t, err)
 		})
 	}
 }

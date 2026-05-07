@@ -95,6 +95,65 @@ func TestProcessor_ProcessFrame(t *testing.T) {
 	assert.Contains(t, metrics.QueriesTotal["A"], "NOERROR")
 }
 
+func TestProcessor_ClientQueryDoesNotRecordResponseMetrics(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	config := ProcessorConfig{
+		ReceiverConfig: ReceiverConfig{
+			SocketPath: "/tmp/test-dnstap-query.sock",
+			BufferSize: 10,
+		},
+		SamplerConfig: SamplerConfig{
+			SampleRate: 1.0,
+		},
+		PrometheusEnabled: true,
+	}
+
+	processor := NewProcessor(config, logger)
+
+	dnsQuery := new(dns.Msg)
+	dnsQuery.SetQuestion("example.com.", dns.TypeA)
+	queryData, err := dnsQuery.Pack()
+	require.NoError(t, err)
+
+	queryTimeSec := uint64(time.Now().Unix())
+	queryTimeNsec := uint32(0)
+	socketProto := dnstap.SocketProtocol_UDP
+	msgType := dnstap.Message_CLIENT_QUERY
+	dnstapType := dnstap.Dnstap_MESSAGE
+
+	dt := &dnstap.Dnstap{
+		Type: &dnstapType,
+		Message: &dnstap.Message{
+			Type:           &msgType,
+			SocketProtocol: &socketProto,
+			QueryMessage:   queryData,
+			QueryTimeSec:   &queryTimeSec,
+			QueryTimeNsec:  &queryTimeNsec,
+		},
+	}
+
+	frameData, err := proto.Marshal(dt)
+	require.NoError(t, err)
+
+	processor.processFrame(Frame{
+		Data:      frameData,
+		Timestamp: time.Now(),
+	})
+
+	metrics := processor.GetMetrics()
+	totalQueries := int64(0)
+	for _, rcodes := range metrics.QueriesTotal {
+		for _, count := range rcodes {
+			totalQueries += count
+		}
+	}
+
+	assert.Equal(t, int64(0), totalQueries)
+	assert.Equal(t, int64(0), metrics.DNSSECValid)
+	assert.Equal(t, int64(0), metrics.DNSSECInvalid)
+}
+
 // TestProcessor_GetPrometheusMetrics tests Prometheus metrics export.
 func TestProcessor_GetPrometheusMetrics(t *testing.T) {
 	logger := zaptest.NewLogger(t)

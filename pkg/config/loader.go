@@ -4,10 +4,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/spf13/viper"
 )
+
+const minArtifactSignatureKeyBytes = 32
 
 // LoadControllerConfig loads the controller configuration from the specified file.
 // Priority: defaults < YAML file < environment variables
@@ -36,6 +40,9 @@ func LoadControllerConfig(path string) (*ControllerConfig, error) {
 		if err := v.Unmarshal(cfg); err != nil {
 			return nil, fmt.Errorf("unmarshal controller config: %w", err)
 		}
+		if err := applyControllerKeyDirectoryAliases(v, cfg); err != nil {
+			return nil, err
+		}
 	} else {
 		// No config file, only apply environment variables
 		v := viper.New()
@@ -49,6 +56,9 @@ func LoadControllerConfig(path string) (*ControllerConfig, error) {
 		if err := v.Unmarshal(cfg); err != nil {
 			return nil, fmt.Errorf("unmarshal controller config from env: %w", err)
 		}
+		if err := applyControllerKeyDirectoryAliases(v, cfg); err != nil {
+			return nil, err
+		}
 	}
 
 	// Validate configuration
@@ -57,6 +67,26 @@ func LoadControllerConfig(path string) (*ControllerConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func applyControllerKeyDirectoryAliases(v *viper.Viper, cfg *ControllerConfig) error {
+	storageKeySet := v.IsSet("storage.key_directory")
+	dnssecKeySet := v.IsSet("dnssec.key_directory")
+
+	if storageKeySet && !dnssecKeySet {
+		cfg.DNSSEC.KeyDirectory = cfg.Storage.KeyDirectory
+		return nil
+	}
+
+	if storageKeySet && dnssecKeySet && !sameConfigPath(cfg.Storage.KeyDirectory, cfg.DNSSEC.KeyDirectory) {
+		return fmt.Errorf("invalid key_directory: storage.key_directory and dnssec.key_directory must match when both are set")
+	}
+
+	return nil
+}
+
+func sameConfigPath(a, b string) bool {
+	return filepath.Clean(strings.TrimSpace(a)) == filepath.Clean(strings.TrimSpace(b))
 }
 
 // LoadAgentConfig loads the agent configuration from the specified file.
@@ -78,6 +108,9 @@ func LoadAgentConfig(path string) (*AgentConfig, error) {
 		if err := v.ReadInConfig(); err != nil {
 			return nil, fmt.Errorf("load agent config: %w", err)
 		}
+
+		// Manually apply environment variables that need explicit binding.
+		bindAgentEnvVars(v)
 
 		// Unmarshal into config struct
 		if err := v.Unmarshal(cfg); err != nil {
@@ -112,8 +145,21 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return fmt.Errorf("invalid api.listen: empty")
 	}
 
+	if err := validateArtifactSignatureKey("api.artifact_signature_key", cfg.API.ArtifactSignatureKey, false); err != nil {
+		return err
+	}
+
 	if err := validateControllerAuthConfig(cfg.API.Auth); err != nil {
 		return err
+	}
+
+	if cfg.API.RateLimit.Enabled {
+		if cfg.API.RateLimit.RequestsPerSecond <= 0 {
+			return fmt.Errorf("invalid api.rate_limit.requests_per_second: must be positive when rate limiting is enabled")
+		}
+		if cfg.API.RateLimit.Burst <= 0 {
+			return fmt.Errorf("invalid api.rate_limit.burst: must be positive when rate limiting is enabled")
+		}
 	}
 
 	if cfg.Backend.Type == "" {
@@ -133,8 +179,8 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	}
 
 	if cfg.DNSSEC.Enabled {
-		if cfg.DNSSEC.KeyDirectory == "" {
-			return fmt.Errorf("invalid dnssec.key_directory: empty when DNSSEC is enabled")
+		if cfg.DNSSECKeyDirectory() == "" {
+			return fmt.Errorf("invalid dnssec.key_directory: empty when DNSSEC is enabled and storage.key_directory is not set")
 		}
 
 		validAlgorithms := map[uint8]bool{
@@ -173,12 +219,16 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		}
 	}
 
-	if cfg.Storage.ArtifactDirectory == "" {
+	if strings.TrimSpace(cfg.Storage.ArtifactDirectory) == "" {
 		return fmt.Errorf("invalid storage.artifact_directory: empty")
 	}
 
-	if cfg.Storage.KeyDirectory == "" {
-		return fmt.Errorf("invalid storage.key_directory: empty")
+	if cfg.DNSSEC.Enabled && strings.TrimSpace(cfg.Storage.KeyDirectory) == "" && strings.TrimSpace(cfg.DNSSEC.KeyDirectory) == "" {
+		return fmt.Errorf("invalid storage.key_directory: empty when DNSSEC is enabled and dnssec.key_directory is not set")
+	}
+
+	if cfg.Storage.MaxVersionsPerZone < 1 {
+		return fmt.Errorf("invalid storage.max_versions_per_zone: must be positive")
 	}
 
 	validLogLevels := map[string]bool{
@@ -207,35 +257,88 @@ func validateControllerAuthConfig(auth AuthConfig) error {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("invalid api.auth.api_keys: key name must not be empty")
 		}
-		if !isSHA256APIKeyHash(hash) {
+		normalizedHash, ok := normalizeSHA256APIKeyHash(hash)
+		if !ok {
 			return fmt.Errorf("invalid api.auth.api_keys.%s: expected sha256:<64 hex characters>; generate with: echo -n '<api-key>' | sha256sum", name)
 		}
+		auth.APIKeys[name] = normalizedHash
 	}
 
 	return nil
 }
 
-func isSHA256APIKeyHash(hash string) bool {
+func normalizeSHA256APIKeyHash(hash string) (string, bool) {
 	const prefix = "sha256:"
 
 	value := strings.TrimSpace(hash)
 	if !strings.HasPrefix(value, prefix) {
-		return false
+		return "", false
 	}
 
 	hexPart := strings.TrimPrefix(value, prefix)
 	if len(hexPart) != 64 {
-		return false
+		return "", false
 	}
 
 	_, err := hex.DecodeString(hexPart)
-	return err == nil
+	if err != nil {
+		return "", false
+	}
+	return prefix + strings.ToLower(hexPart), true
+}
+
+func validateArtifactSignatureKey(field string, key string, required bool) error {
+	value := strings.TrimSpace(key)
+	if value == "" {
+		if required {
+			return fmt.Errorf("invalid %s: required when sync.verify_signatures is true; generate a shared secret with: openssl rand -base64 32", field)
+		}
+		return nil
+	}
+
+	if isPlaceholderSecret(value) {
+		return fmt.Errorf("invalid %s: replace placeholder value with a generated shared secret (generate with: openssl rand -base64 32)", field)
+	}
+
+	if len([]byte(value)) < minArtifactSignatureKeyBytes {
+		return fmt.Errorf("invalid %s: must be at least %d bytes; generate with: openssl rand -base64 32", field, minArtifactSignatureKeyBytes)
+	}
+
+	return nil
+}
+
+func isPlaceholderSecret(value string) bool {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	return strings.Contains(normalized, "REPLACE") ||
+		strings.Contains(normalized, "CHANGEME") ||
+		strings.Contains(normalized, "CHANGE_ME") ||
+		strings.Contains(normalized, "TODO")
 }
 
 // ValidateAgentConfig validates the agent configuration.
 func ValidateAgentConfig(cfg *AgentConfig) error {
 	if cfg.Controller.URL == "" {
 		return fmt.Errorf("invalid controller.url: empty")
+	}
+	if cfg.Controller.Timeout <= 0 {
+		return fmt.Errorf("invalid controller.timeout: must be greater than 0")
+	}
+	if cfg.Controller.RetryAttempts < 0 {
+		return fmt.Errorf("invalid controller.retry_attempts: must be >= 0")
+	}
+	if cfg.Controller.RetryDelay < 0 {
+		return fmt.Errorf("invalid controller.retry_delay: must be >= 0")
+	}
+	if cfg.Controller.RetryAttempts > 0 && cfg.Controller.RetryDelay == 0 {
+		return fmt.Errorf("invalid controller.retry_delay: must be greater than 0 when controller.retry_attempts is greater than 0")
+	}
+
+	cfg.Authoritative = strings.ToLower(strings.TrimSpace(cfg.Authoritative))
+	if cfg.Authoritative == "" {
+		return fmt.Errorf("invalid authoritative: empty")
+	}
+	if cfg.Authoritative != "nsd" {
+		return fmt.Errorf("invalid authoritative: %s (supported: nsd)", cfg.Authoritative)
 	}
 
 	if cfg.NSD.Enabled {
@@ -257,8 +360,8 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		if cfg.Unbound.ControlPath == "" {
 			return fmt.Errorf("invalid unbound.control_path: empty when Unbound is enabled")
 		}
-		if cfg.Unbound.EDNSBufferSize <= 0 {
-			return fmt.Errorf("invalid unbound.edns_buffer_size: must be positive")
+		if cfg.Unbound.EDNSBufferSize != 1232 {
+			return fmt.Errorf("invalid unbound.edns_buffer_size: must be 1232 for ECMP-safe DNSSEC responses")
 		}
 	}
 
@@ -322,8 +425,60 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid sync.sync_interval: must be positive")
 	}
 
+	if cfg.Sync.MaxStaleness <= 0 {
+		return fmt.Errorf("invalid sync.max_staleness: must be positive")
+	}
+
+	if cfg.Sync.MaxStaleness < cfg.Sync.SyncInterval {
+		return fmt.Errorf("invalid sync.max_staleness: must be greater than or equal to sync.sync_interval")
+	}
+
+	if cfg.Sync.BackupVersions < 0 {
+		return fmt.Errorf("invalid sync.backup_versions: must be non-negative")
+	}
+
+	if cfg.Sync.VerifySignatures {
+		if err := validateArtifactSignatureKey("sync.controller_public_key", cfg.Sync.ControllerPublicKey, true); err != nil {
+			return err
+		}
+	}
+
+	if cfg.DNSTap.Enabled {
+		if strings.TrimSpace(cfg.DNSTap.SocketPath) == "" {
+			return fmt.Errorf("invalid dnstap.socket_path: empty when DNSTap is enabled")
+		}
+		if _, err := cfg.DNSTap.SocketFileMode(); err != nil {
+			return fmt.Errorf("invalid dnstap.socket_mode: %w", err)
+		}
+		if cfg.DNSTap.SampleRate <= 0 {
+			return fmt.Errorf("invalid dnstap.sample_rate: must be positive when DNSTap is enabled")
+		}
+	}
+
+	if strings.TrimSpace(cfg.Metrics.Listen) == "" {
+		return fmt.Errorf("invalid metrics.listen: empty")
+	}
+
+	if cfg.Metrics.Enabled {
+		path := normalizeHTTPPath(cfg.Metrics.Path, "/metrics")
+		if strings.ContainsAny(path, ":*") {
+			return fmt.Errorf("invalid metrics.path: must be a static HTTP path without ':' or '*'")
+		}
+		if isReservedAgentStatusPath(path) {
+			return fmt.Errorf("invalid metrics.path: conflicts with reserved status endpoint %q", path)
+		}
+	}
+
 	if cfg.Health.CheckInterval <= 0 {
 		return fmt.Errorf("invalid health.check_interval: must be positive")
+	}
+
+	if cfg.Health.QueryTimeout <= 0 {
+		return fmt.Errorf("invalid health.query_timeout: must be positive")
+	}
+
+	if cfg.Health.LatencyThreshold <= 0 {
+		return fmt.Errorf("invalid health.latency_threshold: must be positive")
 	}
 
 	if cfg.Health.FailureThreshold <= 0 {
@@ -347,28 +502,30 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	return nil
 }
 
-// bindControllerEnvVars manually applies controller environment overrides.
+func normalizeHTTPPath(path string, defaultPath string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return defaultPath
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
+}
+
+func isReservedAgentStatusPath(path string) bool {
+	switch path {
+	case "/health", "/ready", "/status":
+		return true
+	default:
+		return false
+	}
+}
+
+// bindControllerEnvVars binds all controller config leaves so environment
+// variables are visible to Unmarshal even when a key is absent from YAML.
 func bindControllerEnvVars(v *viper.Viper) {
-	// Bind key environment variables
-	envVars := []string{
-		"api.listen",
-		"api.auth.enabled",
-		"backend.type",
-		"dnssec.enabled",
-		"dnssec.key_directory",
-		"dnssec.algorithm",
-		"storage.artifact_directory",
-		"storage.key_directory",
-		"logging.level",
-	}
-
-	for _, key := range envVars {
-		envKey := "ARCA_DNS_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
-		if val := os.Getenv(envKey); val != "" {
-			v.Set(key, val)
-		}
-	}
-
+	bindEnvVarsFromStruct(v, reflect.TypeOf(ControllerConfig{}), "")
 	bindControllerAPIKeyEnvVars(v)
 }
 
@@ -396,25 +553,57 @@ func bindControllerAPIKeyEnvVars(v *viper.Viper) {
 	}
 }
 
-// bindAgentEnvVars manually binds key environment variables for agent.
-// This is needed when no config file is provided.
+// bindAgentEnvVars binds all agent config leaves so environment variables are
+// visible to Unmarshal even when a key is absent from the YAML file.
 func bindAgentEnvVars(v *viper.Viper) {
-	// Bind key environment variables
-	envVars := []string{
-		"controller.url",
-		"controller.api_key",
-		"nsd.enabled",
-		"nsd.zone_directory",
-		"unbound.enabled",
-		"bird.enabled",
-		"sync.sync_interval",
-		"logging.level",
+	bindEnvVarsFromStruct(v, reflect.TypeOf(AgentConfig{}), "")
+}
+
+func bindEnvVarsFromStruct(v *viper.Viper, typ reflect.Type, prefix string) {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if typ.Kind() != reflect.Struct {
+		return
 	}
 
-	for _, key := range envVars {
-		envKey := "ARCA_DNS_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
-		if val := os.Getenv(envKey); val != "" {
-			v.Set(key, val)
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if field.PkgPath != "" {
+			continue
 		}
+
+		name := mapstructureName(field)
+		if name == "" {
+			continue
+		}
+
+		key := name
+		if prefix != "" {
+			key = prefix + "." + name
+		}
+
+		fieldType := field.Type
+		for fieldType.Kind() == reflect.Pointer {
+			fieldType = fieldType.Elem()
+		}
+		if fieldType.Kind() == reflect.Struct {
+			bindEnvVarsFromStruct(v, fieldType, key)
+			continue
+		}
+
+		_ = v.BindEnv(key)
 	}
+}
+
+func mapstructureName(field reflect.StructField) string {
+	tag := field.Tag.Get("mapstructure")
+	if tag == "-" {
+		return ""
+	}
+	if tag != "" {
+		name, _, _ := strings.Cut(tag, ",")
+		return name
+	}
+	return strings.ToLower(field.Name)
 }

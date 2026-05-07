@@ -1,8 +1,15 @@
 package util
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"regexp"
 	"strings"
+)
+
+const (
+	maxSafeZoneFilenameLength = 200
+	safeZoneFilenameHashChars = 12
 )
 
 // SafeZoneFilename converts a DNS zone name to a safe filename.
@@ -36,9 +43,11 @@ func SafeZoneFilename(zoneName string) string {
 	// Prevent path traversal patterns
 	zoneName = strings.ReplaceAll(zoneName, "..", "_")
 
-	// Limit length to 200 characters (filesystem limit - reserve space for extensions)
-	if len(zoneName) > 200 {
-		zoneName = zoneName[:200]
+	// Limit length while preserving uniqueness for long valid zone names.
+	if len(zoneName) > maxSafeZoneFilenameLength {
+		suffix := "-" + safeZoneFilenameHash(zoneName)
+		prefixLength := maxSafeZoneFilenameLength - len(suffix)
+		zoneName = zoneName[:prefixLength] + suffix
 	}
 
 	// Ensure the result is not empty
@@ -47,4 +56,9 @@ func SafeZoneFilename(zoneName string) string {
 	}
 
 	return zoneName
+}
+
+func safeZoneFilenameHash(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(sum[:])[:safeZoneFilenameHashChars]
 }

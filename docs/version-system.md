@@ -399,21 +399,34 @@ Response:
 
 **Rollback to Previous Version:**
 ```bash
-# Get the old version
+# Get the old version and the current version.
 GET /api/v1/zones/example.com./versions/v2024122801-a3f5c2e9
+GET /api/v1/zones/example.com.
 
-# Apply it as a new update (creates v2024122804)
+# Restore SOA metadata first. Existing records are preserved by PUT /zones.
 PUT /api/v1/zones/example.com.
 If-Match: "v2024122803-1a2b3c4d"
 Content-Type: application/json
 
 {
-  "soa": { ... },  # from v2024122801
-  "records": [ ... ]
+  "name": "example.com.",
+  "soa": { ... }  # from v2024122801
+}
+
+# Restore records separately with the record batch endpoint. Record ids must come
+# from the current record list; create entries omit ids.
+POST /api/v1/zones/example.com./records/batch
+If-Match: "v2024122804-..."
+Content-Type: application/json
+
+{
+  "delete": [{ "id": "current-record-id" }],
+  "update": [{ "id": "existing-record-id", "name": "...", "type": "...", "ttl": 300, "value": "..." }],
+  "create": [{ "name": "...", "type": "...", "ttl": 300, "value": "..." }]
 }
 ```
 
-**Note**: Rollback creates a NEW version with incremented serial, not a reversion to the old serial. This follows DNS best practices.
+**Note**: Each rollback update creates a NEW version with an incremented serial, not a reversion to the old serial. This follows DNS best practices.
 
 ---
 

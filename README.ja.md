@@ -168,6 +168,7 @@ sync:
 nsd:
   enabled: true
   config_path: "/etc/nsd/nsd.conf"
+  zone_config_path: "/etc/nsd/arca-dns-zones.conf" # nsd.conf から include してください
   zone_directory: "/var/lib/nsd/zones"
 
 unbound:
@@ -182,6 +183,12 @@ bird:
     - name: "anycast_1"
       neighbor_address: "10.0.0.1"
       neighbor_asn: 64512
+
+dnstap:
+  enabled: false
+  socket_path: "/var/run/dnstap.sock"
+  socket_mode: "0660"
+  socket_group: "arca-dns" # DNS daemon user をこの共有 group に追加してください
 
 health:
   check_interval: "10s"

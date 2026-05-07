@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -129,6 +128,10 @@ func (e *EtcdBackend) versionKey(name string) string {
 	return fmt.Sprintf("%s/%s/%s", e.prefix, etcdVersionsPrefix, model.NormalizeZoneName(name))
 }
 
+func (e *EtcdBackend) versionPrefix() string {
+	return fmt.Sprintf("%s/%s/", e.prefix, etcdVersionsPrefix)
+}
+
 func (e *EtcdBackend) historyKey(name, version string) string {
 	return fmt.Sprintf("%s/%s/%s/%s", e.prefix, etcdHistoryPrefix, model.NormalizeZoneName(name), version)
 }
@@ -190,10 +193,7 @@ func (e *EtcdBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model
 	for _, kv := range resp.Kvs {
 		var zone model.Zone
 		if err := json.Unmarshal(kv.Value, &zone); err != nil {
-			// Log warning but continue - don't fail the entire list operation
-			// In production, this should use proper logging (zap/slog)
-			fmt.Fprintf(os.Stderr, "Warning: skipping malformed zone at key %s: %v\n", string(kv.Key), err)
-			continue
+			return nil, fmt.Errorf("failed to unmarshal zone at key %s: %w", string(kv.Key), err)
 		}
 		zones = append(zones, &zone)
 	}
@@ -222,6 +222,51 @@ func (e *EtcdBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model
 	return zones[start:end], nil
 }
 
+// ListZoneSummaries returns zone names and versions without loading zone records.
+func (e *EtcdBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
+	defer cancel()
+
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	prefix := e.versionPrefix()
+	getOpts := []clientv3.OpOption{
+		clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	}
+	if opts.Limit > 0 {
+		getOpts = append(getOpts, clientv3.WithLimit(int64(offset+opts.Limit)))
+	}
+
+	resp, err := e.client.Get(ctx, prefix, getOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list zone summaries: %w", err)
+	}
+
+	if offset > len(resp.Kvs) {
+		return make([]*ZoneSummary, 0), nil
+	}
+
+	end := len(resp.Kvs)
+	if opts.Limit > 0 && offset+opts.Limit < end {
+		end = offset + opts.Limit
+	}
+
+	summaries := make([]*ZoneSummary, 0, end-offset)
+	for _, kv := range resp.Kvs[offset:end] {
+		name := strings.TrimPrefix(string(kv.Key), prefix)
+		summaries = append(summaries, &ZoneSummary{
+			Name:    name,
+			Version: string(kv.Value),
+		})
+	}
+
+	return summaries, nil
+}
+
 // CreateZone creates a new zone.
 func (e *EtcdBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	normalized := model.NormalizeZoneName(zone.Name)
@@ -244,6 +289,10 @@ func (e *EtcdBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 			return fmt.Errorf("generate zone version: %w", err)
 		}
 		zone.Version = version
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
 	}
 
 	// Acquire zone lock
@@ -313,8 +362,9 @@ func (e *EtcdBackend) UpdateZone(ctx context.Context, zone *model.Zone, expected
 	// Preserve CreatedAt from current zone
 	zone.CreatedAt = currentZone.CreatedAt
 
-	// Auto-increment serial
-	zone.SOA.Serial = generateSerial(currentZone.SOA.Serial)
+	// Advance from the stored serial. A caller may provide a precomputed
+	// greater serial when another component already used it for a prepared artifact.
+	zone.SOA.Serial = updateSOASerial(currentZone.SOA.Serial, zone.SOA.Serial)
 
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
@@ -326,6 +376,10 @@ func (e *EtcdBackend) UpdateZone(ctx context.Context, zone *model.Zone, expected
 			return fmt.Errorf("generate zone version: %w", err)
 		}
 		zone.Version = newVersion
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
 	}
 
 	// Marshal zone data
@@ -386,6 +440,7 @@ func (e *EtcdBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string,
 	if resp.Count == 0 {
 		return model.ErrZoneNotFound
 	}
+	modRevision := resp.Kvs[0].ModRevision
 
 	var zone model.Zone
 	if err := json.Unmarshal(resp.Kvs[0].Value, &zone); err != nil {
@@ -401,7 +456,7 @@ func (e *EtcdBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string,
 	}
 
 	txn := e.client.Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(zoneKey), ">", 0)).
+		If(clientv3.Compare(clientv3.ModRevision(zoneKey), "=", modRevision)).
 		Then(clientv3.OpPut(zoneKey, string(zoneData)))
 
 	txnResp, err := txn.Commit()
@@ -409,7 +464,14 @@ func (e *EtcdBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string,
 		return fmt.Errorf("failed to update DNSSEC metadata: %w", err)
 	}
 	if !txnResp.Succeeded {
-		return model.ErrZoneNotFound
+		existsResp, err := e.client.Get(ctx, zoneKey)
+		if err != nil {
+			return fmt.Errorf("check zone existence after DNSSEC metadata conflict: %w", err)
+		}
+		if existsResp.Count == 0 {
+			return model.ErrZoneNotFound
+		}
+		return model.ErrConflict
 	}
 	return nil
 }
@@ -451,6 +513,54 @@ func (e *EtcdBackend) DeleteZone(ctx context.Context, name string) error {
 	}
 
 	// Watch events will be triggered by etcd's watch mechanism
+	return nil
+}
+
+// DeleteZoneWithVersion removes a zone only when its current version matches.
+func (e *EtcdBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	normalized := model.NormalizeZoneName(name)
+
+	zoneMu := e.acquireZoneLock(normalized)
+	defer e.releaseZoneLock(zoneMu)
+
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
+	defer cancel()
+
+	zoneKey := e.zoneKey(normalized)
+	versionKey := e.versionKey(normalized)
+
+	resp, err := e.client.Get(ctx, zoneKey)
+	if err != nil {
+		return fmt.Errorf("failed to check zone existence: %w", err)
+	}
+	if resp.Count == 0 {
+		return model.ErrZoneNotFound
+	}
+
+	txn := e.client.Txn(ctx)
+	if expectedVersion != "" {
+		txn = txn.If(clientv3.Compare(clientv3.Value(versionKey), "=", expectedVersion))
+	}
+	txn = txn.Then(
+		clientv3.OpDelete(zoneKey),
+		clientv3.OpDelete(versionKey),
+	)
+
+	txnResp, err := txn.Commit()
+	if err != nil {
+		return fmt.Errorf("failed to delete zone: %w", err)
+	}
+	if !txnResp.Succeeded {
+		existsResp, err := e.client.Get(ctx, zoneKey)
+		if err != nil {
+			return fmt.Errorf("check zone existence after delete conflict: %w", err)
+		}
+		if existsResp.Count == 0 {
+			return model.ErrZoneNotFound
+		}
+		return model.ErrConflict
+	}
+
 	return nil
 }
 
@@ -512,9 +622,7 @@ func (e *EtcdBackend) ListRevisions(ctx context.Context, zoneName string, opts L
 	for _, kv := range resp.Kvs {
 		var zone model.Zone
 		if err := json.Unmarshal(kv.Value, &zone); err != nil {
-			// Log warning but continue
-			fmt.Fprintf(os.Stderr, "Warning: skipping malformed revision at key %s: %v\n", string(kv.Key), err)
-			continue
+			return nil, fmt.Errorf("failed to unmarshal revision at key %s: %w", string(kv.Key), err)
 		}
 
 		hashHex, err := ComputeZoneHash(&zone)

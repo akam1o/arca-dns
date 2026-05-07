@@ -14,8 +14,10 @@ import (
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
+	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/gofrs/flock"
@@ -51,18 +53,44 @@ func init() {
 			authorEmail = "noreply@arca-dns"
 		}
 
-		// Support both old name (auto_sync) and new name (auto_push)
-		// Priority: new name (auto_push) > old name (auto_sync) > default (false)
-		var autoSync bool
-		if val, ok := cfg["auto_push"]; ok {
-			autoSync, _ = val.(bool)
-		} else if val, ok := cfg["auto_sync"]; ok {
-			autoSync, _ = val.(bool)
-		}
-		// Default: false (local-only)
+		remoteURL, _ := cfg["remote_url"].(string)
 
-		return NewGitBackend(repoPath, branch, authorName, authorEmail, autoSync)
+		autoPush, autoPushSet := boolFromConfig(cfg["auto_push"])
+		autoPull, autoPullSet := boolFromConfig(cfg["auto_pull"])
+		if autoSync, ok := boolFromConfig(cfg["auto_sync"]); ok {
+			if !autoPushSet {
+				autoPush = autoSync
+			}
+			if !autoPullSet {
+				autoPull = autoSync
+			}
+		} else if autoPushSet && !autoPullSet {
+			autoPull = autoPush
+		}
+
+		pullInterval, _ := durationFromConfig(cfg["pull_interval"])
+
+		return NewGitBackendWithOptions(repoPath, GitBackendOptions{
+			Branch:       branch,
+			AuthorName:   authorName,
+			AuthorEmail:  authorEmail,
+			RemoteURL:    remoteURL,
+			AutoPush:     autoPush,
+			AutoPull:     autoPull,
+			PullInterval: pullInterval,
+		})
 	})
+}
+
+// GitBackendOptions configures a Git-backed zone store.
+type GitBackendOptions struct {
+	Branch       string
+	AuthorName   string
+	AuthorEmail  string
+	RemoteURL    string
+	AutoPush     bool
+	AutoPull     bool
+	PullInterval time.Duration
 }
 
 // GitBackend implements ZoneStore and RevisionStore using a Git repository
@@ -71,27 +99,71 @@ type GitBackend struct {
 	branch      string
 	authorName  string
 	authorEmail string
-	autoSync    bool // If true, pull before operations and push after commits
+	remoteURL   string
+
+	autoPush     bool
+	autoPull     bool
+	pullInterval time.Duration
+	lastPull     time.Time
 
 	repo      *git.Repository
 	worktree  *git.Worktree
+	repoLock  chan struct{}
 	fileLock  *flock.Flock
 	zoneMutex sync.Map // map[string]*sync.Mutex (per-zone locking)
-	mu        sync.RWMutex
+}
+
+type gitRollbackPoint struct {
+	relPath      string
+	absPath      string
+	fileData     []byte
+	fileMode     os.FileMode
+	fileExists   bool
+	indexTracked bool
+	headHash     plumbing.Hash
+	headRef      *plumbing.Reference
+	hasHead      bool
 }
 
 // NewGitBackend creates a new Git backend
 // If the repository doesn't exist, it will be initialized
 func NewGitBackend(repoPath, branch, authorName, authorEmail string, autoSync bool) (*GitBackend, error) {
+	return NewGitBackendWithOptions(repoPath, GitBackendOptions{
+		Branch:      branch,
+		AuthorName:  authorName,
+		AuthorEmail: authorEmail,
+		AutoPush:    autoSync,
+		AutoPull:    autoSync,
+	})
+}
+
+// NewGitBackendWithOptions creates a new Git backend with explicit options.
+func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitBackend, error) {
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve repository path: %w", err)
 	}
 
+	if options.Branch == "" {
+		options.Branch = "main"
+	}
+	if options.AuthorName == "" {
+		options.AuthorName = "arca-dns-controller"
+	}
+	if options.AuthorEmail == "" {
+		options.AuthorEmail = "noreply@arca-dns"
+	}
+
 	// Initialize or open repository
-	repo, err := openOrInitRepo(absPath, branch)
+	repo, err := openOrInitRepo(absPath, options.Branch)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open/init repository: %w", err)
+	}
+
+	if options.RemoteURL != "" {
+		if err := ensureRemote(repo, "origin", options.RemoteURL); err != nil {
+			return nil, err
+		}
 	}
 
 	worktree, err := repo.Worktree()
@@ -110,14 +182,18 @@ func NewGitBackend(repoPath, branch, authorName, authorEmail string, autoSync bo
 	fileLock := flock.New(lockPath)
 
 	return &GitBackend{
-		repoPath:    absPath,
-		branch:      branch,
-		authorName:  authorName,
-		authorEmail: authorEmail,
-		autoSync:    autoSync,
-		repo:        repo,
-		worktree:    worktree,
-		fileLock:    fileLock,
+		repoPath:     absPath,
+		branch:       options.Branch,
+		authorName:   options.AuthorName,
+		authorEmail:  options.AuthorEmail,
+		remoteURL:    options.RemoteURL,
+		autoPush:     options.AutoPush,
+		autoPull:     options.AutoPull,
+		pullInterval: options.PullInterval,
+		repo:         repo,
+		worktree:     worktree,
+		repoLock:     make(chan struct{}, 1),
+		fileLock:     fileLock,
 	}, nil
 }
 
@@ -147,8 +223,15 @@ func openOrInitRepo(path, branch string) (*git.Repository, error) {
 				if err != nil {
 					return nil, fmt.Errorf("failed to create branch %s: %w", branch, err)
 				}
+			} else if headErr == plumbing.ErrReferenceNotFound {
+				// Empty repositories do not have a commit to checkout from yet.
+				// Point HEAD at the configured branch so the first commit lands there.
+				if err := repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, branchRef)); err != nil {
+					return nil, fmt.Errorf("failed to set HEAD to branch %s: %w", branch, err)
+				}
+			} else {
+				return nil, headErr
 			}
-			// If HEAD doesn't exist, the repository is empty; the branch will be created on first commit.
 		} else if err != nil {
 			return nil, err
 		} else {
@@ -172,7 +255,9 @@ func openOrInitRepo(path, branch string) (*git.Repository, error) {
 	fs := osfs.New(path)
 	storage := filesystem.NewStorage(fs, cache.NewObjectLRUDefault())
 
-	repo, err = git.Init(storage, fs)
+	repo, err = git.InitWithOptions(storage, fs, git.InitOptions{
+		DefaultBranch: plumbing.NewBranchReferenceName(branch),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize repository: %w", err)
 	}
@@ -180,9 +265,48 @@ func openOrInitRepo(path, branch string) (*git.Repository, error) {
 	return repo, nil
 }
 
-// acquireLock acquires both file lock and per-zone mutex
-func (g *GitBackend) acquireLock(ctx context.Context, zoneName string) (*sync.Mutex, error) {
-	// Acquire file lock (cross-process)
+func ensureRemote(repo *git.Repository, name, remoteURL string) error {
+	cfg, err := repo.Config()
+	if err != nil {
+		return fmt.Errorf("failed to read git config: %w", err)
+	}
+	if cfg.Remotes == nil {
+		cfg.Remotes = make(map[string]*gitconfig.RemoteConfig)
+	}
+	cfg.Remotes[name] = &gitconfig.RemoteConfig{
+		Name: name,
+		URLs: []string{remoteURL},
+	}
+	if err := repo.SetConfig(cfg); err != nil {
+		return fmt.Errorf("failed to configure git remote %s: %w", name, err)
+	}
+	return nil
+}
+
+func boolFromConfig(value interface{}) (bool, bool) {
+	v, ok := value.(bool)
+	return v, ok
+}
+
+func (g *GitBackend) acquireRepoLock(ctx context.Context) error {
+	select {
+	case g.repoLock <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (g *GitBackend) releaseRepoLock() {
+	<-g.repoLock
+}
+
+// acquireFileLock acquires the in-process repository lock and cross-process file lock.
+func (g *GitBackend) acquireFileLock(ctx context.Context) error {
+	if err := g.acquireRepoLock(ctx); err != nil {
+		return err
+	}
+
 	locked := false
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -190,20 +314,33 @@ func (g *GitBackend) acquireLock(ctx context.Context, zoneName string) (*sync.Mu
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			g.releaseRepoLock()
+			return ctx.Err()
 		case <-ticker.C:
 			var err error
 			locked, err = g.fileLock.TryLock()
 			if err != nil {
-				return nil, fmt.Errorf("failed to acquire file lock: %w", err)
+				g.releaseRepoLock()
+				return fmt.Errorf("failed to acquire file lock: %w", err)
 			}
 			if locked {
-				goto haveLock
+				return nil
 			}
 		}
 	}
+}
 
-haveLock:
+func (g *GitBackend) releaseFileLock() {
+	_ = g.fileLock.Unlock()
+	g.releaseRepoLock()
+}
+
+// acquireLock acquires both file lock and per-zone mutex.
+func (g *GitBackend) acquireLock(ctx context.Context, zoneName string) (*sync.Mutex, error) {
+	if err := g.acquireFileLock(ctx); err != nil {
+		return nil, err
+	}
+
 	// Acquire per-zone mutex (in-process)
 	muInterface, _ := g.zoneMutex.LoadOrStore(zoneName, &sync.Mutex{})
 	zoneMu := muInterface.(*sync.Mutex)
@@ -217,7 +354,7 @@ func (g *GitBackend) releaseLock(zoneMu *sync.Mutex) {
 	if zoneMu != nil {
 		zoneMu.Unlock()
 	}
-	_ = g.fileLock.Unlock()
+	g.releaseFileLock()
 }
 
 // zoneFilePath returns the path to the zone JSON file
@@ -249,18 +386,23 @@ func (g *GitBackend) zoneFilePath(zoneName string) (string, error) {
 	return relPath, nil
 }
 
-// pullIfNeeded performs a fast-forward-only pull if autoSync is enabled
+// pullIfNeeded performs a fast-forward-only pull if auto-pull is enabled
 func (g *GitBackend) pullIfNeeded(ctx context.Context) error {
-	if !g.autoSync {
+	if !g.autoPull {
+		return nil
+	}
+	if g.pullInterval > 0 && !g.lastPull.IsZero() && time.Since(g.lastPull) < g.pullInterval {
 		return nil
 	}
 
 	err := g.worktree.PullContext(ctx, &git.PullOptions{
-		RemoteName: "origin",
-		Force:      false, // Fast-forward only
+		RemoteName:    "origin",
+		ReferenceName: plumbing.NewBranchReferenceName(g.branch),
+		Force:         false, // Fast-forward only
 	})
 
 	if err == git.NoErrAlreadyUpToDate {
+		g.lastPull = time.Now()
 		return nil
 	}
 
@@ -271,11 +413,164 @@ func (g *GitBackend) pullIfNeeded(ctx context.Context) error {
 		return fmt.Errorf("git pull failed: %w", err)
 	}
 
+	g.lastPull = time.Now()
 	return nil
 }
 
+func (g *GitBackend) snapshotZoneFile(zoneName string) (*gitRollbackPoint, error) {
+	relPath, err := g.zoneFilePath(zoneName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid zone path: %w", err)
+	}
+
+	point := &gitRollbackPoint{
+		relPath: relPath,
+		absPath: filepath.Join(g.repoPath, relPath),
+	}
+
+	info, err := os.Stat(point.absPath)
+	if err == nil {
+		point.fileExists = true
+		point.fileMode = info.Mode()
+		point.fileData, err = os.ReadFile(point.absPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to snapshot zone file: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to stat zone file: %w", err)
+	}
+
+	idx, err := g.repo.Storer.Index()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read git index: %w", err)
+	}
+	if _, err := idx.Entry(relPath); err == nil {
+		point.indexTracked = true
+	} else if err != index.ErrEntryNotFound {
+		return nil, fmt.Errorf("failed to inspect git index: %w", err)
+	}
+
+	head, err := g.repo.Head()
+	if err == nil {
+		point.hasHead = true
+		point.headHash = head.Hash()
+		headRef, err := g.repo.Reference(plumbing.HEAD, false)
+		if err != nil {
+			return nil, fmt.Errorf("failed to snapshot git head reference: %w", err)
+		}
+		point.headRef = headRef
+		return point, nil
+	}
+	if err != plumbing.ErrReferenceNotFound {
+		return nil, fmt.Errorf("failed to snapshot git head: %w", err)
+	}
+
+	return point, nil
+}
+
+func (g *GitBackend) restoreZoneFile(point *gitRollbackPoint) error {
+	if point.fileExists {
+		if err := os.MkdirAll(filepath.Dir(point.absPath), 0755); err != nil {
+			return fmt.Errorf("failed to recreate zone directory: %w", err)
+		}
+		if err := os.WriteFile(point.absPath, point.fileData, point.fileMode.Perm()); err != nil {
+			return fmt.Errorf("failed to restore zone file: %w", err)
+		}
+		return nil
+	}
+
+	if err := os.Remove(point.absPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove rolled back zone file: %w", err)
+	}
+	return nil
+}
+
+func (g *GitBackend) restoreHead(point *gitRollbackPoint) error {
+	if !point.hasHead {
+		branchRef := plumbing.NewBranchReferenceName(g.branch)
+		if err := g.repo.Storer.RemoveReference(branchRef); err != nil && err != plumbing.ErrReferenceNotFound {
+			return fmt.Errorf("failed to remove rolled back branch reference: %w", err)
+		}
+		if err := g.repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, branchRef)); err != nil {
+			return fmt.Errorf("failed to restore git head reference: %w", err)
+		}
+		return nil
+	}
+
+	if point.headRef != nil && point.headRef.Type() == plumbing.SymbolicReference {
+		branchRef := point.headRef.Target()
+		if err := g.repo.Storer.SetReference(plumbing.NewHashReference(branchRef, point.headHash)); err != nil {
+			return fmt.Errorf("failed to restore git branch reference: %w", err)
+		}
+		if err := g.repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, branchRef)); err != nil {
+			return fmt.Errorf("failed to restore git head reference: %w", err)
+		}
+		return nil
+	}
+
+	if err := g.repo.Storer.SetReference(plumbing.NewHashReference(plumbing.HEAD, point.headHash)); err != nil {
+		return fmt.Errorf("failed to restore git head reference: %w", err)
+	}
+	return nil
+}
+
+func (g *GitBackend) restoreIndex(point *gitRollbackPoint) error {
+	if !point.indexTracked || !point.fileExists {
+		return g.removeFromIndex(point.relPath)
+	}
+
+	if _, err := g.worktree.Add(point.relPath); err != nil {
+		return fmt.Errorf("failed to restore zone in git index: %w", err)
+	}
+	return nil
+}
+
+func (g *GitBackend) removeFromIndex(relPath string) error {
+	idx, err := g.repo.Storer.Index()
+	if err != nil {
+		return fmt.Errorf("failed to read git index: %w", err)
+	}
+	if _, err := idx.Remove(relPath); err != nil && err != index.ErrEntryNotFound {
+		return fmt.Errorf("failed to remove zone from git index: %w", err)
+	}
+	if err := g.repo.Storer.SetIndex(idx); err != nil {
+		return fmt.Errorf("failed to write git index: %w", err)
+	}
+	return nil
+}
+
+func (g *GitBackend) rollbackZoneMutation(point *gitRollbackPoint) error {
+	if err := g.restoreHead(point); err != nil {
+		return err
+	}
+	if err := g.restoreZoneFile(point); err != nil {
+		return err
+	}
+	return g.restoreIndex(point)
+}
+
+func (g *GitBackend) wrapWithRollback(point *gitRollbackPoint, err error) error {
+	if point == nil {
+		return err
+	}
+	if rollbackErr := g.rollbackZoneMutation(point); rollbackErr != nil {
+		return fmt.Errorf("%w (rollback failed: %v)", err, rollbackErr)
+	}
+	return err
+}
+
 // commitZone commits changes to the zone file
-func (g *GitBackend) commitZone(ctx context.Context, zoneName, operation, summary string, zone *model.Zone) error {
+func (g *GitBackend) commitZone(ctx context.Context, zoneName, operation, summary string, zone *model.Zone, rollback *gitRollbackPoint) error {
+	message := fmt.Sprintf("[%s] %s: %s\n\nVersion: %s", operation, zoneName, summary, zone.Version)
+	return g.commitZoneWithMessage(ctx, zoneName, message, rollback)
+}
+
+func (g *GitBackend) commitZoneMetadata(ctx context.Context, zoneName, operation, summary string, rollback *gitRollbackPoint) error {
+	message := fmt.Sprintf("[%s] %s: %s", operation, zoneName, summary)
+	return g.commitZoneWithMessage(ctx, zoneName, message, rollback)
+}
+
+func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, message string, rollback *gitRollbackPoint) error {
 	filePath, err := g.zoneFilePath(zoneName)
 	if err != nil {
 		return fmt.Errorf("invalid zone path: %w", err)
@@ -284,11 +579,8 @@ func (g *GitBackend) commitZone(ctx context.Context, zoneName, operation, summar
 	// Add file to staging
 	_, err = g.worktree.Add(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to add file to git: %w", err)
+		return g.wrapWithRollback(rollback, fmt.Errorf("failed to add file to git: %w", err))
 	}
-
-	// Create commit message
-	message := fmt.Sprintf("[%s] %s: %s\n\nVersion: %s", operation, zoneName, summary, zone.Version)
 
 	// Commit
 	_, err = g.worktree.Commit(message, &git.CommitOptions{
@@ -299,16 +591,16 @@ func (g *GitBackend) commitZone(ctx context.Context, zoneName, operation, summar
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("failed to commit: %w", err)
+		return g.wrapWithRollback(rollback, fmt.Errorf("failed to commit: %w", err))
 	}
 
-	// Push if autoSync is enabled
-	if g.autoSync {
+	// Push if auto-push is enabled
+	if g.autoPush {
 		err = g.repo.PushContext(ctx, &git.PushOptions{
 			RemoteName: "origin",
 		})
 		if err != nil && err != git.NoErrAlreadyUpToDate {
-			return fmt.Errorf("git push failed: %w", err)
+			return g.wrapWithRollback(rollback, fmt.Errorf("git push failed: %w", err))
 		}
 	}
 
@@ -317,6 +609,11 @@ func (g *GitBackend) commitZone(ctx context.Context, zoneName, operation, summar
 
 // removeAndCommit removes a zone file and commits the deletion
 func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary string) error {
+	rollback, err := g.snapshotZoneFile(zoneName)
+	if err != nil {
+		return err
+	}
+
 	filePath, err := g.zoneFilePath(zoneName)
 	if err != nil {
 		return fmt.Errorf("invalid zone path: %w", err)
@@ -325,7 +622,7 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 	// Remove file from git
 	_, err = g.worktree.Remove(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to remove file from git: %w", err)
+		return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove file from git: %w", err))
 	}
 
 	// Create commit message
@@ -340,16 +637,16 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("failed to commit deletion: %w", err)
+		return g.wrapWithRollback(rollback, fmt.Errorf("failed to commit deletion: %w", err))
 	}
 
-	// Push if autoSync is enabled
-	if g.autoSync {
+	// Push if auto-push is enabled
+	if g.autoPush {
 		err = g.repo.PushContext(ctx, &git.PushOptions{
 			RemoteName: "origin",
 		})
 		if err != nil && err != git.NoErrAlreadyUpToDate {
-			return fmt.Errorf("git push failed: %w", err)
+			return g.wrapWithRollback(rollback, fmt.Errorf("git push failed: %w", err))
 		}
 	}
 
@@ -435,16 +732,29 @@ func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 func (g *GitBackend) GetZone(ctx context.Context, name string) (*model.Zone, error) {
 	normalized := model.NormalizeZoneName(name)
 
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	zoneMu, err := g.acquireLock(ctx, normalized)
+	if err != nil {
+		return nil, err
+	}
+	defer g.releaseLock(zoneMu)
+
+	if err := g.pullIfNeeded(ctx); err != nil {
+		return nil, err
+	}
 
 	return g.readZone(normalized)
 }
 
 // ListZones returns all zones with pagination
 func (g *GitBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	if err := g.acquireFileLock(ctx); err != nil {
+		return nil, err
+	}
+	defer g.releaseFileLock()
+
+	if err := g.pullIfNeeded(ctx); err != nil {
+		return nil, err
+	}
 
 	zonesDir := filepath.Join(g.repoPath, "zones")
 	entries, err := os.ReadDir(zonesDir)
@@ -464,8 +774,7 @@ func (g *GitBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.
 		zoneName := strings.TrimSuffix(entry.Name(), ".json")
 		zone, err := g.readZone(zoneName)
 		if err != nil {
-			// Skip corrupted files
-			continue
+			return nil, fmt.Errorf("failed to read zone %q from git backend: %w", zoneName, err)
 		}
 
 		zones = append(zones, zone)
@@ -519,13 +828,17 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 		zone.Version = version
 	}
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	zoneMu, err := g.acquireLock(ctx, normalized)
 	if err != nil {
 		return err
 	}
 	defer g.releaseLock(zoneMu)
 
-	// Pull if autoSync is enabled
+	// Pull if auto-pull is enabled
 	if err := g.pullIfNeeded(ctx); err != nil {
 		return err
 	}
@@ -539,6 +852,11 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 		return err
 	}
 
+	rollback, err := g.snapshotZoneFile(normalized)
+	if err != nil {
+		return err
+	}
+
 	// Write zone file
 	if err := g.writeZone(normalized, zone); err != nil {
 		return err
@@ -546,7 +864,7 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 
 	// Commit
 	summary := fmt.Sprintf("created zone with %d records", len(zone.Records))
-	return g.commitZone(ctx, normalized, "create", summary, zone)
+	return g.commitZone(ctx, normalized, "create", summary, zone, rollback)
 }
 
 // UpdateZone updates an existing zone with optimistic locking
@@ -560,7 +878,7 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 	}
 	defer g.releaseLock(zoneMu)
 
-	// Pull if autoSync is enabled
+	// Pull if auto-pull is enabled
 	if err := g.pullIfNeeded(ctx); err != nil {
 		return err
 	}
@@ -582,8 +900,9 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 	// Preserve CreatedAt from current zone
 	zone.CreatedAt = currentZone.CreatedAt
 
-	// Auto-increment serial
-	zone.SOA.Serial = generateSerial(currentZone.SOA.Serial)
+	// Advance from the stored serial. A caller may provide a precomputed
+	// greater serial when another component already used it for a prepared artifact.
+	zone.SOA.Serial = updateSOASerial(currentZone.SOA.Serial, zone.SOA.Serial)
 
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
@@ -597,6 +916,15 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 		zone.Version = newVersion
 	}
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
+	rollback, err := g.snapshotZoneFile(normalized)
+	if err != nil {
+		return err
+	}
+
 	// Write updated zone file
 	if err := g.writeZone(normalized, zone); err != nil {
 		return err
@@ -604,7 +932,7 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 
 	// Commit
 	summary := fmt.Sprintf("updated zone (%d records)", len(zone.Records))
-	return g.commitZone(ctx, normalized, "update", summary, zone)
+	return g.commitZone(ctx, normalized, "update", summary, zone, rollback)
 }
 
 // UpdateDNSSECMetadata updates DNSSEC metadata without changing zone version or SOA serial.
@@ -632,11 +960,16 @@ func (g *GitBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string, 
 	zone.DNSSEC = cloneDNSSECConfig(dnssec)
 	zone.UpdatedAt = time.Now()
 
+	rollback, err := g.snapshotZoneFile(normalized)
+	if err != nil {
+		return err
+	}
+
 	if err := g.writeZone(normalized, zone); err != nil {
 		return err
 	}
 
-	return g.commitZone(ctx, normalized, "dnssec", "updated DNSSEC metadata", zone)
+	return g.commitZoneMetadata(ctx, normalized, "dnssec", "updated DNSSEC metadata", rollback)
 }
 
 // DeleteZone deletes a zone
@@ -649,7 +982,7 @@ func (g *GitBackend) DeleteZone(ctx context.Context, name string) error {
 	}
 	defer g.releaseLock(zoneMu)
 
-	// Pull if autoSync is enabled
+	// Pull if auto-pull is enabled
 	if err := g.pullIfNeeded(ctx); err != nil {
 		return err
 	}
@@ -663,24 +996,46 @@ func (g *GitBackend) DeleteZone(ctx context.Context, name string) error {
 		return err
 	}
 
-	// Delete file
-	relPath, err := g.zoneFilePath(normalized)
-	if err != nil {
-		return fmt.Errorf("invalid zone path: %w", err)
-	}
-
-	filePath := filepath.Join(g.repoPath, relPath)
-	if err := os.Remove(filePath); err != nil {
-		return fmt.Errorf("failed to delete zone file: %w", err)
-	}
-
 	// Commit deletion
 	summary := "deleted zone"
 	return g.removeAndCommit(ctx, normalized, summary)
 }
 
+// DeleteZoneWithVersion deletes a zone only when its current version matches.
+func (g *GitBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	normalized := model.NormalizeZoneName(name)
+
+	zoneMu, err := g.acquireLock(ctx, normalized)
+	if err != nil {
+		return err
+	}
+	defer g.releaseLock(zoneMu)
+
+	if err := g.pullIfNeeded(ctx); err != nil {
+		return err
+	}
+
+	zone, err := g.readZone(normalized)
+	if err != nil {
+		if err == model.ErrZoneNotFound {
+			return model.ErrZoneNotFound
+		}
+		return err
+	}
+	if expectedVersion != "" && zone.Version != expectedVersion {
+		return model.ErrConflict
+	}
+
+	return g.removeAndCommit(ctx, normalized, "deleted zone")
+}
+
 // Close closes the backend
 func (g *GitBackend) Close() error {
+	if err := g.acquireRepoLock(context.Background()); err != nil {
+		return err
+	}
+	defer g.releaseRepoLock()
+
 	// Release file lock if held
 	_ = g.fileLock.Unlock()
 	return nil
@@ -690,8 +1045,15 @@ func (g *GitBackend) Close() error {
 func (g *GitBackend) GetRevision(ctx context.Context, zoneName, version string) (*model.Zone, error) {
 	normalized := model.NormalizeZoneName(zoneName)
 
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	zoneMu, err := g.acquireLock(ctx, normalized)
+	if err != nil {
+		return nil, err
+	}
+	defer g.releaseLock(zoneMu)
+
+	if err := g.pullIfNeeded(ctx); err != nil {
+		return nil, err
+	}
 
 	// Get commit history for the zone file
 	filePath, err := g.zoneFilePath(normalized)
@@ -710,7 +1072,7 @@ func (g *GitBackend) GetRevision(ctx context.Context, zoneName, version string) 
 	var targetCommit *object.Commit
 	stopSentinel := fmt.Errorf("found")
 	err = commits.ForEach(func(c *object.Commit) error {
-		if strings.Contains(c.Message, fmt.Sprintf("Version: %s", version)) {
+		if commitVersion := extractVersionTrailer(c.Message); commitVersion == version {
 			targetCommit = c
 			return stopSentinel // Stop iteration
 		}
@@ -754,8 +1116,15 @@ func (g *GitBackend) GetRevision(ctx context.Context, zoneName, version string) 
 func (g *GitBackend) ListRevisions(ctx context.Context, zoneName string, opts ListOptions) ([]*model.ZoneVersion, error) {
 	normalized := model.NormalizeZoneName(zoneName)
 
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	zoneMu, err := g.acquireLock(ctx, normalized)
+	if err != nil {
+		return nil, err
+	}
+	defer g.releaseLock(zoneMu)
+
+	if err := g.pullIfNeeded(ctx); err != nil {
+		return nil, err
+	}
 
 	// Get commit history for the zone file
 	filePath, err := g.zoneFilePath(normalized)
@@ -772,16 +1141,7 @@ func (g *GitBackend) ListRevisions(ctx context.Context, zoneName string, opts Li
 
 	versions := make([]*model.ZoneVersion, 0)
 	err = commits.ForEach(func(c *object.Commit) error {
-		// Extract version from commit message
-		lines := strings.Split(c.Message, "\n")
-		var version string
-		for _, line := range lines {
-			if strings.HasPrefix(line, "Version: ") {
-				version = strings.TrimPrefix(line, "Version: ")
-				break
-			}
-		}
-
+		version := extractVersionTrailer(c.Message)
 		if version == "" {
 			return nil // Skip commits without version trailer
 		}
@@ -848,6 +1208,16 @@ func (g *GitBackend) ListRevisions(ctx context.Context, zoneName string, opts Li
 	}
 
 	return versions[start:end], nil
+}
+
+func extractVersionTrailer(message string) string {
+	lines := strings.Split(message, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Version: ") {
+			return strings.TrimPrefix(line, "Version: ")
+		}
+	}
+	return ""
 }
 
 // GetCurrentVersion returns the current version of a zone

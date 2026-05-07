@@ -170,6 +170,40 @@ func (s *SQLiteBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mod
 	return zones, nil
 }
 
+// ListZoneSummaries returns zone names and versions without loading records.
+func (s *SQLiteBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	query := `
+		SELECT name, version
+		FROM zones
+		ORDER BY name
+	`
+	args := []interface{}{}
+	if opts.Limit > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, opts.Limit, opts.Offset)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query zone summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]*ZoneSummary, 0)
+	for rows.Next() {
+		summary := &ZoneSummary{}
+		if err := rows.Scan(&summary.Name, &summary.Version); err != nil {
+			return nil, fmt.Errorf("failed to scan zone summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating zone summaries: %w", err)
+	}
+
+	return summaries, nil
+}
+
 // CreateZone creates a new zone.
 func (s *SQLiteBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.Name = normalizeZoneName(zone.Name)
@@ -189,6 +223,10 @@ func (s *SQLiteBackend) CreateZone(ctx context.Context, zone *model.Zone) error 
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -200,7 +238,7 @@ func (s *SQLiteBackend) CreateZone(ctx context.Context, zone *model.Zone) error 
 		return err
 	}
 
-	if err := s.insertRecordsTx(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := s.insertRecordsTx(ctx, tx, zoneID, zone.Records, nil); err != nil {
 		return err
 	}
 
@@ -210,15 +248,6 @@ func (s *SQLiteBackend) CreateZone(ctx context.Context, zone *model.Zone) error 
 // UpdateZone updates an existing zone.
 func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
-
-	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = v
-	}
 	zone.UpdatedAt = time.Now()
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -227,9 +256,10 @@ func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Preserve CreatedAt
-	var createdAt string
-	err = tx.QueryRowContext(ctx, "SELECT created_at FROM zones WHERE name = ?", zone.Name).Scan(&createdAt)
+	// Preserve CreatedAt and advance from the stored SOA serial, not client input.
+	var createdAt, currentVersion string
+	var currentSerial uint32
+	err = tx.QueryRowContext(ctx, "SELECT created_at, soa_serial, version FROM zones WHERE name = ?", zone.Name).Scan(&createdAt, &currentSerial, &currentVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -237,6 +267,14 @@ func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 		return fmt.Errorf("query zone: %w", err)
 	}
 	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
+	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
+		return err
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	// CAS update
 	query := `
@@ -277,12 +315,16 @@ func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 	if err := tx.QueryRowContext(ctx, "SELECT id FROM zones WHERE name = ?", zone.Name).Scan(&zoneID); err != nil {
 		return fmt.Errorf("get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, tx, "SELECT id FROM records WHERE zone_id = ?", zoneID)
+	if err != nil {
+		return fmt.Errorf("load record IDs: %w", err)
+	}
 
 	// Replace records
 	if _, err := tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = ?", zoneID); err != nil {
 		return fmt.Errorf("delete old records: %w", err)
 	}
-	if err := s.insertRecordsTx(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := s.insertRecordsTx(ctx, tx, zoneID, zone.Records, recordIDs); err != nil {
 		return err
 	}
 
@@ -340,6 +382,40 @@ func (s *SQLiteBackend) DeleteZone(ctx context.Context, name string) error {
 		return model.ErrZoneNotFound
 	}
 	return nil
+}
+
+// DeleteZoneWithVersion removes a zone only when its current version matches.
+func (s *SQLiteBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = ?"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = ?"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("delete zone: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
 }
 
 // Close releases resources.
@@ -478,11 +554,11 @@ func (s *SQLiteBackend) scanZoneRow(row scannable) (*model.Zone, error) {
 
 func (s *SQLiteBackend) loadRecordsDB(ctx context.Context, q querier, zoneName string) ([]model.Record, error) {
 	query := `
-		SELECT r.name, r.type, r.ttl, r.value, r.priority
+		SELECT r.id, r.name, r.type, r.ttl, r.value, r.priority
 		FROM records r
 		JOIN zones z ON r.zone_id = z.id
 		WHERE z.name = ?
-		ORDER BY r.name, r.type
+		ORDER BY r.name, r.type, r.id
 	`
 	rows, err := q.QueryContext(ctx, query, zoneName)
 	if err != nil {
@@ -493,10 +569,12 @@ func (s *SQLiteBackend) loadRecordsDB(ctx context.Context, q querier, zoneName s
 	records := make([]model.Record, 0)
 	for rows.Next() {
 		var rec model.Record
+		var id int64
 		var priority sql.NullInt64
-		if err := rows.Scan(&rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
+		if err := rows.Scan(&id, &rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
 			return nil, fmt.Errorf("scan record: %w", err)
 		}
+		rec.ID = formatSQLRecordID(id)
 		if priority.Valid {
 			p := uint16(priority.Int64)
 			rec.Priority = &p
@@ -556,17 +634,24 @@ func (s *SQLiteBackend) insertZoneTx(ctx context.Context, tx *sql.Tx, zone *mode
 	return result.LastInsertId()
 }
 
-func (s *SQLiteBackend) insertRecordsTx(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record) error {
+func (s *SQLiteBackend) insertRecordsTx(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record, allowedRecordIDs sqlRecordIDSet) error {
 	if len(records) == 0 {
 		return nil
 	}
 
-	query := `INSERT INTO records (zone_id, name, type, ttl, value, value_hash, priority) VALUES (?, ?, ?, ?, ?, ?, ?)`
-	stmt, err := tx.PrepareContext(ctx, query)
+	autoIDQuery := `INSERT INTO records (zone_id, name, type, ttl, value, value_hash, priority) VALUES (?, ?, ?, ?, ?, ?, ?)`
+	autoIDStmt, err := tx.PrepareContext(ctx, autoIDQuery)
 	if err != nil {
 		return fmt.Errorf("prepare record insert: %w", err)
 	}
-	defer stmt.Close()
+	defer autoIDStmt.Close()
+
+	explicitIDQuery := `INSERT INTO records (id, zone_id, name, type, ttl, value, value_hash, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	explicitIDStmt, err := tx.PrepareContext(ctx, explicitIDQuery)
+	if err != nil {
+		return fmt.Errorf("prepare record insert with id: %w", err)
+	}
+	defer explicitIDStmt.Close()
 
 	for _, rec := range records {
 		hash := sha256.Sum256([]byte(rec.Value))
@@ -575,7 +660,15 @@ func (s *SQLiteBackend) insertRecordsTx(ctx context.Context, tx *sql.Tx, zoneID 
 		if rec.Priority != nil && *rec.Priority > 0 {
 			priority = *rec.Priority
 		}
-		if _, err := stmt.ExecContext(ctx, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
+
+		if recordID, ok := parseSQLRecordID(rec.ID); ok && allowedRecordIDs.allows(recordID) {
+			if _, err := explicitIDStmt.ExecContext(ctx, recordID, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
+				return fmt.Errorf("insert record: %w", err)
+			}
+			continue
+		}
+
+		if _, err := autoIDStmt.ExecContext(ctx, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
 			return fmt.Errorf("insert record: %w", err)
 		}
 	}
@@ -707,6 +800,38 @@ func (t *sqliteTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zo
 	return zones, nil
 }
 
+func (t *sqliteTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	query := `
+		SELECT name, version
+		FROM zones
+		ORDER BY name
+	`
+	args := []interface{}{}
+	if opts.Limit > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, opts.Limit, opts.Offset)
+	}
+
+	rows, err := t.tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query zone summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]*ZoneSummary, 0)
+	for rows.Next() {
+		summary := &ZoneSummary{}
+		if err := rows.Scan(&summary.Name, &summary.Version); err != nil {
+			return nil, fmt.Errorf("scan zone summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate zone summaries: %w", err)
+	}
+	return summaries, nil
+}
+
 func (t *sqliteTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.Name = normalizeZoneName(zone.Name)
 	if zone.SOA.Serial == 0 {
@@ -723,29 +848,25 @@ func (t *sqliteTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	zoneID, err := t.backend.insertZoneTx(ctx, t.tx, zone)
 	if err != nil {
 		return err
 	}
-	return t.backend.insertRecordsTx(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecordsTx(ctx, t.tx, zoneID, zone.Records, nil)
 }
 
 func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
-
-	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate version: %w", err)
-		}
-		zone.Version = v
-	}
 	zone.UpdatedAt = time.Now()
 
-	// Preserve CreatedAt
-	var createdAt string
-	err := t.tx.QueryRowContext(ctx, "SELECT created_at FROM zones WHERE name = ?", zone.Name).Scan(&createdAt)
+	// Preserve CreatedAt and advance from the stored SOA serial, not client input.
+	var createdAt, currentVersion string
+	var currentSerial uint32
+	err := t.tx.QueryRowContext(ctx, "SELECT created_at, soa_serial, version FROM zones WHERE name = ?", zone.Name).Scan(&createdAt, &currentSerial, &currentVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -753,6 +874,14 @@ func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVer
 		return fmt.Errorf("query zone: %w", err)
 	}
 	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
+	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
+		return err
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	query := `
 		UPDATE zones SET
@@ -788,10 +917,14 @@ func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVer
 	if err := t.tx.QueryRowContext(ctx, "SELECT id FROM zones WHERE name = ?", zone.Name).Scan(&zoneID); err != nil {
 		return fmt.Errorf("get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, t.tx, "SELECT id FROM records WHERE zone_id = ?", zoneID)
+	if err != nil {
+		return fmt.Errorf("load record IDs: %w", err)
+	}
 	if _, err := t.tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = ?", zoneID); err != nil {
 		return fmt.Errorf("delete records: %w", err)
 	}
-	return t.backend.insertRecordsTx(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecordsTx(ctx, t.tx, zoneID, zone.Records, recordIDs)
 }
 
 func (t *sqliteTx) DeleteZone(ctx context.Context, name string) error {
@@ -808,6 +941,38 @@ func (t *sqliteTx) DeleteZone(ctx context.Context, name string) error {
 		return model.ErrZoneNotFound
 	}
 	return nil
+}
+
+func (t *sqliteTx) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = ?"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = ?"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := t.tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("delete zone: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := t.tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
 }
 
 func (t *sqliteTx) Close() error                       { return nil }

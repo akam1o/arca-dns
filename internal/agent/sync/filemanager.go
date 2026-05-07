@@ -1,13 +1,17 @@
 package sync
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/akam1o/arca-dns/pkg/model"
 	"go.uber.org/zap"
 )
 
@@ -18,8 +22,28 @@ type FileManager struct {
 	logger         *zap.Logger
 }
 
+const managedZonesIndexFile = ".arca-dns-managed-zones.json"
+
+type managedZonesIndex struct {
+	Zones   []string           `json:"zones,omitempty"`
+	Entries []managedZoneEntry `json:"entries,omitempty"`
+}
+
+type managedZoneEntry struct {
+	Name string `json:"name"`
+	File string `json:"file"`
+}
+
+type managedZoneRef struct {
+	ZoneName string
+	SafeName string
+}
+
 // NewFileManager creates a new file manager.
 func NewFileManager(zoneDir string, backupVersions int, logger *zap.Logger) *FileManager {
+	if backupVersions < 0 {
+		backupVersions = 0
+	}
 	return &FileManager{
 		zoneDir:        zoneDir,
 		backupVersions: backupVersions,
@@ -33,39 +57,81 @@ func NewFileManager(zoneDir string, backupVersions int, logger *zap.Logger) *Fil
 // 2. Write to temporary file
 // 3. Fsync the temporary file
 // 4. Backup old version (if exists)
-// 5. Rename temporary file to target (atomic operation)
-// 6. Clean up old backups
+// 5. Record the file as agent-managed
+// 6. Rename temporary file to target (atomic operation)
+// 7. Clean up old backups
 func (fm *FileManager) WriteZoneFile(zoneName string, content string) error {
+	return fm.WriteZoneFileValidated(zoneName, content, nil)
+}
+
+// WriteZoneFileValidated writes a zone file atomically after validating the
+// temporary file, if a validator is provided.
+func (fm *FileManager) WriteZoneFileValidated(zoneName string, content string, validate func(zonePath string) error) error {
+	_, err := fm.WriteZoneFileValidatedWithRollback(zoneName, content, validate)
+	return err
+}
+
+// WriteZoneFileValidatedWithRollback writes a zone file atomically and returns
+// a rollback function that restores the previous active file and managed-zone
+// index entry. The rollback function is intended for service hook failures
+// after the filesystem commit has already succeeded.
+func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, content string, validate func(zonePath string) error) (func() error, error) {
 	targetPath := fm.GetZonePath(zoneName) // Use safe path with GetZonePath
 	tmpPath := targetPath + ".tmp"
 
 	// Check disk space (require at least 100MB free)
 	if err := fm.checkDiskSpace(100 * 1024 * 1024); err != nil {
-		return fmt.Errorf("insufficient disk space: %w", err)
+		return nil, fmt.Errorf("insufficient disk space: %w", err)
+	}
+
+	snapshot, err := snapshotZoneFile(targetPath)
+	if err != nil {
+		return nil, err
 	}
 
 	// Write to temporary file
 	if err := os.WriteFile(tmpPath, []byte(content), 0644); err != nil {
-		return fmt.Errorf("failed to write temporary file: %w", err)
+		return nil, fmt.Errorf("failed to write temporary file: %w", err)
 	}
 
 	// Fsync the temporary file to ensure it's written to disk
 	if err := fm.fsyncFile(tmpPath); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("failed to fsync temporary file: %w", err)
+		return nil, fmt.Errorf("failed to fsync temporary file: %w", err)
 	}
 
+	if validate != nil {
+		if err := validate(tmpPath); err != nil {
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("zone validation failed: %w", err)
+		}
+	}
+
+	backupPath := ""
 	// Backup old version if it exists
 	if _, err := os.Stat(targetPath); err == nil {
-		if err := fm.backupFile(targetPath); err != nil {
+		backupPath, err = fm.backupFile(targetPath)
+		if err != nil {
 			os.Remove(tmpPath)
-			return fmt.Errorf("failed to backup old version: %w", err)
+			return nil, fmt.Errorf("failed to backup old version: %w", err)
 		}
+	}
+
+	rollbackManagedZone, err := fm.recordManagedZoneWithRollback(zoneName)
+	if err != nil {
+		os.Remove(tmpPath)
+		return nil, fmt.Errorf("failed to record managed zone: %w", err)
 	}
 
 	// Atomic rename (this is the commit point)
 	if err := os.Rename(tmpPath, targetPath); err != nil {
-		return fmt.Errorf("failed to rename temporary file: %w", err)
+		_ = os.Remove(tmpPath)
+		if rollbackErr := rollbackManagedZone(); rollbackErr != nil {
+			fm.logger.Warn("Failed to roll back managed zone index",
+				zap.String("zone", zoneName),
+				zap.Error(rollbackErr))
+		}
+		return nil, fmt.Errorf("failed to rename temporary file: %w", err)
 	}
 
 	// Clean up old backups
@@ -80,7 +146,23 @@ func (fm *FileManager) WriteZoneFile(zoneName string, content string) error {
 		zap.String("zone", zoneName),
 		zap.String("path", targetPath))
 
-	return nil
+	return func() error {
+		var errs []error
+		if err := restoreZoneFileSnapshot(targetPath, snapshot); err != nil {
+			errs = append(errs, err)
+		}
+		if rollbackManagedZone != nil {
+			if err := rollbackManagedZone(); err != nil {
+				errs = append(errs, fmt.Errorf("roll back managed zone index: %w", err))
+			}
+		}
+		if backupPath != "" {
+			if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("remove rollback backup: %w", err))
+			}
+		}
+		return errors.Join(errs...)
+	}, nil
 }
 
 // GetZonePath returns the path to a zone file with safe filename.
@@ -109,6 +191,24 @@ func (fm *FileManager) ReadZoneFile(zoneName string) (string, error) {
 func (fm *FileManager) DeleteZoneFile(zoneName string) error {
 	targetPath := fm.GetZonePath(zoneName)
 
+	if err := fm.deleteZoneFiles(zoneName); err != nil {
+		return err
+	}
+
+	if err := fm.removeManagedZone(zoneName); err != nil {
+		return fmt.Errorf("failed to update managed zone index: %w", err)
+	}
+
+	fm.logger.Info("Zone file deleted",
+		zap.String("zone", zoneName),
+		zap.String("path", targetPath))
+
+	return nil
+}
+
+func (fm *FileManager) deleteZoneFiles(zoneName string) error {
+	targetPath := fm.GetZonePath(zoneName)
+
 	// Delete main file
 	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete zone file: %w", err)
@@ -117,7 +217,10 @@ func (fm *FileManager) DeleteZoneFile(zoneName string) error {
 	// Delete backups
 	backups, err := fm.listBackups(zoneName)
 	if err != nil {
-		return fmt.Errorf("failed to list backups: %w", err)
+		fm.logger.Warn("Failed to list backups after deleting zone file",
+			zap.String("zone", zoneName),
+			zap.Error(err))
+		return nil
 	}
 
 	for _, backup := range backups {
@@ -128,29 +231,88 @@ func (fm *FileManager) DeleteZoneFile(zoneName string) error {
 		}
 	}
 
-	fm.logger.Info("Zone file deleted",
-		zap.String("zone", zoneName),
-		zap.String("path", targetPath))
-
 	return nil
 }
 
 // backupFile creates a backup of the given file.
 // Backups are named: {filename}.backup.{nanoseconds}
-func (fm *FileManager) backupFile(path string) error {
+func (fm *FileManager) backupFile(path string) (string, error) {
 	// Use nanoseconds for unique timestamp
 	backupPath := fmt.Sprintf("%s.backup.%d", path, time.Now().UnixNano())
 
 	// Copy file
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("failed to read file for backup: %w", err)
+		return "", fmt.Errorf("failed to read file for backup: %w", err)
 	}
 
 	if err := os.WriteFile(backupPath, content, 0644); err != nil {
-		return fmt.Errorf("failed to write backup file: %w", err)
+		return "", fmt.Errorf("failed to write backup file: %w", err)
 	}
 
+	return backupPath, nil
+}
+
+type zoneFileSnapshot struct {
+	exists bool
+	mode   os.FileMode
+	data   []byte
+}
+
+func snapshotZoneFile(path string) (zoneFileSnapshot, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return zoneFileSnapshot{}, nil
+		}
+		return zoneFileSnapshot{}, fmt.Errorf("stat active zone file: %w", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return zoneFileSnapshot{}, fmt.Errorf("read active zone file: %w", err)
+	}
+	return zoneFileSnapshot{
+		exists: true,
+		mode:   info.Mode().Perm(),
+		data:   data,
+	}, nil
+}
+
+func restoreZoneFileSnapshot(path string, snapshot zoneFileSnapshot) error {
+	if !snapshot.exists {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove rolled back zone file: %w", err)
+		}
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create zone directory for rollback: %w", err)
+	}
+
+	tmpPath := path + ".rollback"
+	if err := os.WriteFile(tmpPath, snapshot.data, snapshot.mode); err != nil {
+		return fmt.Errorf("write rollback zone file: %w", err)
+	}
+	file, err := os.OpenFile(tmpPath, os.O_RDWR, 0)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("open rollback zone file: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("fsync rollback zone file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close rollback zone file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename rollback zone file: %w", err)
+	}
 	return nil
 }
 
@@ -201,28 +363,161 @@ func (fm *FileManager) listBackups(zoneName string) ([]string, error) {
 	return matches, nil
 }
 
-// listZoneFiles returns the safe zone names for managed zone files in the zone directory.
-func (fm *FileManager) listZoneFiles() ([]string, error) {
-	pattern := filepath.Join(fm.zoneDir, "*.zone")
-	matches, err := filepath.Glob(pattern)
+func (fm *FileManager) managedZonesIndexPath() string {
+	return filepath.Join(fm.zoneDir, managedZonesIndexFile)
+}
+
+func (fm *FileManager) readManagedZones() (map[string]string, error) {
+	path := fm.managedZonesIndexPath()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list zone files: %w", err)
+		if os.IsNotExist(err) {
+			return map[string]string{}, nil
+		}
+		return nil, fmt.Errorf("read managed zone index: %w", err)
 	}
 
-	zoneNames := make([]string, 0, len(matches))
-	for _, match := range matches {
-		info, err := os.Stat(match)
-		if err != nil {
-			return nil, fmt.Errorf("failed to stat zone file: %w", err)
+	var index managedZonesIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, fmt.Errorf("parse managed zone index: %w", err)
+	}
+
+	zones := make(map[string]string, len(index.Zones)+len(index.Entries))
+	for _, entry := range index.Entries {
+		fileName := entry.File
+		if strings.TrimSpace(fileName) == "" {
+			fileName = entry.Name
 		}
-		if info.IsDir() {
+		safeName := SafeZoneFilename(fileName)
+		if safeName == "" {
 			continue
 		}
+		zoneName := strings.TrimSpace(entry.Name)
+		if zoneName == "" {
+			zoneName = safeName
+		} else {
+			zoneName = model.NormalizeZoneName(zoneName)
+		}
+		zones[safeName] = zoneName
+	}
+	for _, zone := range index.Zones {
+		safeName := SafeZoneFilename(zone)
+		if safeName == "" {
+			continue
+		}
+		// Backward compatibility for the previous index format, which only
+		// stored the safe filename and cannot recover truncated long FQDNs.
+		if _, exists := zones[safeName]; !exists {
+			zones[safeName] = safeName
+		}
+	}
+	return zones, nil
+}
 
-		fileName := filepath.Base(match)
-		zoneNames = append(zoneNames, fileName[:len(fileName)-len(".zone")])
+func (fm *FileManager) writeManagedZones(zones map[string]string) error {
+	entries := make([]managedZoneEntry, 0, len(zones))
+	for safeName, zoneName := range zones {
+		entries = append(entries, managedZoneEntry{
+			Name: zoneName,
+			File: safeName,
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].File < entries[j].File
+	})
+
+	data, err := json.MarshalIndent(managedZonesIndex{Entries: entries}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal managed zone index: %w", err)
+	}
+	data = append(data, '\n')
+
+	if err := os.MkdirAll(fm.zoneDir, 0755); err != nil {
+		return fmt.Errorf("create zone directory: %w", err)
 	}
 
+	path := fm.managedZonesIndexPath()
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return fmt.Errorf("write managed zone index tmp: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename managed zone index: %w", err)
+	}
+	return nil
+}
+
+func (fm *FileManager) recordManagedZone(zoneName string) error {
+	_, err := fm.recordManagedZoneWithRollback(zoneName)
+	return err
+}
+
+func (fm *FileManager) recordManagedZoneWithRollback(zoneName string) (func() error, error) {
+	zones, err := fm.readManagedZones()
+	if err != nil {
+		return nil, err
+	}
+
+	safeName := SafeZoneFilename(zoneName)
+	previousZoneName, hadPrevious := zones[safeName]
+	zones[safeName] = model.NormalizeZoneName(zoneName)
+	if err := fm.writeManagedZones(zones); err != nil {
+		return nil, err
+	}
+
+	return func() error {
+		zones, err := fm.readManagedZones()
+		if err != nil {
+			return err
+		}
+		if hadPrevious {
+			zones[safeName] = previousZoneName
+		} else {
+			delete(zones, safeName)
+		}
+		return fm.writeManagedZones(zones)
+	}, nil
+}
+
+func (fm *FileManager) removeManagedZone(zoneName string) error {
+	zones, err := fm.readManagedZones()
+	if err != nil {
+		return err
+	}
+	delete(zones, SafeZoneFilename(zoneName))
+	return fm.writeManagedZones(zones)
+}
+
+func (fm *FileManager) listManagedZones() ([]managedZoneRef, error) {
+	zones, err := fm.readManagedZones()
+	if err != nil {
+		return nil, err
+	}
+
+	refs := make([]managedZoneRef, 0, len(zones))
+	for safeName, zoneName := range zones {
+		refs = append(refs, managedZoneRef{
+			ZoneName: zoneName,
+			SafeName: safeName,
+		})
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		return refs[i].SafeName < refs[j].SafeName
+	})
+	return refs, nil
+}
+
+func (fm *FileManager) listManagedZoneFiles() ([]string, error) {
+	zones, err := fm.listManagedZones()
+	if err != nil {
+		return nil, err
+	}
+
+	zoneNames := make([]string, 0, len(zones))
+	for _, zone := range zones {
+		zoneNames = append(zoneNames, zone.SafeName)
+	}
 	sort.Strings(zoneNames)
 	return zoneNames, nil
 }

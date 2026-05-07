@@ -34,8 +34,10 @@ services:
       # Set before running:
       #   export ARCA_DNS_API_KEY_HASH="sha256:<64-hex>"
       #   export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
+      #   export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$(openssl rand -base64 32)"
       ARCA_DNS_API_AUTH_API_KEYS_ADMIN: "${ARCA_DNS_API_KEY_HASH:?set ARCA_DNS_API_KEY_HASH}"
       ARCA_DNS_DNSSEC_MASTER_KEY_B64: "${ARCA_DNS_DNSSEC_MASTER_KEY_B64:?set ARCA_DNS_DNSSEC_MASTER_KEY_B64}"
+      ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY: "${ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY:?set ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY}"
     volumes:
       # Run with: docker compose -f deployments/compose/controller-mysql/docker-compose.yaml --project-directory . up
       - ./deployments/compose/controller-mysql/controller.yaml:/etc/arca-dns/controller.yaml:ro

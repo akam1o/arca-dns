@@ -13,6 +13,10 @@ sync:
   max_staleness: "5m"
   backup_versions: 3
   verify_checksums: true
+  verify_signatures: true
+  # Required when verify_signatures is true. Must match controller
+  # api.artifact_signature_key. Generate with: openssl rand -base64 32
+  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 health:
   check_interval: "10s"
@@ -28,6 +32,9 @@ health:
 nsd:
   enabled: false
   config_path: "/etc/nsd/nsd.conf"
+  # The agent writes managed zone stanzas here. Include this file from nsd.conf:
+  #   include: "/etc/nsd/arca-dns-zones.conf"
+  zone_config_path: "/etc/nsd/arca-dns-zones.conf"
   control_path: "/usr/sbin/nsd-control"
   zone_directory: "/var/lib/nsd/zones"
   checkzone_path: "/usr/sbin/nsd-checkzone"
@@ -95,6 +102,9 @@ bird:
 dnstap:
   enabled: false
   socket_path: "/var/run/dnstap.sock"
+  # Use a shared group that the DNS daemon user belongs to.
+  socket_mode: "0660"
+  socket_group: "arca-dns"
   log_file: "/var/log/arca-dns/dnstap.jsonl"
   sample_rate: 10
   always_log_errors: true
@@ -107,7 +117,9 @@ dnstap:
 
 metrics:
   enabled: true
-  listen: "0.0.0.0:9090"
+  # /status includes zone and BGP state, so expose it remotely only behind
+  # firewalling, a tunnel, or another authenticated control plane.
+  listen: "127.0.0.1:9090"
 
 logging:
   level: "info"

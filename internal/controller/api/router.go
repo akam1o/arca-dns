@@ -39,14 +39,11 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 	auditLogger := middleware.NewAuditLogger(logger)
 	router.Use(auditLogger.Middleware())
 
-	requestValidator := middleware.NewRequestValidator()
-	router.Use(requestValidator.Middleware())
-
 	// Rate limiting
 	if cfg != nil && cfg.RateLimit.Enabled {
 		rateLimiterConfig := middleware.DefaultRateLimiterConfig()
 		rateLimiterConfig.ReadRPS = cfg.RateLimit.RequestsPerSecond
-		rateLimiterConfig.WriteRPS = cfg.RateLimit.RequestsPerSecond / 10
+		rateLimiterConfig.WriteRPS = writeRPSFromReadRPS(cfg.RateLimit.RequestsPerSecond)
 		rateLimiterConfig.Burst = cfg.RateLimit.Burst
 
 		rateLimiter := middleware.NewRateLimiter(rateLimiterConfig)
@@ -69,28 +66,37 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 		v1.GET("/metrics", handler.Metrics)
 	}
 
-	protected := v1
+	requestValidator := middleware.NewRequestValidator()
+
+	protected := v1.Group("")
 	if cfg != nil && cfg.Auth.Enabled {
 		authConfig := middleware.AuthConfig{
 			APIKeys:    cfg.Auth.APIKeys,
 			HeaderName: "X-API-Key",
 		}
 		authenticator := middleware.NewAuthenticator(authConfig)
-		protected = v1.Group("")
 		protected.Use(authenticator.Middleware())
 	}
+	protected.Use(requestValidator.Middleware())
 	{
 		// Zone management
 		protected.POST("/zones", handler.CreateZone)
 		protected.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
 		protected.GET("/zones", handler.ListZones)
+		protected.HEAD("/zones/:name", handler.HeadZone)
 		protected.GET("/zones/:name", handler.GetZone)
 		protected.GET("/zones/:name/versions", handler.ListZoneVersions)
 		protected.GET("/zones/:name/versions/:version", handler.GetZoneRevision)
 		protected.PUT("/zones/:name", handler.UpdateZone)
 		protected.DELETE("/zones/:name", handler.DeleteZone)
+		protected.GET("/zones/:name/records", handler.ListRecords)
+		protected.POST("/zones/:name/records", handler.CreateRecord)
+		protected.POST("/zones/:name/records/batch", handler.BulkRecords)
+		protected.PUT("/zones/:name/records/:id", handler.UpdateRecord)
+		protected.DELETE("/zones/:name/records/:id", handler.DeleteRecord)
 
 		// Zone file download (for agents)
+		protected.HEAD("/zones/:name/signed", handler.HeadSignedZone)
 		protected.GET("/zones/:name/signed", handler.GetSignedZone)
 		protected.GET("/zones/:name/signed/metadata", handler.GetSignedZoneMetadata)
 		protected.GET("/zones/:name/ds", handler.GetDSRecords)
@@ -98,4 +104,12 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 	}
 
 	return router
+}
+
+func writeRPSFromReadRPS(readRPS int) int {
+	writeRPS := readRPS / 10
+	if writeRPS < 1 {
+		return 1
+	}
+	return writeRPS
 }

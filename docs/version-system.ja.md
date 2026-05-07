@@ -399,21 +399,34 @@ Response:
 
 **Rollback to Previous Version:**
 ```bash
-# Get the old version
+# 旧バージョンと現行バージョンを取得する。
 GET /api/v1/zones/example.com./versions/v2024122801-a3f5c2e9
+GET /api/v1/zones/example.com.
 
-# Apply it as a new update (creates v2024122804)
+# まず SOA メタデータを復元する。PUT /zones では既存 records は保持される。
 PUT /api/v1/zones/example.com.
 If-Match: "v2024122803-1a2b3c4d"
 Content-Type: application/json
 
 {
-  "soa": { ... },  # from v2024122801
-  "records": [ ... ]
+  "name": "example.com.",
+  "soa": { ... }  # from v2024122801
+}
+
+# records は record batch エンドポイントで別途復元する。record id は現行の
+# record 一覧から取得し、create では id を指定しない。
+POST /api/v1/zones/example.com./records/batch
+If-Match: "v2024122804-..."
+Content-Type: application/json
+
+{
+  "delete": [{ "id": "current-record-id" }],
+  "update": [{ "id": "existing-record-id", "name": "...", "type": "...", "ttl": 300, "value": "..." }],
+  "create": [{ "name": "...", "type": "...", "ttl": 300, "value": "..." }]
 }
 ```
 
-**Note**: ロールバックは「serial を巻き戻す」のではなく、serial をインクリメントした新バージョンを作成します（DNS のベストプラクティス）。
+**Note**: ロールバックの各更新は「serial を巻き戻す」のではなく、serial をインクリメントした新バージョンを作成します（DNS のベストプラクティス）。
 
 ---
 
@@ -591,4 +604,3 @@ annotations:
 - RFC 7719: DNS Terminology
 - HTTP ETag: RFC 7232
 - SHA-256: FIPS 180-4
-

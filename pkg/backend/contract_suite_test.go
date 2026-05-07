@@ -17,11 +17,11 @@ import (
 
 // RunZoneStoreCRUDSuite tests the core CRUD operations that all ZoneStore implementations must support.
 //
-// Test Cases (13 total):
+// Test Cases:
 //   - CreateZone, CreateZone_AlreadyExists
 //   - GetZone, GetZone_NotFound, GetZone_CaseInsensitive
 //   - UpdateZone, UpdateZone_OptimisticLocking, UpdateZone_OptionalVersionCheck, UpdateZone_NotFound
-//   - DeleteZone, DeleteZone_NotFound
+//   - DeleteZone, DeleteZone_NotFound, DeleteZoneWithVersion_OptimisticLocking
 //   - ListZones_Multiple, ListZones_Pagination
 //
 // Contract Invariants Tested:
@@ -75,6 +75,18 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		zone2 := createTestZone("duplicate.example.com.")
 		err = store.CreateZone(ctx, zone2)
 		assert.ErrorIs(t, err, model.ErrZoneAlreadyExists)
+	})
+
+	t.Run("CreateZone_DuplicateRecords", func(t *testing.T) {
+		zone := createTestZone("duplicate-records.example.com.")
+		zone.Records = []model.Record{
+			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		}
+
+		err := store.CreateZone(ctx, zone)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate record")
 	})
 
 	t.Run("GetZone", func(t *testing.T) {
@@ -157,6 +169,49 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		assert.Len(t, updated.Records, 1)
 	})
 
+	t.Run("UpdateZone_IgnoresClientSerialRollback", func(t *testing.T) {
+		zone := createTestZone("serial-rollback.example.com.")
+		err := store.CreateZone(ctx, zone)
+		require.NoError(t, err)
+
+		originalVersion := zone.Version
+		originalSerial := zone.SOA.Serial
+
+		zone.SOA.Serial = 1
+		zone.Records = []model.Record{
+			{Name: "test.serial-rollback.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		}
+		err = store.UpdateZone(ctx, zone, originalVersion)
+		require.NoError(t, err)
+
+		updated, err := store.GetZone(ctx, "serial-rollback.example.com.")
+		require.NoError(t, err)
+		assert.Greater(t, updated.SOA.Serial, originalSerial,
+			"UpdateZone must advance from the stored serial, not a stale client serial")
+	})
+
+	t.Run("UpdateZone_PreservesPreparedSerial", func(t *testing.T) {
+		zone := createTestZone("prepared-serial.example.com.")
+		err := store.CreateZone(ctx, zone)
+		require.NoError(t, err)
+
+		originalVersion := zone.Version
+		originalSerial := zone.SOA.Serial
+		preparedSerial := originalSerial + 42
+
+		zone.SOA.Serial = preparedSerial
+		zone.Records = []model.Record{
+			{Name: "test.prepared-serial.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		}
+		err = store.UpdateZone(ctx, zone, originalVersion)
+		require.NoError(t, err)
+
+		updated, err := store.GetZone(ctx, "prepared-serial.example.com.")
+		require.NoError(t, err)
+		assert.Equal(t, preparedSerial, updated.SOA.Serial,
+			"UpdateZone should preserve a precomputed serial that already advanced from the stored serial")
+	})
+
 	t.Run("UpdateZone_OptimisticLocking", func(t *testing.T) {
 		zone := createTestZone("locking.example.com.")
 		err := store.CreateZone(ctx, zone)
@@ -193,6 +248,28 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		require.NoError(t, err, "UpdateZone with empty expectedVersion should skip version check (contract)")
 	})
 
+	t.Run("UpdateZone_PreservesPreparedVersionWithoutCAS", func(t *testing.T) {
+		zone := createTestZone("prepared-version.example.com.")
+		err := store.CreateZone(ctx, zone)
+		require.NoError(t, err)
+
+		originalVersion := zone.Version
+		preparedVersion, err := model.NewZoneVersion()
+		require.NoError(t, err)
+		require.NotEqual(t, originalVersion, preparedVersion)
+
+		zone.Version = preparedVersion
+		zone.Records = []model.Record{
+			{Name: "test.prepared-version.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		}
+		err = store.UpdateZone(ctx, zone, "")
+		require.NoError(t, err, "UpdateZone with empty expectedVersion should preserve caller-provided non-current version")
+
+		updated, err := store.GetZone(ctx, "prepared-version.example.com.")
+		require.NoError(t, err)
+		assert.Equal(t, preparedVersion, updated.Version)
+	})
+
 	t.Run("DeleteZone", func(t *testing.T) {
 		zone := createTestZone("delete.example.com.")
 		err := store.CreateZone(ctx, zone)
@@ -208,6 +285,37 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 
 	t.Run("DeleteZone_NotFound", func(t *testing.T) {
 		err := store.DeleteZone(ctx, "nonexistent.example.com.")
+		assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	})
+
+	t.Run("DeleteZoneWithVersion_OptimisticLocking", func(t *testing.T) {
+		conditionalStore, ok := store.(ConditionalDeleteStore)
+		if !ok {
+			t.Skip("store does not implement ConditionalDeleteStore")
+		}
+
+		zone := createTestZone("conditional-delete.example.com.")
+		err := store.CreateZone(ctx, zone)
+		require.NoError(t, err)
+
+		originalVersion := zone.Version
+		zone.Records = []model.Record{
+			{Name: "test.conditional-delete.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		}
+		err = store.UpdateZone(ctx, zone, originalVersion)
+		require.NoError(t, err)
+
+		err = conditionalStore.DeleteZoneWithVersion(ctx, "conditional-delete.example.com.", originalVersion)
+		assert.ErrorIs(t, err, model.ErrConflict,
+			"DeleteZoneWithVersion with stale expectedVersion must return ErrConflict")
+
+		current, err := store.GetZone(ctx, "conditional-delete.example.com.")
+		require.NoError(t, err)
+
+		err = conditionalStore.DeleteZoneWithVersion(ctx, "conditional-delete.example.com.", current.Version)
+		require.NoError(t, err)
+
+		_, err = store.GetZone(ctx, "conditional-delete.example.com.")
 		assert.ErrorIs(t, err, model.ErrZoneNotFound)
 	})
 

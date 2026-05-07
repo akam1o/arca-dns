@@ -140,6 +140,8 @@ See `configs/controller.example.yaml` and `configs/agent.example.yaml`, plus `do
 ```yaml
 api:
   listen: "0.0.0.0:8080"
+  # Generate with: openssl rand -base64 32
+  artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
   # TLS is typically terminated by a reverse proxy / ingress.
   auth:
     enabled: true
@@ -164,10 +166,14 @@ controller:
 
 sync:
   sync_interval: "30s"
+  verify_signatures: true
+  # Must match api.artifact_signature_key.
+  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 nsd:
   enabled: true
   config_path: "/etc/nsd/nsd.conf"
+  zone_config_path: "/etc/nsd/arca-dns-zones.conf" # include this from nsd.conf
   zone_directory: "/var/lib/nsd/zones"
 
 unbound:
@@ -182,6 +188,12 @@ bird:
     - name: "anycast_1"
       neighbor_address: "10.0.0.1"
       neighbor_asn: 64512
+
+dnstap:
+  enabled: false
+  socket_path: "/var/run/dnstap.sock"
+  socket_mode: "0660"
+  socket_group: "arca-dns" # add the DNS daemon user to this shared group
 
 health:
   check_interval: "10s"
@@ -250,40 +262,59 @@ curl -X POST http://localhost:8080/api/v1/zones/raw \
   --data-binary @example.com.zone
 ```
 
-**Add 1 record (update zone via ETag / If-Match)**:
-
-This API does not have a dedicated `/records` endpoint; update the full zone document with `PUT /api/v1/zones/:name`.
+**Add 1 record (record CRUD via ETag / If-Match)**:
 
 ```bash
 BASE="http://localhost:8080/api/v1"
 API_KEY="your-api-key" # only if auth is enabled
 
-zone_json="$(curl -s "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}")"
 etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
 
-updated="$(printf '%s' "${zone_json}" | jq '.records += [{"name":"www","type":"A","ttl":300,"value":"203.0.113.2"}]')"
-
-curl -i -X PUT "${BASE}/zones/example.com." \
+curl -i -X POST "${BASE}/zones/example.com./records" \
   -H "X-API-Key: ${API_KEY}" \
   -H 'Content-Type: application/json' \
   -H "If-Match: ${etag}" \
-  --data-binary "${updated}"
+  -d '{"name":"www","type":"A","ttl":300,"value":"203.0.113.2"}'
 ```
 
-**Add multiple records at once**:
+**Apply multiple record changes atomically**:
 
 ```bash
-updated="$(printf '%s' "${zone_json}" | jq '.records += [
-  {"name":"www","type":"A","ttl":300,"value":"203.0.113.2"},
-  {"name":"api","type":"AAAA","ttl":300,"value":"2001:db8::1"},
-  {"name":"@","type":"MX","ttl":3600,"value":"10 mail.example.com."}
-]')"
+etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+old_id="$(curl -s "${BASE}/zones/example.com./records" -H "X-API-Key: ${API_KEY}" | jq -r '.records[] | select(.name=="old" and .type=="A") | .id')"
 
-curl -i -X PUT "${BASE}/zones/example.com." \
+curl -i -X POST "${BASE}/zones/example.com./records/batch" \
   -H "X-API-Key: ${API_KEY}" \
   -H 'Content-Type: application/json' \
   -H "If-Match: ${etag}" \
-  --data-binary "${updated}"
+  -d "{
+    \"create\": [
+      {\"name\":\"api\",\"type\":\"AAAA\",\"ttl\":300,\"value\":\"2001:db8::1\"}
+    ],
+    \"delete\": [
+      {\"id\":\"${old_id}\"}
+    ]
+  }"
+```
+
+**Update or delete a record**:
+
+```bash
+record_id="$(curl -s "${BASE}/zones/example.com./records" -H "X-API-Key: ${API_KEY}" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+curl -i -X PUT "${BASE}/zones/example.com./records/${record_id}" \
+  -H "X-API-Key: ${API_KEY}" \
+  -H 'Content-Type: application/json' \
+  -H "If-Match: ${etag}" \
+  -d '{"name":"www","type":"A","ttl":300,"value":"203.0.113.3"}'
+
+etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+record_id="$(curl -s "${BASE}/zones/example.com./records" -H "X-API-Key: ${API_KEY}" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+
+curl -i -X DELETE "${BASE}/zones/example.com./records/${record_id}" \
+  -H "X-API-Key: ${API_KEY}" \
+  -H "If-Match: ${etag}"
 ```
 
 See `docs/api.md` for record value formats and more examples.

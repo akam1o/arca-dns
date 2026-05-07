@@ -32,6 +32,11 @@ var (
 	migrateOverwrite   bool
 )
 
+const (
+	defaultMigrateBackend    = "sqlite"
+	supportedMigrateBackends = "sqlite, postgres, mysql, git, etcd"
+)
+
 // NewMigrateCmd creates the migrate command with subcommands.
 func NewMigrateCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -57,19 +62,17 @@ func newExportCmd() *cobra.Command {
 Each zone is saved as a separate JSON file named <zone-name>.json.
 
 Example:
-  arca-dns-controller migrate export --backend=memory --output=./zones/
-  arca-dns-controller migrate export --backend=mysql --dsn="root:pass@/dns" --output=./backup/`,
+  arca-dns-controller migrate export --output=./zones/
+  arca-dns-controller migrate export --backend=postgres --dsn="postgres://user:pass@localhost:5432/dns?sslmode=disable" --output=./backup/`,
 		RunE: runExport,
 	}
 
 	cmd.Flags().StringVarP(&migrateConfigFile, "config", "c", "", "Path to configuration file")
-	cmd.Flags().StringVar(&migrateBackendType, "backend", "", "Backend type (memory, mysql, git, etcd)")
-	cmd.Flags().StringVar(&migrateBackendDSN, "dsn", "", "Backend DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateBackendType, "backend", "", "Backend type (sqlite [default], postgres, mysql, git, etcd)")
+	cmd.Flags().StringVar(&migrateBackendDSN, "dsn", "", "Backend DSN (for SQLite, PostgreSQL, MySQL)")
 	cmd.Flags().StringVar(&migrateBackendPath, "path", "", "Backend path (for Git)")
 	cmd.Flags().StringVarP(&migrateOutputDir, "output", "o", "./zones", "Output directory for JSON files")
 	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Preview export without writing files")
-
-	cobra.CheckErr(cmd.MarkFlagRequired("backend"))
 
 	return cmd
 }
@@ -83,20 +86,18 @@ func newImportCmd() *cobra.Command {
 Zone versions are recomputed during import to ensure consistency.
 
 Example:
-  arca-dns-controller migrate import --backend=mysql --dsn="root:pass@/dns" --input=./zones/
+  arca-dns-controller migrate import --input=./zones/
   arca-dns-controller migrate import --backend=git --path=/var/dns/repo --input=./backup/`,
 		RunE: runImport,
 	}
 
 	cmd.Flags().StringVarP(&migrateConfigFile, "config", "c", "", "Path to configuration file")
-	cmd.Flags().StringVar(&migrateBackendType, "backend", "", "Backend type (memory, mysql, git, etcd)")
-	cmd.Flags().StringVar(&migrateBackendDSN, "dsn", "", "Backend DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateBackendType, "backend", "", "Backend type (sqlite [default], postgres, mysql, git, etcd)")
+	cmd.Flags().StringVar(&migrateBackendDSN, "dsn", "", "Backend DSN (for SQLite, PostgreSQL, MySQL)")
 	cmd.Flags().StringVar(&migrateBackendPath, "path", "", "Backend path (for Git)")
 	cmd.Flags().StringVarP(&migrateInputDir, "input", "i", "./zones", "Input directory with JSON files")
 	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Validate files without importing")
 	cmd.Flags().BoolVar(&migrateOverwrite, "overwrite", false, "Overwrite existing zones")
-
-	cobra.CheckErr(cmd.MarkFlagRequired("backend"))
 
 	return cmd
 }
@@ -110,17 +111,17 @@ func newCopyCmd() *cobra.Command {
 Zone versions are recomputed during the copy operation.
 
 Example:
-  arca-dns-controller migrate copy --from-backend=memory --to-backend=mysql --to-dsn="root:pass@/dns"
+  arca-dns-controller migrate copy --from-backend=sqlite --from-dsn="file:arca-dns.db" --to-backend=mysql --to-dsn="root:pass@/dns"
   arca-dns-controller migrate copy --from-backend=git --from-path=/tmp/repo --to-backend=etcd`,
 		RunE: runCopy,
 	}
 
 	cmd.Flags().StringVarP(&migrateConfigFile, "config", "c", "", "Path to configuration file")
-	cmd.Flags().StringVar(&migrateFromBackend, "from-backend", "", "Source backend type")
-	cmd.Flags().StringVar(&migrateToBackend, "to-backend", "", "Destination backend type")
-	cmd.Flags().StringVar(&migrateFromDSN, "from-dsn", "", "Source DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateFromBackend, "from-backend", "", "Source backend type (sqlite, postgres, mysql, git, etcd)")
+	cmd.Flags().StringVar(&migrateToBackend, "to-backend", "", "Destination backend type (sqlite, postgres, mysql, git, etcd)")
+	cmd.Flags().StringVar(&migrateFromDSN, "from-dsn", "", "Source DSN (for SQLite, PostgreSQL, MySQL)")
 	cmd.Flags().StringVar(&migrateFromPath, "from-path", "", "Source path (for Git)")
-	cmd.Flags().StringVar(&migrateToDSN, "to-dsn", "", "Destination DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateToDSN, "to-dsn", "", "Destination DSN (for SQLite, PostgreSQL, MySQL)")
 	cmd.Flags().StringVar(&migrateToPath, "to-path", "", "Destination path (for Git)")
 	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Preview copy without writing")
 	cmd.Flags().BoolVar(&migrateOverwrite, "overwrite", false, "Overwrite existing zones")
@@ -220,11 +221,7 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	if migrateDryRun {
 		fmt.Println("\n[DRY RUN] Would copy:")
 		for _, zone := range zones {
-			newVersion, err := model.NewZoneVersion()
-			if err != nil {
-				return fmt.Errorf("generate version for %s: %w", zone.Name, err)
-			}
-			fmt.Printf("  - %s (old version: %s, new version: %s)\n", zone.Name, zone.Version, newVersion)
+			fmt.Printf("  - %s (old version: %s, new version: generated during copy)\n", zone.Name, zone.Version)
 		}
 		return nil
 	}
@@ -242,19 +239,15 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	for _, zone := range zones {
 		oldVersion := zone.Version
 
-		// Clear version - it will be recomputed during CreateZone
+		// Clear version - it will be recomputed during CreateZone/UpdateZone
 		zone.Version = ""
 
 		if err := destStore.CreateZone(ctx, zone); err != nil {
 			// If zone exists, handle based on overwrite flag
 			if errors.Is(err, model.ErrZoneAlreadyExists) {
 				if migrateOverwrite {
-					// Delete and recreate to avoid serial increment
-					if err := destStore.DeleteZone(ctx, zone.Name); err != nil {
-						return fmt.Errorf("delete existing zone %s: %w", zone.Name, err)
-					}
-					if err := destStore.CreateZone(ctx, zone); err != nil {
-						return fmt.Errorf("recreate zone %s: %w", zone.Name, err)
+					if err := overwriteZone(ctx, destStore, zone); err != nil {
+						return fmt.Errorf("overwrite zone %s in destination: %w", zone.Name, err)
 					}
 					fmt.Printf("Overwrote: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
 				} else {
@@ -348,6 +341,9 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 		if err := json.Unmarshal(data, &zone); err != nil {
 			return 0, fmt.Errorf("parse file %s: %w", file, err)
 		}
+		if err := model.ValidateZone(&zone); err != nil {
+			return 0, fmt.Errorf("validate file %s: %w", file, err)
+		}
 
 		zones = append(zones, &zone)
 	}
@@ -355,11 +351,7 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 	if dryRun {
 		fmt.Println("\n[DRY RUN] Would import:")
 		for _, zone := range zones {
-			newVersion, err := model.NewZoneVersion()
-			if err != nil {
-				return 0, fmt.Errorf("generate version for %s: %w", zone.Name, err)
-			}
-			fmt.Printf("  - %s (old version: %s, new version: %s)\n", zone.Name, zone.Version, newVersion)
+			fmt.Printf("  - %s (old version: %s, new version: generated during import)\n", zone.Name, zone.Version)
 		}
 		return 0, nil
 	}
@@ -368,7 +360,7 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 	imported := 0
 	skipped := 0
 	for _, zone := range zones {
-		// Clear version - it will be recomputed during CreateZone
+		// Clear version - it will be recomputed during CreateZone/UpdateZone
 		oldVersion := zone.Version
 		zone.Version = ""
 
@@ -376,12 +368,8 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 			// If zone exists, handle based on overwrite flag
 			if errors.Is(err, model.ErrZoneAlreadyExists) {
 				if overwrite {
-					// Delete and recreate to avoid serial increment
-					if err := store.DeleteZone(ctx, zone.Name); err != nil {
-						return 0, fmt.Errorf("delete existing zone %s: %w", zone.Name, err)
-					}
-					if err := store.CreateZone(ctx, zone); err != nil {
-						return 0, fmt.Errorf("recreate zone %s: %w", zone.Name, err)
+					if err := overwriteZone(ctx, store, zone); err != nil {
+						return 0, fmt.Errorf("overwrite zone %s: %w", zone.Name, err)
 					}
 					fmt.Printf("Overwrote: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
 				} else {
@@ -406,14 +394,189 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 	return imported, nil
 }
 
+func overwriteZone(ctx context.Context, store backend.ZoneStore, zone *model.Zone) error {
+	if txStore, ok := store.(backend.TransactionalStore); ok {
+		return overwriteZoneInTransaction(ctx, txStore, zone)
+	}
+
+	return overwriteZoneWithRestore(ctx, store, zone)
+}
+
+func overwriteZoneInTransaction(ctx context.Context, store backend.TransactionalStore, zone *model.Zone) error {
+	tx, err := store.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin overwrite transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(context.WithoutCancel(ctx))
+		}
+	}()
+
+	current, err := tx.GetZone(ctx, zone.Name)
+	if err != nil {
+		return fmt.Errorf("get existing zone: %w", err)
+	}
+
+	if err := deleteZoneForOverwrite(ctx, tx, zone.Name, current.Version); err != nil {
+		return fmt.Errorf("delete existing zone: %w", err)
+	}
+	if err := tx.CreateZone(ctx, zone); err != nil {
+		return fmt.Errorf("create replacement zone: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit overwrite transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func overwriteZoneWithRestore(ctx context.Context, store backend.ZoneStore, zone *model.Zone) error {
+	current, err := store.GetZone(ctx, zone.Name)
+	if err != nil {
+		return fmt.Errorf("get existing zone: %w", err)
+	}
+
+	if err := deleteZoneForOverwrite(ctx, store, zone.Name, current.Version); err != nil {
+		return fmt.Errorf("delete existing zone: %w", err)
+	}
+	if err := store.CreateZone(ctx, zone); err != nil {
+		if restoreErr := restoreZoneAfterOverwriteFailure(ctx, store, current, zone); restoreErr != nil {
+			return errors.Join(
+				fmt.Errorf("create replacement zone: %w", err),
+				restoreErr,
+			)
+		}
+		return fmt.Errorf("create replacement zone: %w", err)
+	}
+	return nil
+}
+
+func restoreZoneAfterOverwriteFailure(ctx context.Context, store backend.ZoneStore, current *model.Zone, attemptedReplacement *model.Zone) error {
+	restoreCtx := context.WithoutCancel(ctx)
+
+	visible, err := store.GetZone(restoreCtx, current.Name)
+	switch {
+	case err == nil:
+		if visible.Version == current.Version {
+			return nil
+		}
+		if !sameReplacementZone(visible, attemptedReplacement) {
+			return fmt.Errorf("restore previous zone: visible zone changed after failed replacement: %w", model.ErrConflict)
+		}
+		if err := deleteZoneForOverwrite(restoreCtx, store, current.Name, visible.Version); err != nil {
+			return fmt.Errorf("restore previous zone: delete failed replacement zone: %w", err)
+		}
+	case errors.Is(err, model.ErrZoneNotFound):
+	default:
+		return fmt.Errorf("restore previous zone: get visible zone: %w", err)
+	}
+
+	if err := store.CreateZone(restoreCtx, current); err != nil {
+		return fmt.Errorf("restore previous zone: create previous zone: %w", err)
+	}
+	return nil
+}
+
+func sameReplacementZone(visible *model.Zone, attempted *model.Zone) bool {
+	if visible == nil || attempted == nil {
+		return false
+	}
+	if attempted.Version == "" || visible.Version != attempted.Version {
+		return false
+	}
+	if model.NormalizeZoneName(visible.Name) != model.NormalizeZoneName(attempted.Name) {
+		return false
+	}
+	if visible.SOA != attempted.SOA {
+		return false
+	}
+	if !sameDNSSECConfig(visible.DNSSEC, attempted.DNSSEC) {
+		return false
+	}
+	if len(visible.Records) != len(attempted.Records) {
+		return false
+	}
+	for i := range visible.Records {
+		if !sameRecord(visible.Records[i], attempted.Records[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameRecord(a model.Record, b model.Record) bool {
+	if a.ID != b.ID || a.Name != b.Name || a.Type != b.Type || a.TTL != b.TTL || a.Value != b.Value {
+		return false
+	}
+	if a.Priority == nil || b.Priority == nil {
+		return a.Priority == nil && b.Priority == nil
+	}
+	return *a.Priority == *b.Priority
+}
+
+func sameDNSSECConfig(a *model.DNSSECConfig, b *model.DNSSECConfig) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.Enabled != b.Enabled ||
+		a.Algorithm != b.Algorithm ||
+		a.KSKKeyTag != b.KSKKeyTag ||
+		a.ZSKKeyTag != b.ZSKKeyTag ||
+		a.NSEC3Enabled != b.NSEC3Enabled ||
+		a.NSEC3Iterations != b.NSEC3Iterations ||
+		a.NSEC3Salt != b.NSEC3Salt {
+		return false
+	}
+	if a.SignatureExpiration == nil || b.SignatureExpiration == nil {
+		return a.SignatureExpiration == nil && b.SignatureExpiration == nil
+	}
+	return a.SignatureExpiration.Equal(*b.SignatureExpiration)
+}
+
+func deleteZoneForOverwrite(ctx context.Context, store backend.ZoneStore, name string, expectedVersion string) error {
+	if conditionalStore, ok := store.(backend.ConditionalDeleteStore); ok {
+		return conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
+	}
+	return store.DeleteZone(ctx, name)
+}
+
 // createBackendForCopy creates a backend with explicit DSN/path parameters.
 // This is used by the copy command to configure source and destination independently.
 func createBackendForCopy(backendType, dsn, path string, cfg *config.ControllerConfig) (backend.ZoneStore, error) {
 	configMap := make(map[string]interface{})
 
 	switch backendType {
-	case "memory":
-		return backend.NewBackend("memory", configMap)
+	case "sqlite":
+		if dsn == "" && cfg != nil && cfg.Backend.Type == "sqlite" {
+			dsn = cfg.Backend.SQLite.DSN
+		}
+		if dsn != "" {
+			configMap["dsn"] = dsn
+		}
+		return backend.NewBackend("sqlite", configMap)
+
+	case "postgres":
+		if dsn == "" && cfg != nil && cfg.Backend.Type == "postgres" {
+			dsn = cfg.Backend.Postgres.DSN
+		}
+		if dsn == "" {
+			return nil, fmt.Errorf("PostgreSQL backend requires --from-dsn/--to-dsn flag or dsn in config")
+		}
+		configMap["dsn"] = dsn
+		if cfg != nil && cfg.Backend.Type == "postgres" {
+			if cfg.Backend.Postgres.MaxOpenConns > 0 {
+				configMap["max_open_conns"] = cfg.Backend.Postgres.MaxOpenConns
+			}
+			if cfg.Backend.Postgres.MaxIdleConns > 0 {
+				configMap["max_idle_conns"] = cfg.Backend.Postgres.MaxIdleConns
+			}
+			if cfg.Backend.Postgres.ConnMaxLifetime > 0 {
+				configMap["conn_max_lifetime"] = cfg.Backend.Postgres.ConnMaxLifetime
+			}
+		}
+		return backend.NewBackend("postgres", configMap)
 
 	case "mysql":
 		if dsn == "" && cfg != nil && cfg.Backend.Type == "mysql" {
@@ -423,6 +586,17 @@ func createBackendForCopy(backendType, dsn, path string, cfg *config.ControllerC
 			return nil, fmt.Errorf("MySQL backend requires --from-dsn/--to-dsn flag or dsn in config")
 		}
 		configMap["dsn"] = dsn
+		if cfg != nil && cfg.Backend.Type == "mysql" {
+			if cfg.Backend.MySQL.MaxOpenConns > 0 {
+				configMap["max_open_conns"] = cfg.Backend.MySQL.MaxOpenConns
+			}
+			if cfg.Backend.MySQL.MaxIdleConns > 0 {
+				configMap["max_idle_conns"] = cfg.Backend.MySQL.MaxIdleConns
+			}
+			if cfg.Backend.MySQL.ConnMaxLifetime > 0 {
+				configMap["conn_max_lifetime"] = cfg.Backend.MySQL.ConnMaxLifetime
+			}
+		}
 		return backend.NewBackend("mysql", configMap)
 
 	case "git":
@@ -473,7 +647,7 @@ func createBackendForCopy(backendType, dsn, path string, cfg *config.ControllerC
 		return backend.NewBackend("etcd", configMap)
 
 	default:
-		return nil, fmt.Errorf("unsupported backend type: %s", backendType)
+		return nil, fmt.Errorf("unsupported backend type: %s (supported: %s)", backendType, supportedMigrateBackends)
 	}
 }
 
@@ -481,11 +655,40 @@ func createBackendForCopy(backendType, dsn, path string, cfg *config.ControllerC
 func createBackend(backendType string, cfg *config.ControllerConfig) (backend.ZoneStore, error) {
 	// Build config map from flags and config file
 	configMap := make(map[string]interface{})
+	backendType = effectiveMigrateBackendType(backendType, cfg)
 
 	switch backendType {
-	case "memory":
-		// Memory backend needs no config
-		return backend.NewBackend("memory", configMap)
+	case "sqlite":
+		dsn := migrateBackendDSN
+		if dsn == "" && cfg != nil && cfg.Backend.Type == "sqlite" {
+			dsn = cfg.Backend.SQLite.DSN
+		}
+		if dsn != "" {
+			configMap["dsn"] = dsn
+		}
+		return backend.NewBackend("sqlite", configMap)
+
+	case "postgres":
+		dsn := migrateBackendDSN
+		if dsn == "" && cfg != nil && cfg.Backend.Type == "postgres" {
+			dsn = cfg.Backend.Postgres.DSN
+		}
+		if dsn == "" {
+			return nil, fmt.Errorf("PostgreSQL backend requires --dsn flag or dsn in config")
+		}
+		configMap["dsn"] = dsn
+		if cfg != nil && cfg.Backend.Type == "postgres" {
+			if cfg.Backend.Postgres.MaxOpenConns > 0 {
+				configMap["max_open_conns"] = cfg.Backend.Postgres.MaxOpenConns
+			}
+			if cfg.Backend.Postgres.MaxIdleConns > 0 {
+				configMap["max_idle_conns"] = cfg.Backend.Postgres.MaxIdleConns
+			}
+			if cfg.Backend.Postgres.ConnMaxLifetime > 0 {
+				configMap["conn_max_lifetime"] = cfg.Backend.Postgres.ConnMaxLifetime
+			}
+		}
+		return backend.NewBackend("postgres", configMap)
 
 	case "mysql":
 		dsn := migrateBackendDSN
@@ -496,6 +699,17 @@ func createBackend(backendType string, cfg *config.ControllerConfig) (backend.Zo
 			return nil, fmt.Errorf("MySQL backend requires --dsn flag or dsn in config")
 		}
 		configMap["dsn"] = dsn
+		if cfg != nil && cfg.Backend.Type == "mysql" {
+			if cfg.Backend.MySQL.MaxOpenConns > 0 {
+				configMap["max_open_conns"] = cfg.Backend.MySQL.MaxOpenConns
+			}
+			if cfg.Backend.MySQL.MaxIdleConns > 0 {
+				configMap["max_idle_conns"] = cfg.Backend.MySQL.MaxIdleConns
+			}
+			if cfg.Backend.MySQL.ConnMaxLifetime > 0 {
+				configMap["conn_max_lifetime"] = cfg.Backend.MySQL.ConnMaxLifetime
+			}
+		}
 		return backend.NewBackend("mysql", configMap)
 
 	case "git":
@@ -554,8 +768,18 @@ func createBackend(backendType string, cfg *config.ControllerConfig) (backend.Zo
 		return backend.NewBackend("etcd", configMap)
 
 	default:
-		return nil, fmt.Errorf("unsupported backend type: %s (supported: memory, mysql, git, etcd)", backendType)
+		return nil, fmt.Errorf("unsupported backend type: %s (supported: %s)", backendType, supportedMigrateBackends)
 	}
+}
+
+func effectiveMigrateBackendType(backendType string, cfg *config.ControllerConfig) string {
+	if backendType != "" {
+		return backendType
+	}
+	if cfg != nil && cfg.Backend.Type != "" {
+		return cfg.Backend.Type
+	}
+	return defaultMigrateBackend
 }
 
 // sanitizeFilename converts a zone name to a safe filename.

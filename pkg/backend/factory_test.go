@@ -44,8 +44,10 @@ func TestNewBackend_Git(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	testCases := []struct {
-		name   string
-		config map[string]interface{}
+		name             string
+		config           map[string]interface{}
+		expectedAutoPush bool
+		expectedAutoPull bool
 	}{
 		{
 			name: "new config format (author/email/auto_push)",
@@ -64,8 +66,21 @@ func TestNewBackend_Git(t *testing.T) {
 				"branch":          "main",
 				"author_name":     "Test User",
 				"author_email":    "test@example.com",
-				"auto_sync":       false,
+				"auto_sync":       true,
 			},
+			expectedAutoPush: true,
+			expectedAutoPull: true,
+		},
+		{
+			name: "remote pull config",
+			config: map[string]interface{}{
+				"repository_path": tmpDir,
+				"remote_url":      "https://example.com/arca-dns.git",
+				"auto_push":       false,
+				"auto_pull":       true,
+				"pull_interval":   time.Minute,
+			},
+			expectedAutoPull: true,
 		},
 		{
 			name: "minimal config with defaults",
@@ -85,6 +100,17 @@ func TestNewBackend_Git(t *testing.T) {
 			gitBackend, ok := backend.(*GitBackend)
 			assert.True(t, ok, "Should return GitBackend instance")
 			assert.Equal(t, tmpDir, gitBackend.repoPath)
+			assert.Equal(t, tc.expectedAutoPush, gitBackend.autoPush)
+			assert.Equal(t, tc.expectedAutoPull, gitBackend.autoPull)
+			if remoteURL, _ := tc.config["remote_url"].(string); remoteURL != "" {
+				assert.Equal(t, remoteURL, gitBackend.remoteURL)
+				assert.Equal(t, time.Minute, gitBackend.pullInterval)
+
+				repoConfig, err := gitBackend.repo.Config()
+				require.NoError(t, err)
+				require.Contains(t, repoConfig.Remotes, "origin")
+				assert.Equal(t, []string{remoteURL}, repoConfig.Remotes["origin"].URLs)
+			}
 
 			// Cleanup
 			backend.Close()
@@ -345,7 +371,28 @@ func TestFactoryDefaults(t *testing.T) {
 		assert.Equal(t, "main", gitBackend.branch)
 		assert.Equal(t, "arca-dns-controller", gitBackend.authorName)
 		assert.Equal(t, "noreply@arca-dns", gitBackend.authorEmail)
-		assert.False(t, gitBackend.autoSync)
+		assert.False(t, gitBackend.autoPush)
+		assert.False(t, gitBackend.autoPull)
+	})
+
+	t.Run("sql pool defaults", func(t *testing.T) {
+		pool := normalizeSQLPoolConfig(SQLPoolConfig{})
+
+		assert.Equal(t, 25, pool.MaxOpenConns)
+		assert.Equal(t, 5, pool.MaxIdleConns)
+		assert.Equal(t, 5*time.Minute, pool.ConnMaxLifetime)
+	})
+
+	t.Run("sql pool config", func(t *testing.T) {
+		pool := normalizeSQLPoolConfig(sqlPoolConfigFromMap(map[string]interface{}{
+			"max_open_conns":    17,
+			"max_idle_conns":    int64(9),
+			"conn_max_lifetime": "2m",
+		}))
+
+		assert.Equal(t, 17, pool.MaxOpenConns)
+		assert.Equal(t, 9, pool.MaxIdleConns)
+		assert.Equal(t, 2*time.Minute, pool.ConnMaxLifetime)
 	})
 
 	t.Run("etcd defaults", func(t *testing.T) {

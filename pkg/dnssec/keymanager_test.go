@@ -1,6 +1,7 @@
 package dnssec
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -294,6 +295,50 @@ func TestEnsureZoneKeys_Load(t *testing.T) {
 	assert.Equal(t, zsk1.ID.KeyTag, zsk2.ID.KeyTag)
 }
 
+func TestGenerateZoneKeys_RotateFailureKeepsExistingActiveKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	goodKM, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    8,
+		KSKBits:      1024,
+		ZSKBits:      1024,
+	})
+	require.NoError(t, err)
+
+	ksk, zsk, err := goodKM.GenerateZoneKeys("example.com", false)
+	require.NoError(t, err)
+	before := readTestActiveKeys(t, tmpDir, "example.com.")
+	require.Equal(t, ksk.ID.KeyTag, before.ActiveKSKTag)
+	require.Equal(t, zsk.ID.KeyTag, before.ActiveZSKTag)
+
+	badKM, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    8,
+		KSKBits:      1024,
+		ZSKBits:      -1,
+	})
+	require.NoError(t, err)
+
+	_, _, err = badKM.GenerateZoneKeys("example.com", true)
+	require.Error(t, err)
+
+	after := readTestActiveKeys(t, tmpDir, "example.com.")
+	assert.Equal(t, before, after)
+
+	loadedKSK, err := goodKM.LoadKSK("example.com")
+	require.NoError(t, err)
+	assert.Equal(t, ksk.ID.KeyTag, loadedKSK.ID.KeyTag)
+
+	loadedZSK, err := goodKM.LoadZSK("example.com")
+	require.NoError(t, err)
+	assert.Equal(t, zsk.ID.KeyTag, loadedZSK.ID.KeyTag)
+}
+
 func TestExportDS(t *testing.T) {
 	tmpDir := t.TempDir()
 	masterKey, err := GenerateMasterKey()
@@ -399,4 +444,18 @@ func TestEncryptedPrivateKey_Metadata(t *testing.T) {
 	assert.Contains(t, string(encData), "algorithm")
 	assert.Contains(t, string(encData), "key_tag")
 	assert.Contains(t, string(encData), "role")
+}
+
+func readTestActiveKeys(t *testing.T, keyDir, zone string) activeKeys {
+	t.Helper()
+
+	zoneName, err := ZoneNameForFile(zone)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(keyDir, zoneName, "active.json"))
+	require.NoError(t, err)
+
+	var active activeKeys
+	require.NoError(t, json.Unmarshal(data, &active))
+	return active
 }

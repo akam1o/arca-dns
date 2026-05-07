@@ -2,9 +2,13 @@ package sync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,12 +35,20 @@ type Syncer struct {
 	lastSuccess time.Time                 // Last successful sync (any zone)
 	mu          sync.RWMutex              // Protects zoneStates and lastSuccess
 
-	onZoneApplied func(ctx context.Context, zoneName string) error
-	onZoneDeleted func(ctx context.Context, zoneName string) error
+	onZoneApplied        func(ctx context.Context, zoneName string) error
+	onZoneApplyRollback  func(ctx context.Context, zoneName string, hadPrevious bool) error
+	onZoneDeleted        func(ctx context.Context, zoneName string) error
+	onZoneDeleteRollback func(ctx context.Context, zoneName string) error
+	validateZoneFile     func(ctx context.Context, zoneName string, zonePath string) error
 }
 
 // NewSyncer creates a new zone syncer.
 func NewSyncer(client *Client, fileMgr *FileManager, cfg config.SyncConfig, logger *zap.Logger) *Syncer {
+	if client != nil {
+		client.SetVerifyChecksums(cfg.VerifyChecksums)
+		client.SetSignatureVerification(cfg.VerifySignatures, cfg.ControllerPublicKey)
+	}
+
 	return &Syncer{
 		client:     client,
 		fileMgr:    fileMgr,
@@ -53,10 +65,28 @@ func (s *Syncer) SetOnZoneApplied(fn func(ctx context.Context, zoneName string) 
 	s.onZoneApplied = fn
 }
 
-// SetOnZoneDeleted sets a hook to be called after a zone file is deleted successfully.
-// Returning an error will keep the zone state so the deletion reload can be retried.
+// SetOnZoneApplyRollback sets a hook to restore service references after a
+// zone apply hook fails and the active zone file has been rolled back.
+func (s *Syncer) SetOnZoneApplyRollback(fn func(ctx context.Context, zoneName string, hadPrevious bool) error) {
+	s.onZoneApplyRollback = fn
+}
+
+// SetOnZoneDeleted sets a hook to be called before removing the local zone file.
+// Returning an error keeps the zone file and state so the deletion can be retried.
 func (s *Syncer) SetOnZoneDeleted(fn func(ctx context.Context, zoneName string) error) {
 	s.onZoneDeleted = fn
+}
+
+// SetOnZoneDeleteRollback sets a hook that restores service references when
+// local zone file removal fails after SetOnZoneDeleted has already succeeded.
+func (s *Syncer) SetOnZoneDeleteRollback(fn func(ctx context.Context, zoneName string) error) {
+	s.onZoneDeleteRollback = fn
+}
+
+// SetValidateZoneFile sets a hook used to validate the temporary zone file
+// before it replaces the active file.
+func (s *Syncer) SetValidateZoneFile(fn func(ctx context.Context, zoneName string, zonePath string) error) {
+	s.validateZoneFile = fn
 }
 
 // Run starts the sync loop with configurable interval and jitter.
@@ -118,7 +148,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	s.logger.Debug("Starting sync cycle")
 
 	// Step 1: Fetch zone list from controller
-	zones, err := s.client.ListZones()
+	zones, err := s.client.ListZones(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list zones: %w", err)
 	}
@@ -169,8 +199,8 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	successCount += deleteCount
 	errorCount += deleteErrorCount
 
-	// Update last success time if the cycle made progress, or if an empty controller list was reconciled.
-	if successCount > 0 || (len(zones) == 0 && errorCount == 0) {
+	// Update last success time only after a fully clean reconciliation.
+	if errorCount == 0 && (successCount > 0 || len(zones) == 0) {
 		s.mu.Lock()
 		s.lastSuccess = time.Now()
 		s.mu.Unlock()
@@ -182,18 +212,16 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 		zap.Int("errors", errorCount),
 		zap.Int("total", len(zones)))
 
-	// Return error if all active controller zones failed, or if reconciliation had no success.
-	if zoneErrorCount > 0 && zoneErrorCount == len(zones) {
+	// Return error for any failed active zone so callers do not treat a
+	// partially-applied reconciliation as healthy.
+	if zoneErrorCount > 0 {
 		if deleteErrorCount > 0 {
-			return fmt.Errorf("all zones failed to sync (%d errors); failed to delete removed zones (%d errors)", zoneErrorCount, deleteErrorCount)
+			return fmt.Errorf("zones failed to sync (%d errors); failed to delete removed zones (%d errors)", zoneErrorCount, deleteErrorCount)
 		}
-		return fmt.Errorf("all zones failed to sync (%d errors)", zoneErrorCount)
+		return fmt.Errorf("zones failed to sync (%d errors)", zoneErrorCount)
 	}
 	if deleteErrorCount > 0 {
 		return fmt.Errorf("failed to delete removed zones (%d errors)", deleteErrorCount)
-	}
-	if errorCount > 0 && successCount == 0 {
-		return fmt.Errorf("sync failed (%d errors)", errorCount)
 	}
 
 	return nil
@@ -245,25 +273,26 @@ func (s *Syncer) deleteRemovedZones(ctx context.Context, controllerZones map[str
 		deletedCount++
 	}
 
-	localZoneFiles, err := s.fileMgr.listZoneFiles()
+	managedZones, err := s.fileMgr.listManagedZones()
 	if err != nil {
-		s.logger.Error("Failed to list local zone files", zap.Error(err))
+		s.logger.Error("Failed to list managed zone files", zap.Error(err))
 		return deletedCount, errorCount + 1
 	}
 
-	for _, zoneFile := range localZoneFiles {
-		if _, exists := controllerZoneFiles[zoneFile]; exists {
+	for _, managedZone := range managedZones {
+		if _, exists := controllerZoneFiles[managedZone.SafeName]; exists {
 			continue
 		}
-		if _, attempted := attemptedFiles[zoneFile]; attempted {
+		if _, attempted := attemptedFiles[managedZone.SafeName]; attempted {
 			continue
 		}
 
-		if err := s.deleteRemovedZone(ctx, zoneFile); err != nil {
+		if err := s.deleteRemovedZone(ctx, managedZone.ZoneName); err != nil {
 			s.logger.Error("Failed to delete orphaned zone file",
-				zap.String("zone_file", zoneFile),
+				zap.String("zone", managedZone.ZoneName),
+				zap.String("zone_file", managedZone.SafeName),
 				zap.Error(err))
-			s.recordDeleteFailure(zoneFile)
+			s.recordDeleteFailure(managedZone.ZoneName)
 			errorCount++
 			continue
 		}
@@ -274,14 +303,22 @@ func (s *Syncer) deleteRemovedZones(ctx context.Context, controllerZones map[str
 }
 
 func (s *Syncer) deleteRemovedZone(ctx context.Context, zoneName string) error {
-	if err := s.fileMgr.DeleteZoneFile(zoneName); err != nil {
-		return fmt.Errorf("failed to delete zone file: %w", err)
-	}
-
 	if s.onZoneDeleted != nil {
 		if err := s.onZoneDeleted(ctx, zoneName); err != nil {
-			return fmt.Errorf("post-delete hook failed: %w", err)
+			return fmt.Errorf("delete hook failed: %w", err)
 		}
+	}
+
+	if err := s.fileMgr.deleteZoneFiles(zoneName); err != nil {
+		deleteErr := fmt.Errorf("failed to delete zone file: %w", err)
+		if rollbackErr := s.rollbackDeletedZone(ctx, zoneName); rollbackErr != nil {
+			return errors.Join(deleteErr, fmt.Errorf("rollback deleted zone: %w", rollbackErr))
+		}
+		return deleteErr
+	}
+
+	if err := s.fileMgr.removeManagedZone(zoneName); err != nil {
+		return fmt.Errorf("failed to update managed zone index: %w", err)
 	}
 
 	s.mu.Lock()
@@ -291,6 +328,21 @@ func (s *Syncer) deleteRemovedZone(ctx context.Context, zoneName string) error {
 	s.logger.Info("Deleted removed zone",
 		zap.String("zone", zoneName))
 
+	return nil
+}
+
+func (s *Syncer) rollbackDeletedZone(ctx context.Context, zoneName string) error {
+	if s.onZoneDeleteRollback == nil {
+		return nil
+	}
+	if err := s.onZoneDeleteRollback(ctx, zoneName); err != nil {
+		s.logger.Error("Failed to roll back deleted zone service references",
+			zap.String("zone", zoneName),
+			zap.Error(err))
+		return err
+	}
+	s.logger.Info("Rolled back deleted zone service references",
+		zap.String("zone", zoneName))
 	return nil
 }
 
@@ -312,8 +364,15 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 	}
 	s.mu.RUnlock()
 
+	if currentETag != "" && !s.localZoneFileMatchesState(zone.Name, currentETag) {
+		s.logger.Warn("Local zone file missing or mismatched, forcing full fetch",
+			zap.String("zone", zone.Name),
+			zap.String("etag", currentETag))
+		currentETag = ""
+	}
+
 	// Step 3: Conditional fetch using ETag
-	zoneContent, newETag, notModified, err := s.client.FetchSignedZone(zone.Name, currentETag)
+	zoneContent, newETag, notModified, err := s.client.FetchSignedZone(ctx, zone.Name, currentETag)
 	if err != nil {
 		return fmt.Errorf("failed to fetch zone: %w", err)
 	}
@@ -323,14 +382,6 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 		s.logger.Debug("Zone not modified (304)",
 			zap.String("zone", zone.Name),
 			zap.String("etag", currentETag))
-
-		// Prefer the response ETag (may be quoted); keep our local state aligned.
-		if newETag != "" {
-			s.mu.Lock()
-			state := s.getOrCreateStateLocked(zone.Name)
-			state.Version = newETag
-			s.mu.Unlock()
-		}
 		return nil
 	}
 
@@ -343,13 +394,28 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 
 	// Step 5: Atomic file write
 	// Step 6: Backup old version (handled by FileManager)
-	if err := s.fileMgr.WriteZoneFile(zone.Name, zoneContent); err != nil {
+	var validate func(zonePath string) error
+	if s.validateZoneFile != nil {
+		validate = func(zonePath string) error {
+			return s.validateZoneFile(ctx, zone.Name, zonePath)
+		}
+	}
+	hadPreviousZoneFile := s.fileMgr.ZoneExists(zone.Name)
+	rollbackZoneFile, err := s.fileMgr.WriteZoneFileValidatedWithRollback(zone.Name, zoneContent, validate)
+	if err != nil {
 		return fmt.Errorf("failed to write zone file: %w", err)
 	}
 
 	// Step 7: NSD/Unbound reload is handled by the caller (main agent loop) via hook.
 	if s.onZoneApplied != nil {
 		if err := s.onZoneApplied(ctx, zone.Name); err != nil {
+			rollbackErr := s.rollbackFailedApply(ctx, zone.Name, hadPreviousZoneFile, rollbackZoneFile)
+			if rollbackErr != nil {
+				return errors.Join(
+					fmt.Errorf("post-apply hook failed: %w", err),
+					rollbackErr,
+				)
+			}
 			return fmt.Errorf("post-apply hook failed: %w", err)
 		}
 	}
@@ -367,11 +433,76 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 	return nil
 }
 
+func (s *Syncer) rollbackFailedApply(ctx context.Context, zoneName string, hadPrevious bool, rollbackZoneFile func() error) error {
+	if hadPrevious {
+		return errors.Join(
+			rollbackZoneFile(),
+			s.rollbackAppliedZone(ctx, zoneName, hadPrevious),
+		)
+	}
+
+	if err := s.rollbackAppliedZone(ctx, zoneName, hadPrevious); err != nil {
+		s.logger.Warn("Keeping newly applied zone file because service reference rollback failed",
+			zap.String("zone", zoneName),
+			zap.Error(err))
+		return err
+	}
+	return rollbackZoneFile()
+}
+
+func (s *Syncer) rollbackAppliedZone(ctx context.Context, zoneName string, hadPrevious bool) error {
+	if s.onZoneApplyRollback == nil {
+		return nil
+	}
+	if err := s.onZoneApplyRollback(ctx, zoneName, hadPrevious); err != nil {
+		s.logger.Error("Failed to roll back applied zone service references",
+			zap.String("zone", zoneName),
+			zap.Bool("had_previous", hadPrevious),
+			zap.Error(err))
+		return fmt.Errorf("rollback applied zone service references: %w", err)
+	}
+	s.logger.Info("Rolled back applied zone service references",
+		zap.String("zone", zoneName),
+		zap.Bool("had_previous", hadPrevious))
+	return nil
+}
+
+func (s *Syncer) localZoneFileMatchesState(zoneName, currentETag string) bool {
+	if !s.fileMgr.ZoneExists(zoneName) {
+		return false
+	}
+
+	expectedHash := etagValue(currentETag)
+	if len(expectedHash) != 64 || !isHex(expectedHash) {
+		return true
+	}
+
+	content, err := s.fileMgr.ReadZoneFile(zoneName)
+	if err != nil {
+		return false
+	}
+
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:]) == expectedHash
+}
+
+func etagValue(etag string) string {
+	etag = strings.TrimSpace(etag)
+	etag = strings.TrimPrefix(etag, "W/")
+	etag = strings.TrimSpace(etag)
+	return strings.Trim(etag, "\"")
+}
+
+func isHex(s string) bool {
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
 // SyncZone synchronizes a specific zone by name.
 // Useful for on-demand sync or testing.
 func (s *Syncer) SyncZone(ctx context.Context, zoneName string) error {
 	// Fetch zone info from controller
-	zones, err := s.client.ListZones()
+	zones, err := s.client.ListZones(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list zones: %w", err)
 	}
@@ -429,6 +560,20 @@ func (s *Syncer) GetLastSuccessTime() time.Time {
 	return s.lastSuccess
 }
 
+// FailedZoneCount returns the number of zones with outstanding sync failures.
+func (s *Syncer) FailedZoneCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	count := 0
+	for _, state := range s.zoneStates {
+		if state.FailCount > 0 {
+			count++
+		}
+	}
+	return count
+}
+
 // IsStale returns true if sync is stale (exceeds MaxStaleness).
 func (s *Syncer) IsStale() bool {
 	s.mu.RLock()
@@ -451,6 +596,9 @@ func (s *Syncer) getOrCreateStateLocked(zoneName string) *ZoneSyncState {
 
 // addJitter adds random jitter to prevent thundering herd.
 func (s *Syncer) addJitter(duration time.Duration) time.Duration {
+	if duration <= 0 {
+		return time.Nanosecond
+	}
 	if s.config.Jitter <= 0 {
 		return duration
 	}
@@ -459,5 +607,13 @@ func (s *Syncer) addJitter(duration time.Duration) time.Duration {
 	jitterNanos := s.config.Jitter.Nanoseconds()
 	randomJitter := rand.Int63n(jitterNanos) - (jitterNanos / 2)
 
-	return duration + time.Duration(randomJitter)
+	next := duration + time.Duration(randomJitter)
+	minDuration := duration / 2
+	if minDuration <= 0 {
+		minDuration = time.Nanosecond
+	}
+	if next < minDuration {
+		return minDuration
+	}
+	return next
 }

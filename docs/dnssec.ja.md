@@ -191,54 +191,80 @@ DNSSEC 鍵のローテーションは、セキュリティ上のベストプラ�
 
 **タイムライン**: 各ステップ間は「親ゾーン TTL の 2 倍」程度を確保してください。
 
-1. **新しい KSK を生成**（Day 0）
+現在のリリースでは、完全な pre-publish や double-signature rollover は未実装です。`generate-keys --rotate` は新しい KSK/ZSK を即 active にするため、親ゾーンが新 DS を公開する前に scheduler、zone 更新、record 更新、on-demand re-sign が走ると DNSSEC 検証が壊れ得ます。
+
+1. **制御された maintenance window に入る**（Day 0 前）
+   - DNSSEC scheduler を無効化するか、再署名可能な controller instance を停止する。
+   - 対象ゾーンの zone/record 書き込みを止める。
+   - 既存の signed artifact は維持し、DS 公開待ちの間は artifact storage を削除しない。
+
+2. **新しい鍵ペアを生成して active にする**（Day 0）
    ```bash
-   # The controller will generate a new KSK when you explicitly trigger rotation
-   # For now, use the API to update the zone, which triggers re-signing
-   curl -X PUT https://controller/api/v1/zones/example.com \
-     -H "Content-Type: application/json" \
-     -d @zone.json
+   # --rotate は新しい active KSK/ZSK を生成します。
+   arca-dns-controller dnssec generate-keys --zone example.com. --rotate
+   ```
+   これは `active.json` を更新しますが、cached signed zone artifact を置き換える処理ではありません。
+
+3. **新しい DS レコードを出力**
+   ```bash
+   arca-dns-controller dnssec export-ds --zone example.com. > new-ds.txt
    ```
 
-2. **新しい DS レコードを出力**
-   ```bash
-   arca-dns-controller dnssec export-ds example.com > new-ds.txt
-   ```
-
-3. **親ゾーンへ新 DS を提出**（Day 0）
+4. **親ゾーンへ新 DS を提出**（Day 0）
    - レジストラへ提出
    - 旧 DS も維持（旧/新 DS が共存する期間を設ける）
 
-4. **親ゾーンの伝播を待つ**（Day 0 + parent TTL）
+5. **親ゾーンの伝播を待つ**（Day 0 + parent TTL）
    - `dig +dnssec example.com DS` で検証
+   - 新 DS が public resolver から見えるまで、scheduler の再開や zone/record 書き込みを行わない。
 
-5. **active セットから旧 KSK を外す**（Day 0 + 2× parent TTL）
-   - `active.json` を更新して新 KSK の key tag を採用
-   - controller が新 KSK で再署名
+6. **active key で再署名を発生させる**（新 DS が見えるようになった後）
+   ```bash
+   BASE="https://controller/api/v1"
+   API_KEY="your-api-key"
 
-6. **親ゾーンから旧 DS を削除**（Day 0 + 3× parent TTL）
+   zone_json="$(curl -s "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}")"
+   etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+   printf '%s' "${zone_json}" | jq '{name: .name, soa: .soa}' |
+     curl -X PUT "${BASE}/zones/example.com." \
+       -H "X-API-Key: ${API_KEY}" \
+       -H "Content-Type: application/json" \
+       -H "If-Match: ${etag}" \
+       --data-binary @-
+   ```
+   `PUT /zones/:name` は records を保持します。ここでは、すでに rotate 済みの鍵で再署名するために zone version を進める目的で使います。
+   新しい signed zone を検証した後、scheduler と通常の zone/record 書き込みを再開します。
+
+7. **親ゾーンから旧 DS を削除**（Day 0 + 3× parent TTL）
    - レジストラへ削除依頼
+   - 旧署名の期限切れ後、inactive な鍵ファイルを削除します。
+     ```bash
+     arca-dns-controller dnssec remove-old-keys --zone example.com.
+     ```
 
 ### ZSK ローテーション（簡略）
 
-ZSK ローテーションは親ゾーン調整が不要です。
+ZSK ローテーション自体は親ゾーン調整が不要ですが、現在の CLI では `--rotate` が KSK/ZSK の両方を rotate します。KSK が変わる場合は、上記の KSK 手順に従って combined rollover として扱ってください。
 
 **タイムライン**: 各ステップ間は「ゾーン最大 TTL の 2 倍」程度を確保してください。
 
-1. **新しい ZSK を生成**
-   - KSK と同様
+1. **新しい鍵を生成して active にする**
+   ```bash
+   arca-dns-controller dnssec generate-keys --zone example.com. --rotate
+   ```
 
-2. **旧/新 ZSK の両方で署名**（Day 0）
-   - pre-publication として両方で署名
+2. **再署名を発生させる**
+   - KSK 手順と同じ `PUT /zones/:name` の再署名ステップを使います。
 
-3. **新 ZSK のみに切り替え**（Day 0 + 2× max TTL）
-   - `active.json` を更新して新 ZSK の key tag を採用
-   - 旧 ZSK の署名は自然に失効
+3. **旧署名の期限切れを待つ**（Day 0 + 2× max TTL）
 
-4. **旧 ZSK を削除**（Day 0 + 3× max TTL）
-   - 旧 ZSK ファイルを削除
+4. **inactive な鍵ファイルを削除**
+   ```bash
+   arca-dns-controller dnssec remove-old-keys --zone example.com.
+   ```
 
-**Note**: 自動鍵ローテーションは M8 以降の拡張で実装予定です。
+**Note**: 現在のリリースでは、自動鍵ローテーションと double-signature rollover は未実装です。
 
 ## バックアップと復旧
 
@@ -398,4 +424,3 @@ chmod 600 /var/lib/arca-dns/keys/_masterkey
 
 **Version**: M4.1  
 **Last Updated**: 2025-12-28
-

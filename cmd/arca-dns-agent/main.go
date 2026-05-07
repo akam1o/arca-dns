@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -21,6 +23,7 @@ import (
 	"github.com/akam1o/arca-dns/internal/agent/plugin"
 	zonesync "github.com/akam1o/arca-dns/internal/agent/sync"
 	"github.com/akam1o/arca-dns/internal/agent/unbound"
+	applogging "github.com/akam1o/arca-dns/internal/logging"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
@@ -49,11 +52,15 @@ manages NSD/Unbound, controls BGP routes via BIRD, and provides observability.`,
 	daemonCmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the agent daemon",
-		Long:  "Run the agent daemon to sync zones and manage DNS services",
-		RunE:  runDaemon,
+		Long: `Run the agent daemon to sync zones and manage DNS services.
+
+Provide a configuration file, or provide all required settings via environment
+variables. For example, signature verification requires
+sync.controller_public_key or ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY.`,
+		RunE: runDaemon,
 	}
 
-	daemonCmd.Flags().StringVarP(&configFile, "config", "c", "", "Path to configuration file (optional, uses defaults if not provided)")
+	daemonCmd.Flags().StringVarP(&configFile, "config", "c", "", "Path to configuration file")
 
 	rootCmd.AddCommand(daemonCmd)
 
@@ -64,17 +71,11 @@ manages NSD/Unbound, controls BGP routes via BIRD, and provides observability.`,
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
-	// Initialize logger
-	logger, err := zap.NewProduction()
+	// Initialize a bootstrap logger until configuration is loaded.
+	bootstrapLogger, err := zap.NewProduction()
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
-	defer func() { _ = logger.Sync() }()
-
-	logger.Info("arca-dns-agent starting",
-		zap.String("version", version),
-		zap.String("commit", commit),
-		zap.String("date", date))
 
 	// Load configuration
 	var cfg *config.AgentConfig
@@ -84,10 +85,30 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to load config: %w", loadErr)
 		}
 		cfg = loadedCfg
+	} else {
+		loadedCfg, loadErr := config.LoadAgentConfig("")
+		if loadErr != nil {
+			return fmt.Errorf("failed to load config from defaults and environment: %w", loadErr)
+		}
+		cfg = loadedCfg
+	}
+
+	logger, err := applogging.NewLogger(cfg.Logging)
+	if err != nil {
+		bootstrapLogger.Error("Failed to initialize configured logger", zap.Error(err))
+		return fmt.Errorf("failed to initialize configured logger: %w", err)
+	}
+	defer func() { _ = logger.Sync() }()
+	_ = bootstrapLogger.Sync()
+
+	logger.Info("arca-dns-agent starting",
+		zap.String("version", version),
+		zap.String("commit", commit),
+		zap.String("date", date))
+	if configFile != "" {
 		logger.Info("Configuration loaded from file", zap.String("config_file", configFile))
 	} else {
-		cfg = config.DefaultAgentConfig()
-		logger.Info("Using default configuration")
+		logger.Info("Using default configuration with environment overrides")
 	}
 
 	// Create controller client
@@ -110,50 +131,89 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Create authoritative DNS server plugin
 	var authServer plugin.AuthoritativeServer
-	if cfg.NSD.Enabled {
-		nsdCtrl := nsd.NewController(cfg.NSD, logger)
-		authServer = nsd.NewAdapter(nsdCtrl)
-		logger.Info("Authoritative server initialized", zap.String("type", authServer.Type()))
-	} else {
-		authServer = &plugin.NoopAuthoritativeServer{}
+	switch cfg.Authoritative {
+	case "nsd":
+		if cfg.NSD.Enabled {
+			nsdCtrl := nsd.NewController(cfg.NSD, logger)
+			authServer = nsd.NewAdapter(nsdCtrl)
+			logger.Info("Authoritative server initialized", zap.String("type", authServer.Type()))
+		} else {
+			authServer = &plugin.NoopAuthoritativeServer{}
+		}
+	default:
+		return fmt.Errorf("unsupported authoritative server: %s", cfg.Authoritative)
 	}
 
 	// Create resolver plugin
 	var resolver plugin.Resolver
 	if cfg.Unbound.Enabled {
 		unboundCtrl := unbound.NewController(cfg.Unbound, logger)
+		if err := unboundCtrl.EnsureEDNSBufferSize(); err != nil {
+			return fmt.Errorf("failed to validate unbound EDNS buffer size: %w", err)
+		}
 		resolver = unbound.NewAdapter(unboundCtrl)
 		logger.Info("Resolver initialized", zap.String("type", resolver.Type()))
 	} else {
 		resolver = &plugin.NoopResolver{}
 	}
 
-	// Wire zone-apply hook: reload services after zone file write.
-	syncer.SetOnZoneApplied(func(ctx context.Context, zoneName string) error {
-		// Reload authoritative server zone immediately so updates become visible to DNS.
-		if err := authServer.ReloadZone(ctx, zoneName); err != nil {
-			return err
-		}
-		// Reload resolver to pick up any configuration changes.
-		if err := resolver.Reload(ctx); err != nil {
-			return err
-		}
-		return nil
+	syncer.SetValidateZoneFile(func(ctx context.Context, zoneName string, zonePath string) error {
+		return authServer.CheckZone(ctx, zoneName, zonePath)
 	})
 
-	// Wire zone-delete hook: reload services after the zone file is removed.
+	// Wire zone-apply hook: reload services after zone file write.
+	syncer.SetOnZoneApplied(func(ctx context.Context, zoneName string) error {
+		return applyZoneServiceReferences(ctx, zoneName, authServer, resolver)
+	})
+	syncer.SetOnZoneApplyRollback(func(ctx context.Context, zoneName string, hadPrevious bool) error {
+		return rollbackAppliedZoneServiceReferences(ctx, zoneName, hadPrevious, authServer, resolver, logger)
+	})
+
+	// Wire zone-delete hook: remove service references before deleting the zone file.
 	syncer.SetOnZoneDeleted(func(ctx context.Context, zoneName string) error {
-		if err := authServer.Reload(ctx); err != nil {
-			return err
-		}
-		if err := resolver.Reload(ctx); err != nil {
-			return err
-		}
-		return nil
+		return deleteZoneServiceReferences(ctx, zoneName, authServer, resolver, logger)
+	})
+	syncer.SetOnZoneDeleteRollback(func(ctx context.Context, zoneName string) error {
+		return restoreZoneServiceReferences(ctx, zoneName, authServer, resolver, true, true)
 	})
 
 	// Create health checker (DNS behavior is the source of truth).
-	checker := health.NewChecker(cfg.Health, logger)
+	checker := health.NewCheckerWithOptions(cfg.Health, health.CheckerOptions{
+		CheckAuthoritative: cfg.NSD.Enabled,
+		CheckResolver:      cfg.Unbound.Enabled,
+	}, logger)
+	checker.AddCheck(func(ctx context.Context) health.CheckResult {
+		now := time.Now()
+		if failedZones := syncer.FailedZoneCount(); failedZones > 0 {
+			return health.CheckResult{
+				Type:      health.CheckTypeSync,
+				Success:   false,
+				Error:     fmt.Errorf("%d zone sync failures", failedZones),
+				Timestamp: now,
+			}
+		}
+		if syncer.GetLastSuccessTime().IsZero() {
+			return health.CheckResult{
+				Type:      health.CheckTypeSync,
+				Success:   false,
+				Error:     fmt.Errorf("no successful sync yet"),
+				Timestamp: now,
+			}
+		}
+		if syncer.IsStale() {
+			return health.CheckResult{
+				Type:      health.CheckTypeSync,
+				Success:   false,
+				Error:     fmt.Errorf("sync is stale"),
+				Timestamp: now,
+			}
+		}
+		return health.CheckResult{
+			Type:      health.CheckTypeSync,
+			Success:   true,
+			Timestamp: now,
+		}
+	})
 	logger.Info("Health checker initialized")
 
 	// Create BIRD BGP control components (M5)
@@ -230,7 +290,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 				protocolNames = []string{cfg.BIRD.ProtocolName}
 			}
 		}
-		routeManager = bird.NewRouteManager(birdClient, protocolNames)
+		routeManager, err = bird.NewRouteManager(birdClient, protocolNames)
+		if err != nil {
+			return fmt.Errorf("failed to create BIRD route manager: %w", err)
+		}
 		reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := routeManager.Reconcile(reconcileCtx); err != nil {
 			reconcileCancel()
@@ -272,10 +335,18 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Create DNSTap processor (M6)
 	var dnstapProcessor *dnstap.Processor
 	if cfg.DNSTap.Enabled {
+		socketMode, err := cfg.DNSTap.SocketFileMode()
+		if err != nil {
+			return fmt.Errorf("invalid dnstap socket mode: %w", err)
+		}
+
 		processorConfig := dnstap.ProcessorConfig{
 			ReceiverConfig: dnstap.ReceiverConfig{
-				SocketPath: cfg.DNSTap.SocketPath,
-				BufferSize: cfg.DNSTap.BufferSize,
+				SocketPath:  cfg.DNSTap.SocketPath,
+				SocketMode:  socketMode,
+				SocketOwner: cfg.DNSTap.SocketOwner,
+				SocketGroup: cfg.DNSTap.SocketGroup,
+				BufferSize:  cfg.DNSTap.BufferSize,
 			},
 			LoggerConfig: dnstap.LoggerConfig{
 				LogFile:    cfg.DNSTap.LogFile,
@@ -286,7 +357,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 				QueueSize:  1000, // Default queue size
 			},
 			SamplerConfig: dnstap.SamplerConfig{
-				SampleRate: 1.0 / float64(cfg.DNSTap.SampleRate), // Convert 1/N to float
+				SampleRate:      1.0 / float64(cfg.DNSTap.SampleRate), // Convert 1/N to float
+				AlwaysLogErrors: cfg.DNSTap.AlwaysLogErrors,
 			},
 			PrometheusEnabled: cfg.Metrics.Enabled,
 		}
@@ -304,6 +376,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigChan)
 
 	// Create wait group for goroutines
 	var wg sync.WaitGroup
@@ -319,16 +392,51 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		logger.Info("Zone sync loop stopped")
 	}()
 
-	// Start health check loop
+	// Start one health check loop and fan out results to consumers.
+	healthCheckChan := make(chan health.HealthStatus, 10)
 	healthStatusChan := make(chan health.HealthStatus, 10)
+	var healthEngineStatusChan chan health.HealthStatus
+	if cfg.BIRD.Enabled && healthEngine != nil && controlLoop != nil {
+		healthEngineStatusChan = make(chan health.HealthStatus, 10)
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(healthCheckChan)
 		logger.Info("Starting health check loop")
-		if err := checker.Run(ctx, healthStatusChan); err != nil && err != context.Canceled {
+		if err := checker.Run(ctx, healthCheckChan); err != nil && err != context.Canceled {
 			logger.Error("Health check loop failed", zap.Error(err))
 		}
 		logger.Info("Health check loop stopped")
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(healthStatusChan)
+		if healthEngineStatusChan != nil {
+			defer close(healthEngineStatusChan)
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case status, ok := <-healthCheckChan:
+				if !ok {
+					return
+				}
+				if !sendHealthStatus(ctx, healthStatusChan, status) {
+					return
+				}
+				if healthEngineStatusChan != nil {
+					if !sendHealthStatus(ctx, healthEngineStatusChan, status) {
+						return
+					}
+				}
+			}
+		}
 	}()
 
 	// Start BIRD BGP control loop (M5)
@@ -341,7 +449,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			defer wg.Done()
 			defer close(healthSignalChan) // Close signal channel on exit
 			logger.Info("Starting health engine")
-			if err := healthEngine.Run(ctx, healthSignalChan); err != nil && err != context.Canceled {
+			if err := healthEngine.RunWithStatus(ctx, healthEngineStatusChan, healthSignalChan); err != nil && err != context.Canceled {
 				logger.Error("Health engine failed", zap.Error(err))
 			}
 			logger.Info("Health engine stopped")
@@ -402,12 +510,17 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}()
 
 	// Start HTTP status server
-	wg.Add(1)
 	var routeCtrl plugin.RouteController
 	if routeManager != nil {
 		routeCtrl = bird.NewAdapter(routeManager)
 	}
-	statusServer := startStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+	statusServer, err := startStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+	if err != nil {
+		cancel()
+		wg.Wait()
+		return fmt.Errorf("start status server: %w", err)
+	}
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		<-ctx.Done()
@@ -455,6 +568,125 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func applyZoneServiceReferences(ctx context.Context, zoneName string, authServer plugin.AuthoritativeServer, resolver plugin.Resolver) error {
+	if err := authServer.EnsureZone(ctx, zoneName); err != nil {
+		return err
+	}
+	// Reload authoritative server zone immediately so updates become visible to DNS.
+	if err := authServer.ReloadZone(ctx, zoneName); err != nil {
+		return err
+	}
+	if err := resolver.UpdateStubZone(ctx, zoneName); err != nil {
+		return err
+	}
+	if err := resolver.CheckConfig(ctx); err != nil {
+		return err
+	}
+	// Reload resolver to pick up any configuration changes.
+	if err := resolver.Reload(ctx); err != nil {
+		return err
+	}
+	if err := resolver.FlushZone(ctx, zoneName); err != nil {
+		return err
+	}
+	return nil
+}
+
+func rollbackAppliedZoneServiceReferences(ctx context.Context, zoneName string, hadPrevious bool, authServer plugin.AuthoritativeServer, resolver plugin.Resolver, logger *zap.Logger) error {
+	if hadPrevious {
+		return restoreZoneServiceReferences(ctx, zoneName, authServer, resolver, true, true)
+	}
+	return deleteZoneServiceReferences(ctx, zoneName, authServer, resolver, logger)
+}
+
+func deleteZoneServiceReferences(ctx context.Context, zoneName string, authServer plugin.AuthoritativeServer, resolver plugin.Resolver, logger *zap.Logger) error {
+	authDeleted := false
+	resolverDeleted := false
+
+	if err := authServer.DeleteZone(ctx, zoneName); err != nil {
+		return rollbackZoneServiceDeletion(ctx, zoneName, authServer, resolver, true, resolverDeleted, logger,
+			fmt.Errorf("delete authoritative zone: %w", err))
+	}
+	authDeleted = true
+
+	if err := resolver.DeleteStubZone(ctx, zoneName); err != nil {
+		return rollbackZoneServiceDeletion(ctx, zoneName, authServer, resolver, authDeleted, resolverDeleted, logger,
+			fmt.Errorf("delete resolver stub zone: %w", err))
+	}
+	resolverDeleted = true
+
+	if err := resolver.CheckConfig(ctx); err != nil {
+		return rollbackZoneServiceDeletion(ctx, zoneName, authServer, resolver, authDeleted, resolverDeleted, logger,
+			fmt.Errorf("check resolver config after zone deletion: %w", err))
+	}
+
+	if err := resolver.Reload(ctx); err != nil {
+		return rollbackZoneServiceDeletion(ctx, zoneName, authServer, resolver, authDeleted, resolverDeleted, logger,
+			fmt.Errorf("reload resolver after zone deletion: %w", err))
+	}
+
+	if err := resolver.FlushZone(ctx, zoneName); err != nil {
+		return rollbackZoneServiceDeletion(ctx, zoneName, authServer, resolver, authDeleted, resolverDeleted, logger,
+			fmt.Errorf("flush resolver cache after zone deletion: %w", err))
+	}
+
+	return nil
+}
+
+func rollbackZoneServiceDeletion(ctx context.Context, zoneName string, authServer plugin.AuthoritativeServer, resolver plugin.Resolver, restoreAuth bool, restoreResolver bool, logger *zap.Logger, cause error) error {
+	if err := restoreZoneServiceReferences(ctx, zoneName, authServer, resolver, restoreAuth, restoreResolver); err != nil {
+		if logger != nil {
+			logger.Error("Failed to roll back zone service deletion",
+				zap.String("zone", zoneName),
+				zap.Error(err))
+		}
+		return errors.Join(cause, fmt.Errorf("rollback zone service deletion: %w", err))
+	}
+	if logger != nil {
+		logger.Info("Rolled back zone service deletion",
+			zap.String("zone", zoneName))
+	}
+	return cause
+}
+
+func restoreZoneServiceReferences(ctx context.Context, zoneName string, authServer plugin.AuthoritativeServer, resolver plugin.Resolver, restoreAuth bool, restoreResolver bool) error {
+	var errs []error
+
+	if restoreAuth {
+		if err := authServer.EnsureZone(ctx, zoneName); err != nil {
+			errs = append(errs, fmt.Errorf("restore authoritative zone: %w", err))
+		} else if err := authServer.ReloadZone(ctx, zoneName); err != nil {
+			errs = append(errs, fmt.Errorf("reload restored authoritative zone: %w", err))
+		}
+	}
+
+	if restoreResolver {
+		if err := resolver.UpdateStubZone(ctx, zoneName); err != nil {
+			errs = append(errs, fmt.Errorf("restore resolver stub zone: %w", err))
+		} else {
+			if err := resolver.CheckConfig(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("check restored resolver config: %w", err))
+			}
+			if err := resolver.Reload(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("reload restored resolver config: %w", err))
+			} else if err := resolver.FlushZone(ctx, zoneName); err != nil {
+				errs = append(errs, fmt.Errorf("flush restored resolver cache: %w", err))
+			}
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+func sendHealthStatus(ctx context.Context, statusChan chan<- health.HealthStatus, status health.HealthStatus) bool {
+	select {
+	case statusChan <- status:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func reexecSelf() error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -469,7 +701,38 @@ func reexecSelf() error {
 }
 
 // startStatusServer starts an HTTP server for status and metrics.
-func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
+func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) (*http.Server, error) {
+	server := newStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen %s: %w", server.Addr, err)
+	}
+
+	go func() {
+		logger.Info("Starting status server", zap.String("listen", listener.Addr().String()))
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			logger.Error("Status server failed", zap.Error(err))
+		}
+	}()
+
+	return server, nil
+}
+
+func newStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
+	router := newStatusRouter(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+
+	return &http.Server{
+		Addr:              cfg.Metrics.Listen,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
+func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -483,6 +746,7 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 			"status":            "running",
 			"version":           version,
 			"zone_count":        len(zoneStates),
+			"failed_zones":      syncer.FailedZoneCount(),
 			"zones":             zoneStates,
 			"last_sync":         syncer.GetLastSuccessTime(),
 			"is_stale":          syncer.IsStale(),
@@ -525,13 +789,27 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 			return
 		}
 
+		if failedZones := syncer.FailedZoneCount(); failedZones > 0 {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status":       "not ready",
+				"reason":       "zone sync failures",
+				"failed_zones": failedZones,
+			})
+			return
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"status": "ready",
 		})
 	})
 
+	if !cfg.Metrics.Enabled {
+		logger.Info("Metrics endpoint disabled")
+		return router
+	}
+
 	// Metrics endpoint (Prometheus format)
-	router.GET("/metrics", func(c *gin.Context) {
+	router.GET(metricPath(cfg.Metrics.Path), func(c *gin.Context) {
 		var sb strings.Builder
 
 		sb.WriteString("# arca-dns agent metrics\n")
@@ -542,6 +820,10 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 		sb.WriteString("\n# HELP arca_dns_agent_sync_stale Whether sync is currently considered stale (1/0).\n")
 		sb.WriteString("# TYPE arca_dns_agent_sync_stale gauge\n")
 		sb.WriteString(fmt.Sprintf("arca_dns_agent_sync_stale %d\n", boolToInt(syncer.IsStale())))
+
+		sb.WriteString("\n# HELP arca_dns_agent_sync_failed_zones Number of zones with outstanding sync failures.\n")
+		sb.WriteString("# TYPE arca_dns_agent_sync_failed_zones gauge\n")
+		sb.WriteString(fmt.Sprintf("arca_dns_agent_sync_failed_zones %d\n", syncer.FailedZoneCount()))
 
 		lastSuccess := syncer.GetLastSuccessTime()
 		sb.WriteString("\n# HELP arca_dns_agent_sync_last_success_timestamp_seconds Unix timestamp of the last successful sync (0 if none).\n")
@@ -611,19 +893,18 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 		c.String(http.StatusOK, sb.String())
 	})
 
-	server := &http.Server{
-		Addr:    cfg.Metrics.Listen,
-		Handler: router,
+	return router
+}
+
+func metricPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/metrics"
 	}
-
-	go func() {
-		logger.Info("Starting status server", zap.String("listen", cfg.Metrics.Listen))
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("Status server failed", zap.Error(err))
-		}
-	}()
-
-	return server
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
 }
 
 func boolToInt(v bool) int {

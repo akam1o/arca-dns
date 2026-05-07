@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	agentsync "github.com/akam1o/arca-dns/internal/agent/sync"
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -39,6 +42,42 @@ func setupTest(t *testing.T) (*Handler, *backend.MemoryBackend, *httptest.Server
 	server.Listener = ln
 	server.Start()
 	return handler, store, server
+}
+
+type readinessFailingStore struct {
+	*backend.MemoryBackend
+}
+
+func (s *readinessFailingStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	return nil, errors.New("dial tcp db.internal:5432: schema path /var/lib/arca-dns")
+}
+
+type zoneStoreWithoutConditionalDelete struct {
+	inner backend.ZoneStore
+}
+
+func (s *zoneStoreWithoutConditionalDelete) GetZone(ctx context.Context, name string) (*model.Zone, error) {
+	return s.inner.GetZone(ctx, name)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	return s.inner.ListZones(ctx, opts)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) CreateZone(ctx context.Context, zone *model.Zone) error {
+	return s.inner.CreateZone(ctx, zone)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
+	return s.inner.UpdateZone(ctx, zone, expectedVersion)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) DeleteZone(ctx context.Context, name string) error {
+	return s.inner.DeleteZone(ctx, name)
+}
+
+func (s *zoneStoreWithoutConditionalDelete) Close() error {
+	return s.inner.Close()
 }
 
 func TestCreateZone(t *testing.T) {
@@ -71,6 +110,98 @@ func TestCreateZone(t *testing.T) {
 	assert.NotZero(t, created.SOA.Serial)
 }
 
+func TestReadyRedactsBackendErrors(t *testing.T) {
+	logger := zap.NewNop()
+	store := &readinessFailingStore{MemoryBackend: backend.NewMemoryBackend()}
+	handler := NewHandler(store, nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = true
+	apiCfg.Auth.APIKeys = nil
+	apiCfg.RateLimit.Enabled = false
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "not_ready", body["status"])
+	assert.Equal(t, "backend unavailable", body["error"])
+	assert.NotContains(t, w.Body.String(), "db.internal")
+	assert.NotContains(t, w.Body.String(), "/var/lib/arca-dns")
+}
+
+func TestHeadZoneReturnsETagWithoutBody(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.Background(), zone))
+
+	resp, err := http.Head(server.URL + "/api/v1/zones/example.com.")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	etag := resp.Header.Get("ETag")
+	assert.NotEmpty(t, etag)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Empty(t, body)
+
+	req, err := http.NewRequest(http.MethodHead, server.URL+"/api/v1/zones/example.com.", nil)
+	require.NoError(t, err)
+	req.Header.Set("If-None-Match", etag)
+	conditionalResp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer conditionalResp.Body.Close()
+
+	assert.Equal(t, http.StatusNotModified, conditionalResp.StatusCode)
+	assert.Equal(t, etag, conditionalResp.Header.Get("ETag"))
+}
+
+func TestHeadSignedZoneReturnsArtifactHeadersWithoutBody(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.Background(), zone))
+
+	resp, err := http.Head(server.URL + "/api/v1/zones/example.com./signed")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	etag := resp.Header.Get("ETag")
+	assert.NotEmpty(t, etag)
+	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash"))
+	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash8"))
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Empty(t, body)
+
+	req, err := http.NewRequest(http.MethodHead, server.URL+"/api/v1/zones/example.com./signed", nil)
+	require.NoError(t, err)
+	req.Header.Set("If-None-Match", etag)
+	conditionalResp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer conditionalResp.Body.Close()
+
+	assert.Equal(t, http.StatusNotModified, conditionalResp.StatusCode)
+	assert.Equal(t, etag, conditionalResp.Header.Get("ETag"))
+}
+
 func TestCreateZone_Duplicate(t *testing.T) {
 	_, _, server := setupTest(t)
 	defer server.Close()
@@ -96,6 +227,28 @@ func TestCreateZone_Duplicate(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+}
+
+func TestCreateZone_RejectsDuplicateRecords(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+
+	body, err := json.Marshal(zone)
+	require.NoError(t, err)
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 func TestGetZone(t *testing.T) {
@@ -169,6 +322,39 @@ func TestListZones(t *testing.T) {
 	assert.Equal(t, 3, result.Pagination.Count)
 }
 
+func TestListZones_SummaryFields(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	resp, err := http.Get(server.URL + "/api/v1/zones?fields=summary")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Zones      []map[string]interface{} `json:"zones"`
+		Pagination struct {
+			Count int `json:"count"`
+		} `json:"pagination"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	require.Len(t, result.Zones, 1)
+	assert.Equal(t, "example.com.", result.Zones[0]["name"])
+	assert.NotEmpty(t, result.Zones[0]["version"])
+	assert.NotContains(t, result.Zones[0], "records")
+	assert.Equal(t, 1, result.Pagination.Count)
+}
+
 func TestListZones_Pagination(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
@@ -216,7 +402,9 @@ func TestUpdateZone(t *testing.T) {
 	require.NoError(t, err)
 	originalVersion := retrieved.Version
 
-	// Update the zone
+	// Update the zone. Records in a zone update request are ignored; record
+	// mutations belong to record-specific workflows.
+	retrieved.SOA.Refresh = 7200
 	retrieved.Records = append(retrieved.Records, model.Record{
 		Name:  "www",
 		Type:  "A",
@@ -239,7 +427,643 @@ func TestUpdateZone(t *testing.T) {
 	var updated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
 	assert.NotEqual(t, originalVersion, updated.Version)
+	assert.Equal(t, uint32(7200), updated.SOA.Refresh)
+	assert.Len(t, updated.Records, 1)
+	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
+}
+
+func TestUpdateZone_OmittedRecordsPreservesExistingRecords(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	soa := retrieved.SOA
+	soa.Refresh = 7200
+
+	body, err := json.Marshal(map[string]interface{}{
+		"name": "example.com.",
+		"soa":  soa,
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", retrieved.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	assert.Equal(t, uint32(7200), updated.SOA.Refresh)
 	assert.Len(t, updated.Records, 2)
+	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
+	assert.Equal(t, "192.0.2.2", updated.Records[1].Value)
+}
+
+func TestUpdateZone_EmptyRecordsPreservesExistingRecords(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	body, err := json.Marshal(map[string]interface{}{
+		"name":    "example.com.",
+		"soa":     retrieved.SOA,
+		"records": []model.Record{},
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", retrieved.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	assert.Len(t, updated.Records, 1)
+	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
+}
+
+func TestListRecords(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	resp, err := http.Get(server.URL + "/api/v1/zones/example.com./records")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.NotEmpty(t, resp.Header.Get("ETag"))
+
+	var body struct {
+		Records []model.Record `json:"records"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Len(t, body.Records, 2)
+}
+
+func TestRecordIDsDerivedWhenBackendIDMissing(t *testing.T) {
+	records := []model.Record{
+		{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"},
+	}
+
+	withIDs := recordsWithIDs(records)
+
+	require.Len(t, withIDs, 1)
+	assert.NotEmpty(t, withIDs[0].ID)
+	assert.Equal(t, 0, findRecordByID(records, withIDs[0].ID))
+}
+
+func TestFindRecordByIDAcceptsStoredAndDerivedID(t *testing.T) {
+	record := model.Record{ID: "42", Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"}
+	records := []model.Record{record}
+
+	assert.Equal(t, 0, findRecordByID(records, "42"))
+	assert.Equal(t, 0, findRecordByID(records, derivedRecordID(record)))
+}
+
+func TestCreateRecord(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	record := model.Record{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	assert.NotEmpty(t, resp.Header.Get("ETag"))
+	assert.Contains(t, resp.Header.Get("Location"), "/api/v1/zones/example.com./records/")
+
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	assert.Len(t, updated.Records, 2)
+	assert.Equal(t, "www", updated.Records[1].Name)
+	assert.Equal(t, "192.0.2.2", updated.Records[1].Value)
+}
+
+func TestUpdateRecord(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, current.Records, 1)
+	recordID := current.Records[0].ID
+
+	record := model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.9"}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com./records/"+recordID, bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.Len(t, updated.Records, 1)
+	assert.Equal(t, recordID, updated.Records[0].ID)
+	assert.Equal(t, "192.0.2.9", updated.Records[0].Value)
+}
+
+func TestUpdateRecordAcceptsDerivedIDForStoredRecordID(t *testing.T) {
+	store, err := backend.NewSQLiteBackend(":memory:")
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.InitSchema())
+	_, server := setupTestWithStore(t, store)
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, current.Records, 1)
+	storedID := current.Records[0].ID
+	derivedID := derivedRecordID(current.Records[0])
+	require.NotEmpty(t, storedID)
+	require.NotEqual(t, storedID, derivedID)
+
+	record := model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.9"}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com./records/"+derivedID, bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.Len(t, updated.Records, 1)
+	assert.Equal(t, storedID, updated.Records[0].ID)
+	assert.Equal(t, "192.0.2.9", updated.Records[0].Value)
+}
+
+func TestUpdateRecordReleasesDerivedIDForContentAddressedBackends(t *testing.T) {
+	store, err := backend.NewGitBackendWithOptions(t.TempDir(), backend.GitBackendOptions{})
+	require.NoError(t, err)
+	defer store.Close()
+	_, server := setupTestWithStore(t, store)
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, current.Records, 1)
+	require.Empty(t, current.Records[0].ID)
+	originalDerivedID := derivedRecordID(current.Records[0])
+
+	updateRecord := model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.9"}
+	body, err := json.Marshal(updateRecord)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com./records/"+originalDerivedID, bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.Len(t, updated.Records, 1)
+	updatedID := updated.Records[0].ID
+	require.NotEmpty(t, updatedID)
+	require.NotEqual(t, originalDerivedID, updatedID)
+
+	persisted, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, persisted.Records, 1)
+	require.Empty(t, persisted.Records[0].ID)
+
+	createRecord := model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"}
+	body, err = json.Marshal(createRecord)
+	require.NoError(t, err)
+	req, err = http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", updated.Version)
+
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var recreated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&recreated))
+	require.Len(t, recreated.Records, 2)
+	assert.NotEqual(t, recreated.Records[0].ID, recreated.Records[1].ID)
+	assert.Contains(t, []string{recreated.Records[0].ID, recreated.Records[1].ID}, originalDerivedID)
+	assert.Contains(t, []string{recreated.Records[0].ID, recreated.Records[1].ID}, updatedID)
+}
+
+func TestDeleteRecord(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, current.Records, 2)
+	recordID := current.Records[1].ID
+
+	req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com./records/"+recordID, nil)
+	require.NoError(t, err)
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.Len(t, updated.Records, 1)
+	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
+}
+
+func TestBulkRecords_CreateUpdateDelete(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+			{Name: "old", Type: "A", TTL: 300, Value: "192.0.2.2"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, current.Records, 2)
+	rootID := current.Records[0].ID
+	oldID := current.Records[1].ID
+
+	body, err := json.Marshal(map[string]interface{}{
+		"create": []model.Record{
+			{Name: "api", Type: "AAAA", TTL: 300, Value: "2001:db8::1"},
+		},
+		"update": []map[string]interface{}{
+			{"id": rootID, "name": "@", "type": "A", "ttl": 300, "value": "192.0.2.9"},
+		},
+		"delete": []map[string]interface{}{
+			{"id": oldID},
+		},
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records/batch", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.NotEmpty(t, resp.Header.Get("ETag"))
+
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.Len(t, updated.Records, 2)
+	assert.NotEqual(t, current.Version, updated.Version)
+
+	records := map[string]model.Record{}
+	for _, record := range updated.Records {
+		records[record.Name] = record
+	}
+	assert.Equal(t, "192.0.2.9", records["@"].Value)
+	assert.Equal(t, "2001:db8::1", records["api"].Value)
+	assert.NotContains(t, records, "old")
+}
+
+func TestBulkRecords_RollsBackOnMissingRecord(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+			{Name: "old", Type: "A", TTL: 300, Value: "192.0.2.2"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, current.Records, 2)
+
+	body, err := json.Marshal(map[string]interface{}{
+		"create": []model.Record{
+			{Name: "api", Type: "AAAA", TTL: 300, Value: "2001:db8::1"},
+		},
+		"update": []map[string]interface{}{
+			{"id": "missing-record", "name": "@", "type": "A", "ttl": 300, "value": "192.0.2.9"},
+		},
+		"delete": []map[string]interface{}{
+			{"id": current.Records[1].ID},
+		},
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records/batch", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, current.Version, unchanged.Version)
+	assert.Len(t, unchanged.Records, 2)
+	assert.Equal(t, "old", unchanged.Records[1].Name)
+}
+
+func TestBulkRecords_RejectsDuplicateResult(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	body, err := json.Marshal(map[string]interface{}{
+		"create": []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records/batch", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+}
+
+func TestBulkRecords_RejectsEmptyOperationSet(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records/batch", bytes.NewReader([]byte(`{}`)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestCreateRecord_RequiresIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	record := model.Record{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	resp, err := http.Post(server.URL+"/api/v1/zones/example.com./records", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusPreconditionRequired, resp.StatusCode)
+}
+
+func TestCreateRecord_RejectsWildcardIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	record := model.Record{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", "*")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Empty(t, unchanged.Records)
+}
+
+func TestCreateRecord_RejectsStaleIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	record := model.Record{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", "stale-version")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+}
+
+func TestUpdateZone_PreservesDNSSECMetadata(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		DNSSEC: &model.DNSSECConfig{
+			Enabled:         true,
+			Algorithm:       13,
+			KSKKeyTag:       12345,
+			ZSKKeyTag:       23456,
+			NSEC3Enabled:    true,
+			NSEC3Iterations: 1,
+			NSEC3Salt:       "abcd",
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	soa := retrieved.SOA
+	soa.Refresh = 7200
+
+	body, err := json.Marshal(map[string]interface{}{
+		"name": "example.com.",
+		"soa":  soa,
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", retrieved.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.NotNil(t, updated.DNSSEC)
+	assert.True(t, updated.DNSSEC.Enabled)
+	assert.Equal(t, uint8(13), updated.DNSSEC.Algorithm)
+	assert.Equal(t, uint16(12345), updated.DNSSEC.KSKKeyTag)
+	assert.Equal(t, uint16(23456), updated.DNSSEC.ZSKKeyTag)
+	assert.True(t, updated.DNSSEC.NSEC3Enabled)
+	assert.Equal(t, uint16(1), updated.DNSSEC.NSEC3Iterations)
+	assert.Equal(t, "abcd", updated.DNSSEC.NSEC3Salt)
 }
 
 func TestUpdateZone_Conflict(t *testing.T) {
@@ -277,9 +1101,12 @@ func TestDeleteZone(t *testing.T) {
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
 
 	// Delete the zone
 	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
+	req.Header.Set("If-Match", current.Version)
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	require.NoError(t, err)
@@ -297,12 +1124,104 @@ func TestDeleteZone_NotFound(t *testing.T) {
 	defer server.Close()
 
 	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/nonexistent.com.", nil)
+	req.Header.Set("If-Match", "missing-version")
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestDeleteZone_RequiresIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusPreconditionRequired, resp.StatusCode)
+	_, err = store.GetZone(context.TODO(), "example.com.")
+	assert.NoError(t, err)
+}
+
+func TestDeleteZone_RejectsWildcardIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
+	req.Header.Set("If-Match", "*")
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	_, err = store.GetZone(context.TODO(), "example.com.")
+	assert.NoError(t, err)
+}
+
+func TestDeleteZone_RejectsStaleIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
+	req.Header.Set("If-Match", "stale-version")
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	_, err = store.GetZone(context.TODO(), "example.com.")
+	assert.NoError(t, err)
+}
+
+func TestDeleteZone_FallsBackWithoutConditionalDeleteStore(t *testing.T) {
+	inner := backend.NewMemoryBackend()
+	store := &zoneStoreWithoutConditionalDelete{inner: inner}
+	_, server := setupTestWithStore(t, store)
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
+	req.Header.Set("If-Match", current.Version)
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	_, err = store.GetZone(context.TODO(), "example.com.")
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
 }
 
 func TestGetSignedZone(t *testing.T) {
@@ -338,6 +1257,60 @@ func TestGetSignedZone(t *testing.T) {
 	assert.Contains(t, zoneFile, "ns1.example.com.")
 }
 
+func TestGetSignedZone_WithArtifactSignature(t *testing.T) {
+	handler, store, server := setupTest(t)
+	defer server.Close()
+	handler.SetArtifactSignatureKey("test-signature-key")
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	resp, err := http.Get(server.URL + "/api/v1/zones/example.com./signed")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, signArtifact(string(body), "test-signature-key"), resp.Header.Get("X-Zone-Signature"))
+}
+
+func TestGetSignedZone_AgentClientVerifiesArtifactSignature(t *testing.T) {
+	handler, store, server := setupTest(t)
+	defer server.Close()
+	handler.SetArtifactSignatureKey("test-signature-key")
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	client, err := agentsync.NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    10 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	defer client.Close()
+	client.SetSignatureVerification(true, "test-signature-key")
+
+	zoneFile, _, notModified, err := client.FetchSignedZone(context.Background(), "example.com.", "")
+	require.NoError(t, err)
+	assert.False(t, notModified)
+	assert.Contains(t, zoneFile, "192.0.2.1")
+}
+
 func TestGetSignedZone_NotModified(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
@@ -349,10 +1322,13 @@ func TestGetSignedZone_NotModified(t *testing.T) {
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
-	// Get zone to retrieve ETag
-	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	// Get signed artifact to retrieve its content ETag.
+	firstResp, err := http.Get(server.URL + "/api/v1/zones/example.com./signed")
 	require.NoError(t, err)
-	etag := retrieved.Version
+	etag := firstResp.Header.Get("ETag")
+	require.NotEmpty(t, etag)
+	require.Equal(t, http.StatusOK, firstResp.StatusCode)
+	require.NoError(t, firstResp.Body.Close())
 
 	// Request with If-None-Match
 	req, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/zones/example.com./signed", nil)
@@ -364,7 +1340,7 @@ func TestGetSignedZone_NotModified(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusNotModified, resp.StatusCode)
-	assert.Equal(t, formatETag(etag), resp.Header.Get("ETag"))
+	assert.Equal(t, etag, resp.Header.Get("ETag"))
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Serial"))
 
 	// Body should be empty for 304
@@ -406,4 +1382,33 @@ func TestUpdateZone_MissingIfMatch(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusPreconditionRequired, resp.StatusCode)
+}
+
+func TestUpdateZone_RejectsWildcardIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	zone.SOA.Refresh = 7200
+	body, err := json.Marshal(zone)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", "*")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, uint32(3600), unchanged.SOA.Refresh)
 }

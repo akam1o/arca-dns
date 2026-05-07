@@ -66,16 +66,18 @@ func (l *fakeZoneLister) ListZones(ctx context.Context, opts backend.ListOptions
 
 // fakeSigner implements Signer for testing.
 type fakeSigner struct {
-	mu          sync.Mutex
-	expirations map[string]uint32 // zoneName -> expiration timestamp
-	resignCalls []string          // track resign calls
-	resignErr   error
+	mu             sync.Mutex
+	expirations    map[string]uint32 // zoneName -> expiration timestamp
+	expirationErrs map[string]error
+	resignCalls    []string // track resign calls
+	resignErr      error
 }
 
 func newFakeSigner() *fakeSigner {
 	return &fakeSigner{
-		expirations: make(map[string]uint32),
-		resignCalls: make([]string, 0),
+		expirations:    make(map[string]uint32),
+		expirationErrs: make(map[string]error),
+		resignCalls:    make([]string, 0),
 	}
 }
 
@@ -83,6 +85,9 @@ func (s *fakeSigner) GetEarliestExpiration(ctx context.Context, zoneName string)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err, ok := s.expirationErrs[zoneName]; ok {
+		return 0, err
+	}
 	exp, ok := s.expirations[zoneName]
 	if !ok {
 		return 0, errors.New("no expiration data")
@@ -239,6 +244,54 @@ func TestScheduler_ZoneExpiresIn6Days(t *testing.T) {
 	}
 
 	// Check metrics
+	if metrics.GetResignCount("success") != 1 {
+		t.Errorf("Expected 1 success metric, got %d", metrics.GetResignCount("success"))
+	}
+
+	cancel()
+}
+
+func TestScheduler_ResignsWhenExpirationUnavailable(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := &fakeClock{now: now}
+	ticker := newManualTicker()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		DNSSEC: &model.DNSSECConfig{
+			Enabled: true,
+		},
+	}
+
+	lister := &fakeZoneLister{zones: []*model.Zone{zone}}
+	signer := newFakeSigner()
+	signer.expirationErrs["example.com."] = ErrSignatureExpirationUnavailable
+
+	metrics := newFakeMetrics()
+	logger := zap.NewNop()
+
+	config := DefaultSchedulerConfig()
+	config.InitialJitter = 0
+
+	scheduler := NewScheduler(config, lister, signer, clock, ticker, metrics, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = scheduler.Start(ctx)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+
+	resignCalls := signer.GetResignCalls()
+	if len(resignCalls) != 1 {
+		t.Fatalf("Expected 1 resign call, got %d", len(resignCalls))
+	}
+	if resignCalls[0] != "example.com." {
+		t.Errorf("Expected resign call for example.com., got %s", resignCalls[0])
+	}
+
 	if metrics.GetResignCount("success") != 1 {
 		t.Errorf("Expected 1 success metric, got %d", metrics.GetResignCount("success"))
 	}

@@ -102,6 +102,17 @@ $TTL 3600
 			origin:  "example.com.",
 		},
 		{
+			name: "zone with lowercase directives",
+			raw: `$origin example.com.
+$ttl 3600
+@ in soa ns1.example.com. admin.example.com. (2024010101 3600 1800 604800 86400)
+@ in ns ns1.example.com.
+ns1 in a 192.0.2.53
+`,
+			wantErr: false,
+			origin:  "example.com.",
+		},
+		{
 			name: "zone with explicit origin in SOA",
 			raw: `$TTL 3600
 example.com. IN SOA ns1.example.com. admin.example.com. (
@@ -232,9 +243,28 @@ $TTL 3600
 			wantErr: false,
 		},
 		{
+			name: "lowercase $origin directive",
+			raw: `$origin example.com.
+$TTL 3600
+@ IN SOA ns1 admin (2024010101 3600 1800 604800 86400)
+`,
+			want:    "example.com.",
+			wantErr: false,
+		},
+		{
 			name: "SOA record with explicit origin",
 			raw: `$TTL 3600
 example.com. IN SOA ns1.example.com. admin.example.com. (
+    2024010101 3600 1800 604800 86400
+)
+`,
+			want:    "example.com.",
+			wantErr: false,
+		},
+		{
+			name: "lowercase SOA record with explicit origin",
+			raw: `$TTL 3600
+example.com. in soa ns1.example.com. admin.example.com. (
     2024010101 3600 1800 604800 86400
 )
 `,

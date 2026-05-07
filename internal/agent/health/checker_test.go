@@ -64,6 +64,51 @@ func TestChecker_checkDNSQuery_Failure(t *testing.T) {
 	assert.Contains(t, result.Error.Error(), "SERVFAIL")
 }
 
+func TestChecker_checkDNSQuery_NoAnswerFails(t *testing.T) {
+	logger := zap.NewNop()
+
+	server, addr := startTestDNSServerWithOptions(t, dns.RcodeSuccess, true, false)
+	defer func() { _ = server.Shutdown() }()
+
+	checker := NewChecker(config.HealthConfig{
+		QueryTimeout: 5 * time.Second,
+		TestRecord:   "example.com",
+	}, logger)
+
+	result := checker.checkDNSQuery(context.Background(), addr, CheckTypeFullPath)
+
+	assert.False(t, result.Success)
+	require.Error(t, result.Error)
+	assert.Contains(t, result.Error.Error(), "missing expected A answer")
+}
+
+func TestChecker_checkDNSQuery_AuthoritativeCheckRequiresAA(t *testing.T) {
+	logger := zap.NewNop()
+
+	server, addr := startTestDNSServerWithOptions(t, dns.RcodeSuccess, false, true)
+	defer func() { _ = server.Shutdown() }()
+
+	checker := NewChecker(config.HealthConfig{
+		QueryTimeout: 5 * time.Second,
+		TestRecord:   "example.com",
+	}, logger)
+
+	result := checker.checkDNSQuery(context.Background(), addr, CheckTypeQuery)
+
+	assert.False(t, result.Success)
+	require.Error(t, result.Error)
+	assert.Contains(t, result.Error.Error(), "not authoritative")
+}
+
+func TestChecker_questionNameUsesTestZoneForRelativeRecord(t *testing.T) {
+	checker := NewChecker(config.HealthConfig{
+		TestZone:   "example.com.",
+		TestRecord: "www",
+	}, zap.NewNop())
+
+	assert.Equal(t, "www.example.com.", checker.questionName())
+}
+
 func TestChecker_checkLatency(t *testing.T) {
 	logger := zap.NewNop()
 
@@ -137,6 +182,124 @@ func TestChecker_CheckAll(t *testing.T) {
 	assert.True(t, status.Checks[CheckTypeLatency].Success)
 }
 
+func TestChecker_CheckAll_AuthoritativeOnly(t *testing.T) {
+	logger := zap.NewNop()
+
+	server, addr := startTestDNSServer(t, dns.RcodeSuccess)
+	defer func() { _ = server.Shutdown() }()
+
+	checker := NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout:     2 * time.Second,
+		LatencyThreshold: 100 * time.Millisecond,
+		TestRecord:       "example.com",
+		NSDServer:        addr,
+		UnboundServer:    "127.0.0.1:1",
+	}, CheckerOptions{
+		CheckAuthoritative: true,
+		CheckResolver:      false,
+	}, logger)
+
+	status := checker.CheckAll(context.Background())
+
+	assert.True(t, status.Healthy)
+	assert.Contains(t, status.Checks, CheckTypeQuery)
+	assert.NotContains(t, status.Checks, CheckTypeFullPath)
+	assert.NotContains(t, status.Checks, CheckTypeLatency)
+}
+
+func TestChecker_CheckAll_ResolverOnly(t *testing.T) {
+	logger := zap.NewNop()
+
+	server, addr := startTestDNSServer(t, dns.RcodeSuccess)
+	defer func() { _ = server.Shutdown() }()
+
+	checker := NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout:     2 * time.Second,
+		LatencyThreshold: 100 * time.Millisecond,
+		TestRecord:       "example.com",
+		NSDServer:        "127.0.0.1:1",
+		UnboundServer:    addr,
+	}, CheckerOptions{
+		CheckAuthoritative: false,
+		CheckResolver:      true,
+	}, logger)
+
+	status := checker.CheckAll(context.Background())
+
+	assert.True(t, status.Healthy)
+	assert.NotContains(t, status.Checks, CheckTypeQuery)
+	assert.Contains(t, status.Checks, CheckTypeFullPath)
+	assert.Contains(t, status.Checks, CheckTypeLatency)
+}
+
+func TestChecker_CheckAll_NoComponentsEnabled(t *testing.T) {
+	logger := zap.NewNop()
+
+	checker := NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout:     2 * time.Second,
+		LatencyThreshold: 100 * time.Millisecond,
+		TestRecord:       "example.com",
+	}, CheckerOptions{}, logger)
+
+	status := checker.CheckAll(context.Background())
+
+	assert.False(t, status.Healthy)
+	assert.Empty(t, status.Checks)
+}
+
+func TestChecker_CheckAll_AdditionalCheckAloneDoesNotMakeHealthy(t *testing.T) {
+	logger := zap.NewNop()
+
+	checker := NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout:     2 * time.Second,
+		LatencyThreshold: 100 * time.Millisecond,
+		TestRecord:       "example.com",
+	}, CheckerOptions{}, logger)
+	checker.AddCheck(func(ctx context.Context) CheckResult {
+		return CheckResult{
+			Type:      CheckTypeSync,
+			Success:   true,
+			Timestamp: time.Now(),
+		}
+	})
+
+	status := checker.CheckAll(context.Background())
+
+	assert.False(t, status.Healthy)
+	assert.Contains(t, status.Checks, CheckTypeSync)
+	assert.True(t, status.Checks[CheckTypeSync].Success)
+}
+
+func TestChecker_CheckAll_AdditionalCheckFailureMakesUnhealthy(t *testing.T) {
+	logger := zap.NewNop()
+
+	server, addr := startTestDNSServer(t, dns.RcodeSuccess)
+	defer func() { _ = server.Shutdown() }()
+
+	checker := NewCheckerWithOptions(config.HealthConfig{
+		QueryTimeout:     2 * time.Second,
+		LatencyThreshold: 100 * time.Millisecond,
+		TestRecord:       "example.com",
+		NSDServer:        addr,
+	}, CheckerOptions{
+		CheckAuthoritative: true,
+	}, logger)
+	checker.AddCheck(func(ctx context.Context) CheckResult {
+		return CheckResult{
+			Type:      CheckTypeSync,
+			Success:   false,
+			Error:     errors.New("sync failed"),
+			Timestamp: time.Now(),
+		}
+	})
+
+	status := checker.CheckAll(context.Background())
+
+	assert.False(t, status.Healthy)
+	assert.True(t, status.Checks[CheckTypeQuery].Success)
+	assert.False(t, status.Checks[CheckTypeSync].Success)
+}
+
 func TestChecker_Run(t *testing.T) {
 	logger := zap.NewNop()
 
@@ -193,13 +356,20 @@ func TestChecker_Run(t *testing.T) {
 func startTestDNSServer(t *testing.T, rcode int) (*dns.Server, string) {
 	t.Helper()
 
+	return startTestDNSServerWithOptions(t, rcode, true, true)
+}
+
+func startTestDNSServerWithOptions(t *testing.T, rcode int, authoritative bool, includeAnswer bool) (*dns.Server, string) {
+	t.Helper()
+
 	// Create handler
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
 		msg := new(dns.Msg)
 		msg.SetReply(r)
 		msg.Rcode = rcode
+		msg.Authoritative = authoritative
 
-		if rcode == dns.RcodeSuccess {
+		if rcode == dns.RcodeSuccess && includeAnswer {
 			// Add answer
 			msg.Answer = append(msg.Answer, &dns.A{
 				Hdr: dns.RR_Header{

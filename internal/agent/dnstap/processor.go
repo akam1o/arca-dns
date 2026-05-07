@@ -128,6 +128,10 @@ func (p *Processor) processFrame(frame Frame) {
 		return
 	}
 
+	if !query.IsResponse {
+		return
+	}
+
 	// Convert transport to boolean
 	isTCP := query.Transport == "tcp"
 
@@ -145,7 +149,7 @@ func (p *Processor) processFrame(frame Frame) {
 	// Record DNSSEC validation (both valid and invalid)
 	p.metrics.RecordDNSSEC(query.DNSSECValid)
 
-	// Log query (via sampler)
+	// Log response (via sampler)
 	if p.logger != nil {
 		p.logger.LogQuery(query)
 	}

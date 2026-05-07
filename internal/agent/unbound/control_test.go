@@ -1,6 +1,8 @@
 package unbound
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -49,6 +51,10 @@ func TestController_Disabled(t *testing.T) {
 
 	if err := ctrl.UpdateStubZoneConfig("example.com."); err != nil {
 		t.Errorf("UpdateStubZoneConfig should succeed when disabled: %v", err)
+	}
+
+	if err := ctrl.DeleteStubZoneConfig("example.com."); err != nil {
+		t.Errorf("DeleteStubZoneConfig should succeed when disabled: %v", err)
 	}
 
 	if err := ctrl.FlushZone("example.com."); err != nil {
@@ -104,6 +110,40 @@ func TestController_GenerateStubZoneConfig(t *testing.T) {
 		if !contains(stubConfig, expected) {
 			t.Errorf("Expected stub config to contain '%s', got: %s", expected, stubConfig)
 		}
+	}
+}
+
+func TestController_DeleteStubZoneConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger, _ := zap.NewDevelopment()
+	cfg := config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: filepath.Join(tmpDir, "unbound.conf"),
+		StubZoneConfig: config.StubZoneConfig{
+			NSDAddress: "127.0.0.1",
+			NSDPort:    5353,
+		},
+	}
+
+	ctrl := NewController(cfg, logger)
+	stubPath := filepath.Join(tmpDir, "stub-zone-example.com.conf")
+
+	if err := ctrl.UpdateStubZoneConfig("example.com."); err != nil {
+		t.Fatalf("UpdateStubZoneConfig failed: %v", err)
+	}
+	if _, err := os.Stat(stubPath); err != nil {
+		t.Fatalf("expected stub-zone file to exist: %v", err)
+	}
+
+	if err := ctrl.DeleteStubZoneConfig("example.com."); err != nil {
+		t.Fatalf("DeleteStubZoneConfig failed: %v", err)
+	}
+	if _, err := os.Stat(stubPath); !os.IsNotExist(err) {
+		t.Fatalf("expected stub-zone file to be removed, got err=%v", err)
+	}
+
+	if err := ctrl.DeleteStubZoneConfig("example.com."); err != nil {
+		t.Fatalf("DeleteStubZoneConfig should be idempotent: %v", err)
 	}
 }
 

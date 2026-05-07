@@ -25,14 +25,19 @@ curl http://controller:8080/status
 **Agent**:
 ```bash
 # Liveness check
-curl http://agent:9090/health
+curl http://localhost:9090/health
 
 # Readiness check (requires successful sync)
-curl http://agent:9090/ready
+curl http://localhost:9090/ready
 
 # Full status with zone states
-curl http://agent:9090/status
+curl http://localhost:9090/status
 ```
+
+agent の status server はデフォルトで `127.0.0.1:9090` に bind します。
+`/status` には zone 同期状態と BGP 状態が含まれるため、`metrics.listen`
+をリモート公開する場合は firewall、tunnel、または認証済みの control plane
+の背後に置いてください。
 
 ### Prometheus メトリクス
 
@@ -43,7 +48,7 @@ curl http://agent:9090/status
 - `dnssec_signing_duration_seconds`: DNSSEC 署名のレイテンシ
 - `backend_operations_total`: backend 操作数（type/status 別）
 
-**Agent metrics**（`http://agent:9090/metrics`）:
+**Agent metrics**（`http://localhost:9090/metrics`）:
 - `dns_queries_total`: type/rcode 別のクエリ数
 - `dns_query_duration_seconds`: クエリレイテンシのヒストグラム
 - `dns_udp_queries_total`, `dns_tcp_queries_total`: transport 別
@@ -113,23 +118,48 @@ curl -X POST http://controller:8080/api/v1/zones/raw \
 ### ゾーンを更新する
 
 ```bash
-# Update specific records
+# SOA メタデータを更新する。このエンドポイントでは既存 records は保持されます。
+etag="$(curl -sI http://controller:8080/api/v1/zones/example.com. \
+  -H "X-API-Key: your-api-key" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
 curl -X PUT http://controller:8080/api/v1/zones/example.com. \
   -H "X-API-Key: your-api-key" \
   -H "Content-Type: application/json" \
-  -H "If-Match: v2024122801-a3f5c2e9" \
+  -H "If-Match: ${etag}" \
   -d '{
-    "records": [
-      {"name": "www", "type": "A", "ttl": 300, "value": "192.0.2.100"}
-    ]
+    "name": "example.com.",
+    "soa": {
+      "mname": "ns1.example.com.",
+      "rname": "admin.example.com.",
+      "refresh": 3600,
+      "retry": 600,
+      "expire": 604800,
+      "minimum": 300
+    }
   }'
+
+# 特定の record は record CRUD エンドポイントで更新する。
+record_id="$(curl -s http://controller:8080/api/v1/zones/example.com./records \
+  -H "X-API-Key: your-api-key" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+etag="$(curl -sI http://controller:8080/api/v1/zones/example.com. \
+  -H "X-API-Key: your-api-key" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+curl -X PUT "http://controller:8080/api/v1/zones/example.com./records/${record_id}" \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -H "If-Match: ${etag}" \
+  -d '{"name": "www", "type": "A", "ttl": 300, "value": "192.0.2.100"}'
 ```
 
 ### ゾーンを削除する
 
 ```bash
+etag="$(curl -sI http://controller:8080/api/v1/zones/example.com. \
+  -H "X-API-Key: your-api-key" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
 curl -X DELETE http://controller:8080/api/v1/zones/example.com. \
-  -H "X-API-Key: your-api-key"
+  -H "X-API-Key: your-api-key" \
+  -H "If-Match: ${etag}"
 ```
 
 ### ゾーン状態を確認する
@@ -173,23 +203,22 @@ arca-dns-controller dnssec export-ds --zone example.com. --format json
 
 ### 鍵ローテーション
 
-**自動ローテーション**（推奨）:
-1. 設定に応じて自動的にローテート（例: 90 日）
-2. スケジューラがロールオーバー期間は旧+新鍵を維持
-3. 新しい KSK を公開後、親ゾーンの DS を更新
+現在のリリースでは自動鍵ローテーションは未実装です。DNSSEC scheduler は署名期限前の再署名を行いますが、新しい KSK/ZSK は生成しません。
 
 **手動ローテーション**:
 ```bash
-# Generate new keys
+# 先に maintenance window に入り、DNSSEC scheduler と zone/record 書き込みを止める。
+# generate-keys --rotate は新しい KSK/ZSK を即 active にする。
 arca-dns-controller dnssec generate-keys --zone example.com. --rotate
 
-# Export new DS records
+# 新しい DS を出力する
 arca-dns-controller dnssec export-ds --zone example.com.
 
-# Update DS at parent zone
-# Wait for TTL + propagation (e.g., 24 hours)
+# 親ゾーンに新 DS を提出し、伝播までは旧 DS も維持する。
+# その後 docs/dnssec.ja.md の手順に従って再署名を発生させる。
+# 新 DS が見えて再署名が成功してから scheduler と書き込みを再開する。
 
-# Remove old keys
+# 旧署名の期限切れ後、inactive な鍵ファイルを削除する
 arca-dns-controller dnssec remove-old-keys --zone example.com.
 ```
 
@@ -617,4 +646,3 @@ groups:
     expr: arca_dns_agent_health_status == 0
     for: 2m
 ```
-

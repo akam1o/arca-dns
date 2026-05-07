@@ -1,9 +1,12 @@
 package sync
 
 import (
+	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,17 +18,19 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/config"
-	"github.com/akam1o/arca-dns/pkg/model"
 )
 
 const listZonesPageLimit = 1000
 
 // Client is an HTTP client for communicating with the arca-dns controller.
 type Client struct {
-	httpClient *http.Client
-	baseURL    string
-	apiKey     string
-	config     config.ControllerClientConfig
+	httpClient       *http.Client
+	baseURL          string
+	apiKey           string
+	config           config.ControllerClientConfig
+	verifyChecksums  bool
+	verifySignatures bool
+	signatureKey     string
 }
 
 // ZoneInfo contains information about a zone from the controller.
@@ -46,7 +51,7 @@ type SignedZoneResponse struct {
 }
 
 type listZonesResponse struct {
-	Zones      []model.Zone `json:"zones"`
+	Zones      []ZoneInfo `json:"zones"`
 	Pagination struct {
 		Offset int `json:"offset"`
 		Limit  int `json:"limit"`
@@ -121,19 +126,37 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 	}
 
 	return &Client{
-		httpClient: httpClient,
-		baseURL:    cfg.URL,
-		apiKey:     cfg.APIKey,
-		config:     cfg,
+		httpClient:      httpClient,
+		baseURL:         cfg.URL,
+		apiKey:          cfg.APIKey,
+		config:          cfg,
+		verifyChecksums: true,
 	}, nil
 }
 
+// SetVerifyChecksums controls whether signed zone downloads must include and
+// match controller checksum headers.
+func (c *Client) SetVerifyChecksums(enabled bool) {
+	c.verifyChecksums = enabled
+}
+
+// SetSignatureVerification controls whether signed zone downloads must include
+// a valid X-Zone-Signature header. The signature is base64(HMAC-SHA256(body, key)).
+func (c *Client) SetSignatureVerification(enabled bool, key string) {
+	c.verifySignatures = enabled
+	c.signatureKey = key
+}
+
 // ListZones retrieves the list of zones from the controller.
-func (c *Client) ListZones() ([]ZoneInfo, error) {
+func (c *Client) ListZones(ctx context.Context) ([]ZoneInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	var zones []ZoneInfo
 
 	for offset := 0; ; {
-		result, err := c.listZonesPage(offset, listZonesPageLimit)
+		result, err := c.listZonesPage(ctx, offset, listZonesPageLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -170,17 +193,18 @@ func (c *Client) ListZones() ([]ZoneInfo, error) {
 	return zones, nil
 }
 
-func (c *Client) listZonesPage(offset, limit int) (*listZonesResponse, error) {
+func (c *Client) listZonesPage(ctx context.Context, offset, limit int) (*listZonesResponse, error) {
 	endpoint, err := url.Parse(fmt.Sprintf("%s/api/v1/zones", c.baseURL))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse request URL: %w", err)
 	}
 	query := endpoint.Query()
+	query.Set("fields", "summary")
 	query.Set("offset", fmt.Sprintf("%d", offset))
 	query.Set("limit", fmt.Sprintf("%d", limit))
 	endpoint.RawQuery = query.Encode()
 
-	req, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -210,12 +234,18 @@ func (c *Client) listZonesPage(offset, limit int) (*listZonesResponse, error) {
 }
 
 // FetchSignedZone fetches a signed zone file from the controller.
-// If currentETag is provided, it performs a conditional fetch using If-None-Match.
+// If currentETag is provided, it performs a conditional fetch using If-None-Match
+// unless artifact signatures are required. A 304 response has no body, so the
+// agent cannot verify a body signature for that response.
 // Returns (zoneContent, newETag, isNotModified, error).
-func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, string, bool, error) {
+func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentETag string) (string, string, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	url := fmt.Sprintf("%s/api/v1/zones/%s/signed", c.baseURL, zoneName)
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", "", false, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -225,9 +255,13 @@ func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, s
 		req.Header.Set("X-API-Key", c.apiKey)
 	}
 
-	// Add If-None-Match header for conditional fetch (ETag-based)
-	if normalized := normalizeIfNoneMatch(currentETag); normalized != "" {
-		req.Header.Set("If-None-Match", normalized)
+	// Add If-None-Match header for conditional fetch (ETag-based).
+	requestETag := ""
+	if !c.verifySignatures {
+		requestETag = normalizeIfNoneMatch(currentETag)
+	}
+	if requestETag != "" {
+		req.Header.Set("If-None-Match", requestETag)
 	}
 
 	resp, err := c.doWithRetry(req)
@@ -238,9 +272,30 @@ func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, s
 
 	// Handle 304 Not Modified (zone hasn't changed)
 	if resp.StatusCode == http.StatusNotModified {
-		// Extract integrity headers even on 304
-		newETag := resp.Header.Get("ETag")
-		return "", newETag, true, nil
+		if requestETag == "" {
+			return "", "", false, fmt.Errorf("received 304 Not Modified without a conditional ETag")
+		}
+
+		responseETag := normalizeIfNoneMatch(resp.Header.Get("ETag"))
+		if responseETag == "" {
+			return "", "", false, fmt.Errorf("missing ETag header in 304 response")
+		}
+		if responseETag != requestETag {
+			return "", "", false, fmt.Errorf("ETag mismatch in 304 response: requested %s, got %s", requestETag, responseETag)
+		}
+
+		if c.verifyChecksums {
+			zoneHash := resp.Header.Get("X-Zone-Hash")
+			if err := validateFullChecksumHeader(zoneHash); err != nil {
+				return "", "", false, fmt.Errorf("invalid checksum header in 304 response: %w", err)
+			}
+			responseHash := etagValue(responseETag)
+			if !strings.EqualFold(responseHash, zoneHash) {
+				return "", "", false, fmt.Errorf("checksum header mismatch in 304 response: ETag %s, X-Zone-Hash %s", responseHash, zoneHash)
+			}
+		}
+
+		return "", currentETag, true, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -264,47 +319,80 @@ func (c *Client) FetchSignedZone(zoneName string, currentETag string) (string, s
 	zoneSerial := resp.Header.Get("X-Zone-Serial")
 	zoneHash := resp.Header.Get("X-Zone-Hash")
 	zoneHash8 := resp.Header.Get("X-Zone-Hash8")
+	zoneSignature := resp.Header.Get("X-Zone-Signature")
 
-	// Verify SHA256 checksum if provided
-	if zoneHash != "" || zoneHash8 != "" {
+	// Verify SHA256 checksum when enabled. A full checksum header is required
+	// because the agent otherwise cannot detect truncated or altered artifacts.
+	if c.verifyChecksums {
+		if err := validateFullChecksumHeader(zoneHash); err != nil {
+			return "", "", false, err
+		}
+
 		computedHash := sha256.Sum256(body)
 		computedHashHex := hex.EncodeToString(computedHash[:])
-		computedHash8 := computedHashHex
-		if len(computedHash8) > 8 {
-			computedHash8 = computedHash8[:8]
+		if !strings.EqualFold(computedHashHex, zoneHash) {
+			return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash, computedHashHex)
 		}
+	}
 
-		// Backward/forward compatible verification:
-		// - If X-Zone-Hash is 64 hex chars: treat as full SHA256.
-		// - If X-Zone-Hash is 8 chars: treat as hash8.
-		// - If X-Zone-Hash8 is present: treat as hash8.
-		if zoneHash != "" {
-			switch len(zoneHash) {
-			case 64:
-				if computedHashHex != zoneHash {
-					return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash, computedHashHex)
-				}
-			case 8:
-				if computedHash8 != zoneHash {
-					return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash, computedHash8)
-				}
-			default:
-				// Unknown length; best-effort: compare prefix.
-				if !strings.HasPrefix(computedHashHex, zoneHash) {
-					return "", "", false, fmt.Errorf("checksum verification failed: expected prefix %s, got %s", zoneHash, computedHashHex)
-				}
-			}
-		}
-
-		if zoneHash8 != "" && computedHash8 != zoneHash8 {
-			return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash8, computedHash8)
+	if c.verifySignatures {
+		if err := verifyArtifactSignature(body, zoneSignature, c.signatureKey); err != nil {
+			return "", "", false, err
 		}
 	}
 
 	// Log integrity metadata for debugging
 	_ = zoneSerial // Available for logging if needed
+	_ = zoneHash8  // Short hash is display metadata only; verification uses X-Zone-Hash.
 
 	return string(body), newETag, false, nil
+}
+
+func validateFullChecksumHeader(zoneHash string) error {
+	if zoneHash == "" {
+		return fmt.Errorf("missing full checksum header in response")
+	}
+	if len(zoneHash) != sha256.Size*2 {
+		return fmt.Errorf("invalid checksum header length: expected %d hex chars, got %d", sha256.Size*2, len(zoneHash))
+	}
+	if _, err := hex.DecodeString(zoneHash); err != nil {
+		return fmt.Errorf("invalid checksum header: %w", err)
+	}
+	return nil
+}
+
+func artifactSignature(body []byte, key string) string {
+	mac := hmac.New(sha256.New, []byte(key))
+	_, _ = mac.Write(body)
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func verifyArtifactSignature(body []byte, signatureHeader string, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("signature verification enabled but controller public key is empty")
+	}
+
+	signatureHeader = strings.TrimSpace(signatureHeader)
+	if signatureHeader == "" {
+		return fmt.Errorf("missing signature header in response")
+	}
+
+	signatureHeader = strings.TrimPrefix(signatureHeader, "sha256=")
+	signatureHeader = strings.TrimPrefix(signatureHeader, "hmac-sha256=")
+
+	actual, err := base64.StdEncoding.DecodeString(signatureHeader)
+	if err != nil {
+		return fmt.Errorf("invalid signature header: %w", err)
+	}
+
+	expected := hmac.New(sha256.New, []byte(key))
+	_, _ = expected.Write(body)
+	if !hmac.Equal(actual, expected.Sum(nil)) {
+		return fmt.Errorf("signature verification failed")
+	}
+
+	return nil
 }
 
 // doWithRetry executes an HTTP request with retry logic.
@@ -313,8 +401,18 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 
 	for attempt := 0; attempt <= c.config.RetryAttempts; attempt++ {
 		if attempt > 0 {
-			// Wait before retry
-			time.Sleep(c.config.RetryDelay)
+			timer := time.NewTimer(c.config.RetryDelay)
+			select {
+			case <-timer.C:
+			case <-req.Context().Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return nil, req.Context().Err()
+			}
 		}
 
 		resp, err := c.httpClient.Do(req)

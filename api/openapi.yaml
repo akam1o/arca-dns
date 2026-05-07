@@ -33,8 +33,6 @@ security:
 tags:
   - name: zones
     description: Zone management operations
-  - name: records
-    description: Record management operations
   - name: dnssec
     description: DNSSEC operations
   - name: health
@@ -109,6 +107,13 @@ paths:
             type: integer
             default: 0
             minimum: 0
+        - name: fields
+          in: query
+          description: Response field set. Use summary to return only zone names and versions.
+          schema:
+            type: string
+            enum: [full, summary]
+            default: full
         - name: filter
           in: query
           description: Filter expression (backend-specific)
@@ -125,7 +130,9 @@ paths:
                   zones:
                     type: array
                     items:
-                      $ref: '#/components/schemas/Zone'
+                      oneOf:
+                        - $ref: '#/components/schemas/Zone'
+                        - $ref: '#/components/schemas/ZoneSummary'
                   pagination:
                     $ref: '#/components/schemas/Pagination'
         '401':
@@ -370,7 +377,7 @@ paths:
     put:
       tags: [zones]
       summary: Update a zone
-      description: Updates an existing zone (requires If-Match header for concurrency control)
+      description: Updates zone SOA metadata. Existing records and DNSSEC metadata are preserved. Requires If-Match header for concurrency control.
       operationId: updateZone
       parameters:
         - name: If-Match
@@ -409,8 +416,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '412':
-          description: Precondition failed - If-Match header required
+        '428':
+          description: Precondition required - If-Match header required
           content:
             application/json:
               schema:
@@ -421,15 +428,301 @@ paths:
     delete:
       tags: [zones]
       summary: Delete a zone
-      description: Deletes a zone and all its records
+      description: Deletes a zone and all its records. Requires If-Match with the current zone version.
       operationId: deleteZone
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          description: Current zone ETag/version for optimistic locking
+          schema:
+            type: string
       responses:
         '204':
           description: Zone deleted successfully
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Conflict - If-Match mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           $ref: '#/components/responses/NotFound'
+        '428':
+          description: Precondition required - If-Match header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}/records:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        description: Fully qualified domain name of the zone
+        schema:
+          type: string
+          example: "example.com."
+
+    get:
+      tags: [zones]
+      summary: List records for a zone
+      description: Returns records for a zone. The ETag header is the current zone version.
+      operationId: listRecords
+      responses:
+        '200':
+          description: Records for the zone
+          headers:
+            ETag:
+              description: Current zone version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - records
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Record'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [zones]
+      summary: Create a record
+      description: Creates a record in the zone. Requires If-Match with the current zone version.
+      operationId: createRecord
+      parameters:
+        - name: If-Match
+          in: header
+          description: Zone version for optimistic concurrency control
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRecordRequest'
+      responses:
+        '201':
+          description: Record created; response body is the updated zone
+          headers:
+            ETag:
+              description: New zone version
+              schema:
+                type: string
+            Location:
+              description: Created record URL when the backend returns a record id
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict - duplicate record or If-Match mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '428':
+          description: Precondition required - If-Match header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}/records/batch:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        description: Fully qualified domain name of the zone
+        schema:
+          type: string
+          example: "example.com."
+
+    post:
+      tags: [zones]
+      summary: Apply multiple record changes
+      description: Applies record deletes, updates, and creates atomically. Requires If-Match with the current zone version.
+      operationId: bulkRecords
+      parameters:
+        - name: If-Match
+          in: header
+          description: Zone version for optimistic concurrency control
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkRecordRequest'
+      responses:
+        '200':
+          description: Records updated; response body is the updated zone
+          headers:
+            ETag:
+              description: New zone version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict - duplicate record or If-Match mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '428':
+          description: Precondition required - If-Match header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}/records/{recordId}:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        description: Fully qualified domain name of the zone
+        schema:
+          type: string
+          example: "example.com."
+      - name: recordId
+        in: path
+        required: true
+        description: Record identifier from the current record list response
+        schema:
+          type: string
+
+    put:
+      tags: [zones]
+      summary: Update a record
+      description: Replaces a record in the zone. Requires If-Match with the current zone version.
+      operationId: updateRecord
+      parameters:
+        - name: If-Match
+          in: header
+          description: Zone version for optimistic concurrency control
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRecordRequest'
+      responses:
+        '200':
+          description: Record updated; response body is the updated zone
+          headers:
+            ETag:
+              description: New zone version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict - duplicate record or If-Match mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '428':
+          description: Precondition required - If-Match header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [zones]
+      summary: Delete a record
+      description: Deletes a record from the zone. Requires If-Match with the current zone version.
+      operationId: deleteRecord
+      parameters:
+        - name: If-Match
+          in: header
+          description: Zone version for optimistic concurrency control
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Record deleted; response body is the updated zone
+          headers:
+            ETag:
+              description: New zone version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict - If-Match mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '428':
+          description: Precondition required - If-Match header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -452,7 +745,7 @@ paths:
       parameters:
         - name: If-None-Match
           in: header
-          description: Zone version - returns 304 if version matches
+          description: Signed artifact ETag - returns 304 if the artifact matches
           schema:
             type: string
       responses:
@@ -460,7 +753,7 @@ paths:
           description: Signed zone file
           headers:
             ETag:
-              description: Zone version
+              description: Signed artifact SHA256 ETag
               schema:
                 type: string
             X-Zone-Serial:
@@ -476,7 +769,7 @@ paths:
               schema:
                 type: string
             X-Zone-Signature:
-              description: HMAC signature of the artifact (optional)
+              description: HMAC signature of the artifact when api.artifact_signature_key is configured
               schema:
                 type: string
           content:
@@ -484,27 +777,8 @@ paths:
               schema:
                 type: string
                 description: DNSSEC-signed zone file in BIND format
-            application/json:
-              schema:
-                type: object
-                properties:
-                  zone:
-                    type: string
-                    description: Zone file content
-                  metadata:
-                    type: object
-                    properties:
-                      version:
-                        type: string
-                      serial:
-                        type: integer
-                      hash:
-                        type: string
-                      timestamp:
-                        type: string
-                        format: date-time
         '304':
-          description: Not modified (zone version matches If-None-Match)
+          description: Not modified (signed artifact matches If-None-Match)
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -531,7 +805,7 @@ paths:
       parameters:
         - name: If-None-Match
           in: header
-          description: Zone version - returns 304 if version matches
+          description: Signed artifact ETag - returns 304 if the artifact matches
           schema:
             type: string
       responses:
@@ -539,7 +813,7 @@ paths:
           description: Signed zone metadata
           headers:
             ETag:
-              description: Zone version
+              description: Signed artifact SHA256 ETag
               schema:
                 type: string
             X-Zone-Serial:
@@ -572,7 +846,7 @@ paths:
                   dnssec_enabled:
                     type: boolean
         '304':
-          description: Not modified (zone version matches If-None-Match)
+          description: Not modified (signed artifact matches If-None-Match)
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -669,112 +943,6 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /zones/{zoneName}/records:
-    parameters:
-      - name: zoneName
-        in: path
-        required: true
-        schema:
-          type: string
-
-    get:
-      tags: [records]
-      summary: List records in a zone
-      operationId: listRecords
-      parameters:
-        - name: type
-          in: query
-          description: Filter by record type
-          schema:
-            type: string
-            enum: [A, AAAA, CNAME, MX, NS, TXT, PTR, SRV, CAA]
-        - name: name
-          in: query
-          description: Filter by record name
-          schema:
-            type: string
-      responses:
-        '200':
-          description: List of records
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  records:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Record'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
-    post:
-      tags: [records]
-      summary: Add a record to a zone
-      operationId: addRecord
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateRecordRequest'
-      responses:
-        '201':
-          description: Record added successfully
-          headers:
-            ETag:
-              description: New zone version
-              schema:
-                type: string
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Record'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
-  /zones/{zoneName}/records/{recordId}:
-    parameters:
-      - name: zoneName
-        in: path
-        required: true
-        schema:
-          type: string
-      - name: recordId
-        in: path
-        required: true
-        schema:
-          type: string
-
-    delete:
-      tags: [records]
-      summary: Delete a record
-      operationId: deleteRecord
-      responses:
-        '204':
-          description: Record deleted successfully
-          headers:
-            ETag:
-              description: New zone version
-              schema:
-                type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
   /zones/{zoneName}/dnssec/ds:
     parameters:
       - name: zoneName
@@ -792,26 +960,6 @@ paths:
         '200':
           description: DS records
           content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ds_records:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        key_tag:
-                          type: integer
-                        algorithm:
-                          type: integer
-                        digest_type:
-                          type: integer
-                        digest:
-                          type: string
-                  formatted:
-                    type: string
-                    description: DS records in BIND format
             text/plain:
               schema:
                 type: string
@@ -859,6 +1007,7 @@ paths:
       summary: Detailed status information
       description: Returns detailed status information about the controller
       operationId: getStatus
+      security: []  # No authentication required
       responses:
         '200':
           description: Status information
@@ -876,8 +1025,6 @@ paths:
                     type: string
                   date:
                     type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -921,6 +1068,21 @@ components:
           type: string
           format: date-time
 
+    ZoneSummary:
+      type: object
+      required:
+        - name
+        - version
+      properties:
+        name:
+          type: string
+          description: Fully qualified domain name
+          example: "example.com."
+        version:
+          type: string
+          description: Zone version identifier (controller-issued)
+          example: "v01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
     SOARecord:
       type: object
       required:
@@ -949,28 +1111,28 @@ components:
         refresh:
           type: integer
           format: int64
-          minimum: 0
+          minimum: 1
           maximum: 4294967295
           description: Refresh interval in seconds
           example: 3600
         retry:
           type: integer
           format: int64
-          minimum: 0
+          minimum: 1
           maximum: 4294967295
           description: Retry interval in seconds
           example: 1800
         expire:
           type: integer
           format: int64
-          minimum: 0
+          minimum: 1
           maximum: 4294967295
           description: Expiration time in seconds
           example: 604800
         minimum:
           type: integer
           format: int64
-          minimum: 0
+          minimum: 1
           maximum: 4294967295
           description: Minimum TTL in seconds
           example: 86400
@@ -985,7 +1147,7 @@ components:
       properties:
         id:
           type: string
-          description: Record identifier (backend-specific)
+          description: Record identifier. Backend-specific when stored; record CRUD responses derive a deterministic id when the backend does not provide one.
         name:
           type: string
           description: Record name (relative to zone)
@@ -997,8 +1159,8 @@ components:
         ttl:
           type: integer
           format: int64
-          minimum: 0
-          maximum: 4294967295
+          minimum: 1
+          maximum: 2147483647
           description: Time to live in seconds
           example: 300
         value:
@@ -1062,19 +1224,21 @@ components:
         soa:
           $ref: '#/components/schemas/SOARecord'
         records:
+          description: Records to create with the zone. Omit to create an empty zone.
           type: array
           items:
             $ref: '#/components/schemas/CreateRecordRequest'
 
     UpdateZoneRequest:
       type: object
+      required:
+        - name
+        - soa
       properties:
+        name:
+          type: string
         soa:
           $ref: '#/components/schemas/SOARecord'
-        records:
-          type: array
-          items:
-            $ref: '#/components/schemas/Record'
 
     CreateRecordRequest:
       type: object
@@ -1092,26 +1256,60 @@ components:
         ttl:
           type: integer
           format: int64
-          minimum: 0
-          maximum: 4294967295
+          minimum: 1
+          maximum: 2147483647
         value:
           type: string
+
+    BulkRecordRequest:
+      type: object
+      description: Batch record mutation request. Deletes are applied first, then updates, then creates.
+      properties:
+        create:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateRecordRequest'
+        update:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpdateRecordRequest'
+        delete:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeleteRecordRequest'
+
+    UpdateRecordRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreateRecordRequest'
+        - type: object
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              description: Record identifier from the current record list response
+
+    DeleteRecordRequest:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          description: Record identifier from the current record list response
 
     Pagination:
       type: object
       properties:
-        total:
-          type: integer
-          description: Total number of items
-        limit:
-          type: integer
-          description: Maximum items per page
         offset:
           type: integer
           description: Number of items skipped
-        has_more:
-          type: boolean
-          description: Whether more items are available
+        limit:
+          type: integer
+          description: Maximum items per page
+        count:
+          type: integer
+          description: Number of items returned in this page
 
     Error:
       type: object

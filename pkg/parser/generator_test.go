@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -105,6 +106,46 @@ func TestGenerateBINDZoneFile_RelativeNames(t *testing.T) {
 	assert.Contains(t, zoneFile, "mail.example.com.")
 }
 
+func TestGenerateBINDZoneFile_FQDNWithoutTrailingDot(t *testing.T) {
+	zone := &model.Zone{
+		Name:    "example.com.",
+		Version: "v1",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "www.example.com", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+
+	zoneFile, err := GenerateBINDZoneFile(zone)
+	require.NoError(t, err)
+
+	assert.Contains(t, zoneFile, "www.example.com.\t300\tIN\tA\t192.0.2.1")
+	assert.NotContains(t, zoneFile, "www.example.com.example.com.")
+}
+
+func TestGenerateBINDZoneFile_NormalizesSOATargets(t *testing.T) {
+	zone := &model.Zone{
+		Name:    "example.com.",
+		Version: "v1",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com",
+			RName:   "admin.example.com",
+			Serial:  2024122801,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	zoneFile, err := GenerateBINDZoneFile(zone)
+	require.NoError(t, err)
+
+	assert.Contains(t, zoneFile, "\tSOA\tns1.example.com. admin.example.com.")
+	assert.NotContains(t, zoneFile, "\tSOA\tns1.example.com admin.example.com")
+}
+
 func TestGenerateBINDZoneFile_AtSymbol(t *testing.T) {
 	zone := &model.Zone{
 		Name:    "example.com.",
@@ -155,6 +196,26 @@ func TestConvertRecordToRR_InvalidMX(t *testing.T) {
 	_, err := convertRecordToRR("example.com.", record)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid MX value format")
+}
+
+func TestConvertRecordToRR_SplitsLongTXT(t *testing.T) {
+	value := strings.Repeat("a", 300)
+	record := &model.Record{
+		Name:  "@",
+		Type:  "TXT",
+		TTL:   300,
+		Value: value,
+	}
+
+	rr, err := convertRecordToRR("example.com.", record)
+	require.NoError(t, err)
+
+	txt, ok := rr.(*dns.TXT)
+	require.True(t, ok)
+	require.Len(t, txt.Txt, 2)
+	assert.Len(t, txt.Txt[0], model.MaxTXTCharacterStringLength)
+	assert.Len(t, txt.Txt[1], 45)
+	assert.Equal(t, value, strings.Join(txt.Txt, ""))
 }
 
 func TestConvertRecordToRR_InvalidSRV(t *testing.T) {

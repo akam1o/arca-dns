@@ -191,54 +191,80 @@ DNSSEC key rotation should be performed periodically for security best practices
 
 **Timeline**: Allow 2× parent zone TTL between steps.
 
-1. **Generate new KSK** (Day 0)
+The current release does not support a fully automatic pre-publish or double-signature rollover. `generate-keys --rotate` makes the new KSK/ZSK active immediately, so any scheduler run, zone update, record update, or on-demand re-sign before the parent publishes the new DS can break validation.
+
+1. **Enter a controlled maintenance window** (before Day 0)
+   - Disable the DNSSEC scheduler or stop controller instances that can re-sign zones.
+   - Prevent zone and record writes for the zone being rotated.
+   - Keep the existing signed artifact available; do not purge artifact storage during the DS publication window.
+
+2. **Generate and activate a new key pair** (Day 0)
    ```bash
-   # The controller will generate a new KSK when you explicitly trigger rotation
-   # For now, use the API to update the zone, which triggers re-signing
-   curl -X PUT https://controller/api/v1/zones/example.com \
-     -H "Content-Type: application/json" \
-     -d @zone.json
+   # --rotate always generates new active KSK and ZSK keys.
+   arca-dns-controller dnssec generate-keys --zone example.com. --rotate
+   ```
+   This updates `active.json`; it does not by itself replace a cached signed zone artifact.
+
+3. **Export new DS record**
+   ```bash
+   arca-dns-controller dnssec export-ds --zone example.com. > new-ds.txt
    ```
 
-2. **Export new DS record**
-   ```bash
-   arca-dns-controller dnssec export-ds example.com > new-ds.txt
-   ```
-
-3. **Submit new DS to parent zone** (Day 0)
+4. **Submit new DS to parent zone** (Day 0)
    - Submit to registrar
    - Keep old DS record active (both old and new DS records should coexist)
 
-4. **Wait for parent zone propagation** (Day 0 + parent TTL)
+5. **Wait for parent zone propagation** (Day 0 + parent TTL)
    - Verify with: `dig +dnssec example.com DS`
+   - Do not resume scheduler or allow zone/record writes until the new DS is visible from public resolvers.
 
-5. **Remove old KSK from active set** (Day 0 + 2× parent TTL)
-   - Update `active.json` to use new KSK key tag
-   - Controller will re-sign zone with new KSK
+6. **Trigger re-signing with the active keys** (after the new DS is visible)
+   ```bash
+   BASE="https://controller/api/v1"
+   API_KEY="your-api-key"
 
-6. **Remove old DS from parent zone** (Day 0 + 3× parent TTL)
+   zone_json="$(curl -s "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}")"
+   etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+   printf '%s' "${zone_json}" | jq '{name: .name, soa: .soa}' |
+     curl -X PUT "${BASE}/zones/example.com." \
+       -H "X-API-Key: ${API_KEY}" \
+       -H "Content-Type: application/json" \
+       -H "If-Match: ${etag}" \
+       --data-binary @-
+   ```
+   `PUT /zones/:name` preserves records; it is used here only to bump the zone version and re-sign with the already rotated keys.
+   After verifying the new signed zone, resume the scheduler and normal zone/record writes.
+
+7. **Remove old DS from parent zone** (Day 0 + 3× parent TTL)
    - Request removal from registrar
+   - After old signatures have expired, remove inactive key files:
+     ```bash
+     arca-dns-controller dnssec remove-old-keys --zone example.com.
+     ```
 
 ### ZSK Rotation (Simplified)
 
-ZSK rotation does not require parent zone coordination.
+ZSK rotation does not require parent zone coordination, but the current CLI rotates KSK and ZSK together when `--rotate` is used. Treat `generate-keys --rotate` as a combined rollover and follow the KSK procedure above whenever the KSK changes.
 
 **Timeline**: Allow 2× zone maximum TTL between steps.
 
-1. **Generate new ZSK**
-   - Similar to KSK generation
+1. **Generate and activate new keys**
+   ```bash
+   arca-dns-controller dnssec generate-keys --zone example.com. --rotate
+   ```
 
-2. **Sign zone with both old and new ZSK** (Day 0)
-   - Both ZSKs sign the zone simultaneously (pre-publication)
+2. **Trigger re-signing**
+   - Use the same `PUT /zones/:name` re-signing step from the KSK procedure.
 
-3. **Switch to new ZSK only** (Day 0 + 2× max TTL)
-   - Update `active.json` to use new ZSK key tag
-   - Old ZSK signatures expire naturally
+3. **Wait for old signatures to expire** (Day 0 + 2× max TTL)
 
-4. **Remove old ZSK** (Day 0 + 3× max TTL)
-   - Delete old ZSK files
+4. **Remove inactive key files**
+   ```bash
+   arca-dns-controller dnssec remove-old-keys --zone example.com.
+   ```
 
-**Note**: Automated key rotation will be implemented in post-M8 enhancements.
+**Note**: Automated key rotation and double-signature rollover are not implemented in the current release.
 
 ## Backup and Recovery
 

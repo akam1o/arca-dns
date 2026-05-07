@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -40,6 +41,34 @@ func TestAuthenticator_Middleware_ValidKey(t *testing.T) {
 
 	assert.Equal(t, 200, w.Code)
 	assert.Contains(t, w.Body.String(), "test_admin")
+}
+
+func TestAuthenticator_Middleware_NormalizesConfiguredHash(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	testKey := "test-api-key-12345"
+	hash := sha256.Sum256([]byte(testKey))
+	hashStr := "  sha256:" + strings.ToUpper(hex.EncodeToString(hash[:])) + "  "
+
+	config := AuthConfig{
+		APIKeys: map[string]string{
+			"test_admin": hashStr,
+		},
+	}
+
+	auth := NewAuthenticator(config)
+	router := gin.New()
+	router.Use(auth.Middleware())
+	router.GET("/test", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("X-API-Key", testKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, 200, w.Code)
 }
 
 func TestAuthenticator_Middleware_InvalidKey(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/config"
+	"github.com/spf13/cobra"
 )
 
 func TestNewStoreFromConfig_SQLite(t *testing.T) {
@@ -44,6 +45,7 @@ func TestSignerOptionsFromConfig(t *testing.T) {
 	cfg := config.DNSSECConfig{
 		SignatureValidity:  48 * time.Hour,
 		SignatureInception: 2 * time.Hour,
+		ResignThreshold:    6 * time.Hour,
 		NSEC3:              true,
 		NSEC3Iterations:    7,
 		NSEC3SaltLength:    4,
@@ -57,6 +59,9 @@ func TestSignerOptionsFromConfig(t *testing.T) {
 	if options.Inception != -2*time.Hour {
 		t.Fatalf("Inception = %s, want -2h", options.Inception)
 	}
+	if options.ResignThreshold != 6*time.Hour {
+		t.Fatalf("ResignThreshold = %s, want 6h", options.ResignThreshold)
+	}
 	if !options.NSEC3Enabled {
 		t.Fatal("NSEC3Enabled = false, want true")
 	}
@@ -65,5 +70,28 @@ func TestSignerOptionsFromConfig(t *testing.T) {
 	}
 	if options.NSEC3SaltLength != 4 {
 		t.Fatalf("NSEC3SaltLength = %d, want 4", options.NSEC3SaltLength)
+	}
+}
+
+func TestApplyServeFlagOverrides_OnlyOverridesExplicitListen(t *testing.T) {
+	origListenAddr := listenAddr
+	t.Cleanup(func() { listenAddr = origListenAddr })
+
+	cfg := config.DefaultControllerConfig()
+	cfg.API.Listen = "127.0.0.1:9090"
+
+	cmd := &cobra.Command{Use: "serve"}
+	cmd.Flags().StringVar(&listenAddr, "listen", ":8080", "HTTP server listen address")
+	applyServeFlagOverrides(cmd, cfg)
+	if cfg.API.Listen != "127.0.0.1:9090" {
+		t.Fatalf("listen was overridden without explicit flag: %s", cfg.API.Listen)
+	}
+
+	if err := cmd.Flags().Set("listen", "127.0.0.1:7070"); err != nil {
+		t.Fatalf("set listen flag: %v", err)
+	}
+	applyServeFlagOverrides(cmd, cfg)
+	if cfg.API.Listen != "127.0.0.1:7070" {
+		t.Fatalf("listen was not overridden after explicit flag: %s", cfg.API.Listen)
 	}
 }

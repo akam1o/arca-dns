@@ -24,14 +24,17 @@ type PostgresBackend struct {
 // NewPostgresBackend creates a new PostgreSQL backend.
 // DSN format: "postgres://user:password@host:port/dbname?sslmode=disable"
 func NewPostgresBackend(dsn string) (*PostgresBackend, error) {
+	return NewPostgresBackendWithPool(dsn, SQLPoolConfig{})
+}
+
+// NewPostgresBackendWithPool creates a new PostgreSQL backend with connection pool settings.
+func NewPostgresBackendWithPool(dsn string, pool SQLPoolConfig) (*PostgresBackend, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open PostgreSQL connection: %w", err)
 	}
 
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	applySQLPoolConfig(db, pool)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -154,6 +157,38 @@ func (p *PostgresBackend) ListZones(ctx context.Context, opts ListOptions) ([]*m
 	return zones, nil
 }
 
+// ListZoneSummaries returns zone names and versions without loading records.
+func (p *PostgresBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	query := `
+		SELECT name, version
+		FROM zones ORDER BY name
+	`
+	args := []interface{}{}
+	if opts.Limit > 0 {
+		query += " LIMIT $1 OFFSET $2"
+		args = append(args, opts.Limit, opts.Offset)
+	}
+
+	rows, err := p.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query zone summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]*ZoneSummary, 0)
+	for rows.Next() {
+		summary := &ZoneSummary{}
+		if err := rows.Scan(&summary.Name, &summary.Version); err != nil {
+			return nil, fmt.Errorf("scan zone summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate zone summaries: %w", err)
+	}
+	return summaries, nil
+}
+
 // CreateZone creates a new zone.
 func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.Name = normalizeZoneName(zone.Name)
@@ -171,6 +206,10 @@ func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) erro
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
 
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
+
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -181,7 +220,7 @@ func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) erro
 	if err != nil {
 		return err
 	}
-	if err := p.insertRecordsPGTx(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := p.insertRecordsPGTx(ctx, tx, zoneID, zone.Records, nil); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -190,15 +229,6 @@ func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) erro
 // UpdateZone updates an existing zone.
 func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
-
-	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate version: %w", err)
-		}
-		zone.Version = v
-	}
 	zone.UpdatedAt = time.Now()
 
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -207,9 +237,11 @@ func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expe
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Preserve CreatedAt
+	// Preserve CreatedAt and advance from the stored SOA serial, not client input.
 	var createdAt time.Time
-	err = tx.QueryRowContext(ctx, "SELECT created_at FROM zones WHERE name = $1", zone.Name).Scan(&createdAt)
+	var currentVersion string
+	var currentSerial uint32
+	err = tx.QueryRowContext(ctx, "SELECT created_at, soa_serial, version FROM zones WHERE name = $1 FOR UPDATE", zone.Name).Scan(&createdAt, &currentSerial, &currentVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -217,6 +249,14 @@ func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expe
 		return fmt.Errorf("query zone: %w", err)
 	}
 	zone.CreatedAt = createdAt
+	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
+	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
+		return err
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	// CAS update
 	dnssecEnabled := false
@@ -281,10 +321,14 @@ func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expe
 	if err := tx.QueryRowContext(ctx, "SELECT id FROM zones WHERE name = $1", zone.Name).Scan(&zoneID); err != nil {
 		return fmt.Errorf("get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, tx, "SELECT id FROM records WHERE zone_id = $1", zoneID)
+	if err != nil {
+		return fmt.Errorf("load record IDs: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = $1", zoneID); err != nil {
 		return fmt.Errorf("delete records: %w", err)
 	}
-	if err := p.insertRecordsPGTx(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := p.insertRecordsPGTx(ctx, tx, zoneID, zone.Records, recordIDs); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -342,6 +386,39 @@ func (p *PostgresBackend) DeleteZone(ctx context.Context, name string) error {
 		return model.ErrZoneNotFound
 	}
 	return nil
+}
+
+// DeleteZoneWithVersion removes a zone only when its current version matches.
+func (p *PostgresBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = $1"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = $2"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := p.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("delete zone: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := p.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = $1)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
 }
 
 // Close releases resources.
@@ -462,10 +539,10 @@ func (p *PostgresBackend) scanZoneRowPG(row scannable) (*model.Zone, error) {
 
 func (p *PostgresBackend) loadRecordsPG(ctx context.Context, q pgQuerier, zoneName string) ([]model.Record, error) {
 	query := `
-		SELECT r.name, r.type, r.ttl, r.value, r.priority
+		SELECT r.id, r.name, r.type, r.ttl, r.value, r.priority
 		FROM records r JOIN zones z ON r.zone_id = z.id
 		WHERE z.name = $1
-		ORDER BY r.name, r.type
+		ORDER BY r.name, r.type, r.id
 	`
 	rows, err := q.QueryContext(ctx, query, zoneName)
 	if err != nil {
@@ -476,10 +553,12 @@ func (p *PostgresBackend) loadRecordsPG(ctx context.Context, q pgQuerier, zoneNa
 	records := make([]model.Record, 0)
 	for rows.Next() {
 		var rec model.Record
+		var id int64
 		var priority sql.NullInt64
-		if err := rows.Scan(&rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
+		if err := rows.Scan(&id, &rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
 			return nil, fmt.Errorf("scan record: %w", err)
 		}
+		rec.ID = formatSQLRecordID(id)
 		if priority.Valid {
 			p := uint16(priority.Int64)
 			rec.Priority = &p
@@ -539,17 +618,24 @@ func (p *PostgresBackend) insertZonePGTx(ctx context.Context, tx *sql.Tx, zone *
 	return zoneID, nil
 }
 
-func (p *PostgresBackend) insertRecordsPGTx(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record) error {
+func (p *PostgresBackend) insertRecordsPGTx(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record, allowedRecordIDs sqlRecordIDSet) error {
 	if len(records) == 0 {
 		return nil
 	}
 
-	query := `INSERT INTO records (zone_id, name, type, ttl, value, value_hash, priority) VALUES ($1, $2, $3, $4, $5, $6, $7)`
-	stmt, err := tx.PrepareContext(ctx, query)
+	autoIDQuery := `INSERT INTO records (zone_id, name, type, ttl, value, value_hash, priority) VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	autoIDStmt, err := tx.PrepareContext(ctx, autoIDQuery)
 	if err != nil {
 		return fmt.Errorf("prepare record insert: %w", err)
 	}
-	defer stmt.Close()
+	defer autoIDStmt.Close()
+
+	explicitIDQuery := `INSERT INTO records (id, zone_id, name, type, ttl, value, value_hash, priority) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+	explicitIDStmt, err := tx.PrepareContext(ctx, explicitIDQuery)
+	if err != nil {
+		return fmt.Errorf("prepare record insert with id: %w", err)
+	}
+	defer explicitIDStmt.Close()
 
 	for _, rec := range records {
 		hash := sha256.Sum256([]byte(rec.Value))
@@ -558,7 +644,15 @@ func (p *PostgresBackend) insertRecordsPGTx(ctx context.Context, tx *sql.Tx, zon
 		if rec.Priority != nil && *rec.Priority > 0 {
 			priority = *rec.Priority
 		}
-		if _, err := stmt.ExecContext(ctx, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
+
+		if recordID, ok := parseSQLRecordID(rec.ID); ok && allowedRecordIDs.allows(recordID) {
+			if _, err := explicitIDStmt.ExecContext(ctx, recordID, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
+				return fmt.Errorf("insert record: %w", err)
+			}
+			continue
+		}
+
+		if _, err := autoIDStmt.ExecContext(ctx, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
 			return fmt.Errorf("insert record: %w", err)
 		}
 	}
@@ -633,6 +727,37 @@ func (t *pgTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, 
 	return zones, nil
 }
 
+func (t *pgTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	query := `
+		SELECT name, version
+		FROM zones ORDER BY name
+	`
+	args := []interface{}{}
+	if opts.Limit > 0 {
+		query += " LIMIT $1 OFFSET $2"
+		args = append(args, opts.Limit, opts.Offset)
+	}
+
+	rows, err := t.tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query zone summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]*ZoneSummary, 0)
+	for rows.Next() {
+		summary := &ZoneSummary{}
+		if err := rows.Scan(&summary.Name, &summary.Version); err != nil {
+			return nil, fmt.Errorf("scan zone summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate zone summaries: %w", err)
+	}
+	return summaries, nil
+}
+
 func (t *pgTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.Name = normalizeZoneName(zone.Name)
 	if zone.SOA.Serial == 0 {
@@ -648,27 +773,24 @@ func (t *pgTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	now := time.Now()
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 	zoneID, err := t.backend.insertZonePGTx(ctx, t.tx, zone)
 	if err != nil {
 		return err
 	}
-	return t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, zone.Records, nil)
 }
 
 func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
-	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate version: %w", err)
-		}
-		zone.Version = v
-	}
 	zone.UpdatedAt = time.Now()
 
 	var createdAt time.Time
-	err := t.tx.QueryRowContext(ctx, "SELECT created_at FROM zones WHERE name = $1", zone.Name).Scan(&createdAt)
+	var currentVersion string
+	var currentSerial uint32
+	err := t.tx.QueryRowContext(ctx, "SELECT created_at, soa_serial, version FROM zones WHERE name = $1 FOR UPDATE", zone.Name).Scan(&createdAt, &currentSerial, &currentVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -676,6 +798,14 @@ func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion
 		return fmt.Errorf("query zone: %w", err)
 	}
 	zone.CreatedAt = createdAt
+	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
+	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
+		return err
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	dnssecEnabled := false
 	var dnssecAlgo, dnssecKSK, dnssecZSK interface{}
@@ -736,10 +866,14 @@ func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion
 	if err := t.tx.QueryRowContext(ctx, "SELECT id FROM zones WHERE name = $1", zone.Name).Scan(&zoneID); err != nil {
 		return fmt.Errorf("get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, t.tx, "SELECT id FROM records WHERE zone_id = $1", zoneID)
+	if err != nil {
+		return fmt.Errorf("load record IDs: %w", err)
+	}
 	if _, err := t.tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = $1", zoneID); err != nil {
 		return fmt.Errorf("delete records: %w", err)
 	}
-	return t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, zone.Records, recordIDs)
 }
 
 func (t *pgTx) DeleteZone(ctx context.Context, name string) error {
@@ -758,6 +892,38 @@ func (t *pgTx) DeleteZone(ctx context.Context, name string) error {
 	return nil
 }
 
+func (t *pgTx) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = $1"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = $2"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := t.tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("delete zone: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := t.tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = $1)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
+}
+
 func (t *pgTx) Close() error                       { return nil }
 func (t *pgTx) Commit(ctx context.Context) error   { return t.tx.Commit() }
 func (t *pgTx) Rollback(ctx context.Context) error { return t.tx.Rollback() }
@@ -768,6 +934,6 @@ func init() {
 		if !ok {
 			return nil, fmt.Errorf("PostgreSQL DSN is required")
 		}
-		return NewPostgresBackend(dsn)
+		return NewPostgresBackendWithPool(dsn, sqlPoolConfigFromMap(cfg))
 	})
 }

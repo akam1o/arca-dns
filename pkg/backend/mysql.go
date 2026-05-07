@@ -27,15 +27,17 @@ type MySQLBackend struct {
 // NewMySQLBackend creates a new MySQL backend.
 // DSN format: user:password@tcp(host:port)/dbname?parseTime=true
 func NewMySQLBackend(dsn string) (*MySQLBackend, error) {
+	return NewMySQLBackendWithPool(dsn, SQLPoolConfig{})
+}
+
+// NewMySQLBackendWithPool creates a new MySQL backend with connection pool settings.
+func NewMySQLBackendWithPool(dsn string, pool SQLPoolConfig) (*MySQLBackend, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open MySQL connection: %w", err)
 	}
 
-	// Configure connection pool
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	applySQLPoolConfig(db, pool)
 
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -147,11 +149,11 @@ func (m *MySQLBackend) GetZone(ctx context.Context, name string) (*model.Zone, e
 // loadRecords loads all records for a zone.
 func (m *MySQLBackend) loadRecords(ctx context.Context, zoneName string) ([]model.Record, error) {
 	query := `
-		SELECT r.name, r.type, r.ttl, r.value, r.priority
+		SELECT r.id, r.name, r.type, r.ttl, r.value, r.priority
 		FROM records r
 		JOIN zones z ON r.zone_id = z.id
 		WHERE z.name = ?
-		ORDER BY r.name, r.type
+		ORDER BY r.name, r.type, r.id
 	`
 
 	rows, err := m.db.QueryContext(ctx, query, zoneName)
@@ -163,12 +165,14 @@ func (m *MySQLBackend) loadRecords(ctx context.Context, zoneName string) ([]mode
 	records := make([]model.Record, 0)
 	for rows.Next() {
 		var rec model.Record
+		var id int64
 		var priority sql.NullInt64
 
-		if err := rows.Scan(&rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
+		if err := rows.Scan(&id, &rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
 			return nil, fmt.Errorf("failed to scan record: %w", err)
 		}
 
+		rec.ID = formatSQLRecordID(id)
 		if priority.Valid {
 			p := uint16(priority.Int64)
 			rec.Priority = &p
@@ -268,6 +272,42 @@ func (m *MySQLBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mode
 	return zones, nil
 }
 
+// ListZoneSummaries returns zone names and versions without loading records.
+func (m *MySQLBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	query := `
+		SELECT name, version
+		FROM zones
+		ORDER BY name
+	`
+
+	args := []interface{}{}
+	if opts.Limit > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, opts.Limit, opts.Offset)
+	}
+
+	rows, err := m.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query zone summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]*ZoneSummary, 0)
+	for rows.Next() {
+		summary := &ZoneSummary{}
+		if err := rows.Scan(&summary.Name, &summary.Version); err != nil {
+			return nil, fmt.Errorf("failed to scan zone summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating zone summaries: %w", err)
+	}
+
+	return summaries, nil
+}
+
 // CreateZone creates a new zone.
 func (m *MySQLBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	return m.withRetry(ctx, func(ctx context.Context) error {
@@ -296,6 +336,10 @@ func (m *MySQLBackend) createZone(ctx context.Context, zone *model.Zone) error {
 	now := time.Now()
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	// Start transaction
 	tx, err := m.db.BeginTx(ctx, nil)
@@ -356,7 +400,7 @@ func (m *MySQLBackend) createZone(ctx context.Context, zone *model.Zone) error {
 	}
 
 	// Insert records
-	if err := m.insertRecords(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := m.insertRecords(ctx, tx, zoneID, zone.Records, nil); err != nil {
 		return err
 	}
 
@@ -418,18 +462,6 @@ func (m *MySQLBackend) updateDNSSECMetadata(ctx context.Context, zoneName string
 func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
 
-	// Auto-increment serial
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
-
-	// Ensure version changes on update (normally issued by controller).
-	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
-		newVersion, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = newVersion
-	}
-
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
 
@@ -439,6 +471,25 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Advance from the stored SOA serial, not client input.
+	var currentVersion string
+	var currentSerial uint32
+	err = tx.QueryRowContext(ctx, "SELECT version, soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&currentVersion, &currentSerial)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ErrZoneNotFound
+		}
+		return fmt.Errorf("failed to query zone serial: %w", err)
+	}
+	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
+	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
+		return err
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	// Update zone. Add CAS condition only when an expected version is provided.
 	zoneQuery := `
@@ -514,6 +565,10 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 	if err != nil {
 		return fmt.Errorf("failed to get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, tx, "SELECT id FROM records WHERE zone_id = ?", zoneID)
+	if err != nil {
+		return fmt.Errorf("failed to load record IDs: %w", err)
+	}
 
 	// Delete old records
 	_, err = tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = ?", zoneID)
@@ -522,7 +577,7 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 	}
 
 	// Insert new records
-	if err := m.insertRecords(ctx, tx, zoneID, zone.Records); err != nil {
+	if err := m.insertRecords(ctx, tx, zoneID, zone.Records, recordIDs); err != nil {
 		return err
 	}
 
@@ -549,6 +604,46 @@ func (m *MySQLBackend) DeleteZone(ctx context.Context, name string) error {
 	}
 
 	return nil
+}
+
+// DeleteZoneWithVersion removes a zone only when its current version matches.
+func (m *MySQLBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	return m.withRetry(ctx, func(ctx context.Context) error {
+		return m.deleteZoneWithVersion(ctx, name, expectedVersion)
+	})
+}
+
+func (m *MySQLBackend) deleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = ?"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = ?"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := m.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to delete zone: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := m.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("failed to check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
 }
 
 // Close releases resources held by the backend.
@@ -647,11 +742,11 @@ func (t *MySQLTx) GetZone(ctx context.Context, name string) (*model.Zone, error)
 // loadRecords loads all records for a zone within the transaction.
 func (t *MySQLTx) loadRecords(ctx context.Context, zoneName string) ([]model.Record, error) {
 	query := `
-		SELECT r.name, r.type, r.ttl, r.value, r.priority
+		SELECT r.id, r.name, r.type, r.ttl, r.value, r.priority
 		FROM records r
 		JOIN zones z ON r.zone_id = z.id
 		WHERE z.name = ?
-		ORDER BY r.name, r.type
+		ORDER BY r.name, r.type, r.id
 	`
 
 	rows, err := t.tx.QueryContext(ctx, query, zoneName)
@@ -663,12 +758,14 @@ func (t *MySQLTx) loadRecords(ctx context.Context, zoneName string) ([]model.Rec
 	records := make([]model.Record, 0)
 	for rows.Next() {
 		var rec model.Record
+		var id int64
 		var priority sql.NullInt64
 
-		if err := rows.Scan(&rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
+		if err := rows.Scan(&id, &rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
 			return nil, fmt.Errorf("failed to scan record: %w", err)
 		}
 
+		rec.ID = formatSQLRecordID(id)
 		if priority.Valid {
 			p := uint16(priority.Int64)
 			rec.Priority = &p
@@ -770,6 +867,41 @@ func (t *MySQLTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zon
 	return zones, nil
 }
 
+func (t *MySQLTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	query := `
+		SELECT name, version
+		FROM zones
+		ORDER BY name
+	`
+
+	args := []interface{}{}
+	if opts.Limit > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, opts.Limit, opts.Offset)
+	}
+
+	rows, err := t.tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query zone summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]*ZoneSummary, 0)
+	for rows.Next() {
+		summary := &ZoneSummary{}
+		if err := rows.Scan(&summary.Name, &summary.Version); err != nil {
+			return nil, fmt.Errorf("failed to scan zone summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating zone summaries: %w", err)
+	}
+
+	return summaries, nil
+}
+
 // CreateZone creates a new zone within the transaction.
 func (t *MySQLTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	zone.Name = normalizeZoneName(zone.Name)
@@ -792,6 +924,10 @@ func (t *MySQLTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	now := time.Now()
 	zone.CreatedAt = now
 	zone.UpdatedAt = now
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	// Insert zone
 	zoneQuery := `
@@ -845,27 +981,34 @@ func (t *MySQLTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	}
 
 	// Insert records
-	return t.backend.insertRecords(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecords(ctx, t.tx, zoneID, zone.Records, nil)
 }
 
 // UpdateZone updates an existing zone within the transaction.
 func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
 
-	// Auto-increment serial
-	zone.SOA.Serial = generateSerial(zone.SOA.Serial)
-
-	// Ensure version changes on update (normally issued by controller).
-	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
-		newVersion, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = newVersion
-	}
-
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
+
+	// Advance from the stored SOA serial, not client input.
+	var currentVersion string
+	var currentSerial uint32
+	err := t.tx.QueryRowContext(ctx, "SELECT version, soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&currentVersion, &currentSerial)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ErrZoneNotFound
+		}
+		return fmt.Errorf("failed to query zone serial: %w", err)
+	}
+	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
+	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
+		return err
+	}
+
+	if err := validateZoneForWrite(zone); err != nil {
+		return err
+	}
 
 	// Update zone. Add CAS condition only when an expected version is provided.
 	zoneQuery := `
@@ -941,6 +1084,10 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 	if err != nil {
 		return fmt.Errorf("failed to get zone ID: %w", err)
 	}
+	recordIDs, err := loadSQLRecordIDSet(ctx, t.tx, "SELECT id FROM records WHERE zone_id = ?", zoneID)
+	if err != nil {
+		return fmt.Errorf("failed to load record IDs: %w", err)
+	}
 
 	// Delete old records
 	_, err = t.tx.ExecContext(ctx, "DELETE FROM records WHERE zone_id = ?", zoneID)
@@ -949,7 +1096,7 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 	}
 
 	// Insert new records
-	return t.backend.insertRecords(ctx, t.tx, zoneID, zone.Records)
+	return t.backend.insertRecords(ctx, t.tx, zoneID, zone.Records, recordIDs)
 }
 
 // DeleteZone removes a zone within the transaction.
@@ -974,6 +1121,39 @@ func (t *MySQLTx) DeleteZone(ctx context.Context, name string) error {
 	return nil
 }
 
+func (t *MySQLTx) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
+	name = normalizeZoneName(name)
+
+	query := "DELETE FROM zones WHERE name = ?"
+	args := []interface{}{name}
+	if expectedVersion != "" {
+		query += " AND version = ?"
+		args = append(args, expectedVersion)
+	}
+
+	result, err := t.tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to delete zone: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := t.tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("failed to check zone existence: %w", err)
+	}
+	if exists {
+		return model.ErrConflict
+	}
+	return model.ErrZoneNotFound
+}
+
 // Close is a no-op for transactions (use Commit or Rollback instead).
 func (t *MySQLTx) Close() error {
 	return nil
@@ -990,21 +1170,32 @@ func (t *MySQLTx) Rollback(ctx context.Context) error {
 }
 
 // insertRecords inserts records for a zone within a transaction.
-func (m *MySQLBackend) insertRecords(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record) error {
+func (m *MySQLBackend) insertRecords(ctx context.Context, tx *sql.Tx, zoneID int64, records []model.Record, allowedRecordIDs sqlRecordIDSet) error {
 	if len(records) == 0 {
 		return nil
 	}
 
-	recordQuery := `
+	autoIDQuery := `
 		INSERT INTO records (zone_id, name, type, ttl, value, value_hash, priority)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
 
-	stmt, err := tx.PrepareContext(ctx, recordQuery)
+	autoIDStmt, err := tx.PrepareContext(ctx, autoIDQuery)
 	if err != nil {
 		return fmt.Errorf("failed to prepare record statement: %w", err)
 	}
-	defer stmt.Close()
+	defer autoIDStmt.Close()
+
+	explicitIDQuery := `
+		INSERT INTO records (id, zone_id, name, type, ttl, value, value_hash, priority)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	explicitIDStmt, err := tx.PrepareContext(ctx, explicitIDQuery)
+	if err != nil {
+		return fmt.Errorf("failed to prepare record statement with id: %w", err)
+	}
+	defer explicitIDStmt.Close()
 
 	for _, rec := range records {
 		valueHash := computeValueHash(rec.Value)
@@ -1013,8 +1204,14 @@ func (m *MySQLBackend) insertRecords(ctx context.Context, tx *sql.Tx, zoneID int
 			priority = *rec.Priority
 		}
 
-		_, err := stmt.ExecContext(ctx, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority)
-		if err != nil {
+		if recordID, ok := parseSQLRecordID(rec.ID); ok && allowedRecordIDs.allows(recordID) {
+			if _, err := explicitIDStmt.ExecContext(ctx, recordID, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
+				return fmt.Errorf("failed to insert record: %w", err)
+			}
+			continue
+		}
+
+		if _, err := autoIDStmt.ExecContext(ctx, zoneID, rec.Name, rec.Type, rec.TTL, rec.Value, valueHash, priority); err != nil {
 			return fmt.Errorf("failed to insert record: %w", err)
 		}
 	}
@@ -1079,6 +1276,6 @@ func init() {
 		if !ok {
 			return nil, fmt.Errorf("MySQL DSN is required")
 		}
-		return NewMySQLBackend(dsn)
+		return NewMySQLBackendWithPool(dsn, sqlPoolConfigFromMap(cfg))
 	})
 }

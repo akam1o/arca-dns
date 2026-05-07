@@ -2,7 +2,9 @@ package backend
 
 import (
 	"context"
+	"math"
 	"testing"
+	"time"
 
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -278,39 +280,55 @@ func TestMemoryBackend_Close(t *testing.T) {
 }
 
 func TestGenerateSerial(t *testing.T) {
+	now := time.Now()
+	today := uint32(now.Year()*10000 + int(now.Month())*100 + now.Day())
+	todayFirst := today*100 + 1
+	todayLast := today*100 + 99
+	oldDate := uint32((now.Year()-1)*10000 + int(now.Month())*100 + now.Day())
+	oldSerial := oldDate*100 + 1
+	futureDate := uint32((now.Year()+1)*10000 + int(now.Month())*100 + now.Day())
+	futureSerial := futureDate*100 + 1
+
 	tests := []struct {
-		name          string
-		currentSerial uint32
-		wantDateBased bool
-		wantIncrement bool
+		name string
+		in   uint32
+		want uint32
 	}{
 		{
-			name:          "first serial",
-			currentSerial: 0,
-			wantDateBased: true,
+			name: "first serial",
+			in:   0,
+			want: todayFirst,
 		},
 		{
-			name:          "increment same day",
-			currentSerial: 2024122801,
-			wantIncrement: true,
+			name: "old serial moves to today",
+			in:   oldSerial,
+			want: todayFirst,
+		},
+		{
+			name: "same day counter increments",
+			in:   todayFirst,
+			want: todayFirst + 1,
+		},
+		{
+			name: "same day exhausted counter still moves forward",
+			in:   todayLast,
+			want: todayLast + 1,
+		},
+		{
+			name: "future serial still moves forward",
+			in:   futureSerial,
+			want: futureSerial + 1,
+		},
+		{
+			name: "max uint32 does not move backward",
+			in:   math.MaxUint32,
+			want: math.MaxUint32,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			newSerial := generateSerial(tt.currentSerial)
-			assert.NotZero(t, newSerial)
-
-			if tt.wantIncrement && tt.currentSerial > 0 {
-				// Serial should be incremented
-				assert.True(t, newSerial > tt.currentSerial)
-			}
-
-			if tt.wantDateBased {
-				// Serial should follow YYYYMMDDnn format
-				assert.True(t, newSerial > 2024010100)
-				assert.True(t, newSerial < 2100010100)
-			}
+			assert.Equal(t, tt.want, generateSerial(tt.in))
 		})
 	}
 }

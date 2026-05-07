@@ -1,6 +1,15 @@
 package config
 
-import "time"
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const DefaultDNSTapSocketMode = os.FileMode(0o660)
+const DefaultDNSTapSocketModeString = "0660"
 
 // ControllerConfig is the configuration for the arca-dns-controller.
 type ControllerConfig struct {
@@ -20,12 +29,21 @@ type ControllerConfig struct {
 	Logging LoggingConfig `mapstructure:"logging"`
 }
 
+// DNSSECKeyDirectory returns the effective directory used for DNSSEC key
+// material. storage.key_directory is kept as a compatibility alias.
+func (c *ControllerConfig) DNSSECKeyDirectory() string {
+	if keyDirectory := strings.TrimSpace(c.DNSSEC.KeyDirectory); keyDirectory != "" {
+		return keyDirectory
+	}
+	return strings.TrimSpace(c.Storage.KeyDirectory)
+}
+
 // AgentConfig is the configuration for the arca-dns-agent.
 type AgentConfig struct {
 	// Controller configuration
 	Controller ControllerClientConfig `mapstructure:"controller"`
 
-	// Authoritative is the authoritative DNS server type ("nsd" or "knot").
+	// Authoritative is the authoritative DNS server type. Currently supported: "nsd".
 	// Default: "nsd"
 	Authoritative string `mapstructure:"authoritative"`
 
@@ -58,6 +76,10 @@ type AgentConfig struct {
 type APIConfig struct {
 	// Listen address (e.g., "0.0.0.0:8080")
 	Listen string `mapstructure:"listen"`
+
+	// ArtifactSignatureKey signs signed-zone artifact responses with HMAC-SHA256.
+	// Agents use sync.controller_public_key with the same value to verify.
+	ArtifactSignatureKey string `mapstructure:"artifact_signature_key"`
 
 	// Authentication configuration
 	Auth AuthConfig `mapstructure:"auth"`
@@ -198,8 +220,8 @@ type GitBackendConfig struct {
 	// AutoPush enables automatic pushing to remote
 	AutoPush bool `mapstructure:"auto_push"`
 
-	// AutoPull enables automatic pulling from remote
-	AutoPull bool `mapstructure:"auto_pull"`
+	// AutoPull enables automatic pulling from remote. Nil means not explicitly configured.
+	AutoPull *bool `mapstructure:"auto_pull"`
 
 	// PullInterval is the interval for automatic pulling
 	PullInterval time.Duration `mapstructure:"pull_interval"`
@@ -323,6 +345,10 @@ type NSDConfig struct {
 
 	// ConfigPath is the path to nsd.conf
 	ConfigPath string `mapstructure:"config_path"`
+
+	// ZoneConfigPath is the generated NSD config file containing managed zone stanzas.
+	// The main nsd.conf must include this file.
+	ZoneConfigPath string `mapstructure:"zone_config_path"`
 
 	// ControlPath is the path to nsd-control binary
 	ControlPath string `mapstructure:"control_path"`
@@ -474,6 +500,15 @@ type DNSTapConfig struct {
 	// SocketPath is the path to DNSTap Unix socket
 	SocketPath string `mapstructure:"socket_path"`
 
+	// SocketMode is the octal permission mode for the DNSTap Unix socket.
+	SocketMode string `mapstructure:"socket_mode"`
+
+	// SocketOwner is the optional user or numeric UID for the DNSTap socket.
+	SocketOwner string `mapstructure:"socket_owner"`
+
+	// SocketGroup is the optional group or numeric GID for the DNSTap socket.
+	SocketGroup string `mapstructure:"socket_group"`
+
 	// LogFile is the path to the DNSTap log file
 	LogFile string `mapstructure:"log_file"`
 
@@ -505,12 +540,12 @@ type LogRotationConfig struct {
 	Compress bool `mapstructure:"compress"`
 }
 
-// MetricsConfig configures Prometheus metrics.
+// MetricsConfig configures the agent status server and Prometheus metrics.
 type MetricsConfig struct {
 	// Enabled enables metrics endpoint
 	Enabled bool `mapstructure:"enabled"`
 
-	// Listen address for metrics endpoint
+	// Listen address for status and metrics endpoints
 	Listen string `mapstructure:"listen"`
 
 	// Path is the HTTP path for metrics (default: /metrics)
@@ -572,7 +607,7 @@ type SyncConfig struct {
 	// VerifySignatures enables artifact signature verification
 	VerifySignatures bool `mapstructure:"verify_signatures"`
 
-	// ControllerPublicKey is the controller's public key for verification
+	// ControllerPublicKey is the HMAC key used to verify controller artifact signatures.
 	ControllerPublicKey string `mapstructure:"controller_public_key"`
 }
 
@@ -643,6 +678,45 @@ func DefaultControllerConfig() *ControllerConfig {
 	}
 }
 
+// SocketFileMode parses the configured DNSTap socket permission mode.
+func (c DNSTapConfig) SocketFileMode() (os.FileMode, error) {
+	return ParseDNSTapSocketMode(c.SocketMode)
+}
+
+// ParseDNSTapSocketMode parses a DNSTap Unix socket permission mode from an
+// octal string such as "0660" or "0o660".
+func ParseDNSTapSocketMode(value string) (os.FileMode, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, fmt.Errorf("empty")
+	}
+
+	trimmed = strings.TrimPrefix(trimmed, "0o")
+	trimmed = strings.TrimPrefix(trimmed, "0O")
+	trimmed = strings.TrimPrefix(trimmed, "0")
+	if trimmed == "" {
+		return 0, fmt.Errorf("must include permission bits")
+	}
+
+	parsed, err := strconv.ParseUint(trimmed, 8, 32)
+	if err != nil {
+		return 0, fmt.Errorf("must be an octal permission string: %w", err)
+	}
+
+	mode := os.FileMode(parsed)
+	if mode&^os.ModePerm != 0 {
+		return 0, fmt.Errorf("must contain only permission bits")
+	}
+	if mode&0o600 != 0o600 {
+		return 0, fmt.Errorf("must grant owner read and write")
+	}
+	if mode&0o007 != 0 {
+		return 0, fmt.Errorf("must not grant permissions to other users")
+	}
+
+	return mode, nil
+}
+
 // DefaultAgentConfig returns the default agent configuration.
 func DefaultAgentConfig() *AgentConfig {
 	return &AgentConfig{
@@ -654,12 +728,13 @@ func DefaultAgentConfig() *AgentConfig {
 		},
 		Authoritative: "nsd",
 		NSD: NSDConfig{
-			Enabled:       true,
-			ConfigPath:    "/etc/nsd/nsd.conf",
-			ControlPath:   "/usr/sbin/nsd-control",
-			ZoneDirectory: "/var/lib/nsd/zones",
-			CheckzonePath: "/usr/sbin/nsd-checkzone",
-			ReloadTimeout: 10 * time.Second,
+			Enabled:        true,
+			ConfigPath:     "/etc/nsd/nsd.conf",
+			ZoneConfigPath: "/etc/nsd/arca-dns-zones.conf",
+			ControlPath:    "/usr/sbin/nsd-control",
+			ZoneDirectory:  "/var/lib/nsd/zones",
+			CheckzonePath:  "/usr/sbin/nsd-checkzone",
+			ReloadTimeout:  10 * time.Second,
 		},
 		Unbound: UnboundConfig{
 			Enabled:        true,
@@ -687,6 +762,7 @@ func DefaultAgentConfig() *AgentConfig {
 		DNSTap: DNSTapConfig{
 			Enabled:    true,
 			SocketPath: "/var/run/dnstap.sock",
+			SocketMode: DefaultDNSTapSocketModeString,
 			LogFile:    "/var/log/arca-dns/dnstap.log",
 			LogRotation: LogRotationConfig{
 				MaxSize:    100, // 100 MB
@@ -700,7 +776,7 @@ func DefaultAgentConfig() *AgentConfig {
 		},
 		Metrics: MetricsConfig{
 			Enabled: true,
-			Listen:  "0.0.0.0:9090",
+			Listen:  "127.0.0.1:9090",
 			Path:    "/metrics",
 		},
 		Health: HealthConfig{
@@ -719,7 +795,7 @@ func DefaultAgentConfig() *AgentConfig {
 			MaxStaleness:     5 * time.Minute,
 			BackupVersions:   3,
 			VerifyChecksums:  true,
-			VerifySignatures: false, // Disabled by default
+			VerifySignatures: true,
 		},
 		Logging: LoggingConfig{
 			Level:            "info",

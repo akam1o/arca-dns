@@ -154,35 +154,7 @@ func NormalizeZoneForHashing(zone *model.Zone) ([]byte, error) {
 // - Name without trailing dot but contains the zone origin → FQDN, normalize and return
 // - Name without trailing dot and doesn't contain zone origin → Relative, prepend to zone origin
 func expandOwnerName(name, zoneOrigin string) string {
-	if name == "@" {
-		return zoneOrigin
-	}
-
-	// Already FQDN with trailing dot?
-	if strings.HasSuffix(name, ".") {
-		return model.NormalizeZoneName(name)
-	}
-
-	// Check if name is already a FQDN (contains zone origin as suffix with label boundary)
-	// e.g., "www.example.com" with zone "example.com." is FQDN
-	// but "www.notexample.com" with zone "example.com." is NOT
-	normalizedZone := strings.TrimSuffix(zoneOrigin, ".")
-	nameLower := strings.ToLower(name)
-	zoneLower := strings.ToLower(normalizedZone)
-
-	if nameLower == zoneLower {
-		// Apex without trailing dot
-		return model.NormalizeZoneName(name)
-	}
-
-	if strings.HasSuffix(nameLower, "."+zoneLower) {
-		// It's a FQDN without trailing dot with proper label boundary
-		return model.NormalizeZoneName(name)
-	}
-
-	// Relative: prepend to zone origin
-	// "www" + "example.com." → "www.example.com."
-	return model.NormalizeZoneName(name + "." + zoneOrigin)
+	return model.NormalizeRecordOwnerName(name, zoneOrigin)
 }
 
 // normalizeRecordValue normalizes RDATA values that contain domain names.

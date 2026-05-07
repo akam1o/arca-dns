@@ -82,6 +82,7 @@ func TestDecoder_Decode(t *testing.T) {
 	assert.Equal(t, uint16(dns.RcodeSuccess), query.ResponseCode)
 	assert.Equal(t, "udp", query.Transport)
 	assert.True(t, query.DNSSECValid)
+	assert.True(t, query.IsResponse)
 	assert.Equal(t, clientIP.String(), query.ClientIP.String())
 	assert.InDelta(t, 5.0, query.Latency, 0.1) // 5ms +/- 0.1ms
 }
@@ -133,6 +134,7 @@ func TestDecoder_DecodeClientQuery(t *testing.T) {
 	assert.Equal(t, clientIP.String(), query.ClientIP.String())
 	assert.Equal(t, uint16(0), query.ResponseCode) // No response in CLIENT_QUERY
 	assert.Equal(t, 0.0, query.Latency)            // No latency in CLIENT_QUERY
+	assert.False(t, query.IsResponse)
 }
 
 // TestDecoder_DecodeInvalidProtobuf tests handling of invalid protobuf data.

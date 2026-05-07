@@ -170,6 +170,164 @@ func TestZoneSigner_SignZone(t *testing.T) {
 	}
 }
 
+func TestZoneSigner_WildcardRRSIGLabelsExcludeWildcard(t *testing.T) {
+	now := time.Date(2024, 12, 28, 12, 0, 0, 0, time.UTC)
+	signer := newTestZoneSigner(t, DefaultSignerOptions())
+	signer.clock = func() time.Time { return now }
+
+	zone := testSignerZone(now)
+	zone.Records = append(zone.Records, model.Record{
+		Name:  "*.www",
+		Type:  "A",
+		TTL:   300,
+		Value: "203.0.113.10",
+	})
+
+	_, signedRRs, err := signer.SignZone(zone)
+	if err != nil {
+		t.Fatalf("failed to sign zone: %v", err)
+	}
+
+	var wildcardSig *dns.RRSIG
+	for _, rr := range signedRRs {
+		sig, ok := rr.(*dns.RRSIG)
+		if ok && sig.Hdr.Name == "*.www.example.com." && sig.TypeCovered == dns.TypeA {
+			wildcardSig = sig
+			break
+		}
+	}
+	if wildcardSig == nil {
+		t.Fatal("failed to find wildcard A RRSIG")
+	}
+
+	want := uint8(dns.CountLabel("*.www.example.com.") - 1)
+	if wildcardSig.Labels != want {
+		t.Fatalf("wildcard RRSIG labels = %d, want %d", wildcardSig.Labels, want)
+	}
+}
+
+func TestZoneSigner_SplitsLongTXT(t *testing.T) {
+	signer := newTestZoneSigner(t, DefaultSignerOptions())
+	value := strings.Repeat("a", 300)
+	zone := testSignerZone(time.Now())
+	zone.Records = append(zone.Records, model.Record{
+		Name:  "@",
+		Type:  "TXT",
+		TTL:   300,
+		Value: value,
+	})
+
+	_, signedRRs, err := signer.SignZone(zone)
+	if err != nil {
+		t.Fatalf("failed to sign zone: %v", err)
+	}
+
+	for _, rr := range signedRRs {
+		txt, ok := rr.(*dns.TXT)
+		if !ok || txt.Hdr.Name != "example.com." {
+			continue
+		}
+
+		if strings.Join(txt.Txt, "") != value {
+			t.Fatalf("TXT chunks joined to %q, want %q", strings.Join(txt.Txt, ""), value)
+		}
+		for _, chunk := range txt.Txt {
+			if len(chunk) > model.MaxTXTCharacterStringLength {
+				t.Fatalf("TXT chunk length=%d, want <=%d", len(chunk), model.MaxTXTCharacterStringLength)
+			}
+		}
+		return
+	}
+
+	t.Fatal("signed RRs did not include the long TXT record")
+}
+
+func TestZoneSigner_CAAValueWithSpaces(t *testing.T) {
+	signer := &ZoneSigner{}
+	rr, err := signer.recordToRR("example.com.", &model.Record{
+		Name:  "@",
+		Type:  model.RecordTypeCAA,
+		TTL:   3600,
+		Value: `0 issue "letsencrypt.org; accounturi=https://example.com/acct"`,
+	})
+	if err != nil {
+		t.Fatalf("failed to convert CAA record: %v", err)
+	}
+
+	caa, ok := rr.(*dns.CAA)
+	if !ok {
+		t.Fatalf("recordToRR returned %T, want *dns.CAA", rr)
+	}
+	want := "letsencrypt.org; accounturi=https://example.com/acct"
+	if caa.Value != want {
+		t.Fatalf("CAA value = %q, want %q", caa.Value, want)
+	}
+}
+
+func TestZoneSigner_RecordToRRFQDNWithoutTrailingDot(t *testing.T) {
+	signer := &ZoneSigner{}
+	rr, err := signer.recordToRR("example.com.", &model.Record{
+		Name:  "www.example.com",
+		Type:  model.RecordTypeA,
+		TTL:   300,
+		Value: "192.0.2.1",
+	})
+	if err != nil {
+		t.Fatalf("failed to convert A record: %v", err)
+	}
+
+	if rr.Header().Name != "www.example.com." {
+		t.Fatalf("owner name = %q, want %q", rr.Header().Name, "www.example.com.")
+	}
+}
+
+func TestZoneSigner_ModelToRRsNormalizesSOA(t *testing.T) {
+	signer := &ZoneSigner{}
+	zone := testSignerZone(time.Now())
+	zone.SOA.MName = "ns1.example.com"
+	zone.SOA.RName = "admin.example.com"
+
+	rrs, err := signer.modelToRRs(zone, "example.com.")
+	if err != nil {
+		t.Fatalf("failed to convert zone to RRs: %v", err)
+	}
+
+	soa, ok := rrs[0].(*dns.SOA)
+	if !ok {
+		t.Fatalf("first RR = %T, want *dns.SOA", rrs[0])
+	}
+	if soa.Ns != "ns1.example.com." {
+		t.Fatalf("SOA Ns = %q, want %q", soa.Ns, "ns1.example.com.")
+	}
+	if soa.Mbox != "admin.example.com." {
+		t.Fatalf("SOA Mbox = %q, want %q", soa.Mbox, "admin.example.com.")
+	}
+}
+
+func TestZoneSigner_MXValueNormalizesWhitespace(t *testing.T) {
+	signer := &ZoneSigner{}
+	rr, err := signer.recordToRR("example.com.", &model.Record{
+		Name:  "@",
+		Type:  model.RecordTypeMX,
+		TTL:   3600,
+		Value: "10   mail.example.com",
+	})
+	if err != nil {
+		t.Fatalf("failed to convert MX record: %v", err)
+	}
+
+	mx, ok := rr.(*dns.MX)
+	if !ok {
+		t.Fatalf("recordToRR returned %T, want *dns.MX", rr)
+	}
+	if mx.Preference != 10 {
+		t.Fatalf("MX preference = %d, want 10", mx.Preference)
+	}
+	if mx.Mx != "mail.example.com." {
+		t.Fatalf("MX target = %q, want %q", mx.Mx, "mail.example.com.")
+	}
+}
+
 func TestZoneSigner_SignRRset(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
