@@ -273,16 +273,18 @@ www.example.com. 300 IN A 192.0.2.1
 
 func TestFetchSignedZone_NotModified(t *testing.T) {
 	requireTCPListener(t)
+	currentETag := strings.Repeat("a", sha256.Size*2)
 	// Create mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("If-None-Match") != "\"v01ARZ3NDEKTSV4RRFFQ69G5FAV\"" {
-			t.Errorf("Expected If-None-Match header \"v01ARZ3NDEKTSV4RRFFQ69G5FAV\", got %s", r.Header.Get("If-None-Match"))
+		expectedIfNoneMatch := `"` + currentETag + `"`
+		if r.Header.Get("If-None-Match") != expectedIfNoneMatch {
+			t.Errorf("Expected If-None-Match header %s, got %s", expectedIfNoneMatch, r.Header.Get("If-None-Match"))
 		}
 
 		// Return 304 Not Modified
-		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+		w.Header().Set("ETag", currentETag)
 		w.Header().Set("X-Zone-Serial", "2024122801")
-		w.Header().Set("X-Zone-Hash", "a3f5c2e9")
+		w.Header().Set("X-Zone-Hash", currentETag)
 		w.WriteHeader(http.StatusNotModified)
 	}))
 	defer server.Close()
@@ -300,7 +302,7 @@ func TestFetchSignedZone_NotModified(t *testing.T) {
 	}
 	defer client.Close()
 
-	content, etag, notModified, err := client.FetchSignedZone(context.Background(), "example.com.", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	content, etag, notModified, err := client.FetchSignedZone(context.Background(), "example.com.", currentETag)
 	if err != nil {
 		t.Fatalf("FetchSignedZone failed: %v", err)
 	}
@@ -313,8 +315,69 @@ func TestFetchSignedZone_NotModified(t *testing.T) {
 		t.Error("Expected empty content for 304 response")
 	}
 
-	if etag != "v01ARZ3NDEKTSV4RRFFQ69G5FAV" {
-		t.Errorf("Expected ETag v01ARZ3NDEKTSV4RRFFQ69G5FAV, got %s", etag)
+	if etag != currentETag {
+		t.Errorf("Expected ETag %s, got %s", currentETag, etag)
+	}
+}
+
+func TestFetchSignedZone_NotModifiedRejectsShortChecksum(t *testing.T) {
+	requireTCPListener(t)
+	currentETag := strings.Repeat("a", sha256.Size*2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", currentETag)
+		w.Header().Set("X-Zone-Hash", "a3f5c2e9")
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", currentETag)
+	if err == nil {
+		t.Fatal("Expected short checksum header in 304 response to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid checksum header length") {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+}
+
+func TestFetchSignedZone_NotModifiedRejectsChecksumETagMismatch(t *testing.T) {
+	requireTCPListener(t)
+	currentETag := strings.Repeat("a", sha256.Size*2)
+	otherHash := strings.Repeat("b", sha256.Size*2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", currentETag)
+		w.Header().Set("X-Zone-Hash", otherHash)
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", currentETag)
+	if err == nil {
+		t.Fatal("Expected mismatched checksum header in 304 response to fail")
+	}
+	if !strings.Contains(err.Error(), "checksum header mismatch") {
+		t.Errorf("Unexpected error message: %v", err)
 	}
 }
 
@@ -562,6 +625,57 @@ func TestFetchSignedZone_SignatureVerification(t *testing.T) {
 	content, _, _, err := client.FetchSignedZone(context.Background(), "example.com.", "")
 	if err != nil {
 		t.Fatalf("FetchSignedZone failed with valid signature: %v", err)
+	}
+	if content != zoneContent {
+		t.Errorf("Zone content mismatch")
+	}
+}
+
+func TestFetchSignedZone_SignatureVerificationForcesFullFetch(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	signatureKey := "test-signature-key"
+
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != "" {
+			t.Errorf("Expected signature verification to force a full fetch, got If-None-Match %s", r.Header.Get("If-None-Match"))
+		}
+
+		w.Header().Set("ETag", `"`+hashHex+`"`)
+		w.Header().Set("X-Zone-Serial", "2024122801")
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Hash8", hashHex[:8])
+		w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), signatureKey))
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetSignatureVerification(true, signatureKey)
+
+	content, etag, notModified, err := client.FetchSignedZone(context.Background(), "example.com.", hashHex)
+	if err != nil {
+		t.Fatalf("FetchSignedZone failed with valid signature: %v", err)
+	}
+	if notModified {
+		t.Fatal("Expected signed fetch to return a full artifact")
+	}
+	if etag != `"`+hashHex+`"` {
+		t.Errorf("Expected ETag %q, got %q", `"`+hashHex+`"`, etag)
 	}
 	if content != zoneContent {
 		t.Errorf("Zone content mismatch")

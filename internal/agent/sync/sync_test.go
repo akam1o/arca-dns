@@ -208,6 +208,9 @@ func TestSyncer_DeleteRemovedZonesRollsBackWhenZoneFileDeleteFails(t *testing.T)
 func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
 	requireTCPListener(t)
 	requestCount := 0
+	zoneContent := "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n"
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
 
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -222,24 +225,24 @@ func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
 
 			// Check If-None-Match header
 			ifNoneMatch := r.Header.Get("If-None-Match")
-			if ifNoneMatch == "\"v1-abc123\"" {
+			if ifNoneMatch == `"`+hashHex+`"` {
 				// Return 304 Not Modified
-				w.Header().Set("ETag", "v1-abc123")
+				w.Header().Set("ETag", `"`+hashHex+`"`)
 				w.Header().Set("X-Zone-Serial", "2024010101")
-				w.Header().Set("X-Zone-Hash", "717fd0585d1c8d14254131e3d8ee338739570e5b078cda7e726ffd4e466f0724")
-				w.Header().Set("X-Zone-Hash8", "717fd058")
+				w.Header().Set("X-Zone-Hash", hashHex)
+				w.Header().Set("X-Zone-Hash8", hashHex[:8])
 				w.WriteHeader(http.StatusNotModified)
 				return
 			}
 
 			// First request: return zone
 			w.Header().Set("Content-Type", "text/plain")
-			w.Header().Set("ETag", "v1-abc123")
+			w.Header().Set("ETag", `"`+hashHex+`"`)
 			w.Header().Set("X-Zone-Serial", "2024010101")
-			w.Header().Set("X-Zone-Hash", "717fd0585d1c8d14254131e3d8ee338739570e5b078cda7e726ffd4e466f0724")
-			w.Header().Set("X-Zone-Hash8", "717fd058")
+			w.Header().Set("X-Zone-Hash", hashHex)
+			w.Header().Set("X-Zone-Hash8", hashHex[:8])
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprintf(w, "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n")
+			fmt.Fprint(w, zoneContent)
 
 		default:
 			w.WriteHeader(http.StatusNotFound)

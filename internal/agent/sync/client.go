@@ -234,7 +234,9 @@ func (c *Client) listZonesPage(ctx context.Context, offset, limit int) (*listZon
 }
 
 // FetchSignedZone fetches a signed zone file from the controller.
-// If currentETag is provided, it performs a conditional fetch using If-None-Match.
+// If currentETag is provided, it performs a conditional fetch using If-None-Match
+// unless artifact signatures are required. A 304 response has no body, so the
+// agent cannot verify a body signature for that response.
 // Returns (zoneContent, newETag, isNotModified, error).
 func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentETag string) (string, string, bool, error) {
 	if ctx == nil {
@@ -253,8 +255,11 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 		req.Header.Set("X-API-Key", c.apiKey)
 	}
 
-	// Add If-None-Match header for conditional fetch (ETag-based)
-	requestETag := normalizeIfNoneMatch(currentETag)
+	// Add If-None-Match header for conditional fetch (ETag-based).
+	requestETag := ""
+	if !c.verifySignatures {
+		requestETag = normalizeIfNoneMatch(currentETag)
+	}
 	if requestETag != "" {
 		req.Header.Set("If-None-Match", requestETag)
 	}
@@ -277,6 +282,17 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 		}
 		if responseETag != requestETag {
 			return "", "", false, fmt.Errorf("ETag mismatch in 304 response: requested %s, got %s", requestETag, responseETag)
+		}
+
+		if c.verifyChecksums {
+			zoneHash := resp.Header.Get("X-Zone-Hash")
+			if err := validateFullChecksumHeader(zoneHash); err != nil {
+				return "", "", false, fmt.Errorf("invalid checksum header in 304 response: %w", err)
+			}
+			responseHash := etagValue(responseETag)
+			if !strings.EqualFold(responseHash, zoneHash) {
+				return "", "", false, fmt.Errorf("checksum header mismatch in 304 response: ETag %s, X-Zone-Hash %s", responseHash, zoneHash)
+			}
 		}
 
 		return "", currentETag, true, nil
@@ -308,14 +324,8 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 	// Verify SHA256 checksum when enabled. A full checksum header is required
 	// because the agent otherwise cannot detect truncated or altered artifacts.
 	if c.verifyChecksums {
-		if zoneHash == "" {
-			return "", "", false, fmt.Errorf("missing full checksum header in response")
-		}
-		if len(zoneHash) != sha256.Size*2 {
-			return "", "", false, fmt.Errorf("invalid checksum header length: expected %d hex chars, got %d", sha256.Size*2, len(zoneHash))
-		}
-		if _, err := hex.DecodeString(zoneHash); err != nil {
-			return "", "", false, fmt.Errorf("invalid checksum header: %w", err)
+		if err := validateFullChecksumHeader(zoneHash); err != nil {
+			return "", "", false, err
 		}
 
 		computedHash := sha256.Sum256(body)
@@ -336,6 +346,19 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 	_ = zoneHash8  // Short hash is display metadata only; verification uses X-Zone-Hash.
 
 	return string(body), newETag, false, nil
+}
+
+func validateFullChecksumHeader(zoneHash string) error {
+	if zoneHash == "" {
+		return fmt.Errorf("missing full checksum header in response")
+	}
+	if len(zoneHash) != sha256.Size*2 {
+		return fmt.Errorf("invalid checksum header length: expected %d hex chars, got %d", sha256.Size*2, len(zoneHash))
+	}
+	if _, err := hex.DecodeString(zoneHash); err != nil {
+		return fmt.Errorf("invalid checksum header: %w", err)
+	}
+	return nil
 }
 
 func artifactSignature(body []byte, key string) string {
