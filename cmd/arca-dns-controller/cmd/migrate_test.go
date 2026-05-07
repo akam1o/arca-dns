@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
+	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -178,6 +179,69 @@ func TestMigrateCopy(t *testing.T) {
 	require.NoError(t, err)
 	_, err = destStore.GetZone(ctx, "source2.com.")
 	require.NoError(t, err)
+}
+
+func TestCreateBackendDefaultsToSQLite(t *testing.T) {
+	oldDSN := migrateBackendDSN
+	t.Cleanup(func() {
+		migrateBackendDSN = oldDSN
+	})
+	migrateBackendDSN = ":memory:"
+
+	store, err := createBackend("", nil)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	err = store.CreateZone(ctx, &model.Zone{
+		Name: "sqlite-default.example.com.",
+		SOA:  model.DefaultSOA("ns1.sqlite-default.example.com.", "admin.sqlite-default.example.com."),
+		Records: []model.Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.30"},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = store.GetZone(ctx, "sqlite-default.example.com.")
+	require.NoError(t, err)
+}
+
+func TestCreateBackendForCopySupportsSQLite(t *testing.T) {
+	store, err := createBackendForCopy("sqlite", ":memory:", "", nil)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	err = store.CreateZone(ctx, &model.Zone{
+		Name: "sqlite-copy.example.com.",
+		SOA:  model.DefaultSOA("ns1.sqlite-copy.example.com.", "admin.sqlite-copy.example.com."),
+		Records: []model.Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.31"},
+		},
+	})
+	require.NoError(t, err)
+}
+
+func TestCreateBackendPostgresRequiresDSN(t *testing.T) {
+	oldDSN := migrateBackendDSN
+	t.Cleanup(func() {
+		migrateBackendDSN = oldDSN
+	})
+	migrateBackendDSN = ""
+
+	cfg := config.DefaultControllerConfig()
+	cfg.Backend.Type = "postgres"
+	cfg.Backend.Postgres.DSN = ""
+
+	_, err := createBackend("postgres", cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PostgreSQL backend requires --dsn")
+}
+
+func TestCreateBackendRejectsMemory(t *testing.T) {
+	_, err := createBackend("memory", config.DefaultControllerConfig())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "supported: sqlite, postgres, mysql, git, etcd")
 }
 
 // TestMigrateRoundTrip tests export → import round-trip.

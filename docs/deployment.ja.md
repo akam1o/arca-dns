@@ -487,7 +487,7 @@ birdc show route
 - SQL backend は DB dump、Git backend は repository backup、etcd は snapshot を使う
 - DNSSEC key directory と master key は必ず一緒にバックアップする
 - agent は複数台を少しずつ更新し、`/ready`, `/status`, BGP announce 状態を確認する
-- controller の backend を移行する場合は `arca-dns-controller migrate` を使える。ただし現時点の migrate command は `memory`, `mysql`, `git`, `etcd` を対象にしたツールで、`sqlite` と `postgres` は通常の backend としては利用できるが migrate command の直接対象ではない
+- controller の backend を移行する場合は `arca-dns-controller migrate` を使える。現時点の migrate command は `sqlite`（既定）、`postgres`, `mysql`, `git`, `etcd` を対象にしている
 
 ## よくある問題
 

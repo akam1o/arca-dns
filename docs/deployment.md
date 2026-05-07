@@ -489,7 +489,7 @@ birdc show route
 - Use DB dumps for SQL backends, repository backups for Git, and snapshots for etcd
 - Always back up the DNSSEC key directory and the master key together
 - Roll agents gradually and watch `/ready`, `/status`, and BGP announce state
-- Use `arca-dns-controller migrate` for supported backend migrations. The current migrate command targets `memory`, `mysql`, `git`, and `etcd`; `sqlite` and `postgres` are supported runtime backends but are not direct migrate command targets
+- Use `arca-dns-controller migrate` for supported backend migrations. The current migrate command targets `sqlite` (default), `postgres`, `mysql`, `git`, and `etcd`
 
 ## Troubleshooting
 

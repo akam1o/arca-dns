@@ -32,6 +32,11 @@ var (
 	migrateOverwrite   bool
 )
 
+const (
+	defaultMigrateBackend    = "sqlite"
+	supportedMigrateBackends = "sqlite, postgres, mysql, git, etcd"
+)
+
 // NewMigrateCmd creates the migrate command with subcommands.
 func NewMigrateCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -57,19 +62,17 @@ func newExportCmd() *cobra.Command {
 Each zone is saved as a separate JSON file named <zone-name>.json.
 
 Example:
-  arca-dns-controller migrate export --backend=memory --output=./zones/
-  arca-dns-controller migrate export --backend=mysql --dsn="root:pass@/dns" --output=./backup/`,
+  arca-dns-controller migrate export --output=./zones/
+  arca-dns-controller migrate export --backend=postgres --dsn="postgres://user:pass@localhost:5432/dns?sslmode=disable" --output=./backup/`,
 		RunE: runExport,
 	}
 
 	cmd.Flags().StringVarP(&migrateConfigFile, "config", "c", "", "Path to configuration file")
-	cmd.Flags().StringVar(&migrateBackendType, "backend", "", "Backend type (memory, mysql, git, etcd)")
-	cmd.Flags().StringVar(&migrateBackendDSN, "dsn", "", "Backend DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateBackendType, "backend", "", "Backend type (sqlite [default], postgres, mysql, git, etcd)")
+	cmd.Flags().StringVar(&migrateBackendDSN, "dsn", "", "Backend DSN (for SQLite, PostgreSQL, MySQL)")
 	cmd.Flags().StringVar(&migrateBackendPath, "path", "", "Backend path (for Git)")
 	cmd.Flags().StringVarP(&migrateOutputDir, "output", "o", "./zones", "Output directory for JSON files")
 	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Preview export without writing files")
-
-	cobra.CheckErr(cmd.MarkFlagRequired("backend"))
 
 	return cmd
 }
@@ -83,20 +86,18 @@ func newImportCmd() *cobra.Command {
 Zone versions are recomputed during import to ensure consistency.
 
 Example:
-  arca-dns-controller migrate import --backend=mysql --dsn="root:pass@/dns" --input=./zones/
+  arca-dns-controller migrate import --input=./zones/
   arca-dns-controller migrate import --backend=git --path=/var/dns/repo --input=./backup/`,
 		RunE: runImport,
 	}
 
 	cmd.Flags().StringVarP(&migrateConfigFile, "config", "c", "", "Path to configuration file")
-	cmd.Flags().StringVar(&migrateBackendType, "backend", "", "Backend type (memory, mysql, git, etcd)")
-	cmd.Flags().StringVar(&migrateBackendDSN, "dsn", "", "Backend DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateBackendType, "backend", "", "Backend type (sqlite [default], postgres, mysql, git, etcd)")
+	cmd.Flags().StringVar(&migrateBackendDSN, "dsn", "", "Backend DSN (for SQLite, PostgreSQL, MySQL)")
 	cmd.Flags().StringVar(&migrateBackendPath, "path", "", "Backend path (for Git)")
 	cmd.Flags().StringVarP(&migrateInputDir, "input", "i", "./zones", "Input directory with JSON files")
 	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Validate files without importing")
 	cmd.Flags().BoolVar(&migrateOverwrite, "overwrite", false, "Overwrite existing zones")
-
-	cobra.CheckErr(cmd.MarkFlagRequired("backend"))
 
 	return cmd
 }
@@ -110,17 +111,17 @@ func newCopyCmd() *cobra.Command {
 Zone versions are recomputed during the copy operation.
 
 Example:
-  arca-dns-controller migrate copy --from-backend=memory --to-backend=mysql --to-dsn="root:pass@/dns"
+  arca-dns-controller migrate copy --from-backend=sqlite --from-dsn="file:arca-dns.db" --to-backend=mysql --to-dsn="root:pass@/dns"
   arca-dns-controller migrate copy --from-backend=git --from-path=/tmp/repo --to-backend=etcd`,
 		RunE: runCopy,
 	}
 
 	cmd.Flags().StringVarP(&migrateConfigFile, "config", "c", "", "Path to configuration file")
-	cmd.Flags().StringVar(&migrateFromBackend, "from-backend", "", "Source backend type")
-	cmd.Flags().StringVar(&migrateToBackend, "to-backend", "", "Destination backend type")
-	cmd.Flags().StringVar(&migrateFromDSN, "from-dsn", "", "Source DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateFromBackend, "from-backend", "", "Source backend type (sqlite, postgres, mysql, git, etcd)")
+	cmd.Flags().StringVar(&migrateToBackend, "to-backend", "", "Destination backend type (sqlite, postgres, mysql, git, etcd)")
+	cmd.Flags().StringVar(&migrateFromDSN, "from-dsn", "", "Source DSN (for SQLite, PostgreSQL, MySQL)")
 	cmd.Flags().StringVar(&migrateFromPath, "from-path", "", "Source path (for Git)")
-	cmd.Flags().StringVar(&migrateToDSN, "to-dsn", "", "Destination DSN (for MySQL)")
+	cmd.Flags().StringVar(&migrateToDSN, "to-dsn", "", "Destination DSN (for SQLite, PostgreSQL, MySQL)")
 	cmd.Flags().StringVar(&migrateToPath, "to-path", "", "Destination path (for Git)")
 	cmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Preview copy without writing")
 	cmd.Flags().BoolVar(&migrateOverwrite, "overwrite", false, "Overwrite existing zones")
@@ -415,8 +416,35 @@ func createBackendForCopy(backendType, dsn, path string, cfg *config.ControllerC
 	configMap := make(map[string]interface{})
 
 	switch backendType {
-	case "memory":
-		return backend.NewBackend("memory", configMap)
+	case "sqlite":
+		if dsn == "" && cfg != nil && cfg.Backend.Type == "sqlite" {
+			dsn = cfg.Backend.SQLite.DSN
+		}
+		if dsn != "" {
+			configMap["dsn"] = dsn
+		}
+		return backend.NewBackend("sqlite", configMap)
+
+	case "postgres":
+		if dsn == "" && cfg != nil && cfg.Backend.Type == "postgres" {
+			dsn = cfg.Backend.Postgres.DSN
+		}
+		if dsn == "" {
+			return nil, fmt.Errorf("PostgreSQL backend requires --from-dsn/--to-dsn flag or dsn in config")
+		}
+		configMap["dsn"] = dsn
+		if cfg != nil && cfg.Backend.Type == "postgres" {
+			if cfg.Backend.Postgres.MaxOpenConns > 0 {
+				configMap["max_open_conns"] = cfg.Backend.Postgres.MaxOpenConns
+			}
+			if cfg.Backend.Postgres.MaxIdleConns > 0 {
+				configMap["max_idle_conns"] = cfg.Backend.Postgres.MaxIdleConns
+			}
+			if cfg.Backend.Postgres.ConnMaxLifetime > 0 {
+				configMap["conn_max_lifetime"] = cfg.Backend.Postgres.ConnMaxLifetime
+			}
+		}
+		return backend.NewBackend("postgres", configMap)
 
 	case "mysql":
 		if dsn == "" && cfg != nil && cfg.Backend.Type == "mysql" {
@@ -426,6 +454,17 @@ func createBackendForCopy(backendType, dsn, path string, cfg *config.ControllerC
 			return nil, fmt.Errorf("MySQL backend requires --from-dsn/--to-dsn flag or dsn in config")
 		}
 		configMap["dsn"] = dsn
+		if cfg != nil && cfg.Backend.Type == "mysql" {
+			if cfg.Backend.MySQL.MaxOpenConns > 0 {
+				configMap["max_open_conns"] = cfg.Backend.MySQL.MaxOpenConns
+			}
+			if cfg.Backend.MySQL.MaxIdleConns > 0 {
+				configMap["max_idle_conns"] = cfg.Backend.MySQL.MaxIdleConns
+			}
+			if cfg.Backend.MySQL.ConnMaxLifetime > 0 {
+				configMap["conn_max_lifetime"] = cfg.Backend.MySQL.ConnMaxLifetime
+			}
+		}
 		return backend.NewBackend("mysql", configMap)
 
 	case "git":
@@ -476,7 +515,7 @@ func createBackendForCopy(backendType, dsn, path string, cfg *config.ControllerC
 		return backend.NewBackend("etcd", configMap)
 
 	default:
-		return nil, fmt.Errorf("unsupported backend type: %s", backendType)
+		return nil, fmt.Errorf("unsupported backend type: %s (supported: %s)", backendType, supportedMigrateBackends)
 	}
 }
 
@@ -484,11 +523,40 @@ func createBackendForCopy(backendType, dsn, path string, cfg *config.ControllerC
 func createBackend(backendType string, cfg *config.ControllerConfig) (backend.ZoneStore, error) {
 	// Build config map from flags and config file
 	configMap := make(map[string]interface{})
+	backendType = effectiveMigrateBackendType(backendType, cfg)
 
 	switch backendType {
-	case "memory":
-		// Memory backend needs no config
-		return backend.NewBackend("memory", configMap)
+	case "sqlite":
+		dsn := migrateBackendDSN
+		if dsn == "" && cfg != nil && cfg.Backend.Type == "sqlite" {
+			dsn = cfg.Backend.SQLite.DSN
+		}
+		if dsn != "" {
+			configMap["dsn"] = dsn
+		}
+		return backend.NewBackend("sqlite", configMap)
+
+	case "postgres":
+		dsn := migrateBackendDSN
+		if dsn == "" && cfg != nil && cfg.Backend.Type == "postgres" {
+			dsn = cfg.Backend.Postgres.DSN
+		}
+		if dsn == "" {
+			return nil, fmt.Errorf("PostgreSQL backend requires --dsn flag or dsn in config")
+		}
+		configMap["dsn"] = dsn
+		if cfg != nil && cfg.Backend.Type == "postgres" {
+			if cfg.Backend.Postgres.MaxOpenConns > 0 {
+				configMap["max_open_conns"] = cfg.Backend.Postgres.MaxOpenConns
+			}
+			if cfg.Backend.Postgres.MaxIdleConns > 0 {
+				configMap["max_idle_conns"] = cfg.Backend.Postgres.MaxIdleConns
+			}
+			if cfg.Backend.Postgres.ConnMaxLifetime > 0 {
+				configMap["conn_max_lifetime"] = cfg.Backend.Postgres.ConnMaxLifetime
+			}
+		}
+		return backend.NewBackend("postgres", configMap)
 
 	case "mysql":
 		dsn := migrateBackendDSN
@@ -499,6 +567,17 @@ func createBackend(backendType string, cfg *config.ControllerConfig) (backend.Zo
 			return nil, fmt.Errorf("MySQL backend requires --dsn flag or dsn in config")
 		}
 		configMap["dsn"] = dsn
+		if cfg != nil && cfg.Backend.Type == "mysql" {
+			if cfg.Backend.MySQL.MaxOpenConns > 0 {
+				configMap["max_open_conns"] = cfg.Backend.MySQL.MaxOpenConns
+			}
+			if cfg.Backend.MySQL.MaxIdleConns > 0 {
+				configMap["max_idle_conns"] = cfg.Backend.MySQL.MaxIdleConns
+			}
+			if cfg.Backend.MySQL.ConnMaxLifetime > 0 {
+				configMap["conn_max_lifetime"] = cfg.Backend.MySQL.ConnMaxLifetime
+			}
+		}
 		return backend.NewBackend("mysql", configMap)
 
 	case "git":
@@ -557,8 +636,18 @@ func createBackend(backendType string, cfg *config.ControllerConfig) (backend.Zo
 		return backend.NewBackend("etcd", configMap)
 
 	default:
-		return nil, fmt.Errorf("unsupported backend type: %s (supported: memory, mysql, git, etcd)", backendType)
+		return nil, fmt.Errorf("unsupported backend type: %s (supported: %s)", backendType, supportedMigrateBackends)
 	}
+}
+
+func effectiveMigrateBackendType(backendType string, cfg *config.ControllerConfig) string {
+	if backendType != "" {
+		return backendType
+	}
+	if cfg != nil && cfg.Backend.Type != "" {
+		return cfg.Backend.Type
+	}
+	return defaultMigrateBackend
 }
 
 // sanitizeFilename converts a zone name to a safe filename.

@@ -6,7 +6,7 @@ This document provides best practices and important considerations for using the
 
 ### Export zones to JSON files
 ```bash
-arca-dns-controller migrate export --backend=mysql --dsn="root:pass@/dns" --output=./backup/
+arca-dns-controller migrate export --output=./backup/
 ```
 
 ### Import zones from JSON files
@@ -17,8 +17,8 @@ arca-dns-controller migrate import --backend=git --path=/var/dns/repo --input=./
 ### Direct copy between backends
 ```bash
 arca-dns-controller migrate copy \
-  --from-backend=mysql --from-dsn="root:pass@/source" \
-  --to-backend=git --to-path=/var/dns/repo
+  --from-backend=sqlite --from-dsn="file:arca-dns.db" \
+  --to-backend=postgres --to-dsn="postgres://user:pass@localhost:5432/dns?sslmode=disable"
 ```
 
 ## Important Considerations
@@ -52,8 +52,8 @@ arca-dns-controller migrate import --backend=git --path=/repo --input=./backup/ 
 **⚠️ Critical**: Overwrite mode implications vary by backend:
 - **Git**: Creates new delete + create commits (old commits remain in history)
 - **etcd**: Delete operation preserves revision history for audit
+- **SQLite/PostgreSQL**: Previous zone data is permanently deleted
 - **MySQL**: Previous zone data is permanently deleted
-- **Memory**: Previous zone data is permanently deleted
 
 **⚠️ Non-atomic operation**: Delete happens before create. If create fails, the zone is lost from destination.
 
@@ -82,7 +82,8 @@ arca-dns-controller migrate copy \
 ### Record IDs
 
 Record ID behavior during migration varies by backend:
-- **Memory**: Always reassigns new sequential IDs (1, 2, 3...) - original IDs not preserved
+- **SQLite**: Assigns new internal IDs - original IDs not preserved
+- **PostgreSQL**: Assigns new sequence IDs - original IDs not preserved
 - **MySQL**: Assigns new auto-increment IDs - original IDs not preserved
 - **Git**: May preserve IDs in JSON files
 - **etcd**: May preserve IDs in key-value store
@@ -94,13 +95,26 @@ Record ID behavior during migration varies by backend:
 
 ## Backend-Specific Notes
 
-### Memory Backend
-- No configuration required
-- Perfect for testing migrations
-- Data is lost when process exits
+### SQLite Backend
+- Default backend for export/import when `--backend` is omitted
+- Uses `file:arca-dns.db` by default, or a DSN from config/flags
+- Use `:memory:` for disposable local validation
 
 ```bash
-arca-dns-controller migrate copy --from-backend=mysql --from-dsn="..." --to-backend=memory
+arca-dns-controller migrate copy \
+  --from-backend=mysql --from-dsn="..." \
+  --to-backend=sqlite --to-dsn="file:staging.db"
+```
+
+### PostgreSQL Backend
+- Requires `--dsn` flag or config file
+- Format: `postgres://user:password@host:port/database?sslmode=disable`
+- Supports separate `--from-dsn` and `--to-dsn` for copy operations
+
+```bash
+arca-dns-controller migrate copy \
+  --from-backend=postgres --from-dsn="postgres://user:pass@prod:5432/dns?sslmode=require" \
+  --to-backend=postgres --to-dsn="postgres://user:pass@staging:5432/dns?sslmode=require"
 ```
 
 ### MySQL Backend
@@ -154,7 +168,7 @@ arca-dns-controller migrate export \
 
 # 2. Verify backup (dry-run)
 arca-dns-controller migrate import \
-  --backend=memory --input=./backup-2024-01-01/ \
+  --backend=sqlite --dsn=":memory:" --input=./backup-2024-01-01/ \
   --dry-run
 
 # 3. Restore to new environment
@@ -190,8 +204,8 @@ ls /repo/zones/ | wc -l
 # 1. Export production data
 arca-dns-controller migrate export --backend=mysql --dsn="prod..." --output=./prod-data/
 
-# 2. Test import to memory (fast, no side effects)
-arca-dns-controller migrate import --backend=memory --input=./prod-data/
+# 2. Test import to disposable SQLite (fast, no persistent side effects)
+arca-dns-controller migrate import --backend=sqlite --dsn=":memory:" --input=./prod-data/
 
 # 3. Test import to staging
 arca-dns-controller migrate import --backend=mysql --dsn="staging..." --input=./prod-data/
@@ -228,7 +242,7 @@ arca-dns-controller migrate export --backend=mysql --dsn="user:pass@/db" --outpu
 ls ./backup/*.json
 
 # Ensure correct directory
-arca-dns-controller migrate import --backend=memory --input=./backup/
+arca-dns-controller migrate import --backend=sqlite --dsn=":memory:" --input=./backup/
 ```
 
 ## Production Checklist
@@ -247,9 +261,9 @@ Before production migration:
 
 ## Performance Considerations
 
-- **Memory backend**: Fastest, suitable for testing
+- **SQLite backend**: Fast local backend, suitable for small deployments and disposable testing with `:memory:`
 - **Git backend**: Slowest (file I/O + Git operations), suitable for small-medium datasets
-- **MySQL/etcd**: Medium speed, suitable for large datasets
+- **PostgreSQL/MySQL/etcd**: Medium speed, suitable for large datasets
 
 For large migrations (1000+ zones):
 1. Consider exporting to JSON first
