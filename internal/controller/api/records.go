@@ -73,7 +73,7 @@ func (h *Handler) CreateRecord(c *gin.Context) {
 		))
 		return
 	}
-	record.ID = derivedRecordID(record)
+	record.ID = ""
 
 	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
 	if !ok {
@@ -327,7 +327,7 @@ func (h *Handler) applyBulkRecordOperations(c *gin.Context, zoneName string, cur
 
 	for i := range req.Create {
 		record := req.Create[i]
-		record.ID = derivedRecordID(record)
+		record.ID = ""
 		if !h.validateRecordForZone(c, zoneName, &record) {
 			return nil, false
 		}
@@ -336,6 +336,10 @@ func (h *Handler) applyBulkRecordOperations(c *gin.Context, zoneName string, cur
 
 	if duplicateIndex, exists := firstDuplicateRecord(records); exists {
 		h.recordBatchError(c, http.StatusConflict, "Record already exists", duplicateIndex, "records", map[string]interface{}{"index": duplicateIndex})
+		return nil, false
+	}
+	if duplicateIndex, duplicateID, exists := firstDuplicateRecordID(records); exists {
+		h.recordBatchError(c, http.StatusConflict, "Record id already exists", duplicateIndex, "records", map[string]interface{}{"index": duplicateIndex, "record_id": duplicateID})
 		return nil, false
 	}
 
@@ -435,6 +439,14 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 		))
 		return nil, false
 	}
+	if duplicateIndex, duplicateID, exists := firstDuplicateRecordID(zone.Records); exists {
+		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
+			model.ErrorCodeAlreadyExists,
+			"Record id already exists",
+			map[string]interface{}{"index": duplicateIndex, "record_id": duplicateID},
+		))
+		return nil, false
+	}
 
 	newVersion, err := model.NewZoneVersion()
 	if err != nil {
@@ -516,11 +528,14 @@ func recordIDMatches(record model.Record, id string) bool {
 	return derivedRecordID(record) == id
 }
 
-func preserveRecordID(record model.Record, requestedID string) string {
-	if record.ID != "" {
-		return record.ID
+func preserveRecordID(record model.Record, _ string) string {
+	if record.ID == "" {
+		return ""
 	}
-	return requestedID
+	if record.ID == derivedRecordID(record) {
+		return ""
+	}
+	return record.ID
 }
 
 func recordExists(records []model.Record, record model.Record, skip int) bool {
@@ -545,6 +560,18 @@ func firstDuplicateRecord(records []model.Record) (int, bool) {
 		seen[key] = i
 	}
 	return -1, false
+}
+
+func firstDuplicateRecordID(records []model.Record) (int, string, bool) {
+	seen := make(map[string]int, len(records))
+	for i, record := range records {
+		id := recordID(record)
+		if _, exists := seen[id]; exists {
+			return i, id, true
+		}
+		seen[id] = i
+	}
+	return -1, "", false
 }
 
 func findRecordID(records []model.Record, record model.Record) string {

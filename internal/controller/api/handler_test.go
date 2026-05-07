@@ -645,6 +645,72 @@ func TestUpdateRecordAcceptsDerivedIDForStoredRecordID(t *testing.T) {
 	assert.Equal(t, "192.0.2.9", updated.Records[0].Value)
 }
 
+func TestUpdateRecordReleasesDerivedIDForContentAddressedBackends(t *testing.T) {
+	store, err := backend.NewGitBackendWithOptions(t.TempDir(), backend.GitBackendOptions{})
+	require.NoError(t, err)
+	defer store.Close()
+	_, server := setupTestWithStore(t, store)
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, current.Records, 1)
+	require.Empty(t, current.Records[0].ID)
+	originalDerivedID := derivedRecordID(current.Records[0])
+
+	updateRecord := model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.9"}
+	body, err := json.Marshal(updateRecord)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com./records/"+originalDerivedID, bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.Len(t, updated.Records, 1)
+	updatedID := updated.Records[0].ID
+	require.NotEmpty(t, updatedID)
+	require.NotEqual(t, originalDerivedID, updatedID)
+
+	persisted, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	require.Len(t, persisted.Records, 1)
+	require.Empty(t, persisted.Records[0].ID)
+
+	createRecord := model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"}
+	body, err = json.Marshal(createRecord)
+	require.NoError(t, err)
+	req, err = http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", updated.Version)
+
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var recreated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&recreated))
+	require.Len(t, recreated.Records, 2)
+	assert.NotEqual(t, recreated.Records[0].ID, recreated.Records[1].ID)
+	assert.Contains(t, []string{recreated.Records[0].ID, recreated.Records[1].ID}, originalDerivedID)
+	assert.Contains(t, []string{recreated.Records[0].ID, recreated.Records[1].ID}, updatedID)
+}
+
 func TestDeleteRecord(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
