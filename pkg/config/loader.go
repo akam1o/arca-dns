@@ -457,6 +457,14 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid health.check_interval: must be positive")
 	}
 
+	if cfg.Health.QueryTimeout <= 0 {
+		return fmt.Errorf("invalid health.query_timeout: must be positive")
+	}
+
+	if cfg.Health.LatencyThreshold <= 0 {
+		return fmt.Errorf("invalid health.latency_threshold: must be positive")
+	}
+
 	if cfg.Health.FailureThreshold <= 0 {
 		return fmt.Errorf("invalid health.failure_threshold: must be positive")
 	}

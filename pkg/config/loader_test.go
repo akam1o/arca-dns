@@ -775,6 +775,39 @@ func TestValidateAgentConfig_InvalidSyncInterval(t *testing.T) {
 	assert.Contains(t, err.Error(), "sync_interval")
 }
 
+func TestValidateAgentConfig_InvalidHealthTiming(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+		want   string
+	}{
+		{
+			name: "zero query timeout",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Health.QueryTimeout = 0
+			},
+			want: "health.query_timeout",
+		},
+		{
+			name: "zero latency threshold",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Health.LatencyThreshold = 0
+			},
+			want: "health.latency_threshold",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestValidateAgentConfig_InvalidBackupVersions(t *testing.T) {
 	cfg := validAgentConfigForTest()
 	cfg.Sync.BackupVersions = -1
