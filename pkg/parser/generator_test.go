@@ -106,6 +106,46 @@ func TestGenerateBINDZoneFile_RelativeNames(t *testing.T) {
 	assert.Contains(t, zoneFile, "mail.example.com.")
 }
 
+func TestGenerateBINDZoneFile_FQDNWithoutTrailingDot(t *testing.T) {
+	zone := &model.Zone{
+		Name:    "example.com.",
+		Version: "v1",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "www.example.com", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+
+	zoneFile, err := GenerateBINDZoneFile(zone)
+	require.NoError(t, err)
+
+	assert.Contains(t, zoneFile, "www.example.com.\t300\tIN\tA\t192.0.2.1")
+	assert.NotContains(t, zoneFile, "www.example.com.example.com.")
+}
+
+func TestGenerateBINDZoneFile_NormalizesSOATargets(t *testing.T) {
+	zone := &model.Zone{
+		Name:    "example.com.",
+		Version: "v1",
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com",
+			RName:   "admin.example.com",
+			Serial:  2024122801,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	zoneFile, err := GenerateBINDZoneFile(zone)
+	require.NoError(t, err)
+
+	assert.Contains(t, zoneFile, "\tSOA\tns1.example.com. admin.example.com.")
+	assert.NotContains(t, zoneFile, "\tSOA\tns1.example.com admin.example.com")
+}
+
 func TestGenerateBINDZoneFile_AtSymbol(t *testing.T) {
 	zone := &model.Zone{
 		Name:    "example.com.",

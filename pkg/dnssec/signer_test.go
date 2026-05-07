@@ -264,6 +264,70 @@ func TestZoneSigner_CAAValueWithSpaces(t *testing.T) {
 	}
 }
 
+func TestZoneSigner_RecordToRRFQDNWithoutTrailingDot(t *testing.T) {
+	signer := &ZoneSigner{}
+	rr, err := signer.recordToRR("example.com.", &model.Record{
+		Name:  "www.example.com",
+		Type:  model.RecordTypeA,
+		TTL:   300,
+		Value: "192.0.2.1",
+	})
+	if err != nil {
+		t.Fatalf("failed to convert A record: %v", err)
+	}
+
+	if rr.Header().Name != "www.example.com." {
+		t.Fatalf("owner name = %q, want %q", rr.Header().Name, "www.example.com.")
+	}
+}
+
+func TestZoneSigner_ModelToRRsNormalizesSOA(t *testing.T) {
+	signer := &ZoneSigner{}
+	zone := testSignerZone(time.Now())
+	zone.SOA.MName = "ns1.example.com"
+	zone.SOA.RName = "admin.example.com"
+
+	rrs, err := signer.modelToRRs(zone, "example.com.")
+	if err != nil {
+		t.Fatalf("failed to convert zone to RRs: %v", err)
+	}
+
+	soa, ok := rrs[0].(*dns.SOA)
+	if !ok {
+		t.Fatalf("first RR = %T, want *dns.SOA", rrs[0])
+	}
+	if soa.Ns != "ns1.example.com." {
+		t.Fatalf("SOA Ns = %q, want %q", soa.Ns, "ns1.example.com.")
+	}
+	if soa.Mbox != "admin.example.com." {
+		t.Fatalf("SOA Mbox = %q, want %q", soa.Mbox, "admin.example.com.")
+	}
+}
+
+func TestZoneSigner_MXValueNormalizesWhitespace(t *testing.T) {
+	signer := &ZoneSigner{}
+	rr, err := signer.recordToRR("example.com.", &model.Record{
+		Name:  "@",
+		Type:  model.RecordTypeMX,
+		TTL:   3600,
+		Value: "10   mail.example.com",
+	})
+	if err != nil {
+		t.Fatalf("failed to convert MX record: %v", err)
+	}
+
+	mx, ok := rr.(*dns.MX)
+	if !ok {
+		t.Fatalf("recordToRR returned %T, want *dns.MX", rr)
+	}
+	if mx.Preference != 10 {
+		t.Fatalf("MX preference = %d, want 10", mx.Preference)
+	}
+	if mx.Mx != "mail.example.com." {
+		t.Fatalf("MX target = %q, want %q", mx.Mx, "mail.example.com.")
+	}
+}
+
 func TestZoneSigner_SignRRset(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()

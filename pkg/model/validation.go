@@ -156,13 +156,7 @@ func canonicalRecordValue(recordType, value string) string {
 }
 
 func canonicalRecordOwnerName(recordName, zoneName string) string {
-	if recordName == "@" {
-		return zoneName
-	}
-	if strings.HasSuffix(recordName, ".") {
-		return NormalizeZoneName(recordName)
-	}
-	return NormalizeZoneName(recordName + "." + strings.TrimSuffix(zoneName, "."))
+	return NormalizeRecordOwnerName(recordName, zoneName)
 }
 
 // ValidateSOA validates an SOA record.

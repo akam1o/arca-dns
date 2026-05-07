@@ -204,8 +204,8 @@ func (s *ZoneSigner) modelToRRs(zone *model.Zone, normalizedZoneName string) ([]
 			Class:  dns.ClassINET,
 			Ttl:    zone.SOA.Minimum,
 		},
-		Ns:      zone.SOA.MName,
-		Mbox:    zone.SOA.RName,
+		Ns:      model.NormalizeDomainName(zone.SOA.MName),
+		Mbox:    model.NormalizeDomainName(zone.SOA.RName),
 		Serial:  zone.SOA.Serial,
 		Refresh: zone.SOA.Refresh,
 		Retry:   zone.SOA.Retry,
@@ -228,13 +228,7 @@ func (s *ZoneSigner) modelToRRs(zone *model.Zone, normalizedZoneName string) ([]
 
 // recordToRR converts a model.Record to dns.RR.
 func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, error) {
-	// Convert relative name to FQDN
-	name := record.Name
-	if name == "@" {
-		name = origin
-	} else if !strings.HasSuffix(name, ".") {
-		name = name + "." + origin
-	}
+	name := model.NormalizeRecordOwnerName(record.Name, origin)
 
 	// Create RR header
 	hdr := dns.RR_Header{
@@ -287,7 +281,7 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 
 	case model.RecordTypeMX:
 		hdr.Rrtype = dns.TypeMX
-		parts := strings.SplitN(record.Value, " ", 2)
+		parts := strings.Fields(record.Value)
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("invalid MX value: %s", record.Value)
 		}

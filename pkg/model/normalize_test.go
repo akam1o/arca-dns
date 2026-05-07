@@ -146,3 +146,82 @@ func TestNormalizeDomainName_Idempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeRecordOwnerName(t *testing.T) {
+	tests := []struct {
+		name       string
+		ownerName  string
+		zoneOrigin string
+		want       string
+	}{
+		{
+			name:       "relative name",
+			ownerName:  "www",
+			zoneOrigin: "example.com.",
+			want:       "www.example.com.",
+		},
+		{
+			name:       "FQDN with trailing dot",
+			ownerName:  "www.example.com.",
+			zoneOrigin: "example.com.",
+			want:       "www.example.com.",
+		},
+		{
+			name:       "FQDN without trailing dot",
+			ownerName:  "www.example.com",
+			zoneOrigin: "example.com.",
+			want:       "www.example.com.",
+		},
+		{
+			name:       "apex marker",
+			ownerName:  "@",
+			zoneOrigin: "example.com.",
+			want:       "example.com.",
+		},
+		{
+			name:       "apex without trailing dot",
+			ownerName:  "example.com",
+			zoneOrigin: "example.com.",
+			want:       "example.com.",
+		},
+		{
+			name:       "subdomain FQDN without trailing dot",
+			ownerName:  "mail.sub.example.com",
+			zoneOrigin: "example.com.",
+			want:       "mail.sub.example.com.",
+		},
+		{
+			name:       "subdomain relative",
+			ownerName:  "mail.sub",
+			zoneOrigin: "example.com.",
+			want:       "mail.sub.example.com.",
+		},
+		{
+			name:       "wildcard FQDN without trailing dot",
+			ownerName:  "*.www.example.com",
+			zoneOrigin: "example.com.",
+			want:       "*.www.example.com.",
+		},
+		{
+			name:       "uppercase FQDN without trailing dot",
+			ownerName:  "WWW.EXAMPLE.COM",
+			zoneOrigin: "example.com.",
+			want:       "www.example.com.",
+		},
+		{
+			name:       "origin without trailing dot",
+			ownerName:  "www",
+			zoneOrigin: "example.com",
+			want:       "www.example.com.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NormalizeRecordOwnerName(tt.ownerName, tt.zoneOrigin)
+			if got != tt.want {
+				t.Errorf("NormalizeRecordOwnerName(%q, %q) = %q, want %q", tt.ownerName, tt.zoneOrigin, got, tt.want)
+			}
+		})
+	}
+}
