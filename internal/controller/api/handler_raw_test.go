@@ -87,6 +87,36 @@ www.example.com. IN A 192.0.2.2
 	assert.Equal(t, "/api/v1/zones/example.com.", resp.Header.Get("Location"))
 }
 
+func TestCreateZoneRaw_EmptyTXTRecord(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zoneFile := `$TTL 3600
+empty-txt.com. IN SOA ns1.empty-txt.com. admin.empty-txt.com. (
+    2024010101 3600 1800 604800 86400
+)
+empty-txt.com. IN NS ns1.empty-txt.com.
+empty-txt.com. IN TXT ""
+`
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=empty-txt.com.",
+		strings.NewReader(zoneFile))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	zone, err := store.GetZone(context.Background(), "empty-txt.com.")
+	require.NoError(t, err)
+	require.Len(t, zone.Records, 2)
+	assert.Equal(t, "TXT", zone.Records[1].Type)
+	assert.Empty(t, zone.Records[1].Value)
+}
+
 func TestCreateZoneRaw_AutoSignsWhenSigningServiceEnabled(t *testing.T) {
 	store, server := setupRawTestWithSigning(t)
 	defer server.Close()

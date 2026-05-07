@@ -306,6 +306,9 @@ func ValidateRecordNameInZone(recordName, zoneName string) error {
 
 // ValidateRecordValue validates a record value based on its type.
 func ValidateRecordValue(recordType, value string) error {
+	if recordType == RecordTypeTXT {
+		return ValidateTXTValue(value)
+	}
 	if value == "" {
 		return ErrInvalidRecordValue
 	}
@@ -319,8 +322,6 @@ func ValidateRecordValue(recordType, value string) error {
 		return ValidateDomainTarget(value)
 	case RecordTypeMX:
 		return ValidateMXValue(value)
-	case RecordTypeTXT:
-		return ValidateTXTValue(value)
 	case RecordTypeSRV:
 		return ValidateSRVValue(value)
 	case RecordTypeCAA:
@@ -430,8 +431,7 @@ func ValidateMXValue(value string) error {
 
 // ValidateTXTValue validates a TXT record value.
 func ValidateTXTValue(value string) error {
-	// TXT records have flexible format, just check it's not empty
-	// and not too long (max 255 bytes per string, but can have multiple)
+	// TXT records have flexible format; enforce the aggregate payload limit.
 	if len(value) > MaxTXTValueLength {
 		return fmt.Errorf("TXT value too long (max %d bytes)", MaxTXTValueLength)
 	}

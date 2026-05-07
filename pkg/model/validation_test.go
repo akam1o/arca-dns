@@ -256,6 +256,16 @@ func TestValidateRecord(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid empty TXT record",
+			record: &Record{
+				Name:  "@",
+				Type:  "TXT",
+				TTL:   3600,
+				Value: "",
+			},
+			wantErr: false,
+		},
+		{
 			name: "SOA is not allowed as a regular record",
 			record: &Record{
 				Name:  "@",
