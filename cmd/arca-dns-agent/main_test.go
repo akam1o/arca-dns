@@ -159,6 +159,38 @@ func TestStartStatusServer_ReturnsBindError(t *testing.T) {
 	}
 }
 
+func TestApplyZoneServiceReferences_FlushesAfterReload(t *testing.T) {
+	authServer := newFakeAuthoritativeServer()
+	resolver := newFakeResolver()
+
+	err := applyZoneServiceReferences(context.Background(), "example.com.", authServer, resolver)
+	if err != nil {
+		t.Fatalf("applyZoneServiceReferences failed: %v", err)
+	}
+
+	wantAuthCalls := "ensure,reload-zone"
+	if got := strings.Join(authServer.calls, ","); got != wantAuthCalls {
+		t.Fatalf("auth calls = %s, want %s", got, wantAuthCalls)
+	}
+
+	wantResolverCalls := "update-stub,check,reload,flush"
+	if got := strings.Join(resolver.calls, ","); got != wantResolverCalls {
+		t.Fatalf("resolver calls = %s, want %s", got, wantResolverCalls)
+	}
+}
+
+func TestApplyZoneServiceReferences_ReturnsFlushError(t *testing.T) {
+	authServer := newFakeAuthoritativeServer()
+	resolver := newFakeResolver()
+	resolver.failAt["flush"] = 1
+	resolver.failErr["flush"] = errors.New("flush failed")
+
+	err := applyZoneServiceReferences(context.Background(), "example.com.", authServer, resolver)
+	if err == nil || !strings.Contains(err.Error(), "flush failed") {
+		t.Fatalf("expected flush error, got %v", err)
+	}
+}
+
 func TestDeleteZoneServiceReferences_RollsBackWhenResolverReloadFails(t *testing.T) {
 	authServer := newFakeAuthoritativeServer()
 	resolver := newFakeResolver()
@@ -176,6 +208,26 @@ func TestDeleteZoneServiceReferences_RollsBackWhenResolverReloadFails(t *testing
 	}
 
 	wantResolverCalls := "delete-stub,check,reload,update-stub,check,reload"
+	if got := strings.Join(resolver.calls, ","); got != wantResolverCalls {
+		t.Fatalf("resolver calls = %s, want %s", got, wantResolverCalls)
+	}
+}
+
+func TestDeleteZoneServiceReferences_FlushesAfterReload(t *testing.T) {
+	authServer := newFakeAuthoritativeServer()
+	resolver := newFakeResolver()
+
+	err := deleteZoneServiceReferences(context.Background(), "example.com.", authServer, resolver, zap.NewNop())
+	if err != nil {
+		t.Fatalf("deleteZoneServiceReferences failed: %v", err)
+	}
+
+	wantAuthCalls := "delete"
+	if got := strings.Join(authServer.calls, ","); got != wantAuthCalls {
+		t.Fatalf("auth calls = %s, want %s", got, wantAuthCalls)
+	}
+
+	wantResolverCalls := "delete-stub,check,reload,flush"
 	if got := strings.Join(resolver.calls, ","); got != wantResolverCalls {
 		t.Fatalf("resolver calls = %s, want %s", got, wantResolverCalls)
 	}

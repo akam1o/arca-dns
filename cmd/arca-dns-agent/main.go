@@ -160,24 +160,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Wire zone-apply hook: reload services after zone file write.
 	syncer.SetOnZoneApplied(func(ctx context.Context, zoneName string) error {
-		if err := authServer.EnsureZone(ctx, zoneName); err != nil {
-			return err
-		}
-		// Reload authoritative server zone immediately so updates become visible to DNS.
-		if err := authServer.ReloadZone(ctx, zoneName); err != nil {
-			return err
-		}
-		if err := resolver.UpdateStubZone(ctx, zoneName); err != nil {
-			return err
-		}
-		if err := resolver.CheckConfig(ctx); err != nil {
-			return err
-		}
-		// Reload resolver to pick up any configuration changes.
-		if err := resolver.Reload(ctx); err != nil {
-			return err
-		}
-		return nil
+		return applyZoneServiceReferences(ctx, zoneName, authServer, resolver)
+	})
+	syncer.SetOnZoneApplyRollback(func(ctx context.Context, zoneName string, hadPrevious bool) error {
+		return rollbackAppliedZoneServiceReferences(ctx, zoneName, hadPrevious, authServer, resolver, logger)
 	})
 
 	// Wire zone-delete hook: remove service references before deleting the zone file.
@@ -571,6 +557,37 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func applyZoneServiceReferences(ctx context.Context, zoneName string, authServer plugin.AuthoritativeServer, resolver plugin.Resolver) error {
+	if err := authServer.EnsureZone(ctx, zoneName); err != nil {
+		return err
+	}
+	// Reload authoritative server zone immediately so updates become visible to DNS.
+	if err := authServer.ReloadZone(ctx, zoneName); err != nil {
+		return err
+	}
+	if err := resolver.UpdateStubZone(ctx, zoneName); err != nil {
+		return err
+	}
+	if err := resolver.CheckConfig(ctx); err != nil {
+		return err
+	}
+	// Reload resolver to pick up any configuration changes.
+	if err := resolver.Reload(ctx); err != nil {
+		return err
+	}
+	if err := resolver.FlushZone(ctx, zoneName); err != nil {
+		return err
+	}
+	return nil
+}
+
+func rollbackAppliedZoneServiceReferences(ctx context.Context, zoneName string, hadPrevious bool, authServer plugin.AuthoritativeServer, resolver plugin.Resolver, logger *zap.Logger) error {
+	if hadPrevious {
+		return restoreZoneServiceReferences(ctx, zoneName, authServer, resolver, true, true)
+	}
+	return deleteZoneServiceReferences(ctx, zoneName, authServer, resolver, logger)
+}
+
 func deleteZoneServiceReferences(ctx context.Context, zoneName string, authServer plugin.AuthoritativeServer, resolver plugin.Resolver, logger *zap.Logger) error {
 	authDeleted := false
 	resolverDeleted := false
@@ -595,6 +612,11 @@ func deleteZoneServiceReferences(ctx context.Context, zoneName string, authServe
 	if err := resolver.Reload(ctx); err != nil {
 		return rollbackZoneServiceDeletion(ctx, zoneName, authServer, resolver, authDeleted, resolverDeleted, logger,
 			fmt.Errorf("reload resolver after zone deletion: %w", err))
+	}
+
+	if err := resolver.FlushZone(ctx, zoneName); err != nil {
+		return rollbackZoneServiceDeletion(ctx, zoneName, authServer, resolver, authDeleted, resolverDeleted, logger,
+			fmt.Errorf("flush resolver cache after zone deletion: %w", err))
 	}
 
 	return nil

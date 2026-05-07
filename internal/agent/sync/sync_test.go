@@ -377,6 +377,150 @@ func TestSyncer_SyncAll_PartialFailureKeepsSyncUnhealthy(t *testing.T) {
 	assert.Equal(t, 0, syncer.FailedZoneCount())
 }
 
+func TestSyncer_SyncZone_RollsBackNewZoneFileWhenApplyHookFails(t *testing.T) {
+	requireTCPListener(t)
+
+	zoneContent := "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n"
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/zones":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"zones":[{"name":"example.com","version":"v1-new"}]}`)
+		case "/api/v1/zones/example.com/signed":
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("ETag", "v1-new")
+			w.Header().Set("X-Zone-Hash", hashHex)
+			w.Header().Set("X-Zone-Hash8", hashHex[:8])
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, zoneContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	zoneDir := filepath.Join(t.TempDir(), "zones")
+	require.NoError(t, os.MkdirAll(zoneDir, 0755))
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 0,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	logger := zap.NewNop()
+	fileMgr := NewFileManager(zoneDir, 3, logger)
+	require.NoError(t, fileMgr.EnsureDirectory())
+
+	syncer := NewSyncer(client, fileMgr, config.SyncConfig{
+		VerifyChecksums: true,
+	}, logger)
+	syncer.SetOnZoneApplied(func(ctx context.Context, zoneName string) error {
+		return errors.New("reload failed")
+	})
+
+	rollbackCalled := false
+	rollbackHadPrevious := true
+	syncer.SetOnZoneApplyRollback(func(ctx context.Context, zoneName string, hadPrevious bool) error {
+		rollbackCalled = true
+		rollbackHadPrevious = hadPrevious
+		return nil
+	})
+
+	err = syncer.SyncZone(context.Background(), "example.com")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "post-apply hook failed")
+	assert.True(t, rollbackCalled)
+	assert.False(t, rollbackHadPrevious)
+	assert.NoFileExists(t, fileMgr.GetZonePath("example.com"))
+	assert.Nil(t, syncer.GetZoneState("example.com"))
+
+	managedZones, err := fileMgr.listManagedZones()
+	require.NoError(t, err)
+	assert.Empty(t, managedZones)
+}
+
+func TestSyncer_SyncZone_RestoresPreviousZoneFileWhenApplyHookFails(t *testing.T) {
+	requireTCPListener(t)
+
+	oldZoneContent := "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n"
+	newZoneContent := "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010102 3600 1800 604800 86400\n"
+	hash := sha256.Sum256([]byte(newZoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/zones":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"zones":[{"name":"example.com","version":"v1-new"}]}`)
+		case "/api/v1/zones/example.com/signed":
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("ETag", "v1-new")
+			w.Header().Set("X-Zone-Hash", hashHex)
+			w.Header().Set("X-Zone-Hash8", hashHex[:8])
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, newZoneContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	zoneDir := filepath.Join(t.TempDir(), "zones")
+	require.NoError(t, os.MkdirAll(zoneDir, 0755))
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 0,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	logger := zap.NewNop()
+	fileMgr := NewFileManager(zoneDir, 3, logger)
+	require.NoError(t, fileMgr.EnsureDirectory())
+	require.NoError(t, fileMgr.WriteZoneFile("example.com", oldZoneContent))
+
+	syncer := NewSyncer(client, fileMgr, config.SyncConfig{
+		VerifyChecksums: true,
+	}, logger)
+	syncer.SetOnZoneApplied(func(ctx context.Context, zoneName string) error {
+		return errors.New("reload failed")
+	})
+
+	rollbackCalled := false
+	rollbackHadPrevious := false
+	syncer.SetOnZoneApplyRollback(func(ctx context.Context, zoneName string, hadPrevious bool) error {
+		rollbackCalled = true
+		rollbackHadPrevious = hadPrevious
+		return nil
+	})
+
+	err = syncer.SyncZone(context.Background(), "example.com")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "post-apply hook failed")
+	assert.True(t, rollbackCalled)
+	assert.True(t, rollbackHadPrevious)
+
+	content, err := fileMgr.ReadZoneFile("example.com")
+	require.NoError(t, err)
+	assert.Equal(t, oldZoneContent, content)
+	assert.Nil(t, syncer.GetZoneState("example.com"))
+
+	managedZones, err := fileMgr.listManagedZones()
+	require.NoError(t, err)
+	require.Len(t, managedZones, 1)
+	assert.Equal(t, "example.com.", managedZones[0].ZoneName)
+}
+
 func TestSyncer_SyncAll_ForcesFetchWhenLocalZoneFileMissing(t *testing.T) {
 	requireTCPListener(t)
 

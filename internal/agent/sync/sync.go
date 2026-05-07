@@ -36,6 +36,7 @@ type Syncer struct {
 	mu          sync.RWMutex              // Protects zoneStates and lastSuccess
 
 	onZoneApplied        func(ctx context.Context, zoneName string) error
+	onZoneApplyRollback  func(ctx context.Context, zoneName string, hadPrevious bool) error
 	onZoneDeleted        func(ctx context.Context, zoneName string) error
 	onZoneDeleteRollback func(ctx context.Context, zoneName string) error
 	validateZoneFile     func(ctx context.Context, zoneName string, zonePath string) error
@@ -62,6 +63,12 @@ func NewSyncer(client *Client, fileMgr *FileManager, cfg config.SyncConfig, logg
 // Returning an error will mark the sync for that zone as failed.
 func (s *Syncer) SetOnZoneApplied(fn func(ctx context.Context, zoneName string) error) {
 	s.onZoneApplied = fn
+}
+
+// SetOnZoneApplyRollback sets a hook to restore service references after a
+// zone apply hook fails and the active zone file has been rolled back.
+func (s *Syncer) SetOnZoneApplyRollback(fn func(ctx context.Context, zoneName string, hadPrevious bool) error) {
+	s.onZoneApplyRollback = fn
 }
 
 // SetOnZoneDeleted sets a hook to be called before removing the local zone file.
@@ -393,13 +400,24 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 			return s.validateZoneFile(ctx, zone.Name, zonePath)
 		}
 	}
-	if err := s.fileMgr.WriteZoneFileValidated(zone.Name, zoneContent, validate); err != nil {
+	hadPreviousZoneFile := s.fileMgr.ZoneExists(zone.Name)
+	rollbackZoneFile, err := s.fileMgr.WriteZoneFileValidatedWithRollback(zone.Name, zoneContent, validate)
+	if err != nil {
 		return fmt.Errorf("failed to write zone file: %w", err)
 	}
 
 	// Step 7: NSD/Unbound reload is handled by the caller (main agent loop) via hook.
 	if s.onZoneApplied != nil {
 		if err := s.onZoneApplied(ctx, zone.Name); err != nil {
+			rollbackErr := rollbackZoneFile()
+			hookRollbackErr := s.rollbackAppliedZone(ctx, zone.Name, hadPreviousZoneFile)
+			if rollbackErr != nil || hookRollbackErr != nil {
+				return errors.Join(
+					fmt.Errorf("post-apply hook failed: %w", err),
+					rollbackErr,
+					hookRollbackErr,
+				)
+			}
 			return fmt.Errorf("post-apply hook failed: %w", err)
 		}
 	}
@@ -414,6 +432,23 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 	state.Version = newETag
 	s.mu.Unlock()
 
+	return nil
+}
+
+func (s *Syncer) rollbackAppliedZone(ctx context.Context, zoneName string, hadPrevious bool) error {
+	if s.onZoneApplyRollback == nil {
+		return nil
+	}
+	if err := s.onZoneApplyRollback(ctx, zoneName, hadPrevious); err != nil {
+		s.logger.Error("Failed to roll back applied zone service references",
+			zap.String("zone", zoneName),
+			zap.Bool("had_previous", hadPrevious),
+			zap.Error(err))
+		return fmt.Errorf("rollback applied zone service references: %w", err)
+	}
+	s.logger.Info("Rolled back applied zone service references",
+		zap.String("zone", zoneName),
+		zap.Bool("had_previous", hadPrevious))
 	return nil
 }
 

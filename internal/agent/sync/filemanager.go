@@ -2,6 +2,7 @@ package sync
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,44 +67,60 @@ func (fm *FileManager) WriteZoneFile(zoneName string, content string) error {
 // WriteZoneFileValidated writes a zone file atomically after validating the
 // temporary file, if a validator is provided.
 func (fm *FileManager) WriteZoneFileValidated(zoneName string, content string, validate func(zonePath string) error) error {
+	_, err := fm.WriteZoneFileValidatedWithRollback(zoneName, content, validate)
+	return err
+}
+
+// WriteZoneFileValidatedWithRollback writes a zone file atomically and returns
+// a rollback function that restores the previous active file and managed-zone
+// index entry. The rollback function is intended for service hook failures
+// after the filesystem commit has already succeeded.
+func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, content string, validate func(zonePath string) error) (func() error, error) {
 	targetPath := fm.GetZonePath(zoneName) // Use safe path with GetZonePath
 	tmpPath := targetPath + ".tmp"
 
 	// Check disk space (require at least 100MB free)
 	if err := fm.checkDiskSpace(100 * 1024 * 1024); err != nil {
-		return fmt.Errorf("insufficient disk space: %w", err)
+		return nil, fmt.Errorf("insufficient disk space: %w", err)
+	}
+
+	snapshot, err := snapshotZoneFile(targetPath)
+	if err != nil {
+		return nil, err
 	}
 
 	// Write to temporary file
 	if err := os.WriteFile(tmpPath, []byte(content), 0644); err != nil {
-		return fmt.Errorf("failed to write temporary file: %w", err)
+		return nil, fmt.Errorf("failed to write temporary file: %w", err)
 	}
 
 	// Fsync the temporary file to ensure it's written to disk
 	if err := fm.fsyncFile(tmpPath); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("failed to fsync temporary file: %w", err)
+		return nil, fmt.Errorf("failed to fsync temporary file: %w", err)
 	}
 
 	if validate != nil {
 		if err := validate(tmpPath); err != nil {
 			os.Remove(tmpPath)
-			return fmt.Errorf("zone validation failed: %w", err)
+			return nil, fmt.Errorf("zone validation failed: %w", err)
 		}
 	}
 
+	backupPath := ""
 	// Backup old version if it exists
 	if _, err := os.Stat(targetPath); err == nil {
-		if err := fm.backupFile(targetPath); err != nil {
+		backupPath, err = fm.backupFile(targetPath)
+		if err != nil {
 			os.Remove(tmpPath)
-			return fmt.Errorf("failed to backup old version: %w", err)
+			return nil, fmt.Errorf("failed to backup old version: %w", err)
 		}
 	}
 
 	rollbackManagedZone, err := fm.recordManagedZoneWithRollback(zoneName)
 	if err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("failed to record managed zone: %w", err)
+		return nil, fmt.Errorf("failed to record managed zone: %w", err)
 	}
 
 	// Atomic rename (this is the commit point)
@@ -114,7 +131,7 @@ func (fm *FileManager) WriteZoneFileValidated(zoneName string, content string, v
 				zap.String("zone", zoneName),
 				zap.Error(rollbackErr))
 		}
-		return fmt.Errorf("failed to rename temporary file: %w", err)
+		return nil, fmt.Errorf("failed to rename temporary file: %w", err)
 	}
 
 	// Clean up old backups
@@ -129,7 +146,23 @@ func (fm *FileManager) WriteZoneFileValidated(zoneName string, content string, v
 		zap.String("zone", zoneName),
 		zap.String("path", targetPath))
 
-	return nil
+	return func() error {
+		var errs []error
+		if err := restoreZoneFileSnapshot(targetPath, snapshot); err != nil {
+			errs = append(errs, err)
+		}
+		if rollbackManagedZone != nil {
+			if err := rollbackManagedZone(); err != nil {
+				errs = append(errs, fmt.Errorf("roll back managed zone index: %w", err))
+			}
+		}
+		if backupPath != "" {
+			if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("remove rollback backup: %w", err))
+			}
+		}
+		return errors.Join(errs...)
+	}, nil
 }
 
 // GetZonePath returns the path to a zone file with safe filename.
@@ -203,20 +236,83 @@ func (fm *FileManager) deleteZoneFiles(zoneName string) error {
 
 // backupFile creates a backup of the given file.
 // Backups are named: {filename}.backup.{nanoseconds}
-func (fm *FileManager) backupFile(path string) error {
+func (fm *FileManager) backupFile(path string) (string, error) {
 	// Use nanoseconds for unique timestamp
 	backupPath := fmt.Sprintf("%s.backup.%d", path, time.Now().UnixNano())
 
 	// Copy file
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("failed to read file for backup: %w", err)
+		return "", fmt.Errorf("failed to read file for backup: %w", err)
 	}
 
 	if err := os.WriteFile(backupPath, content, 0644); err != nil {
-		return fmt.Errorf("failed to write backup file: %w", err)
+		return "", fmt.Errorf("failed to write backup file: %w", err)
 	}
 
+	return backupPath, nil
+}
+
+type zoneFileSnapshot struct {
+	exists bool
+	mode   os.FileMode
+	data   []byte
+}
+
+func snapshotZoneFile(path string) (zoneFileSnapshot, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return zoneFileSnapshot{}, nil
+		}
+		return zoneFileSnapshot{}, fmt.Errorf("stat active zone file: %w", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return zoneFileSnapshot{}, fmt.Errorf("read active zone file: %w", err)
+	}
+	return zoneFileSnapshot{
+		exists: true,
+		mode:   info.Mode().Perm(),
+		data:   data,
+	}, nil
+}
+
+func restoreZoneFileSnapshot(path string, snapshot zoneFileSnapshot) error {
+	if !snapshot.exists {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove rolled back zone file: %w", err)
+		}
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create zone directory for rollback: %w", err)
+	}
+
+	tmpPath := path + ".rollback"
+	if err := os.WriteFile(tmpPath, snapshot.data, snapshot.mode); err != nil {
+		return fmt.Errorf("write rollback zone file: %w", err)
+	}
+	file, err := os.OpenFile(tmpPath, os.O_RDWR, 0)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("open rollback zone file: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("fsync rollback zone file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close rollback zone file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename rollback zone file: %w", err)
+	}
 	return nil
 }
 
