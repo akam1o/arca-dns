@@ -1072,7 +1072,7 @@ func (g *GitBackend) GetRevision(ctx context.Context, zoneName, version string) 
 	var targetCommit *object.Commit
 	stopSentinel := fmt.Errorf("found")
 	err = commits.ForEach(func(c *object.Commit) error {
-		if strings.Contains(c.Message, fmt.Sprintf("Version: %s", version)) {
+		if commitVersion := extractVersionTrailer(c.Message); commitVersion == version {
 			targetCommit = c
 			return stopSentinel // Stop iteration
 		}
@@ -1141,16 +1141,7 @@ func (g *GitBackend) ListRevisions(ctx context.Context, zoneName string, opts Li
 
 	versions := make([]*model.ZoneVersion, 0)
 	err = commits.ForEach(func(c *object.Commit) error {
-		// Extract version from commit message
-		lines := strings.Split(c.Message, "\n")
-		var version string
-		for _, line := range lines {
-			if strings.HasPrefix(line, "Version: ") {
-				version = strings.TrimPrefix(line, "Version: ")
-				break
-			}
-		}
-
+		version := extractVersionTrailer(c.Message)
 		if version == "" {
 			return nil // Skip commits without version trailer
 		}
@@ -1217,6 +1208,16 @@ func (g *GitBackend) ListRevisions(ctx context.Context, zoneName string, opts Li
 	}
 
 	return versions[start:end], nil
+}
+
+func extractVersionTrailer(message string) string {
+	lines := strings.Split(message, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Version: ") {
+			return strings.TrimPrefix(line, "Version: ")
+		}
+	}
+	return ""
 }
 
 // GetCurrentVersion returns the current version of a zone

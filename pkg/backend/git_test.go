@@ -1013,6 +1013,23 @@ func TestGitBackend_GetRevision_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrVersionNotFound, "Should return ErrVersionNotFound for missing version")
 }
 
+func TestGitBackend_GetRevision_RequiresExactVersionTrailer(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zone := testGitZone("example.com.")
+	require.NoError(t, backend.CreateZone(ctx, zone))
+
+	created, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	require.Greater(t, len(created.Version), 2)
+
+	versionPrefix := created.Version[:len(created.Version)-2]
+	_, err = backend.GetRevision(ctx, "example.com.", versionPrefix)
+	assert.ErrorIs(t, err, model.ErrVersionNotFound, "Should require an exact Version trailer match")
+}
+
 // TestGitBackend_PathTraversal tests path traversal protection
 func TestGitBackend_PathTraversal(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
