@@ -221,11 +221,7 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	if migrateDryRun {
 		fmt.Println("\n[DRY RUN] Would copy:")
 		for _, zone := range zones {
-			newVersion, err := model.NewZoneVersion()
-			if err != nil {
-				return fmt.Errorf("generate version for %s: %w", zone.Name, err)
-			}
-			fmt.Printf("  - %s (old version: %s, new version: %s)\n", zone.Name, zone.Version, newVersion)
+			fmt.Printf("  - %s (old version: %s, new version: generated during copy)\n", zone.Name, zone.Version)
 		}
 		return nil
 	}
@@ -359,11 +355,7 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 	if dryRun {
 		fmt.Println("\n[DRY RUN] Would import:")
 		for _, zone := range zones {
-			newVersion, err := model.NewZoneVersion()
-			if err != nil {
-				return 0, fmt.Errorf("generate version for %s: %w", zone.Name, err)
-			}
-			fmt.Printf("  - %s (old version: %s, new version: %s)\n", zone.Name, zone.Version, newVersion)
+			fmt.Printf("  - %s (old version: %s, new version: generated during import)\n", zone.Name, zone.Version)
 		}
 		return 0, nil
 	}

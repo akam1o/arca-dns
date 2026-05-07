@@ -25,15 +25,17 @@ arca-dns-controller migrate copy \
 
 ### Version Recomputation
 
-**All migrations recompute zone versions** using the content-derived formula:
+**All migrations recompute zone versions** by asking the destination backend to
+create a new controller-issued ULID version:
 ```
-version = v{serial}-{hash8}
+version = v{ULID}
 ```
 
-This ensures consistency across backends but means:
-- ✅ **Idempotent**: Same zone data always produces same version
-- ✅ **Backend-independent**: Versions are portable
+This keeps versions consistent with normal controller writes but means:
+- ⚠️ **Not idempotent**: Re-importing the same zone data creates a new version
+- ✅ **Backend-independent**: All supported backends use the same version format
 - ⚠️ **Not preserved**: Original versions are lost (but saved in JSON exports for audit)
+- ℹ️ **Dry-run output**: Dry-run reports that the version will be generated during copy/import instead of predicting an exact ULID
 
 ### Overwrite Behavior
 
