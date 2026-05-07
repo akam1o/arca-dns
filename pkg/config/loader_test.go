@@ -673,6 +673,54 @@ func TestValidateAgentConfig_EmptyControllerURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "controller.url")
 }
 
+func TestValidateAgentConfig_InvalidControllerClientSettings(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+		want   string
+	}{
+		{
+			name: "zero timeout",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.Timeout = 0
+			},
+			want: "controller.timeout",
+		},
+		{
+			name: "negative retry attempts",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.RetryAttempts = -1
+			},
+			want: "controller.retry_attempts",
+		},
+		{
+			name: "negative retry delay",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.RetryDelay = -time.Second
+			},
+			want: "controller.retry_delay",
+		},
+		{
+			name: "zero retry delay with retries",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.RetryAttempts = 1
+				cfg.Controller.RetryDelay = 0
+			},
+			want: "controller.retry_delay",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestValidateAgentConfig_InvalidAuthoritative(t *testing.T) {
 	cfg := validAgentConfigForTest()
 	cfg.Authoritative = "knot"

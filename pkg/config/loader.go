@@ -267,11 +267,6 @@ func validateControllerAuthConfig(auth AuthConfig) error {
 	return nil
 }
 
-func isSHA256APIKeyHash(hash string) bool {
-	_, ok := normalizeSHA256APIKeyHash(hash)
-	return ok
-}
-
 func normalizeSHA256APIKeyHash(hash string) (string, bool) {
 	const prefix = "sha256:"
 
@@ -324,6 +319,18 @@ func isPlaceholderSecret(value string) bool {
 func ValidateAgentConfig(cfg *AgentConfig) error {
 	if cfg.Controller.URL == "" {
 		return fmt.Errorf("invalid controller.url: empty")
+	}
+	if cfg.Controller.Timeout <= 0 {
+		return fmt.Errorf("invalid controller.timeout: must be greater than 0")
+	}
+	if cfg.Controller.RetryAttempts < 0 {
+		return fmt.Errorf("invalid controller.retry_attempts: must be >= 0")
+	}
+	if cfg.Controller.RetryDelay < 0 {
+		return fmt.Errorf("invalid controller.retry_delay: must be >= 0")
+	}
+	if cfg.Controller.RetryAttempts > 0 && cfg.Controller.RetryDelay == 0 {
+		return fmt.Errorf("invalid controller.retry_delay: must be greater than 0 when controller.retry_attempts is greater than 0")
 	}
 
 	cfg.Authoritative = strings.ToLower(strings.TrimSpace(cfg.Authoritative))
