@@ -425,6 +425,14 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid sync.sync_interval: must be positive")
 	}
 
+	if cfg.Sync.MaxStaleness <= 0 {
+		return fmt.Errorf("invalid sync.max_staleness: must be positive")
+	}
+
+	if cfg.Sync.MaxStaleness < cfg.Sync.SyncInterval {
+		return fmt.Errorf("invalid sync.max_staleness: must be greater than or equal to sync.sync_interval")
+	}
+
 	if cfg.Sync.BackupVersions < 0 {
 		return fmt.Errorf("invalid sync.backup_versions: must be non-negative")
 	}

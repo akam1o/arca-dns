@@ -775,6 +775,37 @@ func TestValidateAgentConfig_InvalidSyncInterval(t *testing.T) {
 	assert.Contains(t, err.Error(), "sync_interval")
 }
 
+func TestValidateAgentConfig_InvalidMaxStaleness(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+	}{
+		{
+			name: "zero",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Sync.MaxStaleness = 0
+			},
+		},
+		{
+			name: "shorter than sync interval",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Sync.SyncInterval = time.Minute
+				cfg.Sync.MaxStaleness = time.Second
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "sync.max_staleness")
+		})
+	}
+}
+
 func TestValidateAgentConfig_InvalidHealthTiming(t *testing.T) {
 	tests := []struct {
 		name   string
