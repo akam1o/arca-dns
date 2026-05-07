@@ -386,12 +386,14 @@ func TestFetchSignedZone_NotModifiedRejectsMismatchedETag(t *testing.T) {
 func TestFetchSignedZone_ChecksumVerification(t *testing.T) {
 	requireTCPListener(t)
 	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	badHash := strings.Repeat("0", sha256.Size*2)
 
 	// Create mock server with incorrect hash
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
 		w.Header().Set("X-Zone-Serial", "2024122801")
-		w.Header().Set("X-Zone-Hash8", "badhash1") // Incorrect hash
+		w.Header().Set("X-Zone-Hash", badHash)
+		w.Header().Set("X-Zone-Hash8", badHash[:8])
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, zoneContent)
@@ -418,7 +420,42 @@ func TestFetchSignedZone_ChecksumVerification(t *testing.T) {
 
 	// Just check that it's a checksum verification error
 	// The actual hash value depends on the content
-	if err.Error()[:36] != "checksum verification failed: expect" {
+	if !strings.HasPrefix(err.Error(), "checksum verification failed: expected ") {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+}
+
+func TestFetchSignedZone_ShortChecksumRejected(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+		w.Header().Set("X-Zone-Serial", "2024122801")
+		w.Header().Set("X-Zone-Hash", "a3f5c2e9")
+		w.Header().Set("X-Zone-Hash8", "a3f5c2e9")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "")
+	if err == nil {
+		t.Fatal("Expected short checksum header to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid checksum header length") {
 		t.Errorf("Unexpected error message: %v", err)
 	}
 }
@@ -451,7 +488,7 @@ func TestFetchSignedZone_MissingChecksumRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected missing checksum header to fail")
 	}
-	if err.Error() != "missing checksum header in response" {
+	if err.Error() != "missing full checksum header in response" {
 		t.Errorf("Unexpected error message: %v", err)
 	}
 }

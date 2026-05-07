@@ -305,44 +305,23 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 	zoneHash8 := resp.Header.Get("X-Zone-Hash8")
 	zoneSignature := resp.Header.Get("X-Zone-Signature")
 
-	// Verify SHA256 checksum when enabled. Missing checksum headers are an error
+	// Verify SHA256 checksum when enabled. A full checksum header is required
 	// because the agent otherwise cannot detect truncated or altered artifacts.
 	if c.verifyChecksums {
-		if zoneHash == "" && zoneHash8 == "" {
-			return "", "", false, fmt.Errorf("missing checksum header in response")
+		if zoneHash == "" {
+			return "", "", false, fmt.Errorf("missing full checksum header in response")
+		}
+		if len(zoneHash) != sha256.Size*2 {
+			return "", "", false, fmt.Errorf("invalid checksum header length: expected %d hex chars, got %d", sha256.Size*2, len(zoneHash))
+		}
+		if _, err := hex.DecodeString(zoneHash); err != nil {
+			return "", "", false, fmt.Errorf("invalid checksum header: %w", err)
 		}
 
 		computedHash := sha256.Sum256(body)
 		computedHashHex := hex.EncodeToString(computedHash[:])
-		computedHash8 := computedHashHex
-		if len(computedHash8) > 8 {
-			computedHash8 = computedHash8[:8]
-		}
-
-		// Backward/forward compatible verification:
-		// - If X-Zone-Hash is 64 hex chars: treat as full SHA256.
-		// - If X-Zone-Hash is 8 chars: treat as hash8.
-		// - If X-Zone-Hash8 is present: treat as hash8.
-		if zoneHash != "" {
-			switch len(zoneHash) {
-			case 64:
-				if computedHashHex != zoneHash {
-					return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash, computedHashHex)
-				}
-			case 8:
-				if computedHash8 != zoneHash {
-					return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash, computedHash8)
-				}
-			default:
-				// Unknown length; best-effort: compare prefix.
-				if !strings.HasPrefix(computedHashHex, zoneHash) {
-					return "", "", false, fmt.Errorf("checksum verification failed: expected prefix %s, got %s", zoneHash, computedHashHex)
-				}
-			}
-		}
-
-		if zoneHash8 != "" && computedHash8 != zoneHash8 {
-			return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash8, computedHash8)
+		if !strings.EqualFold(computedHashHex, zoneHash) {
+			return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash, computedHashHex)
 		}
 	}
 
@@ -354,6 +333,7 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 
 	// Log integrity metadata for debugging
 	_ = zoneSerial // Available for logging if needed
+	_ = zoneHash8  // Short hash is display metadata only; verification uses X-Zone-Hash.
 
 	return string(body), newETag, false, nil
 }
