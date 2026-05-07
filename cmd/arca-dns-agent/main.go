@@ -50,11 +50,15 @@ manages NSD/Unbound, controls BGP routes via BIRD, and provides observability.`,
 	daemonCmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the agent daemon",
-		Long:  "Run the agent daemon to sync zones and manage DNS services",
-		RunE:  runDaemon,
+		Long: `Run the agent daemon to sync zones and manage DNS services.
+
+Provide a configuration file, or provide all required settings via environment
+variables. For example, signature verification requires
+sync.controller_public_key or ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY.`,
+		RunE: runDaemon,
 	}
 
-	daemonCmd.Flags().StringVarP(&configFile, "config", "c", "", "Path to configuration file (optional, uses defaults if not provided)")
+	daemonCmd.Flags().StringVarP(&configFile, "config", "c", "", "Path to configuration file")
 
 	rootCmd.AddCommand(daemonCmd)
 
@@ -82,7 +86,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	} else {
 		loadedCfg, loadErr := config.LoadAgentConfig("")
 		if loadErr != nil {
-			return fmt.Errorf("failed to load default config: %w", loadErr)
+			return fmt.Errorf("failed to load config from defaults and environment: %w", loadErr)
 		}
 		cfg = loadedCfg
 	}
