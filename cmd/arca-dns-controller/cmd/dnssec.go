@@ -70,9 +70,10 @@ func runExportDS(configFile string, zoneName string, digestType uint8, outputFor
 	if !cfg.DNSSEC.Enabled {
 		return fmt.Errorf("DNSSEC is not enabled in configuration")
 	}
+	keyDirectory := cfg.DNSSECKeyDirectory()
 
 	masterKey, src, err := dnssec.LoadMasterKey(dnssec.MasterKeyOptions{
-		KeyDirectory:      cfg.DNSSEC.KeyDirectory,
+		KeyDirectory:      keyDirectory,
 		AllowAutoGenerate: false, // Production mode: don't auto-generate
 	})
 	if err != nil {
@@ -85,7 +86,7 @@ func runExportDS(configFile string, zoneName string, digestType uint8, outputFor
 	}
 
 	km, err := dnssec.NewKeyManager(dnssec.KeyManagerOptions{
-		KeyDirectory: cfg.DNSSEC.KeyDirectory,
+		KeyDirectory: keyDirectory,
 		MasterKey:    masterKey,
 		Algorithm:    cfg.DNSSEC.Algorithm,
 		KSKBits:      cfg.DNSSEC.KSKKeySize,
@@ -152,9 +153,10 @@ func runGenerateKeys(configFile string, zoneName string, rotate bool) error {
 	if !cfg.DNSSEC.Enabled {
 		return fmt.Errorf("DNSSEC is not enabled in configuration")
 	}
+	keyDirectory := cfg.DNSSECKeyDirectory()
 
 	masterKey, _, err := dnssec.LoadMasterKey(dnssec.MasterKeyOptions{
-		KeyDirectory:      cfg.DNSSEC.KeyDirectory,
+		KeyDirectory:      keyDirectory,
 		AllowAutoGenerate: cfg.DNSSEC.MasterKeyAutoGenerate,
 	})
 	if err != nil {
@@ -162,7 +164,7 @@ func runGenerateKeys(configFile string, zoneName string, rotate bool) error {
 	}
 
 	km, err := dnssec.NewKeyManager(dnssec.KeyManagerOptions{
-		KeyDirectory: cfg.DNSSEC.KeyDirectory,
+		KeyDirectory: keyDirectory,
 		MasterKey:    masterKey,
 		Algorithm:    cfg.DNSSEC.Algorithm,
 		KSKBits:      cfg.DNSSEC.KSKKeySize,
@@ -223,9 +225,10 @@ func runRemoveOldKeys(configFile string, zoneName string) error {
 	if !cfg.DNSSEC.Enabled {
 		return fmt.Errorf("DNSSEC is not enabled in configuration")
 	}
+	keyDirectory := cfg.DNSSECKeyDirectory()
 
 	masterKey, _, err := dnssec.LoadMasterKey(dnssec.MasterKeyOptions{
-		KeyDirectory:      cfg.DNSSEC.KeyDirectory,
+		KeyDirectory:      keyDirectory,
 		AllowAutoGenerate: false,
 	})
 	if err != nil {
@@ -233,7 +236,7 @@ func runRemoveOldKeys(configFile string, zoneName string) error {
 	}
 
 	km, err := dnssec.NewKeyManager(dnssec.KeyManagerOptions{
-		KeyDirectory: cfg.DNSSEC.KeyDirectory,
+		KeyDirectory: keyDirectory,
 		MasterKey:    masterKey,
 		Algorithm:    cfg.DNSSEC.Algorithm,
 		KSKBits:      cfg.DNSSEC.KSKKeySize,

@@ -129,12 +129,17 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Create authoritative DNS server plugin
 	var authServer plugin.AuthoritativeServer
-	if cfg.NSD.Enabled {
-		nsdCtrl := nsd.NewController(cfg.NSD, logger)
-		authServer = nsd.NewAdapter(nsdCtrl)
-		logger.Info("Authoritative server initialized", zap.String("type", authServer.Type()))
-	} else {
-		authServer = &plugin.NoopAuthoritativeServer{}
+	switch cfg.Authoritative {
+	case "nsd":
+		if cfg.NSD.Enabled {
+			nsdCtrl := nsd.NewController(cfg.NSD, logger)
+			authServer = nsd.NewAdapter(nsdCtrl)
+			logger.Info("Authoritative server initialized", zap.String("type", authServer.Type()))
+		} else {
+			authServer = &plugin.NoopAuthoritativeServer{}
+		}
+	default:
+		return fmt.Errorf("unsupported authoritative server: %s", cfg.Authoritative)
 	}
 
 	// Create resolver plugin
@@ -173,7 +178,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		return nil
 	})
 
-	// Wire zone-delete hook: reload services after the zone file is removed.
+	// Wire zone-delete hook: remove service references before deleting the zone file.
 	syncer.SetOnZoneDeleted(func(ctx context.Context, zoneName string) error {
 		if err := authServer.DeleteZone(ctx, zoneName); err != nil {
 			return err

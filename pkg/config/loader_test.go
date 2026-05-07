@@ -103,7 +103,7 @@ dnssec:
   key_directory: "/tmp/keys"
 storage:
   artifact_directory: "/tmp/artifacts"
-  key_directory: "/tmp/storage-keys"
+  key_directory: "/tmp/keys"
 logging:
   level: "debug"
 `
@@ -118,7 +118,67 @@ logging:
 	assert.Equal(t, "mysql", cfg.Backend.Type)
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
 	assert.Equal(t, "/tmp/keys", cfg.DNSSEC.KeyDirectory)
+	assert.Equal(t, "/tmp/keys", cfg.DNSSECKeyDirectory())
 	assert.Equal(t, "debug", cfg.Logging.Level)
+}
+
+func TestLoadControllerConfig_StorageKeyDirectoryAliasesDNSSECKeyDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "controller.yaml")
+
+	configContent := `
+api:
+  auth:
+    enabled: false
+storage:
+  key_directory: "/tmp/storage-keys"
+dnssec:
+  enabled: true
+`
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	cfg, err := LoadControllerConfig(configPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "/tmp/storage-keys", cfg.Storage.KeyDirectory)
+	assert.Equal(t, "/tmp/storage-keys", cfg.DNSSEC.KeyDirectory)
+	assert.Equal(t, "/tmp/storage-keys", cfg.DNSSECKeyDirectory())
+}
+
+func TestLoadControllerConfig_StorageKeyDirectoryEnvAliasesDNSSECKeyDirectory(t *testing.T) {
+	t.Setenv("ARCA_DNS_API_AUTH_ENABLED", "false")
+	t.Setenv("ARCA_DNS_STORAGE_KEY_DIRECTORY", "/tmp/env-storage-keys")
+
+	cfg, err := LoadControllerConfig("")
+	require.NoError(t, err)
+
+	assert.Equal(t, "/tmp/env-storage-keys", cfg.Storage.KeyDirectory)
+	assert.Equal(t, "/tmp/env-storage-keys", cfg.DNSSEC.KeyDirectory)
+	assert.Equal(t, "/tmp/env-storage-keys", cfg.DNSSECKeyDirectory())
+}
+
+func TestLoadControllerConfig_MismatchedKeyDirectoriesFail(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "controller.yaml")
+
+	configContent := `
+api:
+  auth:
+    enabled: false
+storage:
+  key_directory: "/tmp/storage-keys"
+dnssec:
+  key_directory: "/tmp/dnssec-keys"
+`
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	cfg, err := LoadControllerConfig(configPath)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "storage.key_directory")
+	assert.Contains(t, err.Error(), "dnssec.key_directory")
 }
 
 func TestLoadControllerConfig_GitAutoPullOptional(t *testing.T) {
@@ -433,9 +493,18 @@ func TestValidateControllerConfig_EmptyKeyDirectory(t *testing.T) {
 	cfg := validControllerConfigForTest()
 	cfg.DNSSEC.Enabled = true
 	cfg.DNSSEC.KeyDirectory = ""
+	cfg.Storage.KeyDirectory = ""
 	err := ValidateControllerConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "key_directory")
+}
+
+func TestValidateControllerConfig_InvalidMaxVersionsPerZone(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.Storage.MaxVersionsPerZone = 0
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "max_versions_per_zone")
 }
 
 func TestValidateControllerConfig_InvalidAlgorithm(t *testing.T) {
@@ -478,6 +547,7 @@ func TestLoadAgentConfig_Defaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "http://localhost:8080", cfg.Controller.URL)
+	assert.Equal(t, "nsd", cfg.Authoritative)
 	assert.True(t, cfg.NSD.Enabled)
 	assert.True(t, cfg.Unbound.Enabled)
 	assert.Equal(t, 1232, cfg.Unbound.EDNSBufferSize)
@@ -601,6 +671,23 @@ func TestValidateAgentConfig_EmptyControllerURL(t *testing.T) {
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "controller.url")
+}
+
+func TestValidateAgentConfig_InvalidAuthoritative(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Authoritative = "knot"
+	err := ValidateAgentConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "authoritative")
+	assert.Contains(t, err.Error(), "supported: nsd")
+}
+
+func TestValidateAgentConfig_NormalizesAuthoritative(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Authoritative = " NSD "
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
+	assert.Equal(t, "nsd", cfg.Authoritative)
 }
 
 func TestValidateAgentConfig_NSDMissingConfig(t *testing.T) {

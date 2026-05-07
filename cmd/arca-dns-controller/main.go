@@ -109,10 +109,11 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	if cfg.DNSSEC.Enabled {
 		logger.Info("Initializing DNSSEC signing service")
+		keyDirectory := cfg.DNSSECKeyDirectory()
 
 		// Load or generate master key
 		masterKey, src, err := dnssec.LoadMasterKey(dnssec.MasterKeyOptions{
-			KeyDirectory:      cfg.DNSSEC.KeyDirectory,
+			KeyDirectory:      keyDirectory,
 			AllowAutoGenerate: cfg.DNSSEC.MasterKeyAutoGenerate,
 		})
 		if err != nil {
@@ -122,7 +123,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 		// Initialize key manager
 		keyManager, err := dnssec.NewKeyManager(dnssec.KeyManagerOptions{
-			KeyDirectory: cfg.DNSSEC.KeyDirectory,
+			KeyDirectory: keyDirectory,
 			MasterKey:    masterKey,
 			Algorithm:    cfg.DNSSEC.Algorithm,
 			KSKBits:      cfg.DNSSEC.KSKKeySize,
@@ -140,6 +141,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			logger,
 			signerOptionsFromConfig(cfg.DNSSEC),
 		)
+		signingService.SetMaxArtifactsPerZone(cfg.Storage.MaxVersionsPerZone)
 		logger.Info("DNSSEC signing service initialized")
 
 		// Initialize scheduler if enabled

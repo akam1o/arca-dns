@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -39,6 +40,9 @@ func LoadControllerConfig(path string) (*ControllerConfig, error) {
 		if err := v.Unmarshal(cfg); err != nil {
 			return nil, fmt.Errorf("unmarshal controller config: %w", err)
 		}
+		if err := applyControllerKeyDirectoryAliases(v, cfg); err != nil {
+			return nil, err
+		}
 	} else {
 		// No config file, only apply environment variables
 		v := viper.New()
@@ -52,6 +56,9 @@ func LoadControllerConfig(path string) (*ControllerConfig, error) {
 		if err := v.Unmarshal(cfg); err != nil {
 			return nil, fmt.Errorf("unmarshal controller config from env: %w", err)
 		}
+		if err := applyControllerKeyDirectoryAliases(v, cfg); err != nil {
+			return nil, err
+		}
 	}
 
 	// Validate configuration
@@ -60,6 +67,26 @@ func LoadControllerConfig(path string) (*ControllerConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func applyControllerKeyDirectoryAliases(v *viper.Viper, cfg *ControllerConfig) error {
+	storageKeySet := v.IsSet("storage.key_directory")
+	dnssecKeySet := v.IsSet("dnssec.key_directory")
+
+	if storageKeySet && !dnssecKeySet {
+		cfg.DNSSEC.KeyDirectory = cfg.Storage.KeyDirectory
+		return nil
+	}
+
+	if storageKeySet && dnssecKeySet && !sameConfigPath(cfg.Storage.KeyDirectory, cfg.DNSSEC.KeyDirectory) {
+		return fmt.Errorf("invalid key_directory: storage.key_directory and dnssec.key_directory must match when both are set")
+	}
+
+	return nil
+}
+
+func sameConfigPath(a, b string) bool {
+	return filepath.Clean(strings.TrimSpace(a)) == filepath.Clean(strings.TrimSpace(b))
 }
 
 // LoadAgentConfig loads the agent configuration from the specified file.
@@ -152,8 +179,8 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	}
 
 	if cfg.DNSSEC.Enabled {
-		if cfg.DNSSEC.KeyDirectory == "" {
-			return fmt.Errorf("invalid dnssec.key_directory: empty when DNSSEC is enabled")
+		if cfg.DNSSECKeyDirectory() == "" {
+			return fmt.Errorf("invalid dnssec.key_directory: empty when DNSSEC is enabled and storage.key_directory is not set")
 		}
 
 		validAlgorithms := map[uint8]bool{
@@ -192,12 +219,16 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		}
 	}
 
-	if cfg.Storage.ArtifactDirectory == "" {
+	if strings.TrimSpace(cfg.Storage.ArtifactDirectory) == "" {
 		return fmt.Errorf("invalid storage.artifact_directory: empty")
 	}
 
-	if cfg.Storage.KeyDirectory == "" {
-		return fmt.Errorf("invalid storage.key_directory: empty")
+	if cfg.DNSSEC.Enabled && strings.TrimSpace(cfg.Storage.KeyDirectory) == "" && strings.TrimSpace(cfg.DNSSEC.KeyDirectory) == "" {
+		return fmt.Errorf("invalid storage.key_directory: empty when DNSSEC is enabled and dnssec.key_directory is not set")
+	}
+
+	if cfg.Storage.MaxVersionsPerZone < 1 {
+		return fmt.Errorf("invalid storage.max_versions_per_zone: must be positive")
 	}
 
 	validLogLevels := map[string]bool{
@@ -293,6 +324,14 @@ func isPlaceholderSecret(value string) bool {
 func ValidateAgentConfig(cfg *AgentConfig) error {
 	if cfg.Controller.URL == "" {
 		return fmt.Errorf("invalid controller.url: empty")
+	}
+
+	cfg.Authoritative = strings.ToLower(strings.TrimSpace(cfg.Authoritative))
+	if cfg.Authoritative == "" {
+		return fmt.Errorf("invalid authoritative: empty")
+	}
+	if cfg.Authoritative != "nsd" {
+		return fmt.Errorf("invalid authoritative: %s (supported: nsd)", cfg.Authoritative)
 	}
 
 	if cfg.NSD.Enabled {

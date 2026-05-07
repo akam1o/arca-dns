@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,13 +22,14 @@ import (
 
 // SigningService handles DNSSEC signing operations and signed zone storage.
 type SigningService struct {
-	store       backend.ZoneStore
-	keyManager  *dnssec.KeyManager
-	logger      *zap.Logger
-	zoneLocks   sync.Map // map[string]*sync.Mutex - per-zone locks for concurrent signing safety
-	artifactDir string
-	metrics     *ctrlmetrics.ControllerMetrics
-	options     dnssec.SignerOptions
+	store        backend.ZoneStore
+	keyManager   *dnssec.KeyManager
+	logger       *zap.Logger
+	zoneLocks    sync.Map // map[string]*sync.Mutex - per-zone locks for concurrent signing safety
+	artifactDir  string
+	maxArtifacts int
+	metrics      *ctrlmetrics.ControllerMetrics
+	options      dnssec.SignerOptions
 }
 
 // SignedZoneArtifact represents a signed zone with metadata.
@@ -111,6 +113,15 @@ func NewSigningService(store backend.ZoneStore, keyManager *dnssec.KeyManager, a
 		metrics:     metrics,
 		options:     signerOptions,
 	}
+}
+
+// SetMaxArtifactsPerZone configures how many signed artifact versions are kept
+// per zone. A non-positive value disables pruning.
+func (s *SigningService) SetMaxArtifactsPerZone(maxArtifacts int) {
+	if maxArtifacts < 0 {
+		maxArtifacts = 0
+	}
+	s.maxArtifacts = maxArtifacts
 }
 
 // SignZone signs a zone and returns the signed artifact.
@@ -422,6 +433,11 @@ func (s *SigningService) completeSignedZoneWrite(artifact *SignedZoneArtifact) {
 				zap.String("zone", artifact.ZoneName),
 				zap.String("version", artifact.Version),
 				zap.Error(err))
+		} else if err := s.pruneArtifacts(artifact.ZoneName); err != nil {
+			s.logger.Warn("Failed to prune signed artifact cache",
+				zap.String("zone", artifact.ZoneName),
+				zap.Int("max_versions", s.maxArtifacts),
+				zap.Error(err))
 		}
 	}
 
@@ -666,6 +682,62 @@ func (s *SigningService) storeArtifact(zoneName, version string, contents []byte
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename artifact: %w", err)
 	}
+	return nil
+}
+
+func (s *SigningService) pruneArtifacts(zoneName string) error {
+	if s.artifactDir == "" || s.maxArtifacts <= 0 {
+		return nil
+	}
+
+	zoneDir := filepath.Join(s.artifactDir, util.SafeZoneFilename(zoneName))
+	entries, err := os.ReadDir(zoneDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read artifact dir: %w", err)
+	}
+
+	type artifactFile struct {
+		name    string
+		path    string
+		modTime time.Time
+	}
+
+	artifacts := make([]artifactFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".zone.signed") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("stat artifact %s: %w", entry.Name(), err)
+		}
+		artifacts = append(artifacts, artifactFile{
+			name:    entry.Name(),
+			path:    filepath.Join(zoneDir, entry.Name()),
+			modTime: info.ModTime(),
+		})
+	}
+
+	if len(artifacts) <= s.maxArtifacts {
+		return nil
+	}
+
+	sort.Slice(artifacts, func(i, j int) bool {
+		if artifacts[i].modTime.Equal(artifacts[j].modTime) {
+			return artifacts[i].name < artifacts[j].name
+		}
+		return artifacts[i].modTime.Before(artifacts[j].modTime)
+	})
+
+	for _, artifact := range artifacts[:len(artifacts)-s.maxArtifacts] {
+		if err := os.Remove(artifact.path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove artifact %s: %w", artifact.name, err)
+		}
+	}
+
 	return nil
 }
 

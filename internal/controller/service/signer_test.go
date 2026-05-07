@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +91,50 @@ func createTestZone() *model.Zone {
 		DNSSEC: &model.DNSSECConfig{
 			Enabled: false,
 		},
+	}
+}
+
+func TestSigningService_PruneArtifactsKeepsNewestVersions(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	service.SetMaxArtifactsPerZone(2)
+	zoneName := "example.com."
+	baseTime := time.Unix(1700000000, 0)
+
+	for i, version := range []string{"v1-old", "v2-middle", "v3-new"} {
+		if err := service.storeArtifact(zoneName, version, []byte(version)); err != nil {
+			t.Fatalf("storeArtifact(%s) failed: %v", version, err)
+		}
+		artifactPath := service.artifactPath(zoneName, version)
+		modTime := baseTime.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(artifactPath, modTime, modTime); err != nil {
+			t.Fatalf("chtimes(%s) failed: %v", version, err)
+		}
+	}
+
+	zoneDir := filepath.Dir(service.artifactPath(zoneName, "v3-new"))
+	if err := os.WriteFile(filepath.Join(zoneDir, "README"), []byte("keep"), 0644); err != nil {
+		t.Fatalf("write non-artifact file failed: %v", err)
+	}
+
+	if err := service.pruneArtifacts(zoneName); err != nil {
+		t.Fatalf("pruneArtifacts failed: %v", err)
+	}
+
+	entries, err := os.ReadDir(zoneDir)
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+
+	want := []string{"README", "v2-middle.zone.signed", "v3-new.zone.signed"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("artifact names = %v, want %v", names, want)
 	}
 }
 

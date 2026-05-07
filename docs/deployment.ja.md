@@ -120,7 +120,7 @@ openssl rand -base64 32 | sudo tee /etc/arca-dns/master.key >/dev/null
 sudo chmod 600 /etc/arca-dns/master.key
 ```
 
-多くの環境では、`storage.key_directory` と `dnssec.key_directory` を同じディレクトリ（例: `/var/lib/arca-dns/keys`）にします。
+`storage.key_directory` と `dnssec.key_directory` の両方を設定する場合は、同じディレクトリ（例: `/var/lib/arca-dns/keys`）を指定してください。`storage.key_directory` は DNSSEC key directory の互換 alias として残しています。
 
 ## Backend の準備
 

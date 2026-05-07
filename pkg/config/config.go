@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ControllerConfig is the configuration for the arca-dns-controller.
 type ControllerConfig struct {
@@ -20,12 +23,21 @@ type ControllerConfig struct {
 	Logging LoggingConfig `mapstructure:"logging"`
 }
 
+// DNSSECKeyDirectory returns the effective directory used for DNSSEC key
+// material. storage.key_directory is kept as a compatibility alias.
+func (c *ControllerConfig) DNSSECKeyDirectory() string {
+	if keyDirectory := strings.TrimSpace(c.DNSSEC.KeyDirectory); keyDirectory != "" {
+		return keyDirectory
+	}
+	return strings.TrimSpace(c.Storage.KeyDirectory)
+}
+
 // AgentConfig is the configuration for the arca-dns-agent.
 type AgentConfig struct {
 	// Controller configuration
 	Controller ControllerClientConfig `mapstructure:"controller"`
 
-	// Authoritative is the authoritative DNS server type ("nsd" or "knot").
+	// Authoritative is the authoritative DNS server type. Currently supported: "nsd".
 	// Default: "nsd"
 	Authoritative string `mapstructure:"authoritative"`
 

@@ -122,7 +122,7 @@ openssl rand -base64 32 | sudo tee /etc/arca-dns/master.key >/dev/null
 sudo chmod 600 /etc/arca-dns/master.key
 ```
 
-Most deployments should set `storage.key_directory` and `dnssec.key_directory` to the same path, such as `/var/lib/arca-dns/keys`.
+When both `storage.key_directory` and `dnssec.key_directory` are set, they must point to the same path, such as `/var/lib/arca-dns/keys`. `storage.key_directory` remains available as a compatibility alias for the DNSSEC key directory.
 
 ## Backend Preparation
 
