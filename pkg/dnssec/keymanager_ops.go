@@ -12,19 +12,26 @@ import (
 )
 
 // GenerateZoneKeys ensures (or rotates) both KSK and ZSK for a zone.
-// If rotate is true, new keys are always generated and become active.
+// If rotate is true, new keys are always generated and become active together.
 func (km *KeyManager) GenerateZoneKeys(zone string, rotate bool) (ksk *KeyPair, zsk *KeyPair, err error) {
 	if !rotate {
 		return km.EnsureZoneKeys(zone)
 	}
 
-	ksk, err = km.GenerateKSK(zone)
+	ksk, err = km.generateKey(zone, KeyRoleKSK, km.kskBits, dnskeyKSKFlags, false)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate ksk: %w", err)
 	}
-	zsk, err = km.GenerateZSK(zone)
+	zsk, err = km.generateKey(zone, KeyRoleZSK, km.zskBits, dnskeyZSKFlags, false)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate zsk: %w", err)
+	}
+	if err := km.writeActiveKeys(ksk.ID.Zone, activeKeys{
+		Algorithm:    km.algorithm,
+		ActiveKSKTag: ksk.ID.KeyTag,
+		ActiveZSKTag: zsk.ID.KeyTag,
+	}); err != nil {
+		return nil, nil, fmt.Errorf("activate rotated keys: %w", err)
 	}
 	return ksk, zsk, nil
 }

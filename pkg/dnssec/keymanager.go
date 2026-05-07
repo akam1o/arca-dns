@@ -23,6 +23,17 @@ type KeyManager struct {
 	zskBits   int
 }
 
+type activeKeys struct {
+	Algorithm    uint8  `json:"algorithm"`
+	ActiveKSKTag uint16 `json:"active_ksk_key_tag"`
+	ActiveZSKTag uint16 `json:"active_zsk_key_tag"`
+}
+
+const (
+	dnskeyKSKFlags = dns.SEP | dns.ZONE
+	dnskeyZSKFlags = dns.ZONE
+)
+
 // KeyManagerOptions configures the key manager.
 type KeyManagerOptions struct {
 	// KeyDirectory is the directory where keys are stored.
@@ -80,16 +91,16 @@ func NewKeyManager(opts KeyManagerOptions) (*KeyManager, error) {
 
 // GenerateKSK generates a new Key Signing Key for the zone.
 func (km *KeyManager) GenerateKSK(zone string) (*KeyPair, error) {
-	return km.generateKey(zone, KeyRoleKSK, km.kskBits, dns.SEP|dns.ZONE)
+	return km.generateKey(zone, KeyRoleKSK, km.kskBits, dnskeyKSKFlags, true)
 }
 
 // GenerateZSK generates a new Zone Signing Key for the zone.
 func (km *KeyManager) GenerateZSK(zone string) (*KeyPair, error) {
-	return km.generateKey(zone, KeyRoleZSK, km.zskBits, dns.ZONE)
+	return km.generateKey(zone, KeyRoleZSK, km.zskBits, dnskeyZSKFlags, true)
 }
 
 // generateKey generates a DNSSEC key pair.
-func (km *KeyManager) generateKey(zone string, role KeyRole, bits int, flags uint16) (*KeyPair, error) {
+func (km *KeyManager) generateKey(zone string, role KeyRole, bits int, flags uint16, activate bool) (*KeyPair, error) {
 	// Normalize zone
 	zoneFQDN, err := NormalizeZoneFQDN(zone)
 	if err != nil {
@@ -130,8 +141,11 @@ func (km *KeyManager) generateKey(zone string, role KeyRole, bits int, flags uin
 		Private: privateKey,
 	}
 
-	// Save to disk
-	if err := km.saveKey(keyPair); err != nil {
+	if activate {
+		if err := km.saveKey(keyPair); err != nil {
+			return nil, fmt.Errorf("save key: %w", err)
+		}
+	} else if err := km.saveKeyFiles(keyPair); err != nil {
 		return nil, fmt.Errorf("save key: %w", err)
 	}
 
@@ -274,6 +288,17 @@ func (km *KeyManager) loadKey(zone string, role KeyRole) (*KeyPair, error) {
 
 // saveKey saves a key pair to disk.
 func (km *KeyManager) saveKey(kp *KeyPair) error {
+	if err := km.saveKeyFiles(kp); err != nil {
+		return err
+	}
+	if err := km.updateActiveKeys(kp); err != nil {
+		return fmt.Errorf("update active keys: %w", err)
+	}
+	return nil
+}
+
+// saveKeyFiles saves a key pair to disk without changing active.json.
+func (km *KeyManager) saveKeyFiles(kp *KeyPair) error {
 	// Get zone directory
 	zoneDir, err := km.getZoneDir(kp.ID.Zone)
 	if err != nil {
@@ -354,39 +379,14 @@ func (km *KeyManager) saveKey(kp *KeyPair) error {
 		return fmt.Errorf("rename private key: %w", err)
 	}
 
-	// Update active.json
-	if err := km.updateActiveKeys(kp); err != nil {
-		return fmt.Errorf("update active keys: %w", err)
-	}
-
 	return nil
 }
 
 // updateActiveKeys updates the active.json file.
 func (km *KeyManager) updateActiveKeys(kp *KeyPair) error {
-	zoneDir, err := km.getZoneDir(kp.ID.Zone)
+	active, err := km.readActiveKeys(kp.ID.Zone)
 	if err != nil {
 		return err
-	}
-
-	activeFile := filepath.Join(zoneDir, "active.json")
-
-	// Read existing active.json or create new
-	var active struct {
-		Algorithm    uint8  `json:"algorithm"`
-		ActiveKSKTag uint16 `json:"active_ksk_key_tag"`
-		ActiveZSKTag uint16 `json:"active_zsk_key_tag"`
-	}
-
-	// Read existing file if it exists
-	if data, err := os.ReadFile(activeFile); err == nil {
-		// Parse existing file, return error if corrupted
-		if err := json.Unmarshal(data, &active); err != nil {
-			return fmt.Errorf("parse existing active.json: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
-		// Return error if read failed for reasons other than file not existing
-		return fmt.Errorf("read active.json: %w", err)
 	}
 
 	// Update the appropriate key tag
@@ -396,9 +396,41 @@ func (km *KeyManager) updateActiveKeys(kp *KeyPair) error {
 		active.ActiveKSKTag = kp.ID.KeyTag
 	case KeyRoleZSK:
 		active.ActiveZSKTag = kp.ID.KeyTag
+	default:
+		return fmt.Errorf("invalid key role: %s", kp.Role)
 	}
 
-	// Marshal to JSON
+	return km.writeActiveKeys(kp.ID.Zone, active)
+}
+
+func (km *KeyManager) readActiveKeys(zone string) (activeKeys, error) {
+	zoneDir, err := km.getZoneDir(zone)
+	if err != nil {
+		return activeKeys{}, err
+	}
+
+	activeFile := filepath.Join(zoneDir, "active.json")
+	active := activeKeys{Algorithm: km.algorithm}
+
+	if data, err := os.ReadFile(activeFile); err == nil {
+		if err := json.Unmarshal(data, &active); err != nil {
+			return activeKeys{}, fmt.Errorf("parse existing active.json: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return activeKeys{}, fmt.Errorf("read active.json: %w", err)
+	}
+
+	return active, nil
+}
+
+func (km *KeyManager) writeActiveKeys(zone string, active activeKeys) error {
+	zoneDir, err := km.getZoneDir(zone)
+	if err != nil {
+		return err
+	}
+
+	activeFile := filepath.Join(zoneDir, "active.json")
+
 	data, err := json.MarshalIndent(active, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal active.json: %w", err)
