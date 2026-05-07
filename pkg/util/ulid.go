@@ -32,6 +32,7 @@ func NewULID(now time.Time) (string, error) {
 		ulidLastMS = ms
 		ulidLastRnd = rnd
 	} else {
+		ms = ulidLastMS
 		rnd = ulidLastRnd
 		if err := increment80(&rnd); err != nil {
 			return "", err
