@@ -28,8 +28,11 @@ func (s *failingRecreateStore) DeleteZone(ctx context.Context, name string) erro
 
 func (s *failingRecreateStore) CreateZone(ctx context.Context, zone *model.Zone) error {
 	if s.deleted && !s.failed {
+		if err := s.ZoneStore.CreateZone(ctx, zone); err != nil {
+			return err
+		}
 		s.failed = true
-		return errors.New("injected recreate failure")
+		return errors.New("injected post-create failure")
 	}
 	return s.ZoneStore.CreateZone(ctx, zone)
 }

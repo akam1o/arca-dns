@@ -442,13 +442,36 @@ func overwriteZoneWithRestore(ctx context.Context, store backend.ZoneStore, zone
 		return fmt.Errorf("delete existing zone: %w", err)
 	}
 	if err := store.CreateZone(ctx, zone); err != nil {
-		if restoreErr := store.CreateZone(context.WithoutCancel(ctx), current); restoreErr != nil {
+		if restoreErr := restoreZoneAfterOverwriteFailure(ctx, store, current); restoreErr != nil {
 			return errors.Join(
 				fmt.Errorf("create replacement zone: %w", err),
-				fmt.Errorf("restore previous zone: %w", restoreErr),
+				restoreErr,
 			)
 		}
 		return fmt.Errorf("create replacement zone: %w", err)
+	}
+	return nil
+}
+
+func restoreZoneAfterOverwriteFailure(ctx context.Context, store backend.ZoneStore, current *model.Zone) error {
+	restoreCtx := context.WithoutCancel(ctx)
+
+	visible, err := store.GetZone(restoreCtx, current.Name)
+	switch {
+	case err == nil:
+		if visible.Version == current.Version {
+			return nil
+		}
+		if err := deleteZoneForOverwrite(restoreCtx, store, current.Name, visible.Version); err != nil {
+			return fmt.Errorf("restore previous zone: delete failed replacement zone: %w", err)
+		}
+	case errors.Is(err, model.ErrZoneNotFound):
+	default:
+		return fmt.Errorf("restore previous zone: get visible zone: %w", err)
+	}
+
+	if err := store.CreateZone(restoreCtx, current); err != nil {
+		return fmt.Errorf("restore previous zone: create previous zone: %w", err)
 	}
 	return nil
 }
