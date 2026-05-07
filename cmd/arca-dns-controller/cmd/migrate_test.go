@@ -223,6 +223,52 @@ func TestMigrateImportOverwriteRestoresExistingZoneOnRecreateFailure(t *testing.
 	assert.Equal(t, before.SOA.Serial, restored.SOA.Serial)
 }
 
+func TestRestoreZoneAfterOverwriteFailureDoesNotDeleteConcurrentReplacement(t *testing.T) {
+	ctx := context.Background()
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	currentZone := &model.Zone{
+		Name: "conflict.example.com.",
+		SOA:  model.DefaultSOA("ns1.conflict.example.com.", "admin.conflict.example.com."),
+		Records: []model.Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(ctx, currentZone))
+	current, err := store.GetZone(ctx, currentZone.Name)
+	require.NoError(t, err)
+	require.NoError(t, deleteZoneForOverwrite(ctx, store, current.Name, current.Version))
+
+	attemptedReplacement := &model.Zone{
+		Name:    current.Name,
+		Version: "v-attempted-replacement",
+		SOA:     current.SOA,
+		Records: []model.Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.10"},
+		},
+	}
+	concurrentReplacement := &model.Zone{
+		Name:    current.Name,
+		Version: "v-concurrent-replacement",
+		SOA:     current.SOA,
+		Records: []model.Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.20"},
+		},
+	}
+	require.NoError(t, store.CreateZone(ctx, concurrentReplacement))
+
+	err = restoreZoneAfterOverwriteFailure(ctx, store, current, attemptedReplacement)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, model.ErrConflict))
+
+	visible, err := store.GetZone(ctx, current.Name)
+	require.NoError(t, err)
+	require.Len(t, visible.Records, 1)
+	assert.Equal(t, "v-concurrent-replacement", visible.Version)
+	assert.Equal(t, "192.0.2.20", visible.Records[0].Value)
+}
+
 func TestMigrateImport_RejectsInvalidZone(t *testing.T) {
 	tmpDir := t.TempDir()
 

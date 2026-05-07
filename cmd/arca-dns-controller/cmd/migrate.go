@@ -442,7 +442,7 @@ func overwriteZoneWithRestore(ctx context.Context, store backend.ZoneStore, zone
 		return fmt.Errorf("delete existing zone: %w", err)
 	}
 	if err := store.CreateZone(ctx, zone); err != nil {
-		if restoreErr := restoreZoneAfterOverwriteFailure(ctx, store, current); restoreErr != nil {
+		if restoreErr := restoreZoneAfterOverwriteFailure(ctx, store, current, zone); restoreErr != nil {
 			return errors.Join(
 				fmt.Errorf("create replacement zone: %w", err),
 				restoreErr,
@@ -453,7 +453,7 @@ func overwriteZoneWithRestore(ctx context.Context, store backend.ZoneStore, zone
 	return nil
 }
 
-func restoreZoneAfterOverwriteFailure(ctx context.Context, store backend.ZoneStore, current *model.Zone) error {
+func restoreZoneAfterOverwriteFailure(ctx context.Context, store backend.ZoneStore, current *model.Zone, attemptedReplacement *model.Zone) error {
 	restoreCtx := context.WithoutCancel(ctx)
 
 	visible, err := store.GetZone(restoreCtx, current.Name)
@@ -461,6 +461,9 @@ func restoreZoneAfterOverwriteFailure(ctx context.Context, store backend.ZoneSto
 	case err == nil:
 		if visible.Version == current.Version {
 			return nil
+		}
+		if !sameReplacementZone(visible, attemptedReplacement) {
+			return fmt.Errorf("restore previous zone: visible zone changed after failed replacement: %w", model.ErrConflict)
 		}
 		if err := deleteZoneForOverwrite(restoreCtx, store, current.Name, visible.Version); err != nil {
 			return fmt.Errorf("restore previous zone: delete failed replacement zone: %w", err)
@@ -474,6 +477,62 @@ func restoreZoneAfterOverwriteFailure(ctx context.Context, store backend.ZoneSto
 		return fmt.Errorf("restore previous zone: create previous zone: %w", err)
 	}
 	return nil
+}
+
+func sameReplacementZone(visible *model.Zone, attempted *model.Zone) bool {
+	if visible == nil || attempted == nil {
+		return false
+	}
+	if attempted.Version == "" || visible.Version != attempted.Version {
+		return false
+	}
+	if model.NormalizeZoneName(visible.Name) != model.NormalizeZoneName(attempted.Name) {
+		return false
+	}
+	if visible.SOA != attempted.SOA {
+		return false
+	}
+	if !sameDNSSECConfig(visible.DNSSEC, attempted.DNSSEC) {
+		return false
+	}
+	if len(visible.Records) != len(attempted.Records) {
+		return false
+	}
+	for i := range visible.Records {
+		if !sameRecord(visible.Records[i], attempted.Records[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameRecord(a model.Record, b model.Record) bool {
+	if a.ID != b.ID || a.Name != b.Name || a.Type != b.Type || a.TTL != b.TTL || a.Value != b.Value {
+		return false
+	}
+	if a.Priority == nil || b.Priority == nil {
+		return a.Priority == nil && b.Priority == nil
+	}
+	return *a.Priority == *b.Priority
+}
+
+func sameDNSSECConfig(a *model.DNSSECConfig, b *model.DNSSECConfig) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.Enabled != b.Enabled ||
+		a.Algorithm != b.Algorithm ||
+		a.KSKKeyTag != b.KSKKeyTag ||
+		a.ZSKKeyTag != b.ZSKKeyTag ||
+		a.NSEC3Enabled != b.NSEC3Enabled ||
+		a.NSEC3Iterations != b.NSEC3Iterations ||
+		a.NSEC3Salt != b.NSEC3Salt {
+		return false
+	}
+	if a.SignatureExpiration == nil || b.SignatureExpiration == nil {
+		return a.SignatureExpiration == nil && b.SignatureExpiration == nil
+	}
+	return a.SignatureExpiration.Equal(*b.SignatureExpiration)
 }
 
 func deleteZoneForOverwrite(ctx context.Context, store backend.ZoneStore, name string, expectedVersion string) error {
