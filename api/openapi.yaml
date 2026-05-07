@@ -1159,8 +1159,8 @@ components:
         ttl:
           type: integer
           format: int64
-          minimum: 0
-          maximum: 4294967295
+          minimum: 1
+          maximum: 2147483647
           description: Time to live in seconds
           example: 300
         value:
@@ -1256,8 +1256,8 @@ components:
         ttl:
           type: integer
           format: int64
-          minimum: 0
-          maximum: 4294967295
+          minimum: 1
+          maximum: 2147483647
         value:
           type: string
 
@@ -1301,18 +1301,15 @@ components:
     Pagination:
       type: object
       properties:
-        total:
-          type: integer
-          description: Total number of items
-        limit:
-          type: integer
-          description: Maximum items per page
         offset:
           type: integer
           description: Number of items skipped
-        has_more:
-          type: boolean
-          description: Whether more items are available
+        limit:
+          type: integer
+          description: Maximum items per page
+        count:
+          type: integer
+          description: Number of items returned in this page
 
     Error:
       type: object
