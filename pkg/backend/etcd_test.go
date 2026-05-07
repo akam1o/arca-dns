@@ -306,6 +306,55 @@ func TestEtcdBackend_ListZones(t *testing.T) {
 	assert.Equal(t, "b.com.", offset[0].Name)
 }
 
+func TestEtcdBackend_ListZoneSummaries(t *testing.T) {
+	backend, cleanup := setupEtcdBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	for _, name := range []string{"a.com.", "b.com.", "c.com."} {
+		zone := &model.Zone{
+			Name: name,
+			SOA: model.SOARecord{
+				MName:   "ns1.example.com.",
+				RName:   "admin.example.com.",
+				Serial:  2024010101,
+				Refresh: 3600,
+				Retry:   1800,
+				Expire:  604800,
+				Minimum: 86400,
+			},
+			Records: []model.Record{
+				{Name: name, Type: "TXT", TTL: 300, Value: "large record content is not needed for summaries"},
+			},
+		}
+		require.NoError(t, backend.CreateZone(ctx, zone))
+	}
+
+	summaries, err := backend.ListZoneSummaries(ctx, ListOptions{Offset: 1, Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, summaries, 1)
+	assert.Equal(t, "b.com.", summaries[0].Name)
+	assert.NotEmpty(t, summaries[0].Version)
+}
+
+func TestEtcdBackend_ListZoneSummaries_DoesNotUnmarshalZoneData(t *testing.T) {
+	backend, cleanup := setupEtcdBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	_, err := backend.client.Put(ctx, backend.zoneKey("bad.example.com."), "{")
+	require.NoError(t, err)
+	_, err = backend.client.Put(ctx, backend.versionKey("bad.example.com."), "v-bad")
+	require.NoError(t, err)
+
+	summaries, err := backend.ListZoneSummaries(ctx, ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, summaries, 1)
+	assert.Equal(t, "bad.example.com.", summaries[0].Name)
+	assert.Equal(t, "v-bad", summaries[0].Version)
+}
+
 func TestEtcdBackend_ListZones_Empty(t *testing.T) {
 	backend, cleanup := setupEtcdBackend(t)
 	defer cleanup()

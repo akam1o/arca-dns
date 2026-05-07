@@ -128,6 +128,10 @@ func (e *EtcdBackend) versionKey(name string) string {
 	return fmt.Sprintf("%s/%s/%s", e.prefix, etcdVersionsPrefix, model.NormalizeZoneName(name))
 }
 
+func (e *EtcdBackend) versionPrefix() string {
+	return fmt.Sprintf("%s/%s/", e.prefix, etcdVersionsPrefix)
+}
+
 func (e *EtcdBackend) historyKey(name, version string) string {
 	return fmt.Sprintf("%s/%s/%s/%s", e.prefix, etcdHistoryPrefix, model.NormalizeZoneName(name), version)
 }
@@ -216,6 +220,51 @@ func (e *EtcdBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model
 	}
 
 	return zones[start:end], nil
+}
+
+// ListZoneSummaries returns zone names and versions without loading zone records.
+func (e *EtcdBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
+	defer cancel()
+
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	prefix := e.versionPrefix()
+	getOpts := []clientv3.OpOption{
+		clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	}
+	if opts.Limit > 0 {
+		getOpts = append(getOpts, clientv3.WithLimit(int64(offset+opts.Limit)))
+	}
+
+	resp, err := e.client.Get(ctx, prefix, getOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list zone summaries: %w", err)
+	}
+
+	if offset > len(resp.Kvs) {
+		return make([]*ZoneSummary, 0), nil
+	}
+
+	end := len(resp.Kvs)
+	if opts.Limit > 0 && offset+opts.Limit < end {
+		end = offset + opts.Limit
+	}
+
+	summaries := make([]*ZoneSummary, 0, end-offset)
+	for _, kv := range resp.Kvs[offset:end] {
+		name := strings.TrimPrefix(string(kv.Key), prefix)
+		summaries = append(summaries, &ZoneSummary{
+			Name:    name,
+			Version: string(kv.Value),
+		})
+	}
+
+	return summaries, nil
 }
 
 // CreateZone creates a new zone.
