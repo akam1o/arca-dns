@@ -19,12 +19,17 @@ type RouteManager struct {
 
 // NewRouteManager creates a new route manager.
 // Note: Call Reconcile() after creation to sync with BIRD's actual state.
-func NewRouteManager(client Client, protocolNames []string) *RouteManager {
+func NewRouteManager(client Client, protocolNames []string) (*RouteManager, error) {
+	if err := validateBIRDIdentifiers("bird.protocol_names", protocolNames); err != nil {
+		return nil, err
+	}
+	names := append([]string(nil), protocolNames...)
+
 	return &RouteManager{
 		client:        client,
-		protocolNames: protocolNames,
+		protocolNames: names,
 		announced:     false,
-	}
+	}, nil
 }
 
 // containsWord checks if a string contains a word (space-separated).

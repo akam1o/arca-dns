@@ -303,7 +303,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 				protocolNames = []string{cfg.BIRD.ProtocolName}
 			}
 		}
-		routeManager = bird.NewRouteManager(birdClient, protocolNames)
+		routeManager, err = bird.NewRouteManager(birdClient, protocolNames)
+		if err != nil {
+			return fmt.Errorf("failed to create BIRD route manager: %w", err)
+		}
 		reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := routeManager.Reconcile(reconcileCtx); err != nil {
 			reconcileCancel()
