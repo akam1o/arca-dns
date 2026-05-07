@@ -239,19 +239,15 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	for _, zone := range zones {
 		oldVersion := zone.Version
 
-		// Clear version - it will be recomputed during CreateZone
+		// Clear version - it will be recomputed during CreateZone/UpdateZone
 		zone.Version = ""
 
 		if err := destStore.CreateZone(ctx, zone); err != nil {
 			// If zone exists, handle based on overwrite flag
 			if errors.Is(err, model.ErrZoneAlreadyExists) {
 				if migrateOverwrite {
-					// Delete and recreate to avoid serial increment
-					if err := destStore.DeleteZone(ctx, zone.Name); err != nil {
-						return fmt.Errorf("delete existing zone %s: %w", zone.Name, err)
-					}
-					if err := destStore.CreateZone(ctx, zone); err != nil {
-						return fmt.Errorf("recreate zone %s: %w", zone.Name, err)
+					if err := overwriteZone(ctx, destStore, zone); err != nil {
+						return fmt.Errorf("overwrite zone %s in destination: %w", zone.Name, err)
 					}
 					fmt.Printf("Overwrote: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
 				} else {
@@ -364,7 +360,7 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 	imported := 0
 	skipped := 0
 	for _, zone := range zones {
-		// Clear version - it will be recomputed during CreateZone
+		// Clear version - it will be recomputed during CreateZone/UpdateZone
 		oldVersion := zone.Version
 		zone.Version = ""
 
@@ -372,12 +368,8 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 			// If zone exists, handle based on overwrite flag
 			if errors.Is(err, model.ErrZoneAlreadyExists) {
 				if overwrite {
-					// Delete and recreate to avoid serial increment
-					if err := store.DeleteZone(ctx, zone.Name); err != nil {
-						return 0, fmt.Errorf("delete existing zone %s: %w", zone.Name, err)
-					}
-					if err := store.CreateZone(ctx, zone); err != nil {
-						return 0, fmt.Errorf("recreate zone %s: %w", zone.Name, err)
+					if err := overwriteZone(ctx, store, zone); err != nil {
+						return 0, fmt.Errorf("overwrite zone %s: %w", zone.Name, err)
 					}
 					fmt.Printf("Overwrote: %s (old version: %s, new version: %s)\n", zone.Name, oldVersion, zone.Version)
 				} else {
@@ -400,6 +392,17 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 		fmt.Printf("\nImport complete: %d zones imported\n", imported)
 	}
 	return imported, nil
+}
+
+func overwriteZone(ctx context.Context, store backend.ZoneStore, zone *model.Zone) error {
+	current, err := store.GetZone(ctx, zone.Name)
+	if err != nil {
+		return fmt.Errorf("get existing zone: %w", err)
+	}
+	if err := store.UpdateZone(ctx, zone, current.Version); err != nil {
+		return fmt.Errorf("update existing zone: %w", err)
+	}
+	return nil
 }
 
 // createBackendForCopy creates a backend with explicit DSN/path parameters.

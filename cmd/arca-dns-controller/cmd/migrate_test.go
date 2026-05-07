@@ -14,6 +14,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type deleteTrackingStore struct {
+	backend.ZoneStore
+	deletes int
+}
+
+func (s *deleteTrackingStore) DeleteZone(ctx context.Context, name string) error {
+	s.deletes++
+	return s.ZoneStore.DeleteZone(ctx, name)
+}
+
 // TestMigrateExportMemory tests exporting zones from memory backend to JSON files.
 func TestMigrateExportMemory(t *testing.T) {
 	// Create test zones in memory backend
@@ -106,6 +116,49 @@ func TestMigrateImport(t *testing.T) {
 	assert.Equal(t, testZone.Name, imported.Name)
 	assert.NotEqual(t, testZone.Version, imported.Version, "Version should be recomputed")
 	assert.NotEmpty(t, imported.Version)
+}
+
+func TestMigrateImportOverwriteUpdatesWithoutDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := context.Background()
+
+	importZone := &model.Zone{
+		Name:    "overwrite.example.com.",
+		Version: "v2024010101-imported",
+		SOA:     model.DefaultSOA("ns1.overwrite.example.com.", "admin.overwrite.example.com."),
+		Records: []model.Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.10"},
+		},
+	}
+	data, err := json.MarshalIndent(importZone, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "overwrite_example_com.json"), data, 0644))
+
+	memoryStore := backend.NewMemoryBackend()
+	defer memoryStore.Close()
+	store := &deleteTrackingStore{ZoneStore: memoryStore}
+
+	existingZone := &model.Zone{
+		Name: "overwrite.example.com.",
+		SOA:  model.DefaultSOA("ns1.overwrite.example.com.", "admin.overwrite.example.com."),
+		Records: []model.Record{
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(ctx, existingZone))
+	existingVersion := existingZone.Version
+
+	imported, err := importToStore(ctx, store, tmpDir, false, true)
+	require.NoError(t, err)
+	assert.Equal(t, 1, imported)
+	assert.Zero(t, store.deletes)
+
+	updated, err := store.GetZone(ctx, importZone.Name)
+	require.NoError(t, err)
+	require.Len(t, updated.Records, 1)
+	assert.Equal(t, "192.0.2.10", updated.Records[0].Value)
+	assert.NotEqual(t, existingVersion, updated.Version)
+	assert.NotEmpty(t, updated.Version)
 }
 
 func TestMigrateImport_RejectsInvalidZone(t *testing.T) {
