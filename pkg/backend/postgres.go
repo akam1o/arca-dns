@@ -229,14 +229,6 @@ func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) erro
 // UpdateZone updates an existing zone.
 func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-
-	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate version: %w", err)
-		}
-		zone.Version = v
-	}
 	zone.UpdatedAt = time.Now()
 
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -247,8 +239,9 @@ func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expe
 
 	// Preserve CreatedAt and advance from the stored SOA serial, not client input.
 	var createdAt time.Time
+	var currentVersion string
 	var currentSerial uint32
-	err = tx.QueryRowContext(ctx, "SELECT created_at, soa_serial FROM zones WHERE name = $1 FOR UPDATE", zone.Name).Scan(&createdAt, &currentSerial)
+	err = tx.QueryRowContext(ctx, "SELECT created_at, soa_serial, version FROM zones WHERE name = $1 FOR UPDATE", zone.Name).Scan(&createdAt, &currentSerial, &currentVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -257,6 +250,9 @@ func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expe
 	}
 	zone.CreatedAt = createdAt
 	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
+	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
+		return err
+	}
 
 	if err := validateZoneForWrite(zone); err != nil {
 		return err
@@ -789,18 +785,12 @@ func (t *pgTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 
 func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate version: %w", err)
-		}
-		zone.Version = v
-	}
 	zone.UpdatedAt = time.Now()
 
 	var createdAt time.Time
+	var currentVersion string
 	var currentSerial uint32
-	err := t.tx.QueryRowContext(ctx, "SELECT created_at, soa_serial FROM zones WHERE name = $1 FOR UPDATE", zone.Name).Scan(&createdAt, &currentSerial)
+	err := t.tx.QueryRowContext(ctx, "SELECT created_at, soa_serial, version FROM zones WHERE name = $1 FOR UPDATE", zone.Name).Scan(&createdAt, &currentSerial, &currentVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -809,6 +799,9 @@ func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion
 	}
 	zone.CreatedAt = createdAt
 	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
+	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
+		return err
+	}
 
 	if err := validateZoneForWrite(zone); err != nil {
 		return err

@@ -462,15 +462,6 @@ func (m *MySQLBackend) updateDNSSECMetadata(ctx context.Context, zoneName string
 func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
 
-	// Ensure version changes on update (normally issued by controller).
-	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
-		newVersion, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = newVersion
-	}
-
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
 
@@ -482,8 +473,9 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 	defer func() { _ = tx.Rollback() }()
 
 	// Advance from the stored SOA serial, not client input.
+	var currentVersion string
 	var currentSerial uint32
-	err = tx.QueryRowContext(ctx, "SELECT soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&currentSerial)
+	err = tx.QueryRowContext(ctx, "SELECT version, soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&currentVersion, &currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -491,6 +483,9 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 		return fmt.Errorf("failed to query zone serial: %w", err)
 	}
 	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
+	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
+		return err
+	}
 
 	if err := validateZoneForWrite(zone); err != nil {
 		return err
@@ -993,21 +988,13 @@ func (t *MySQLTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
 
-	// Ensure version changes on update (normally issued by controller).
-	if zone.Version == "" || expectedVersion == "" || zone.Version == expectedVersion {
-		newVersion, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = newVersion
-	}
-
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
 
 	// Advance from the stored SOA serial, not client input.
+	var currentVersion string
 	var currentSerial uint32
-	err := t.tx.QueryRowContext(ctx, "SELECT soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&currentSerial)
+	err := t.tx.QueryRowContext(ctx, "SELECT version, soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&currentVersion, &currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
@@ -1015,6 +1002,9 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 		return fmt.Errorf("failed to query zone serial: %w", err)
 	}
 	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
+	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
+		return err
+	}
 
 	if err := validateZoneForWrite(zone); err != nil {
 		return err

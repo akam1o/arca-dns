@@ -248,6 +248,28 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		require.NoError(t, err, "UpdateZone with empty expectedVersion should skip version check (contract)")
 	})
 
+	t.Run("UpdateZone_PreservesPreparedVersionWithoutCAS", func(t *testing.T) {
+		zone := createTestZone("prepared-version.example.com.")
+		err := store.CreateZone(ctx, zone)
+		require.NoError(t, err)
+
+		originalVersion := zone.Version
+		preparedVersion, err := model.NewZoneVersion()
+		require.NoError(t, err)
+		require.NotEqual(t, originalVersion, preparedVersion)
+
+		zone.Version = preparedVersion
+		zone.Records = []model.Record{
+			{Name: "test.prepared-version.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		}
+		err = store.UpdateZone(ctx, zone, "")
+		require.NoError(t, err, "UpdateZone with empty expectedVersion should preserve caller-provided non-current version")
+
+		updated, err := store.GetZone(ctx, "prepared-version.example.com.")
+		require.NoError(t, err)
+		assert.Equal(t, preparedVersion, updated.Version)
+	})
+
 	t.Run("DeleteZone", func(t *testing.T) {
 		zone := createTestZone("delete.example.com.")
 		err := store.CreateZone(ctx, zone)
