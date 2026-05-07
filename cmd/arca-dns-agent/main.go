@@ -148,6 +148,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	var resolver plugin.Resolver
 	if cfg.Unbound.Enabled {
 		unboundCtrl := unbound.NewController(cfg.Unbound, logger)
+		if err := unboundCtrl.EnsureEDNSBufferSize(); err != nil {
+			return fmt.Errorf("failed to validate unbound EDNS buffer size: %w", err)
+		}
 		resolver = unbound.NewAdapter(unboundCtrl)
 		logger.Info("Resolver initialized", zap.String("type", resolver.Type()))
 	} else {

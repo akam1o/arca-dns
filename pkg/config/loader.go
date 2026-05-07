@@ -360,8 +360,8 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		if cfg.Unbound.ControlPath == "" {
 			return fmt.Errorf("invalid unbound.control_path: empty when Unbound is enabled")
 		}
-		if cfg.Unbound.EDNSBufferSize <= 0 {
-			return fmt.Errorf("invalid unbound.edns_buffer_size: must be positive")
+		if cfg.Unbound.EDNSBufferSize != 1232 {
+			return fmt.Errorf("invalid unbound.edns_buffer_size: must be 1232 for ECMP-safe DNSSEC responses")
 		}
 	}
 

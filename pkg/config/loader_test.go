@@ -816,6 +816,17 @@ func TestValidateAgentConfig_InvalidBackupVersions(t *testing.T) {
 	assert.Contains(t, err.Error(), "sync.backup_versions")
 }
 
+func TestValidateAgentConfig_RequiresECMPSafeEDNSBufferSize(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Unbound.Enabled = true
+	cfg.Unbound.EDNSBufferSize = 4096
+
+	err := ValidateAgentConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unbound.edns_buffer_size")
+	assert.Contains(t, err.Error(), "1232")
+}
+
 func TestValidateAgentConfig_VerifySignaturesRequiresKey(t *testing.T) {
 	cfg := DefaultAgentConfig()
 	cfg.Sync.VerifySignatures = true
