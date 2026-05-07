@@ -171,8 +171,9 @@ func (m *MemoryBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 	// Normalize zone name in the zone object itself
 	zone.Name = normalized
 
-	// Auto-increment serial
-	zone.SOA.Serial = generateSerial(existing.SOA.Serial)
+	// Advance from the stored serial. A caller may provide a precomputed
+	// greater serial when another component already used it for a prepared artifact.
+	zone.SOA.Serial = updateSOASerial(existing.SOA.Serial, zone.SOA.Serial)
 
 	// Update timestamp
 	zone.UpdatedAt = time.Now()

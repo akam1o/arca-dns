@@ -608,6 +608,12 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
+	if h.signingService == nil {
+		// Keep update semantics controller-driven even though backends can accept
+		// a trusted precomputed serial from the signing path.
+		zone.SOA.Serial = 0
+	}
+
 	// Issue a new version (controller-generated).
 	newVersion, err := model.NewZoneVersion()
 	if err != nil {

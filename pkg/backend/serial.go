@@ -5,3 +5,10 @@ package backend
 func NextSOASerial(currentSerial uint32) uint32 {
 	return generateSerial(currentSerial)
 }
+
+func updateSOASerial(currentSerial, preparedSerial uint32) uint32 {
+	if preparedSerial > currentSerial {
+		return preparedSerial
+	}
+	return generateSerial(currentSerial)
+}

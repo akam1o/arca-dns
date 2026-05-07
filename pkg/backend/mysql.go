@@ -490,7 +490,7 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 		}
 		return fmt.Errorf("failed to query zone serial: %w", err)
 	}
-	zone.SOA.Serial = generateSerial(currentSerial)
+	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
 
 	if err := validateZoneForWrite(zone); err != nil {
 		return err
@@ -1014,7 +1014,7 @@ func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVers
 		}
 		return fmt.Errorf("failed to query zone serial: %w", err)
 	}
-	zone.SOA.Serial = generateSerial(currentSerial)
+	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
 
 	if err := validateZoneForWrite(zone); err != nil {
 		return err

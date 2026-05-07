@@ -190,6 +190,28 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 			"UpdateZone must advance from the stored serial, not a stale client serial")
 	})
 
+	t.Run("UpdateZone_PreservesPreparedSerial", func(t *testing.T) {
+		zone := createTestZone("prepared-serial.example.com.")
+		err := store.CreateZone(ctx, zone)
+		require.NoError(t, err)
+
+		originalVersion := zone.Version
+		originalSerial := zone.SOA.Serial
+		preparedSerial := originalSerial + 42
+
+		zone.SOA.Serial = preparedSerial
+		zone.Records = []model.Record{
+			{Name: "test.prepared-serial.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		}
+		err = store.UpdateZone(ctx, zone, originalVersion)
+		require.NoError(t, err)
+
+		updated, err := store.GetZone(ctx, "prepared-serial.example.com.")
+		require.NoError(t, err)
+		assert.Equal(t, preparedSerial, updated.SOA.Serial,
+			"UpdateZone should preserve a precomputed serial that already advanced from the stored serial")
+	})
+
 	t.Run("UpdateZone_OptimisticLocking", func(t *testing.T) {
 		zone := createTestZone("locking.example.com.")
 		err := store.CreateZone(ctx, zone)

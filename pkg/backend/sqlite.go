@@ -275,7 +275,7 @@ func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 		return fmt.Errorf("query zone: %w", err)
 	}
 	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	zone.SOA.Serial = generateSerial(currentSerial)
+	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
 
 	if err := validateZoneForWrite(zone); err != nil {
 		return err
@@ -887,7 +887,7 @@ func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVer
 		return fmt.Errorf("query zone: %w", err)
 	}
 	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	zone.SOA.Serial = generateSerial(currentSerial)
+	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
 
 	if err := validateZoneForWrite(zone); err != nil {
 		return err

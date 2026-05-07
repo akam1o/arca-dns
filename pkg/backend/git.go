@@ -735,8 +735,9 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 	// Preserve CreatedAt from current zone
 	zone.CreatedAt = currentZone.CreatedAt
 
-	// Auto-increment serial
-	zone.SOA.Serial = generateSerial(currentZone.SOA.Serial)
+	// Advance from the stored serial. A caller may provide a precomputed
+	// greater serial when another component already used it for a prepared artifact.
+	zone.SOA.Serial = updateSOASerial(currentZone.SOA.Serial, zone.SOA.Serial)
 
 	// Update timestamp
 	zone.UpdatedAt = time.Now()
