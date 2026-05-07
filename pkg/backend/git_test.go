@@ -35,6 +35,30 @@ func setupGitBackend(t *testing.T) (*GitBackend, func()) {
 	return backend, cleanup
 }
 
+func testGitZone(name string) *model.Zone {
+	return &model.Zone{
+		Name: name,
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+}
+
+func gitHeadHash(t *testing.T, backend *GitBackend) plumbing.Hash {
+	t.Helper()
+
+	head, err := backend.repo.Head()
+	require.NoError(t, err)
+	return head.Hash()
+}
+
 func TestGitBackend_FreshRepoUsesConfiguredBranch(t *testing.T) {
 	repoPath := filepath.Join(t.TempDir(), "repo")
 
@@ -289,6 +313,74 @@ func TestGitBackend_DeleteZone(t *testing.T) {
 	zonePath := filepath.Join(backend.repoPath, "zones", "example.com..json")
 	_, err = os.Stat(zonePath)
 	assert.True(t, os.IsNotExist(err), "Zone file should not exist")
+}
+
+func TestGitBackend_CreateZone_RollsBackWhenAutoPushFails(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	backend.autoPush = true
+
+	err := backend.CreateZone(ctx, testGitZone("example.com."))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "git push failed")
+
+	_, err = backend.GetZone(ctx, "example.com.")
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+
+	_, err = backend.repo.Head()
+	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
+
+	backend.autoPush = false
+	require.NoError(t, backend.CreateZone(ctx, testGitZone("example.com.")))
+}
+
+func TestGitBackend_UpdateZone_RollsBackWhenAutoPushFails(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, backend.CreateZone(ctx, testGitZone("example.com.")))
+
+	created, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	headBefore := gitHeadHash(t, backend)
+
+	updated := *created
+	updated.Records = []model.Record{
+		{Name: "www.example.com.", Type: "A", TTL: 300, Value: "192.0.2.10"},
+	}
+
+	backend.autoPush = true
+	err = backend.UpdateZone(ctx, &updated, created.Version)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "git push failed")
+	assert.Equal(t, headBefore, gitHeadHash(t, backend))
+
+	retrieved, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, created.Version, retrieved.Version)
+	assert.Empty(t, retrieved.Records)
+}
+
+func TestGitBackend_DeleteZone_RollsBackWhenAutoPushFails(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, backend.CreateZone(ctx, testGitZone("example.com.")))
+	headBefore := gitHeadHash(t, backend)
+
+	backend.autoPush = true
+	err := backend.DeleteZone(ctx, "example.com.")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "git push failed")
+	assert.Equal(t, headBefore, gitHeadHash(t, backend))
+
+	_, err = backend.GetZone(ctx, "example.com.")
+	assert.NoError(t, err)
+	assert.FileExists(t, filepath.Join(backend.repoPath, "zones", "example.com..json"))
 }
 
 func TestGitBackend_AutoPullUsesConfiguredBranch(t *testing.T) {

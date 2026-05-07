@@ -17,6 +17,7 @@ import (
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/gofrs/flock"
@@ -110,6 +111,18 @@ type GitBackend struct {
 	repoLock  chan struct{}
 	fileLock  *flock.Flock
 	zoneMutex sync.Map // map[string]*sync.Mutex (per-zone locking)
+}
+
+type gitRollbackPoint struct {
+	relPath      string
+	absPath      string
+	fileData     []byte
+	fileMode     os.FileMode
+	fileExists   bool
+	indexTracked bool
+	headHash     plumbing.Hash
+	headRef      *plumbing.Reference
+	hasHead      bool
 }
 
 // NewGitBackend creates a new Git backend
@@ -404,18 +417,160 @@ func (g *GitBackend) pullIfNeeded(ctx context.Context) error {
 	return nil
 }
 
+func (g *GitBackend) snapshotZoneFile(zoneName string) (*gitRollbackPoint, error) {
+	relPath, err := g.zoneFilePath(zoneName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid zone path: %w", err)
+	}
+
+	point := &gitRollbackPoint{
+		relPath: relPath,
+		absPath: filepath.Join(g.repoPath, relPath),
+	}
+
+	info, err := os.Stat(point.absPath)
+	if err == nil {
+		point.fileExists = true
+		point.fileMode = info.Mode()
+		point.fileData, err = os.ReadFile(point.absPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to snapshot zone file: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to stat zone file: %w", err)
+	}
+
+	idx, err := g.repo.Storer.Index()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read git index: %w", err)
+	}
+	if _, err := idx.Entry(relPath); err == nil {
+		point.indexTracked = true
+	} else if err != index.ErrEntryNotFound {
+		return nil, fmt.Errorf("failed to inspect git index: %w", err)
+	}
+
+	head, err := g.repo.Head()
+	if err == nil {
+		point.hasHead = true
+		point.headHash = head.Hash()
+		headRef, err := g.repo.Reference(plumbing.HEAD, false)
+		if err != nil {
+			return nil, fmt.Errorf("failed to snapshot git head reference: %w", err)
+		}
+		point.headRef = headRef
+		return point, nil
+	}
+	if err != plumbing.ErrReferenceNotFound {
+		return nil, fmt.Errorf("failed to snapshot git head: %w", err)
+	}
+
+	return point, nil
+}
+
+func (g *GitBackend) restoreZoneFile(point *gitRollbackPoint) error {
+	if point.fileExists {
+		if err := os.MkdirAll(filepath.Dir(point.absPath), 0755); err != nil {
+			return fmt.Errorf("failed to recreate zone directory: %w", err)
+		}
+		if err := os.WriteFile(point.absPath, point.fileData, point.fileMode.Perm()); err != nil {
+			return fmt.Errorf("failed to restore zone file: %w", err)
+		}
+		return nil
+	}
+
+	if err := os.Remove(point.absPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove rolled back zone file: %w", err)
+	}
+	return nil
+}
+
+func (g *GitBackend) restoreHead(point *gitRollbackPoint) error {
+	if !point.hasHead {
+		branchRef := plumbing.NewBranchReferenceName(g.branch)
+		if err := g.repo.Storer.RemoveReference(branchRef); err != nil && err != plumbing.ErrReferenceNotFound {
+			return fmt.Errorf("failed to remove rolled back branch reference: %w", err)
+		}
+		if err := g.repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, branchRef)); err != nil {
+			return fmt.Errorf("failed to restore git head reference: %w", err)
+		}
+		return nil
+	}
+
+	if point.headRef != nil && point.headRef.Type() == plumbing.SymbolicReference {
+		branchRef := point.headRef.Target()
+		if err := g.repo.Storer.SetReference(plumbing.NewHashReference(branchRef, point.headHash)); err != nil {
+			return fmt.Errorf("failed to restore git branch reference: %w", err)
+		}
+		if err := g.repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, branchRef)); err != nil {
+			return fmt.Errorf("failed to restore git head reference: %w", err)
+		}
+		return nil
+	}
+
+	if err := g.repo.Storer.SetReference(plumbing.NewHashReference(plumbing.HEAD, point.headHash)); err != nil {
+		return fmt.Errorf("failed to restore git head reference: %w", err)
+	}
+	return nil
+}
+
+func (g *GitBackend) restoreIndex(point *gitRollbackPoint) error {
+	if !point.indexTracked || !point.fileExists {
+		return g.removeFromIndex(point.relPath)
+	}
+
+	if _, err := g.worktree.Add(point.relPath); err != nil {
+		return fmt.Errorf("failed to restore zone in git index: %w", err)
+	}
+	return nil
+}
+
+func (g *GitBackend) removeFromIndex(relPath string) error {
+	idx, err := g.repo.Storer.Index()
+	if err != nil {
+		return fmt.Errorf("failed to read git index: %w", err)
+	}
+	if _, err := idx.Remove(relPath); err != nil && err != index.ErrEntryNotFound {
+		return fmt.Errorf("failed to remove zone from git index: %w", err)
+	}
+	if err := g.repo.Storer.SetIndex(idx); err != nil {
+		return fmt.Errorf("failed to write git index: %w", err)
+	}
+	return nil
+}
+
+func (g *GitBackend) rollbackZoneMutation(point *gitRollbackPoint) error {
+	if err := g.restoreHead(point); err != nil {
+		return err
+	}
+	if err := g.restoreZoneFile(point); err != nil {
+		return err
+	}
+	return g.restoreIndex(point)
+}
+
+func (g *GitBackend) wrapWithRollback(point *gitRollbackPoint, err error) error {
+	if point == nil {
+		return err
+	}
+	if rollbackErr := g.rollbackZoneMutation(point); rollbackErr != nil {
+		return fmt.Errorf("%w (rollback failed: %v)", err, rollbackErr)
+	}
+	return err
+}
+
 // commitZone commits changes to the zone file
-func (g *GitBackend) commitZone(ctx context.Context, zoneName, operation, summary string, zone *model.Zone) error {
+func (g *GitBackend) commitZone(ctx context.Context, zoneName, operation, summary string, zone *model.Zone, rollback *gitRollbackPoint) error {
 	message := fmt.Sprintf("[%s] %s: %s\n\nVersion: %s", operation, zoneName, summary, zone.Version)
-	return g.commitZoneWithMessage(ctx, zoneName, message)
+	return g.commitZoneWithMessage(ctx, zoneName, message, rollback)
 }
 
-func (g *GitBackend) commitZoneMetadata(ctx context.Context, zoneName, operation, summary string) error {
+func (g *GitBackend) commitZoneMetadata(ctx context.Context, zoneName, operation, summary string, rollback *gitRollbackPoint) error {
 	message := fmt.Sprintf("[%s] %s: %s", operation, zoneName, summary)
-	return g.commitZoneWithMessage(ctx, zoneName, message)
+	return g.commitZoneWithMessage(ctx, zoneName, message, rollback)
 }
 
-func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, message string) error {
+func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, message string, rollback *gitRollbackPoint) error {
 	filePath, err := g.zoneFilePath(zoneName)
 	if err != nil {
 		return fmt.Errorf("invalid zone path: %w", err)
@@ -424,7 +579,7 @@ func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, messag
 	// Add file to staging
 	_, err = g.worktree.Add(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to add file to git: %w", err)
+		return g.wrapWithRollback(rollback, fmt.Errorf("failed to add file to git: %w", err))
 	}
 
 	// Commit
@@ -436,7 +591,7 @@ func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, messag
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("failed to commit: %w", err)
+		return g.wrapWithRollback(rollback, fmt.Errorf("failed to commit: %w", err))
 	}
 
 	// Push if auto-push is enabled
@@ -445,7 +600,7 @@ func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, messag
 			RemoteName: "origin",
 		})
 		if err != nil && err != git.NoErrAlreadyUpToDate {
-			return fmt.Errorf("git push failed: %w", err)
+			return g.wrapWithRollback(rollback, fmt.Errorf("git push failed: %w", err))
 		}
 	}
 
@@ -454,6 +609,11 @@ func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, messag
 
 // removeAndCommit removes a zone file and commits the deletion
 func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary string) error {
+	rollback, err := g.snapshotZoneFile(zoneName)
+	if err != nil {
+		return err
+	}
+
 	filePath, err := g.zoneFilePath(zoneName)
 	if err != nil {
 		return fmt.Errorf("invalid zone path: %w", err)
@@ -462,7 +622,7 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 	// Remove file from git
 	_, err = g.worktree.Remove(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to remove file from git: %w", err)
+		return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove file from git: %w", err))
 	}
 
 	// Create commit message
@@ -477,7 +637,7 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("failed to commit deletion: %w", err)
+		return g.wrapWithRollback(rollback, fmt.Errorf("failed to commit deletion: %w", err))
 	}
 
 	// Push if auto-push is enabled
@@ -486,7 +646,7 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 			RemoteName: "origin",
 		})
 		if err != nil && err != git.NoErrAlreadyUpToDate {
-			return fmt.Errorf("git push failed: %w", err)
+			return g.wrapWithRollback(rollback, fmt.Errorf("git push failed: %w", err))
 		}
 	}
 
@@ -692,6 +852,11 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 		return err
 	}
 
+	rollback, err := g.snapshotZoneFile(normalized)
+	if err != nil {
+		return err
+	}
+
 	// Write zone file
 	if err := g.writeZone(normalized, zone); err != nil {
 		return err
@@ -699,7 +864,7 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 
 	// Commit
 	summary := fmt.Sprintf("created zone with %d records", len(zone.Records))
-	return g.commitZone(ctx, normalized, "create", summary, zone)
+	return g.commitZone(ctx, normalized, "create", summary, zone, rollback)
 }
 
 // UpdateZone updates an existing zone with optimistic locking
@@ -755,6 +920,11 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 		return err
 	}
 
+	rollback, err := g.snapshotZoneFile(normalized)
+	if err != nil {
+		return err
+	}
+
 	// Write updated zone file
 	if err := g.writeZone(normalized, zone); err != nil {
 		return err
@@ -762,7 +932,7 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 
 	// Commit
 	summary := fmt.Sprintf("updated zone (%d records)", len(zone.Records))
-	return g.commitZone(ctx, normalized, "update", summary, zone)
+	return g.commitZone(ctx, normalized, "update", summary, zone, rollback)
 }
 
 // UpdateDNSSECMetadata updates DNSSEC metadata without changing zone version or SOA serial.
@@ -790,11 +960,16 @@ func (g *GitBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string, 
 	zone.DNSSEC = cloneDNSSECConfig(dnssec)
 	zone.UpdatedAt = time.Now()
 
+	rollback, err := g.snapshotZoneFile(normalized)
+	if err != nil {
+		return err
+	}
+
 	if err := g.writeZone(normalized, zone); err != nil {
 		return err
 	}
 
-	return g.commitZoneMetadata(ctx, normalized, "dnssec", "updated DNSSEC metadata")
+	return g.commitZoneMetadata(ctx, normalized, "dnssec", "updated DNSSEC metadata", rollback)
 }
 
 // DeleteZone deletes a zone
@@ -819,17 +994,6 @@ func (g *GitBackend) DeleteZone(ctx context.Context, name string) error {
 			return model.ErrZoneNotFound
 		}
 		return err
-	}
-
-	// Delete file
-	relPath, err := g.zoneFilePath(normalized)
-	if err != nil {
-		return fmt.Errorf("invalid zone path: %w", err)
-	}
-
-	filePath := filepath.Join(g.repoPath, relPath)
-	if err := os.Remove(filePath); err != nil {
-		return fmt.Errorf("failed to delete zone file: %w", err)
 	}
 
 	// Commit deletion
@@ -860,16 +1024,6 @@ func (g *GitBackend) DeleteZoneWithVersion(ctx context.Context, name string, exp
 	}
 	if expectedVersion != "" && zone.Version != expectedVersion {
 		return model.ErrConflict
-	}
-
-	relPath, err := g.zoneFilePath(normalized)
-	if err != nil {
-		return fmt.Errorf("invalid zone path: %w", err)
-	}
-
-	filePath := filepath.Join(g.repoPath, relPath)
-	if err := os.Remove(filePath); err != nil {
-		return fmt.Errorf("failed to delete zone file: %w", err)
 	}
 
 	return g.removeAndCommit(ctx, normalized, "deleted zone")
