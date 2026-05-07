@@ -1007,6 +1007,7 @@ paths:
       summary: Detailed status information
       description: Returns detailed status information about the controller
       operationId: getStatus
+      security: []  # No authentication required
       responses:
         '200':
           description: Status information
@@ -1024,8 +1025,6 @@ paths:
                     type: string
                   date:
                     type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
 
