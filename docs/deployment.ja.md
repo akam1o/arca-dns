@@ -25,6 +25,8 @@ arca-dns は control plane と data plane を分けてデプロイします。
 | Docker Compose | ローカル検証、単一ホスト検証 | `deployments/compose/controller-mysql/` は controller + MySQL の例 |
 | Kubernetes | controller のクラスタ運用 | agent は通常クラスタ外のエッジノードで動かす |
 
+agent container image には `arca-dns-agent` のみが含まれます。`nsd.enabled`、`unbound.enabled`、または `bird.enabled` のまま container で動かす場合は、対応するホスト側 binary、socket、書き込み可能な config/data path を mount するか、agent 設定でそれらの連携を無効化してください。
+
 ## 共通の前提条件
 
 ### Controller
@@ -331,6 +333,7 @@ Compose 例は `deployments/compose/controller-mysql/docker-compose.yaml` にあ
 export ARCA_DNS_API_KEY="$(openssl rand -hex 32)"
 export ARCA_DNS_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_API_KEY" | sha256sum | awk '{print $1}')"
 export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
+export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$(openssl rand -base64 32)"
 ```
 
 起動:
@@ -372,7 +375,7 @@ Kustomize entrypoint:
 
 ### 1. Secret を置き換える
 
-`deployments/kubernetes/controller/base/controller-secret.yaml` の `dnssec-master-key-b64` を置き換えます。
+`deployments/kubernetes/controller/base/controller-secret.yaml` の `api-key-hash`、`dnssec-master-key-b64`、`artifact-signature-key` を置き換えます。
 
 ```bash
 openssl rand -base64 32
@@ -382,13 +385,12 @@ openssl rand -base64 32
 
 `deployments/kubernetes/controller/base/controller.yaml` を編集します。
 
-- `api.auth.api_keys.admin`
 - `backend.etcd.endpoints`
 - `backend.etcd.prefix`
 - `storage.*`
 - `dnssec.*`
 
-demo overlay を使う場合は、`deployments/kubernetes/controller/overlays/demo-etcd/controller.yaml` 側も同様に API キーハッシュを置き換えます。
+Deployment は `api-key-hash` を `ARCA_DNS_API_AUTH_API_KEYS_ADMIN` として読み込むため、Secret の値が ConfigMap の placeholder hash を上書きします。demo overlay を使う場合も、適用前に placeholder 値を置き換えるか上書きしてください。
 
 ### 3. PVC を確認する
 
@@ -504,6 +506,7 @@ birdc show route
 | controller が master key エラーで起動しない | DNSSEC 有効だが master key がない | `ARCA_DNS_DNSSEC_MASTER_KEY_B64` または `/etc/arca-dns/master.key` を設定する |
 | MySQL/PostgreSQL で table not found | SQL スキーマ未適用 | `migrations/<backend>/000001_initial_schema.up.sql` を適用してから起動する |
 | container が `/var/lib/arca-dns` に書けない | distroless nonroot image の UID と volume 権限が合っていない | volume を UID/GID `65532` で書けるようにする。Kubernetes base は `fsGroup: 65532` を設定済み |
+| agent container が NSD/Unbound/BIRD を reload できない | image にホスト DNS/BGP 制御ツールが含まれない | 必要なホスト binary/socket/config を mount するか、それらの連携を無効化する |
 | agent `/ready` が 503 | 初回同期未完了、または sync stale | controller URL/API key、zone 一覧、agent ログを確認する |
 | BGP が announce されない | health check 失敗、BIRD socket 権限、protocol 名不一致 | `curl :9090/status`, `birdc show protocols`, agent ログを確認する |
 

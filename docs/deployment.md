@@ -25,6 +25,8 @@ Recommended production topology:
 | Docker Compose | local or single-host validation | `deployments/compose/controller-mysql/` runs controller + MySQL |
 | Kubernetes | controller cluster deployment | Agents usually still run outside the cluster on edge nodes |
 
+The agent container image contains only `arca-dns-agent`. If you run an agent in a container with `nsd.enabled`, `unbound.enabled`, or `bird.enabled`, mount the matching host binaries, sockets, and writable config/data paths, or disable those integrations in the agent config.
+
 ## Common Prerequisites
 
 ### Controller
@@ -332,6 +334,7 @@ Prepare secrets first:
 export ARCA_DNS_API_KEY="$(openssl rand -hex 32)"
 export ARCA_DNS_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_API_KEY" | sha256sum | awk '{print $1}')"
 export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
+export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$(openssl rand -base64 32)"
 ```
 
 Start:
@@ -373,7 +376,7 @@ Kustomize entrypoints:
 
 ### 1. Replace the Secret
 
-Replace `dnssec-master-key-b64` in `deployments/kubernetes/controller/base/controller-secret.yaml`.
+Replace `api-key-hash`, `dnssec-master-key-b64`, and `artifact-signature-key` in `deployments/kubernetes/controller/base/controller-secret.yaml`.
 
 ```bash
 openssl rand -base64 32
@@ -383,13 +386,12 @@ openssl rand -base64 32
 
 Edit `deployments/kubernetes/controller/base/controller.yaml`.
 
-- `api.auth.api_keys.admin`
 - `backend.etcd.endpoints`
 - `backend.etcd.prefix`
 - `storage.*`
 - `dnssec.*`
 
-If you use the demo overlay, also replace the API key hash in `deployments/kubernetes/controller/overlays/demo-etcd/controller.yaml`.
+The Deployment reads `api-key-hash` through `ARCA_DNS_API_AUTH_API_KEYS_ADMIN`, so the Secret value overrides the placeholder hash in the ConfigMap. If you use the demo overlay, also replace or override its placeholder values before applying.
 
 ### 3. Check the PVC
 
@@ -505,6 +507,7 @@ birdc show route
 | controller fails on master key | DNSSEC enabled but no master key | set `ARCA_DNS_DNSSEC_MASTER_KEY_B64` or `/etc/arca-dns/master.key` |
 | MySQL/PostgreSQL reports missing tables | SQL schema was not applied | apply `migrations/<backend>/000001_initial_schema.up.sql` before startup |
 | container cannot write `/var/lib/arca-dns` | distroless nonroot UID cannot write the volume | make the volume writable by UID/GID `65532`; Kubernetes base already sets `fsGroup: 65532` |
+| agent container cannot reload NSD/Unbound/BIRD | image does not include host DNS/BGP control tools | mount the required host binaries/sockets/configs or disable those integrations |
 | agent `/ready` returns 503 | first sync has not completed or sync is stale | check controller URL/API key, zone list, and agent logs |
 | BGP is not announced | health check failure, BIRD socket permission, or protocol name mismatch | check `curl :9090/status`, `birdc show protocols`, and agent logs |
 

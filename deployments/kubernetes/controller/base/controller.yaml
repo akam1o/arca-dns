@@ -4,6 +4,7 @@ api:
   auth:
     # Replace the placeholder before deployment. When auth is enabled, at least
     # one valid sha256:<64-hex> API key hash is required at startup.
+    # The base Deployment overrides admin from the arca-dns-secrets api-key-hash.
     enabled: true
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"

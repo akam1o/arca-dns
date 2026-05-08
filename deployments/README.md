@@ -55,8 +55,8 @@ Kustomize entrypoints:
 
 Before applying, replace:
 
-- `deployments/kubernetes/controller/base/controller-secret.yaml` (`dnssec-master-key-b64`, `artifact-signature-key`)
-- `deployments/kubernetes/controller/base/controller.yaml` (`api.auth.api_keys`, etcd endpoints, backend prefix)
+- `deployments/kubernetes/controller/base/controller-secret.yaml` (`api-key-hash`, `dnssec-master-key-b64`, `artifact-signature-key`)
+- `deployments/kubernetes/controller/base/controller.yaml` (etcd endpoints, backend prefix)
 - `deployments/kubernetes/controller/base/controller-pvc.yaml` storage class and size if needed
 - `deployments/kubernetes/controller/overlays/demo-etcd/controller.yaml` API key hash if using the demo overlay
 
