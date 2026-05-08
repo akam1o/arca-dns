@@ -112,32 +112,24 @@ func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, conte
 		}
 	}
 
-	rollbackManagedZone, err := fm.recordManagedZoneWithRollback(zoneName)
-	if err != nil {
-		os.Remove(tmpPath)
-		return nil, fmt.Errorf("failed to record managed zone: %w", err)
-	}
-
 	// Atomic rename (this is the commit point)
 	if err := os.Rename(tmpPath, targetPath); err != nil {
 		_ = os.Remove(tmpPath)
-		if rollbackErr := rollbackManagedZone(); rollbackErr != nil {
-			fm.logger.Warn("Failed to roll back managed zone index",
-				zap.String("zone", zoneName),
-				zap.Error(rollbackErr))
-		}
 		return nil, fmt.Errorf("failed to rename temporary file: %w", err)
 	}
 	if err := fm.fsyncDir(filepath.Dir(targetPath)); err != nil {
-		var errs []error
-		errs = append(errs, fmt.Errorf("fsync zone directory: %w", err))
-		if rollbackErr := restoreZoneFileSnapshot(targetPath, snapshot); rollbackErr != nil {
-			errs = append(errs, rollbackErr)
-		}
-		if rollbackErr := rollbackManagedZone(); rollbackErr != nil {
-			errs = append(errs, fmt.Errorf("roll back managed zone index: %w", rollbackErr))
-		}
-		return nil, errors.Join(errs...)
+		return nil, errors.Join(
+			fmt.Errorf("fsync zone directory: %w", err),
+			rollbackZoneFileCommit(targetPath, snapshot, backupPath),
+		)
+	}
+
+	rollbackManagedZone, err := fm.recordManagedZoneWithRollback(zoneName)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("failed to record managed zone: %w", err),
+			rollbackZoneFileCommit(targetPath, snapshot, backupPath),
+		)
 	}
 
 	// Clean up old backups
@@ -163,12 +155,38 @@ func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, conte
 			}
 		}
 		if backupPath != "" {
-			if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
-				errs = append(errs, fmt.Errorf("remove rollback backup: %w", err))
+			if err := removeRollbackBackup(backupPath); err != nil {
+				errs = append(errs, err)
 			}
 		}
 		return errors.Join(errs...)
 	}, nil
+}
+
+func rollbackZoneFileCommit(targetPath string, snapshot zoneFileSnapshot, backupPath string) error {
+	var errs []error
+	if err := restoreZoneFileSnapshot(targetPath, snapshot); err != nil {
+		errs = append(errs, err)
+	}
+	if backupPath != "" {
+		if err := removeRollbackBackup(backupPath); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func removeRollbackBackup(backupPath string) error {
+	if err := os.Remove(backupPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("remove rollback backup: %w", err)
+	}
+	if err := syncDir(filepath.Dir(backupPath)); err != nil {
+		return fmt.Errorf("fsync rollback backup directory: %w", err)
+	}
+	return nil
 }
 
 // GetZonePath returns the path to a zone file with safe filename.
