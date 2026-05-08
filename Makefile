@@ -8,7 +8,7 @@ GOMODCACHE?=$(CURDIR)/.cache/gomod
 GOLANGCI_LINT_CACHE?=$(CURDIR)/.cache/golangci-lint
 GOLANGCI_LINT_VERSION?=v1.64.8
 GOLANGCI_LINT_MODULE?=github.com/golangci/golangci-lint/cmd/golangci-lint
-GOVULNCHECK_VERSION?=latest
+GOVULNCHECK_VERSION?=v1.3.0
 export GOCACHE
 export GOPATH
 export GOMODCACHE
