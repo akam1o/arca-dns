@@ -115,7 +115,7 @@ The controller validates `record.value` based on `record.type` (see `pkg/model/v
 - `CNAME`, `NS`, `PTR`: domain name (example: `"target.example.com."`)
 - `MX`: `"priority domain"` (example: `"10 mail.example.com."`)
 - `SRV`: `"priority weight port target"` (example: `"10 5 443 svc.example.com."`)
-- `TXT`: any non-empty string up to 65535 chars (example: `"v=spf1 -all"`)
+- `TXT`: any string up to 65279 bytes, including an empty string (example: `"v=spf1 -all"`)
 - `CAA`: `"flags tag value"` (example: `"0 issue letsencrypt.org"`)
 
 Domain targets without a trailing dot are interpreted relative to the zone origin unless they already end with the zone origin. For external targets, use an FQDN with a trailing dot in `value`.

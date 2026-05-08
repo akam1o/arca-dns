@@ -115,7 +115,7 @@ controller は `record.type` に応じて `record.value` を検証します（`p
 - `CNAME`, `NS`, `PTR`: ドメイン名（例: `"target.example.com."`）
 - `MX`: `"priority domain"`（例: `"10 mail.example.com."`）
 - `SRV`: `"priority weight port target"`（例: `"10 5 443 svc.example.com."`）
-- `TXT`: 1〜65535 文字の任意文字列（例: `"v=spf1 -all"`）
+- `TXT`: 空文字列を含む 0〜65279 bytes の任意文字列（例: `"v=spf1 -all"`）
 - `CAA`: `"flags tag value"`（例: `"0 issue letsencrypt.org"`）
 
 末尾ドットのないドメインターゲットは、既に zone origin で終わっている場合を除き、zone origin からの相対名として解釈されます。外部ターゲットを指定する場合は、`value` で末尾ドット付き FQDN を使ってください。
