@@ -279,7 +279,12 @@ sudo dnf install bird nsd unbound arca-dns
 - `nsd.enabled`, `nsd.zone_directory`, `nsd.control_path`
 - `unbound.enabled`, `unbound.control_path`
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
-- `health.nsd_server`, `health.unbound_server`, `health.test_record`
+- `health.nsd_server`, `health.unbound_server`, `health.test_zone`, `health.test_record`
+
+`health.test_record` が相対名の場合は、提供する zone を `health.test_zone`
+に設定してください。たとえば `test_zone: "example.com."` と
+`test_record: "www"` を指定します。`health.test_record` の末尾に `.` を
+付けるのは、絶対 DNS 名を直接問い合わせたい場合だけです。
 
 DNSTap を有効にする場合は、`dnstap.socket_mode` を `0660` のままにし、
 `dnstap.socket_group` には DNS daemon user（`nsd`, `unbound`、または環境に

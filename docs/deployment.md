@@ -281,7 +281,12 @@ Set at least:
 - `nsd.enabled`, `nsd.zone_directory`, `nsd.control_path`
 - `unbound.enabled`, `unbound.control_path`
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
-- `health.nsd_server`, `health.unbound_server`, `health.test_record`
+- `health.nsd_server`, `health.unbound_server`, `health.test_zone`, `health.test_record`
+
+When `health.test_record` is relative, set `health.test_zone` to the served
+zone, for example `test_zone: "example.com."` and `test_record: "www"`.
+Use a trailing dot on `health.test_record` only when you want to query an
+absolute DNS name directly.
 
 If DNSTap is enabled, keep `dnstap.socket_mode` at `0660` and either set
 `dnstap.socket_group` to a shared group that contains the DNS daemon user
