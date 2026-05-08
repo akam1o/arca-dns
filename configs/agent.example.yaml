@@ -30,7 +30,9 @@ health:
   # DNS check targets (host:port)
   nsd_server: "127.0.0.1:5353"
   unbound_server: "127.0.0.1:53"
-  test_record: "example.com"
+  # BIRD route control requires this to point at an A record served by this node.
+  test_zone: "example.com."
+  test_record: "www"
 
 nsd:
   enabled: false

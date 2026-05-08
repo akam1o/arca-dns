@@ -587,6 +587,18 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid health.recovery_threshold: must be positive")
 	}
 
+	if cfg.BIRD.Enabled {
+		if !cfg.NSD.Enabled && !cfg.Unbound.Enabled {
+			return fmt.Errorf("invalid bird.enabled: requires nsd.enabled or unbound.enabled for DNS health checks")
+		}
+		if strings.TrimSpace(cfg.Health.TestRecord) == "" {
+			return fmt.Errorf("invalid health.test_record: required when BIRD is enabled")
+		}
+		if healthTestRecordNeedsZone(cfg.Health.TestRecord) && strings.TrimSpace(cfg.Health.TestZone) == "" {
+			return fmt.Errorf("invalid health.test_zone: required when health.test_record is relative and BIRD is enabled")
+		}
+	}
+
 	validLogLevels := map[string]bool{
 		"debug": true,
 		"info":  true,
@@ -598,6 +610,11 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	return nil
+}
+
+func healthTestRecordNeedsZone(record string) bool {
+	record = strings.TrimSpace(record)
+	return record != "" && !strings.HasSuffix(record, ".") && !strings.Contains(record, ".")
 }
 
 func applyAgentSignatureKeyAliases(cfg *AgentConfig) error {

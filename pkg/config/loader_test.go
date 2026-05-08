@@ -987,6 +987,35 @@ func TestValidateAgentConfig_InvalidHealthTiming(t *testing.T) {
 	}
 }
 
+func TestValidateAgentConfig_BIRDRequiresExplicitHealthRecord(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.BIRD.Enabled = true
+
+	err := ValidateAgentConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "health.test_record")
+}
+
+func TestValidateAgentConfig_BIRDRequiresHealthZoneForRelativeRecord(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.BIRD.Enabled = true
+	cfg.Health.TestRecord = "www"
+
+	err := ValidateAgentConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "health.test_zone")
+}
+
+func TestValidateAgentConfig_BIRDAllowsExplicitHealthTarget(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.BIRD.Enabled = true
+	cfg.Health.TestZone = "example.com."
+	cfg.Health.TestRecord = "www"
+
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
+}
+
 func TestValidateAgentConfig_InvalidBackupVersions(t *testing.T) {
 	cfg := validAgentConfigForTest()
 	cfg.Sync.BackupVersions = -1
