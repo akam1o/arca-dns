@@ -149,13 +149,14 @@ func (m *ControllerMetrics) SetSecondsRemaining(seconds float64) {
 	m.mu.Unlock()
 }
 
-// CountZones counts all zones using ListZones pagination.
+// CountZones counts all zones using lightweight summaries when the backend
+// supports them, avoiding full record loads during metrics scrapes.
 func CountZones(ctx context.Context, store backend.ZoneStore) (int, error) {
 	const pageSize = 1000
 	offset := 0
 	total := 0
 	for {
-		zones, err := store.ListZones(ctx, backend.ListOptions{Limit: pageSize, Offset: offset})
+		zones, err := backend.ListZoneSummaries(ctx, store, backend.ListOptions{Limit: pageSize, Offset: offset})
 		if err != nil {
 			return 0, err
 		}

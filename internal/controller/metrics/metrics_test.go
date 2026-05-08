@@ -1,8 +1,14 @@
 package metrics
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"testing"
+
+	"github.com/akam1o/arca-dns/pkg/backend"
+	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHistogramCloneIndependence(t *testing.T) {
@@ -45,4 +51,61 @@ func TestControllerMetricsRenderConcurrentSigningObserve(t *testing.T) {
 
 	close(done)
 	wg.Wait()
+}
+
+type summaryOnlyStore struct {
+	total          int
+	listZonesCalls int
+}
+
+func (s *summaryOnlyStore) GetZone(ctx context.Context, name string) (*model.Zone, error) {
+	return nil, model.ErrZoneNotFound
+}
+
+func (s *summaryOnlyStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	s.listZonesCalls++
+	return nil, fmt.Errorf("ListZones should not be used for CountZones")
+}
+
+func (s *summaryOnlyStore) ListZoneSummaries(ctx context.Context, opts backend.ListOptions) ([]*backend.ZoneSummary, error) {
+	if opts.Offset >= s.total {
+		return []*backend.ZoneSummary{}, nil
+	}
+	end := opts.Offset + opts.Limit
+	if opts.Limit <= 0 || end > s.total {
+		end = s.total
+	}
+	summaries := make([]*backend.ZoneSummary, 0, end-opts.Offset)
+	for i := opts.Offset; i < end; i++ {
+		summaries = append(summaries, &backend.ZoneSummary{
+			Name:    fmt.Sprintf("zone-%d.example.", i),
+			Version: fmt.Sprintf("v%d", i),
+		})
+	}
+	return summaries, nil
+}
+
+func (s *summaryOnlyStore) CreateZone(ctx context.Context, zone *model.Zone) error {
+	return nil
+}
+
+func (s *summaryOnlyStore) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
+	return nil
+}
+
+func (s *summaryOnlyStore) DeleteZone(ctx context.Context, name string) error {
+	return nil
+}
+
+func (s *summaryOnlyStore) Close() error {
+	return nil
+}
+
+func TestCountZonesUsesSummaries(t *testing.T) {
+	store := &summaryOnlyStore{total: 2501}
+
+	count, err := CountZones(context.Background(), store)
+	require.NoError(t, err)
+	require.Equal(t, 2501, count)
+	require.Zero(t, store.listZonesCalls)
 }
