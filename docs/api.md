@@ -7,7 +7,7 @@ The source of truth for the Controller API is `api/openapi.yaml` (OpenAPI 3.0). 
 ## Base URL
 
 - API base: `http://<controller-host>:8080/api/v1`
-- Health/metrics base (also exposed under `/api/v1/*` as aliases): `http://<controller-host>:8080`
+- Observability base (also exposed under `/api/v1/*` as aliases): `http://<controller-host>:9053`
 
 ## Authentication
 
@@ -17,7 +17,7 @@ If API auth is enabled in the controller config, include an API key header on *p
 X-API-Key: <api-key>
 ```
 
-Health endpoints (`/health`, `/ready`, `/status`, `/metrics`) do not require auth.
+Observability endpoints (`/health`, `/ready`, `/status`, `/metrics`) do not require auth and are served on the separate observability listener.
 
 ## Data Model (Zone)
 

@@ -7,39 +7,22 @@ import (
 	"go.uber.org/zap"
 )
 
-// SetupRouter configures the Gin router with all routes.
+// SetupRouter configures the Gin router with authenticated management API routes.
 func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *gin.Engine {
+	return SetupAPIRouter(handler, cfg, logger)
+}
+
+// SetupAPIRouter configures the Gin router with authenticated management API routes.
+func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *gin.Engine {
 	// Set Gin mode based on environment
 	gin.SetMode(gin.ReleaseMode)
 
-	router := gin.New()
+	router := newControllerRouter(handler, cfg, logger, true)
 
-	// Core middleware
-	router.Use(gin.Recovery())
-
-	// Metrics middleware (should run early so aborted requests are still recorded).
-	if handler != nil && handler.metrics != nil {
-		router.Use(handler.metrics.Middleware())
-	}
-
-	// Configure trusted proxies for ClientIP().
-	// - If cfg.TrustedProxies is provided, trust only those.
-	// - Otherwise, trust none (disable forwarded headers).
-	if cfg != nil && len(cfg.TrustedProxies) > 0 {
-		if err := router.SetTrustedProxies(cfg.TrustedProxies); err != nil {
-			logger.Warn("Failed to set trusted proxies", zap.Error(err))
-		}
-	} else {
-		if err := router.SetTrustedProxies(nil); err != nil {
-			logger.Warn("Failed to disable trusted proxies", zap.Error(err))
-		}
-	}
-
-	// Security middleware
+	// Audit and rate limiting are scoped to the management API listener.
 	auditLogger := middleware.NewAuditLogger(logger)
 	router.Use(auditLogger.Middleware())
 
-	// Rate limiting
 	if cfg != nil && cfg.RateLimit.Enabled {
 		rateLimiterConfig := middleware.DefaultRateLimiterConfig()
 		rateLimiterConfig.ReadRPS = cfg.RateLimit.RequestsPerSecond
@@ -50,21 +33,8 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 		router.Use(rateLimiter.Middleware())
 	}
 
-	// Health/status endpoints (no auth).
-	router.GET("/health", handler.Health)
-	router.GET("/ready", handler.Ready)
-	router.GET("/status", handler.Status)
-	router.GET("/metrics", handler.Metrics)
-
 	// API v1 routes (with authentication if enabled)
 	v1 := router.Group("/api/v1")
-	{
-		// Health endpoints (aliases under /api/v1 for OpenAPI server base compatibility)
-		v1.GET("/health", handler.Health)
-		v1.GET("/ready", handler.Ready)
-		v1.GET("/status", handler.Status)
-		v1.GET("/metrics", handler.Metrics)
-	}
 
 	requestValidator := middleware.NewRequestValidator()
 
@@ -104,6 +74,53 @@ func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *g
 	}
 
 	return router
+}
+
+// SetupObservabilityRouter configures unauthenticated operational endpoints for
+// the controller observability listener.
+func SetupObservabilityRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *gin.Engine {
+	gin.SetMode(gin.ReleaseMode)
+
+	router := newControllerRouter(handler, cfg, logger, false)
+	registerObservabilityRoutes(router, handler)
+
+	// Keep the historical /api/v1 aliases on the observability listener only.
+	v1 := router.Group("/api/v1")
+	registerObservabilityRoutes(v1, handler)
+
+	return router
+}
+
+func newControllerRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger, includeMetrics bool) *gin.Engine {
+	router := gin.New()
+
+	router.Use(gin.Recovery())
+	if includeMetrics && handler != nil && handler.metrics != nil {
+		router.Use(handler.metrics.Middleware())
+	}
+
+	if cfg != nil && len(cfg.TrustedProxies) > 0 {
+		if err := router.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+			logger.Warn("Failed to set trusted proxies", zap.Error(err))
+		}
+	} else {
+		if err := router.SetTrustedProxies(nil); err != nil {
+			logger.Warn("Failed to disable trusted proxies", zap.Error(err))
+		}
+	}
+
+	return router
+}
+
+type routeGroup interface {
+	GET(string, ...gin.HandlerFunc) gin.IRoutes
+}
+
+func registerObservabilityRoutes(routes routeGroup, handler *Handler) {
+	routes.GET("/health", handler.Health)
+	routes.GET("/ready", handler.Ready)
+	routes.GET("/status", handler.Status)
+	routes.GET("/metrics", handler.Metrics)
 }
 
 func writeRPSFromReadRPS(readRPS int) int {

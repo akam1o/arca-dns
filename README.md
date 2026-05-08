@@ -148,6 +148,10 @@ api:
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
 
+observability:
+  # Unauthenticated /health, /ready, /status, and /metrics endpoints.
+  listen: "0.0.0.0:9053"
+
 backend:
   type: "sqlite"  # Options: sqlite, postgres, mysql, git, etcd
 

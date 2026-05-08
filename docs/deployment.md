@@ -53,7 +53,8 @@ The agent container image contains only `arca-dns-agent`. If you run an agent in
 
 | Component | Port | Purpose |
 | --- | --- | --- |
-| controller | `8080` | API, health, readiness, metrics |
+| controller | `8080` | management API |
+| controller | `9053` | health, readiness, status, metrics |
 | agent | `9090` | status, health, readiness, metrics |
 | DNS | `53/tcp`, `53/udp` | edge DNS service |
 
@@ -358,8 +359,8 @@ docker compose \
 Check the controller:
 
 ```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/ready
+curl http://localhost:9053/health
+curl http://localhost:9053/ready
 curl -H "X-API-Key: $ARCA_DNS_API_KEY" http://localhost:8080/api/v1/zones
 ```
 
@@ -418,9 +419,9 @@ kubectl apply -k deployments/kubernetes/controller/overlays/demo-etcd
 ```bash
 kubectl get deploy,po,svc,pvc
 kubectl logs deploy/arca-dns-controller
-kubectl port-forward svc/arca-dns-controller 8080:8080
-curl http://localhost:8080/health
-curl http://localhost:8080/ready
+kubectl port-forward svc/arca-dns-controller 8080:8080 9053:9053
+curl http://localhost:9053/health
+curl http://localhost:9053/ready
 ```
 
 Ingress example: `deployments/kubernetes/controller/examples/ingress.yaml`. Terminate TLS at the ingress controller or external load balancer.
@@ -453,6 +454,9 @@ Agent HTTP endpoints:
 | `GET /status` | sync state, health, BGP announce state |
 | `GET /metrics` | Prometheus metrics |
 
+Controller observability endpoints listen on the separate `observability.listen`
+address (`0.0.0.0:9053` in the provided deployment examples).
+
 By default the agent status server listens on `127.0.0.1:9090`. Set
 `metrics.listen` to a remote address only when the endpoint is protected by
 network controls or an authenticated proxy.
@@ -462,10 +466,10 @@ network controls or an authenticated proxy.
 Controller:
 
 ```bash
-curl http://controller:8080/health
-curl http://controller:8080/ready
-curl http://controller:8080/status
-curl http://controller:8080/metrics
+curl http://controller:9053/health
+curl http://controller:9053/ready
+curl http://controller:9053/status
+curl http://controller:9053/metrics
 ```
 
 Agent:

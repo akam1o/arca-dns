@@ -20,6 +20,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /out/arca-dns-controller /arca-dns-controller
-EXPOSE 8080
+EXPOSE 8080 9053
 ENTRYPOINT ["/arca-dns-controller"]
 CMD ["serve"]

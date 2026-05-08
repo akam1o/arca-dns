@@ -89,23 +89,38 @@ func TestSignerOptionsFromConfig(t *testing.T) {
 
 func TestApplyServeFlagOverrides_OnlyOverridesExplicitListen(t *testing.T) {
 	origListenAddr := listenAddr
-	t.Cleanup(func() { listenAddr = origListenAddr })
+	origObservabilityListenAddr := observabilityListenAddr
+	t.Cleanup(func() {
+		listenAddr = origListenAddr
+		observabilityListenAddr = origObservabilityListenAddr
+	})
 
 	cfg := config.DefaultControllerConfig()
 	cfg.API.Listen = "127.0.0.1:9090"
+	cfg.Observability.Listen = "127.0.0.1:9053"
 
 	cmd := &cobra.Command{Use: "serve"}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":8080", "HTTP server listen address")
+	cmd.Flags().StringVar(&observabilityListenAddr, "observability-listen", ":9053", "HTTP observability server listen address")
 	applyServeFlagOverrides(cmd, cfg)
 	if cfg.API.Listen != "127.0.0.1:9090" {
 		t.Fatalf("listen was overridden without explicit flag: %s", cfg.API.Listen)
+	}
+	if cfg.Observability.Listen != "127.0.0.1:9053" {
+		t.Fatalf("observability listen was overridden without explicit flag: %s", cfg.Observability.Listen)
 	}
 
 	if err := cmd.Flags().Set("listen", "127.0.0.1:7070"); err != nil {
 		t.Fatalf("set listen flag: %v", err)
 	}
+	if err := cmd.Flags().Set("observability-listen", "127.0.0.1:7053"); err != nil {
+		t.Fatalf("set observability listen flag: %v", err)
+	}
 	applyServeFlagOverrides(cmd, cfg)
 	if cfg.API.Listen != "127.0.0.1:7070" {
 		t.Fatalf("listen was not overridden after explicit flag: %s", cfg.API.Listen)
+	}
+	if cfg.Observability.Listen != "127.0.0.1:7053" {
+		t.Fatalf("observability listen was not overridden after explicit flag: %s", cfg.Observability.Listen)
 	}
 }

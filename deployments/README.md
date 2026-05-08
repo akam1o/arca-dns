@@ -16,6 +16,7 @@ See the full deployment guide:
 ## Important Notes
 
 - The controller serves HTTP by default. Terminate TLS at an ingress, load balancer, or reverse proxy.
+- The controller management API listens on 8080 by default; unauthenticated health/readiness/status/metrics endpoints listen separately on 9053.
 - Controller and agent container images are based on distroless `nonroot`; mounted data directories must be writable by UID/GID `65532`.
 - The agent controls host NSD/Unbound/BIRD and is typically deployed on edge nodes or VMs rather than as a generic Kubernetes workload.
 - MySQL and PostgreSQL backends require schema creation before controller startup. SQLite creates its schema automatically.

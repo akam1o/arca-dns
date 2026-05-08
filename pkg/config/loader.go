@@ -145,6 +145,13 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	if cfg.API.Listen == "" {
 		return fmt.Errorf("invalid api.listen: empty")
 	}
+	if strings.TrimSpace(cfg.Observability.Listen) == "" {
+		return fmt.Errorf("invalid observability.listen: empty")
+	}
+	cfg.Observability.Listen = strings.TrimSpace(cfg.Observability.Listen)
+	if listenEndpointsOverlap(cfg.API.Listen, cfg.Observability.Listen) {
+		return fmt.Errorf("invalid observability.listen: must not overlap api.listen")
+	}
 
 	trustedProxies, err := normalizeTrustedProxies(cfg.API.TrustedProxies)
 	if err != nil {
@@ -274,6 +281,25 @@ func normalizeTrustedProxies(trustedProxies []string) ([]string, error) {
 		normalized[i] = value
 	}
 	return normalized, nil
+}
+
+func listenEndpointsOverlap(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	aHost, aPort, aErr := net.SplitHostPort(a)
+	bHost, bPort, bErr := net.SplitHostPort(b)
+	if aErr != nil || bErr != nil {
+		return a == b
+	}
+	if aPort != bPort {
+		return false
+	}
+	return isWildcardListenHost(aHost) || isWildcardListenHost(bHost) || strings.EqualFold(aHost, bHost)
+}
+
+func isWildcardListenHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	return host == "" || host == "0.0.0.0" || host == "::"
 }
 
 func validateControllerAuthConfig(auth AuthConfig) error {

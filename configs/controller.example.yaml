@@ -22,6 +22,11 @@ api:
     requests_per_second: 100
     burst: 200
 
+observability:
+  # Unauthenticated health/readiness/status/metrics endpoints are served here,
+  # separate from the management API listener.
+  listen: "0.0.0.0:9053"
+
 backend:
   type: "sqlite" # sqlite|postgres|mysql|git|etcd
   sqlite:

@@ -146,6 +146,10 @@ api:
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
 
+observability:
+  # 認証なしの /health, /ready, /status, /metrics endpoint です。
+  listen: "0.0.0.0:9053"
+
 backend:
   type: "sqlite"  # 選択肢: sqlite, postgres, mysql, git, etcd
 

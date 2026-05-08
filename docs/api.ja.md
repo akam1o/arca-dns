@@ -7,7 +7,7 @@ Controller API の source of truth は `api/openapi.yaml`（OpenAPI 3.0）です
 ## Base URL
 
 - API base: `http://<controller-host>:8080/api/v1`
-- Health/metrics base（`/api/v1/*` でも alias あり）: `http://<controller-host>:8080`
+- Observability base（`/api/v1/*` でも alias あり）: `http://<controller-host>:9053`
 
 ## 認証
 
@@ -17,7 +17,7 @@ controller 設定で API 認証を有効にしている場合、*保護された
 X-API-Key: <api-key>
 ```
 
-ヘルスエンドポイント（`/health`, `/ready`, `/status`, `/metrics`）は認証不要です。
+Observability endpoint（`/health`, `/ready`, `/status`, `/metrics`）は認証不要で、分離された observability listener から提供されます。
 
 ## データモデル（Zone）
 

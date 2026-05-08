@@ -13,6 +13,7 @@ info:
     - Zone versioning with ETag support for optimistic concurrency control
     - Pluggable storage backends (SQLite, PostgreSQL, MySQL, Git, etcd)
     - Artifact distribution for agents with integrity verification
+    - Health/status/metrics endpoints are served on the separate observability listener (default port 9053)
   version: 1.0.0
   contact:
     name: arca-dns

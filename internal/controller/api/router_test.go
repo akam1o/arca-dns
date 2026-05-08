@@ -84,7 +84,7 @@ func TestSetupRouter_ProtectedRoutesStillLimitBodySize(t *testing.T) {
 	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 }
 
-func TestSetupRouter_HealthRoutesBypassAuth(t *testing.T) {
+func TestSetupRouter_ObservabilityRoutesAreNotOnAPIRouter(t *testing.T) {
 	logger := zap.NewNop()
 	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
 	apiCfg := config.DefaultControllerConfig().API
@@ -98,7 +98,26 @@ func TestSetupRouter_HealthRoutesBypassAuth(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestSetupObservabilityRouter_RoutesBypassAuth(t *testing.T) {
+	logger := zap.NewNop()
+	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = true
+	apiCfg.Auth.APIKeys = nil
+	apiCfg.RateLimit.Enabled = false
+
+	router := SetupObservabilityRouter(handler, &apiCfg, logger)
+
+	for _, path := range []string{"/health", "/api/v1/health"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+	}
 }
 
 func TestWriteRPSFromReadRPS_MinimumOne(t *testing.T) {

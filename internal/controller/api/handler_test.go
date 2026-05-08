@@ -183,7 +183,7 @@ func TestReadyRedactsBackendErrors(t *testing.T) {
 	apiCfg.Auth.Enabled = true
 	apiCfg.Auth.APIKeys = nil
 	apiCfg.RateLimit.Enabled = false
-	router := SetupRouter(handler, &apiCfg, logger)
+	router := SetupObservabilityRouter(handler, &apiCfg, logger)
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	w := httptest.NewRecorder()

@@ -13,13 +13,13 @@ This guide covers common operational tasks for maintaining arca-dns in productio
 **Controller**:
 ```bash
 # Liveness check
-curl http://controller:8080/health
+curl http://controller:9053/health
 
 # Readiness check (includes backend connectivity)
-curl http://controller:8080/ready
+curl http://controller:9053/ready
 
 # Full status with metrics
-curl http://controller:8080/status
+curl http://controller:9053/status
 ```
 
 **Agent**:
@@ -40,7 +40,7 @@ network filtering, a tunnel, or another authenticated control plane.
 
 ### Prometheus Metrics
 
-**Controller metrics** (`http://controller:8080/metrics`):
+**Controller metrics** (`http://controller:9053/metrics`):
 - `api_requests_total`: API request count by method, path, status
 - `api_request_duration_seconds`: API latency histogram
 - `zones_total`: Current number of zones
@@ -364,7 +364,7 @@ systemctl status arca-dns-controller
 journalctl -u arca-dns-controller -n 100
 
 # Check port binding
-netstat -tlnp | grep 8080
+netstat -tlnp | grep -E '8080|9053'
 
 # Test backend connectivity
 # SQLite:
@@ -400,7 +400,7 @@ journalctl -u arca-dns-controller | grep "dnssec_error"
 **Issue**: Zone sync failing
 ```bash
 # Check controller connectivity
-curl -I https://controller:8080/health
+curl -I http://controller:9053/health
 
 # Check API key
 curl -H "X-API-Key: your-key" https://controller:8080/api/v1/zones

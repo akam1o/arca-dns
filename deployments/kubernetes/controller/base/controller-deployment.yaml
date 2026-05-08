@@ -21,6 +21,8 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+            - containerPort: 9053
+              name: observability
           env:
             - name: ARCA_DNS_API_AUTH_API_KEYS_ADMIN
               valueFrom:

@@ -80,6 +80,7 @@ func TestDefaultControllerConfig_Defaults(t *testing.T) {
 	cfg := DefaultControllerConfig()
 
 	assert.Equal(t, "0.0.0.0:8080", cfg.API.Listen)
+	assert.Equal(t, "0.0.0.0:9053", cfg.Observability.Listen)
 	assert.Empty(t, cfg.API.ArtifactSignatureKey)
 	assert.True(t, cfg.API.Auth.Enabled)
 	assert.Equal(t, "sqlite", cfg.Backend.Type)
@@ -108,6 +109,8 @@ api:
     enabled: true
     api_keys:
       admin: "` + validTestAPIKeyHash + `"
+observability:
+  listen: "127.0.0.1:9053"
 backend:
   type: "mysql"
 dnssec:
@@ -127,6 +130,7 @@ logging:
 	require.NoError(t, err)
 
 	assert.Equal(t, "127.0.0.1:9090", cfg.API.Listen)
+	assert.Equal(t, "127.0.0.1:9053", cfg.Observability.Listen)
 	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.API.ArtifactSignatureKey)
 	assert.Equal(t, "mysql", cfg.Backend.Type)
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
@@ -260,11 +264,13 @@ backend:
 func TestLoadControllerConfig_EnvOverride(t *testing.T) {
 	// Set environment variables
 	os.Setenv("ARCA_DNS_API_LISTEN", "0.0.0.0:7070")
+	os.Setenv("ARCA_DNS_OBSERVABILITY_LISTEN", "0.0.0.0:7053")
 	os.Setenv("ARCA_DNS_API_AUTH_ENABLED", "false")
 	os.Setenv("ARCA_DNS_BACKEND_TYPE", "git")
 	os.Setenv("ARCA_DNS_LOGGING_LEVEL", "warn")
 	defer func() {
 		os.Unsetenv("ARCA_DNS_API_LISTEN")
+		os.Unsetenv("ARCA_DNS_OBSERVABILITY_LISTEN")
 		os.Unsetenv("ARCA_DNS_API_AUTH_ENABLED")
 		os.Unsetenv("ARCA_DNS_BACKEND_TYPE")
 		os.Unsetenv("ARCA_DNS_LOGGING_LEVEL")
@@ -294,6 +300,7 @@ logging:
 
 	// Environment variables should override YAML
 	assert.Equal(t, "0.0.0.0:7070", cfg.API.Listen)
+	assert.Equal(t, "0.0.0.0:7053", cfg.Observability.Listen)
 	assert.False(t, cfg.API.Auth.Enabled)
 	assert.Equal(t, "git", cfg.Backend.Type)
 	assert.Equal(t, "warn", cfg.Logging.Level)
@@ -302,6 +309,7 @@ logging:
 func TestLoadControllerConfig_NestedEnvOverrides(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", validTestAPIKeyHash)
 	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
+	t.Setenv("ARCA_DNS_OBSERVABILITY_LISTEN", "127.0.0.1:9053")
 	t.Setenv("ARCA_DNS_API_RATE_LIMIT_REQUESTS_PER_SECOND", "42")
 	t.Setenv("ARCA_DNS_API_RATE_LIMIT_BURST", "84")
 	t.Setenv("ARCA_DNS_BACKEND_TYPE", "postgres")
@@ -317,6 +325,7 @@ func TestLoadControllerConfig_NestedEnvOverrides(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 42, cfg.API.RateLimit.RequestsPerSecond)
+	assert.Equal(t, "127.0.0.1:9053", cfg.Observability.Listen)
 	assert.Equal(t, validEnvArtifactSignatureKey, cfg.API.ArtifactSignatureKey)
 	assert.Equal(t, 84, cfg.API.RateLimit.Burst)
 	assert.Equal(t, "postgres", cfg.Backend.Type)
@@ -510,6 +519,24 @@ func TestValidateControllerConfig_EmptyAPIListen(t *testing.T) {
 	cfg.API.Listen = ""
 	err := ValidateControllerConfig(cfg)
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "api.listen")
+}
+
+func TestValidateControllerConfig_EmptyObservabilityListen(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.Observability.Listen = "  "
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "observability.listen")
+}
+
+func TestValidateControllerConfig_ObservabilityListenMustNotOverlapAPIListen(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.API.Listen = "0.0.0.0:8080"
+	cfg.Observability.Listen = "127.0.0.1:8080"
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "observability.listen")
 	assert.Contains(t, err.Error(), "api.listen")
 }
 

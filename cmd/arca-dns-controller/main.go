@@ -29,8 +29,9 @@ var (
 )
 
 var (
-	listenAddr string
-	configFile string
+	listenAddr              string
+	observabilityListenAddr string
+	configFile              string
 )
 
 func main() {
@@ -49,7 +50,8 @@ performs DNSSEC signing, and distributes zone artifacts to agents.`,
 		Run:   runServe,
 	}
 
-	serveCmd.Flags().StringVar(&listenAddr, "listen", ":8080", "HTTP server listen address")
+	serveCmd.Flags().StringVar(&listenAddr, "listen", ":8080", "HTTP API server listen address")
+	serveCmd.Flags().StringVar(&observabilityListenAddr, "observability-listen", ":9053", "HTTP observability server listen address")
 	serveCmd.Flags().StringVar(&configFile, "config", "", "Path to configuration file")
 
 	rootCmd.AddCommand(serveCmd)
@@ -88,7 +90,8 @@ func runServe(cmd *cobra.Command, args []string) {
 	logger.Info("arca-dns-controller starting",
 		zap.String("version", version),
 		zap.String("commit", commit),
-		zap.String("listen", cfg.API.Listen))
+		zap.String("listen", cfg.API.Listen),
+		zap.String("observability_listen", cfg.Observability.Listen))
 
 	// Initialize backend from configuration
 	store, err := newStoreFromConfig(cfg)
@@ -196,23 +199,37 @@ func runServe(cmd *cobra.Command, args []string) {
 	}, logger)
 	handler.SetArtifactSignatureKey(cfg.API.ArtifactSignatureKey)
 
-	// Setup router
-	router := api.SetupRouter(handler, &cfg.API, logger)
+	// Setup routers
+	apiRouter := api.SetupRouter(handler, &cfg.API, logger)
+	observabilityRouter := api.SetupObservabilityRouter(handler, &cfg.API, logger)
 
-	// Create HTTP server
-	srv := &http.Server{
+	// Create HTTP servers
+	apiSrv := &http.Server{
 		Addr:         cfg.API.Listen,
-		Handler:      router,
+		Handler:      apiRouter,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	observabilitySrv := &http.Server{
+		Addr:         cfg.Observability.Listen,
+		Handler:      observabilityRouter,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start server in goroutine
+	// Start servers in goroutines
 	go func() {
-		logger.Info("HTTP server listening", zap.String("addr", cfg.API.Listen))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Failed to start server", zap.Error(err))
+		logger.Info("HTTP API server listening", zap.String("addr", cfg.API.Listen))
+		if err := apiSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal("Failed to start API server", zap.Error(err))
+		}
+	}()
+	go func() {
+		logger.Info("HTTP observability server listening", zap.String("addr", cfg.Observability.Listen))
+		if err := observabilitySrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal("Failed to start observability server", zap.Error(err))
 		}
 	}()
 
@@ -221,15 +238,18 @@ func runServe(cmd *cobra.Command, args []string) {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	logger.Info("Shutting down server...")
+	logger.Info("Shutting down servers...")
 
 	// Graceful shutdown with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
 	// First, stop accepting new requests
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("Server forced to shutdown", zap.Error(err))
+	if err := apiSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("API server forced to shutdown", zap.Error(err))
+	}
+	if err := observabilitySrv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("Observability server forced to shutdown", zap.Error(err))
 	}
 
 	// Cancel context to stop scheduler
@@ -254,12 +274,15 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Error("Failed to close backend", zap.Error(err))
 	}
 
-	logger.Info("Server stopped")
+	logger.Info("Servers stopped")
 }
 
 func applyServeFlagOverrides(cmd *cobra.Command, cfg *config.ControllerConfig) {
 	if cmd.Flags().Changed("listen") {
 		cfg.API.Listen = listenAddr
+	}
+	if cmd.Flags().Changed("observability-listen") {
+		cfg.Observability.Listen = observabilityListenAddr
 	}
 }
 

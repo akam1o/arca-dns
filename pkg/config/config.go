@@ -16,6 +16,9 @@ type ControllerConfig struct {
 	// API configuration
 	API APIConfig `mapstructure:"api"`
 
+	// Observability configuration
+	Observability ObservabilityConfig `mapstructure:"observability"`
+
 	// Backend configuration
 	Backend BackendConfig `mapstructure:"backend"`
 
@@ -90,6 +93,12 @@ type APIConfig struct {
 
 	// Rate limiting
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
+}
+
+// ObservabilityConfig configures the controller's unauthenticated operational endpoints.
+type ObservabilityConfig struct {
+	// Listen address for health, readiness, status, and Prometheus metrics.
+	Listen string `mapstructure:"listen"`
 }
 
 // TLSConfig configures TLS for agent -> controller communication (typically terminated by a reverse proxy).
@@ -635,6 +644,9 @@ func DefaultControllerConfig() *ControllerConfig {
 				RequestsPerSecond: 100,
 				Burst:             200,
 			},
+		},
+		Observability: ObservabilityConfig{
+			Listen: "0.0.0.0:9053",
 		},
 		Backend: BackendConfig{
 			Type: "sqlite",
