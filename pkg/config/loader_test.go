@@ -28,7 +28,7 @@ func validControllerConfigForTest() *ControllerConfig {
 
 func validAgentConfigForTest() *AgentConfig {
 	cfg := DefaultAgentConfig()
-	cfg.Sync.ControllerPublicKey = validTestArtifactSignatureKey
+	cfg.Sync.ControllerSignatureKey = validTestArtifactSignatureKey
 	return cfg
 }
 
@@ -603,6 +603,7 @@ func TestLoadAgentConfig_Defaults(t *testing.T) {
 	assert.Empty(t, cfg.DNSTap.SocketGroup)
 	assert.True(t, cfg.Sync.VerifySignatures)
 	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
+	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
 	assert.Equal(t, "info", cfg.Logging.Level)
 }
 
@@ -623,7 +624,7 @@ dnstap:
   socket_mode: "0600"
   socket_group: "nsd"
 sync:
-  controller_public_key: "` + validYAMLArtifactSignatureKey + `"
+  controller_signature_key: "` + validYAMLArtifactSignatureKey + `"
 logging:
   level: "debug"
 `
@@ -641,6 +642,7 @@ logging:
 	assert.Equal(t, "nsd", cfg.DNSTap.SocketGroup)
 	assert.True(t, cfg.Sync.VerifySignatures)
 	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
+	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
 	assert.Equal(t, "debug", cfg.Logging.Level)
 }
 
@@ -651,7 +653,7 @@ func TestLoadAgentConfig_EnvOverrideWithYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_NSD_ENABLED", "false")
 	t.Setenv("ARCA_DNS_UNBOUND_STUB_ZONE_NSD_PORT", "5533")
 	t.Setenv("ARCA_DNS_SYNC_VERIFY_CHECKSUMS", "false")
-	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", validEnvArtifactSignatureKey)
+	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 	t.Setenv("ARCA_DNS_HEALTH_QUERY_TIMEOUT", "2s")
 	t.Setenv("ARCA_DNS_METRICS_PATH", "/env-metrics")
 	t.Setenv("ARCA_DNS_DNSTAP_SOCKET_MODE", "0600")
@@ -676,7 +678,7 @@ unbound:
     nsd_port: 5353
 sync:
   verify_checksums: true
-  controller_public_key: "` + validYAMLArtifactSignatureKey + `"
+  controller_signature_key: "` + validYAMLArtifactSignatureKey + `"
 health:
   query_timeout: 5s
 metrics:
@@ -698,6 +700,7 @@ logging:
 	assert.Equal(t, 5533, cfg.Unbound.StubZoneConfig.NSDPort)
 	assert.False(t, cfg.Sync.VerifyChecksums)
 	assert.Equal(t, validEnvArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
+	assert.Equal(t, validEnvArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
 	assert.Equal(t, 2*time.Second, cfg.Health.QueryTimeout)
 	assert.Equal(t, "/env-metrics", cfg.Metrics.Path)
 	assert.Equal(t, "0600", cfg.DNSTap.SocketMode)
@@ -921,9 +924,10 @@ func TestValidateAgentConfig_VerifySignaturesRequiresKey(t *testing.T) {
 	cfg := DefaultAgentConfig()
 	cfg.Sync.VerifySignatures = true
 	cfg.Sync.ControllerPublicKey = ""
+	cfg.Sync.ControllerSignatureKey = ""
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "sync.controller_public_key")
+	assert.Contains(t, err.Error(), "sync.controller_signature_key")
 }
 
 func TestValidateAgentConfig_RejectsInvalidSignatureKey(t *testing.T) {
@@ -948,13 +952,33 @@ func TestValidateAgentConfig_RejectsInvalidSignatureKey(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := validAgentConfigForTest()
 			cfg.Sync.VerifySignatures = true
-			cfg.Sync.ControllerPublicKey = tc.key
+			cfg.Sync.ControllerSignatureKey = tc.key
+			cfg.Sync.ControllerPublicKey = ""
 			err := ValidateAgentConfig(cfg)
 			assert.Error(t, err)
-			assert.Contains(t, err.Error(), "sync.controller_public_key")
+			assert.Contains(t, err.Error(), "sync.controller_signature_key")
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
+}
+
+func TestValidateAgentConfig_AcceptsLegacyControllerPublicKeyAlias(t *testing.T) {
+	cfg := DefaultAgentConfig()
+	cfg.Sync.ControllerPublicKey = validTestArtifactSignatureKey
+	cfg.Sync.ControllerSignatureKey = ""
+
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
+	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
+}
+
+func TestValidateAgentConfig_PrefersControllerSignatureKeyAlias(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Sync.ControllerPublicKey = "different-artifact-signature-key-32"
+
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
+	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 }
 
 func TestValidateAgentConfig_InvalidDNSTapSampleRate(t *testing.T) {

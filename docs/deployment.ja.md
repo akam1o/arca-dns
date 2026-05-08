@@ -91,8 +91,8 @@ controller:
 
 sync:
   verify_signatures: true
-  # api.artifact_signature_key と同じ値にしてください。
-  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  # 共有 HMAC secret です。api.artifact_signature_key と同じ値にしてください。
+  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 
 環境変数だけで controller の API キーを渡す場合は、次の形式を使えます。suffix は小文字化され、principal 名になります。

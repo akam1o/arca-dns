@@ -350,6 +350,10 @@ func isPlaceholderSecret(value string) bool {
 
 // ValidateAgentConfig validates the agent configuration.
 func ValidateAgentConfig(cfg *AgentConfig) error {
+	if err := applyAgentSignatureKeyAliases(cfg); err != nil {
+		return err
+	}
+
 	if cfg.Controller.URL == "" {
 		return fmt.Errorf("invalid controller.url: empty")
 	}
@@ -471,7 +475,7 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	if cfg.Sync.VerifySignatures {
-		if err := validateArtifactSignatureKey("sync.controller_public_key", cfg.Sync.ControllerPublicKey, true); err != nil {
+		if err := validateArtifactSignatureKey("sync.controller_signature_key", cfg.Sync.ControllerPublicKey, true); err != nil {
 			return err
 		}
 	}
@@ -532,6 +536,20 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
 	}
 
+	return nil
+}
+
+func applyAgentSignatureKeyAliases(cfg *AgentConfig) error {
+	signatureKey := strings.TrimSpace(cfg.Sync.ControllerSignatureKey)
+	legacyPublicKey := strings.TrimSpace(cfg.Sync.ControllerPublicKey)
+
+	if signatureKey != "" {
+		cfg.Sync.ControllerPublicKey = signatureKey
+		return nil
+	}
+	if legacyPublicKey != "" {
+		cfg.Sync.ControllerSignatureKey = legacyPublicKey
+	}
 	return nil
 }
 

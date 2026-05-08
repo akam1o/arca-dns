@@ -45,8 +45,12 @@ type Syncer struct {
 // NewSyncer creates a new zone syncer.
 func NewSyncer(client *Client, fileMgr *FileManager, cfg config.SyncConfig, logger *zap.Logger) *Syncer {
 	if client != nil {
+		signatureKey := cfg.ControllerSignatureKey
+		if signatureKey == "" {
+			signatureKey = cfg.ControllerPublicKey
+		}
 		client.SetVerifyChecksums(cfg.VerifyChecksums)
-		client.SetSignatureVerification(cfg.VerifySignatures, cfg.ControllerPublicKey)
+		client.SetSignatureVerification(cfg.VerifySignatures, signatureKey)
 	}
 
 	return &Syncer{

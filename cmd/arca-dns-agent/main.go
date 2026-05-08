@@ -56,7 +56,7 @@ manages NSD/Unbound, controls BGP routes via BIRD, and provides observability.`,
 
 Provide a configuration file, or provide all required settings via environment
 variables. For example, signature verification requires
-sync.controller_public_key or ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY.`,
+sync.controller_signature_key or ARCA_DNS_SYNC_CONTROLLER_SIGNATURE_KEY.`,
 		RunE: runDaemon,
 	}
 

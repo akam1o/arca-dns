@@ -91,8 +91,8 @@ controller:
 
 sync:
   verify_signatures: true
-  # Must match api.artifact_signature_key.
-  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  # Shared HMAC secret; must match api.artifact_signature_key.
+  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 
 For env-only controller deployments, API keys can be supplied as:
