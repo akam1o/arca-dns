@@ -11,12 +11,13 @@ import (
 	"github.com/akam1o/arca-dns/pkg/model"
 )
 
-// ComputeZoneVersion generates a content-derived version identifier for a zone.
-// Format: v{serial}-{hash8} where hash8 is first 8 chars of SHA256(normalized zone).
-// Example: v2024122801-a3f5c2e9
+// ComputeZoneVersion generates a legacy content-derived revision label for a zone.
+// Format: v{serial}-{hash8}, where hash8 is the first 8 chars of
+// SHA256(normalized zone). Example: v2024122801-a3f5c2e9.
 //
-// The version is deterministic: same zone content → same version.
-// It excludes Zone.Version, CreatedAt, UpdatedAt, and SignatureExpiration from the hash computation.
+// Deprecated: controller zone versions are issued by model.NewZoneVersion in
+// v{ULID} format. Use ComputeZoneHash or ComputeZoneHash8 for deterministic
+// content metadata.
 //
 // Returns an error if zone normalization fails.
 func ComputeZoneVersion(zone *model.Zone) (string, error) {

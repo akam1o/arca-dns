@@ -7,8 +7,8 @@ import (
 	"github.com/akam1o/arca-dns/pkg/model"
 )
 
-// TestComputeZoneVersion_RelativeVsFQDN tests that relative and FQDN owner names produce the same version
-func TestComputeZoneVersion_RelativeVsFQDN(t *testing.T) {
+// TestComputeZoneHash8_RelativeVsFQDN tests that relative and FQDN owner names produce the same hash
+func TestComputeZoneHash8_RelativeVsFQDN(t *testing.T) {
 	// Zone with relative owner name
 	zone1 := &model.Zone{
 		Name: "example.com.",
@@ -29,23 +29,23 @@ func TestComputeZoneVersion_RelativeVsFQDN(t *testing.T) {
 	}
 	zone2.SOA.Serial = 2024122801
 
-	v1, err := ComputeZoneVersion(zone1)
+	v1, err := ComputeZoneHash8(zone1)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion(zone1) failed: %v", err)
+		t.Fatalf("ComputeZoneHash8(zone1) failed: %v", err)
 	}
 
-	v2, err := ComputeZoneVersion(zone2)
+	v2, err := ComputeZoneHash8(zone2)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion(zone2) failed: %v", err)
+		t.Fatalf("ComputeZoneHash8(zone2) failed: %v", err)
 	}
 
 	if v1 != v2 {
-		t.Errorf("Versions differ for relative vs FQDN: %q vs %q", v1, v2)
+		t.Errorf("Hashes differ for relative vs FQDN: %q vs %q", v1, v2)
 	}
 }
 
-// TestComputeZoneVersion_WhitespaceNormalization tests MX/SRV whitespace normalization
-func TestComputeZoneVersion_WhitespaceNormalization(t *testing.T) {
+// TestComputeZoneHash8_WhitespaceNormalization tests MX/SRV whitespace normalization
+func TestComputeZoneHash8_WhitespaceNormalization(t *testing.T) {
 	tests := []struct {
 		name     string
 		records1 []model.Record
@@ -87,25 +87,25 @@ func TestComputeZoneVersion_WhitespaceNormalization(t *testing.T) {
 			}
 			zone2.SOA.Serial = 2024122801
 
-			v1, err := ComputeZoneVersion(zone1)
+			v1, err := ComputeZoneHash8(zone1)
 			if err != nil {
-				t.Fatalf("ComputeZoneVersion(zone1) failed: %v", err)
+				t.Fatalf("ComputeZoneHash8(zone1) failed: %v", err)
 			}
 
-			v2, err := ComputeZoneVersion(zone2)
+			v2, err := ComputeZoneHash8(zone2)
 			if err != nil {
-				t.Fatalf("ComputeZoneVersion(zone2) failed: %v", err)
+				t.Fatalf("ComputeZoneHash8(zone2) failed: %v", err)
 			}
 
 			if v1 != v2 {
-				t.Errorf("Versions differ despite only whitespace differences: %q vs %q", v1, v2)
+				t.Errorf("Hashes differ despite only whitespace differences: %q vs %q", v1, v2)
 			}
 		})
 	}
 }
 
-// TestComputeZoneVersion_PriorityExcluded tests that Priority field is excluded from hash
-func TestComputeZoneVersion_PriorityExcluded(t *testing.T) {
+// TestComputeZoneHash8_PriorityExcluded tests that Priority field is excluded from hash
+func TestComputeZoneHash8_PriorityExcluded(t *testing.T) {
 	zone1 := &model.Zone{
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
@@ -125,23 +125,23 @@ func TestComputeZoneVersion_PriorityExcluded(t *testing.T) {
 	}
 	zone2.SOA.Serial = 2024122801
 
-	v1, err := ComputeZoneVersion(zone1)
+	v1, err := ComputeZoneHash8(zone1)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion(zone1) failed: %v", err)
+		t.Fatalf("ComputeZoneHash8(zone1) failed: %v", err)
 	}
 
-	v2, err := ComputeZoneVersion(zone2)
+	v2, err := ComputeZoneHash8(zone2)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion(zone2) failed: %v", err)
+		t.Fatalf("ComputeZoneHash8(zone2) failed: %v", err)
 	}
 
 	if v1 != v2 {
-		t.Errorf("Versions differ despite only Priority field being different: %q vs %q", v1, v2)
+		t.Errorf("Hashes differ despite only Priority field being different: %q vs %q", v1, v2)
 	}
 }
 
-// TestComputeZoneVersion_SignatureExpirationExcluded tests that SignatureExpiration is excluded
-func TestComputeZoneVersion_SignatureExpirationExcluded(t *testing.T) {
+// TestComputeZoneHash8_SignatureExpirationExcluded tests that SignatureExpiration is excluded
+func TestComputeZoneHash8_SignatureExpirationExcluded(t *testing.T) {
 	now := time.Now()
 	expiration1 := now.Add(7 * 24 * time.Hour)  // 7 days from now
 	expiration2 := now.Add(30 * 24 * time.Hour) // 30 days from now
@@ -174,23 +174,23 @@ func TestComputeZoneVersion_SignatureExpirationExcluded(t *testing.T) {
 	}
 	zone2.SOA.Serial = 2024122801
 
-	v1, err := ComputeZoneVersion(zone1)
+	v1, err := ComputeZoneHash8(zone1)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion(zone1) failed: %v", err)
+		t.Fatalf("ComputeZoneHash8(zone1) failed: %v", err)
 	}
 
-	v2, err := ComputeZoneVersion(zone2)
+	v2, err := ComputeZoneHash8(zone2)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion(zone2) failed: %v", err)
+		t.Fatalf("ComputeZoneHash8(zone2) failed: %v", err)
 	}
 
 	if v1 != v2 {
-		t.Errorf("Versions differ despite only SignatureExpiration being different: %q vs %q", v1, v2)
+		t.Errorf("Hashes differ despite only SignatureExpiration being different: %q vs %q", v1, v2)
 	}
 }
 
-// TestComputeZoneVersion_SortingWithTTL tests that records are sorted by TTL as well
-func TestComputeZoneVersion_SortingWithTTL(t *testing.T) {
+// TestComputeZoneHash8_SortingWithTTL tests that records are sorted by TTL as well
+func TestComputeZoneHash8_SortingWithTTL(t *testing.T) {
 	// Same records with different TTL values in different orders
 	zone1 := &model.Zone{
 		Name: "example.com.",
@@ -212,17 +212,17 @@ func TestComputeZoneVersion_SortingWithTTL(t *testing.T) {
 	}
 	zone2.SOA.Serial = 2024122801
 
-	v1, err := ComputeZoneVersion(zone1)
+	v1, err := ComputeZoneHash8(zone1)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion(zone1) failed: %v", err)
+		t.Fatalf("ComputeZoneHash8(zone1) failed: %v", err)
 	}
 
-	v2, err := ComputeZoneVersion(zone2)
+	v2, err := ComputeZoneHash8(zone2)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion(zone2) failed: %v", err)
+		t.Fatalf("ComputeZoneHash8(zone2) failed: %v", err)
 	}
 
 	if v1 != v2 {
-		t.Errorf("Versions differ despite same records in different order: %q vs %q", v1, v2)
+		t.Errorf("Hashes differ despite same records in different order: %q vs %q", v1, v2)
 	}
 }
