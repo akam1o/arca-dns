@@ -71,11 +71,12 @@ func (cl *ControlLoop) processSignal(ctx context.Context, signal HealthSignal) {
 
 	// Execute route action if needed
 	if shouldAnnounce {
-		if err := cl.routeManager.AnnounceRoutes(ctx); err != nil {
+		changed, err := cl.routeManager.AnnounceRoutesChanged(ctx)
+		if err != nil {
 			cl.logger.Error("Failed to announce routes",
 				zap.Error(err),
 				zap.String("state", string(cl.stateMachine.GetState())))
-		} else {
+		} else if changed {
 			cl.logger.Info("Routes announced",
 				zap.String("state", string(cl.stateMachine.GetState())),
 				zap.String("reason", signal.Reason))
@@ -84,11 +85,12 @@ func (cl *ControlLoop) processSignal(ctx context.Context, signal HealthSignal) {
 	}
 
 	if shouldWithdraw {
-		if err := cl.routeManager.WithdrawRoutes(ctx); err != nil {
+		changed, err := cl.routeManager.WithdrawRoutesChanged(ctx)
+		if err != nil {
 			cl.logger.Error("Failed to withdraw routes",
 				zap.Error(err),
 				zap.String("state", string(cl.stateMachine.GetState())))
-		} else {
+		} else if changed {
 			cl.logger.Info("Routes withdrawn",
 				zap.String("state", string(cl.stateMachine.GetState())),
 				zap.String("reason", signal.Reason))

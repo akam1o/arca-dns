@@ -1,7 +1,10 @@
 package bird
 
 import (
+	"context"
+	"reflect"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -75,5 +78,35 @@ func TestStateMachine_ProcessSignal_SuccessStillAnnouncesFromHealthy(t *testing.
 	}
 	if shouldWithdraw {
 		t.Fatal("expected healthy signal not to withdraw routes")
+	}
+}
+
+func TestControlLoop_DoesNotDebounceWithdrawAfterNoopAnnounce(t *testing.T) {
+	client := &recordingClient{
+		responses: map[string]*Response{
+			"show protocols anycast_1": {Code: 0, RawText: "anycast_1 BGP master up"},
+		},
+	}
+	manager := mustNewRouteManager(t, client, []string{"anycast_1"})
+	if err := manager.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	stateMachine := NewStateMachine(StateMachineConfig{
+		FailureThreshold:  1,
+		RecoveryThreshold: 1,
+		MinStateDuration:  time.Hour,
+	}, zap.NewNop())
+	controlLoop := NewControlLoop(stateMachine, manager, zap.NewNop())
+
+	controlLoop.processSignal(context.Background(), HealthSignal{Reason: "healthy"})
+	controlLoop.processSignal(context.Background(), HealthSignal{HardFail: true, Reason: "sync unhealthy"})
+
+	want := []string{
+		"show protocols anycast_1",
+		"disable anycast_1",
+	}
+	if !reflect.DeepEqual(client.commands, want) {
+		t.Fatalf("commands mismatch\nwant: %v\n got: %v", want, client.commands)
 	}
 }

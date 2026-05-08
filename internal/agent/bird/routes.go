@@ -14,6 +14,7 @@ type RouteManager struct {
 	protocolNames []string
 	mu            sync.Mutex
 	announced     bool
+	needsWithdraw bool
 	lastChange    time.Time
 }
 
@@ -29,6 +30,7 @@ func NewRouteManager(client Client, protocolNames []string) (*RouteManager, erro
 		client:        client,
 		protocolNames: names,
 		announced:     false,
+		needsWithdraw: true,
 	}, nil
 }
 
@@ -80,6 +82,7 @@ func (rm *RouteManager) Reconcile(ctx context.Context) error {
 	}
 
 	allEnabled := true
+	anyEnabled := false
 	for _, name := range rm.protocolNames {
 		cmd := fmt.Sprintf("show protocols %s", name)
 		resp, err := rm.client.Exec(ctx, cmd)
@@ -89,62 +92,96 @@ func (rm *RouteManager) Reconcile(ctx context.Context) error {
 		if resp.IsError() {
 			return fmt.Errorf("reconcile: BIRD error %d: %s", resp.Code, resp.RawText)
 		}
-		if !protocolEnabledFromShowProtocols(resp.RawText) {
+		if protocolEnabledFromShowProtocols(resp.RawText) {
+			anyEnabled = true
+		} else {
 			allEnabled = false
 		}
 	}
 
 	rm.announced = allEnabled
+	rm.needsWithdraw = anyEnabled && !allEnabled
 	return nil
 }
 
 // AnnounceRoutes enables the BGP protocol to announce routes.
 // This is idempotent - calling multiple times has no additional effect.
 func (rm *RouteManager) AnnounceRoutes(ctx context.Context) error {
+	_, err := rm.AnnounceRoutesChanged(ctx)
+	return err
+}
+
+// AnnounceRoutesChanged enables the BGP protocol and reports whether a route
+// state change was applied.
+func (rm *RouteManager) AnnounceRoutesChanged(ctx context.Context) (bool, error) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
 	if rm.announced {
 		// Already announced, no-op
-		return nil
+		return false, nil
 	}
 
+	changed := false
 	for _, name := range rm.protocolNames {
 		cmd := fmt.Sprintf("enable %s", name)
 		resp, err := rm.client.Exec(ctx, cmd)
 		if err != nil {
-			return fmt.Errorf("enable protocol %s: %w", name, err)
+			if changed {
+				rm.needsWithdraw = true
+			}
+			return false, fmt.Errorf("enable protocol %s: %w", name, err)
 		}
 		if resp.IsError() {
-			return fmt.Errorf("BIRD error enabling %s (%d): %s", name, resp.Code, resp.RawText)
+			if changed {
+				rm.needsWithdraw = true
+			}
+			return false, fmt.Errorf("BIRD error enabling %s (%d): %s", name, resp.Code, resp.RawText)
 		}
+		changed = true
 	}
 
 	rm.announced = true
+	rm.needsWithdraw = false
 	rm.lastChange = time.Now()
-	return nil
+	return true, nil
 }
 
 // WithdrawRoutes disables the BGP protocol to withdraw routes.
 // This is idempotent - calling multiple times has no additional effect.
 func (rm *RouteManager) WithdrawRoutes(ctx context.Context) error {
+	_, err := rm.WithdrawRoutesChanged(ctx)
+	return err
+}
+
+// WithdrawRoutesChanged disables the BGP protocol and reports whether a route
+// state change was applied.
+func (rm *RouteManager) WithdrawRoutesChanged(ctx context.Context) (bool, error) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
+
+	if !rm.announced && !rm.needsWithdraw {
+		// Already withdrawn, no-op
+		return false, nil
+	}
 
 	for _, name := range rm.protocolNames {
 		cmd := fmt.Sprintf("disable %s", name)
 		resp, err := rm.client.Exec(ctx, cmd)
 		if err != nil {
-			return fmt.Errorf("disable protocol %s: %w", name, err)
+			rm.needsWithdraw = true
+			return false, fmt.Errorf("disable protocol %s: %w", name, err)
 		}
 		if resp.IsError() {
-			return fmt.Errorf("BIRD error disabling %s (%d): %s", name, resp.Code, resp.RawText)
+			rm.needsWithdraw = true
+			return false, fmt.Errorf("BIRD error disabling %s (%d): %s", name, resp.Code, resp.RawText)
 		}
 	}
 
 	rm.announced = false
+	rm.needsWithdraw = false
 	rm.lastChange = time.Now()
-	return nil
+	return true, nil
 }
 
 // IsAnnounced returns whether routes are currently announced.
