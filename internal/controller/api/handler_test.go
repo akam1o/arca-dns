@@ -497,6 +497,43 @@ func TestUpdateZone(t *testing.T) {
 	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
 }
 
+func TestUpdateZone_NormalizesURLAndBodyNamesBeforeComparison(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	soa := retrieved.SOA
+	soa.Refresh = 7200
+
+	body, err := json.Marshal(map[string]interface{}{
+		"name": "example.com.",
+		"soa":  soa,
+	})
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/EXAMPLE.COM", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", retrieved.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	assert.Equal(t, "example.com.", updated.Name)
+	assert.Equal(t, uint32(7200), updated.SOA.Refresh)
+}
+
 func TestUpdateZone_OmittedRecordsPreservesExistingRecords(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()

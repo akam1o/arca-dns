@@ -530,7 +530,7 @@ func (h *Handler) GetZoneRevision(c *gin.Context) {
 
 // UpdateZone handles PUT /api/v1/zones/:name
 func (h *Handler) UpdateZone(c *gin.Context) {
-	name := c.Param("name")
+	name := model.NormalizeZoneName(c.Param("name"))
 
 	var req updateZoneRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -544,7 +544,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	}
 
 	zone := model.Zone{
-		Name: req.Name,
+		Name: model.NormalizeZoneName(req.Name),
 		SOA:  req.SOA,
 	}
 
