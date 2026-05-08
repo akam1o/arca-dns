@@ -45,34 +45,64 @@ type SignedZoneArtifact struct {
 }
 
 // SignedZoneWrite is a prepared DNSSEC write with the zone signing lock held.
-// Call Complete after the backend write succeeds, or Abort on every error path.
+// Call Store before the backend write, then Complete after the backend write
+// succeeds, or Abort on every error path.
 type SignedZoneWrite struct {
 	service  *SigningService
 	artifact *SignedZoneArtifact
 	unlock   func()
 	once     sync.Once
+	stored   bool
 }
 
-// Complete stores the signed artifact cache, logs the signing result, and
-// releases the zone signing lock.
-func (w *SignedZoneWrite) Complete() {
+// Store persists the signed artifact while keeping the zone signing lock held.
+func (w *SignedZoneWrite) Store() error {
 	if w == nil {
-		return
+		return nil
 	}
+	if w.stored {
+		return nil
+	}
+	if err := w.service.storeSignedZoneArtifact(w.artifact); err != nil {
+		return err
+	}
+	w.stored = true
+	return nil
+}
+
+// Complete stores the signed artifact cache if needed, logs the signing result,
+// and releases the zone signing lock.
+func (w *SignedZoneWrite) Complete() error {
+	if w == nil {
+		return nil
+	}
+	var err error
 	w.once.Do(func() {
 		if w.unlock != nil {
 			defer w.unlock()
 		}
+		if err = w.Store(); err != nil {
+			return
+		}
 		w.service.completeSignedZoneWrite(w.artifact)
 	})
+	return err
 }
 
-// Abort releases the zone signing lock without storing the prepared artifact.
+// Abort removes any pre-stored artifact and releases the zone signing lock.
 func (w *SignedZoneWrite) Abort() {
 	if w == nil {
 		return
 	}
 	w.once.Do(func() {
+		if w.stored {
+			if err := w.service.removeSignedZoneArtifact(w.artifact); err != nil {
+				w.service.logger.Warn("Failed to remove aborted signed artifact",
+					zap.String("zone", w.artifact.ZoneName),
+					zap.String("version", w.artifact.Version),
+					zap.Error(err))
+			}
+		}
 		if w.unlock != nil {
 			w.unlock()
 		}
@@ -405,42 +435,59 @@ func (s *SigningService) signAndStoreZoneLocked(ctx context.Context, zone *model
 		return err
 	}
 
-	if err := s.persistDNSSECMetadata(ctx, zone.Name, artifact.DNSSEC); err != nil {
-		s.logger.Error("Failed to persist DNSSEC metadata",
-			zap.String("zone", zone.Name),
-			zap.Error(err))
-		return err
-	}
-	zone.DNSSEC = cloneDNSSECConfig(artifact.DNSSEC)
-
-	s.completeSignedZoneWrite(artifact)
-
-	return nil
+	return s.persistSignedZoneArtifactAndMetadata(ctx, zone, artifact)
 }
 
-// completeSignedZoneWrite stores the optional signed artifact cache and emits
+// completeSignedZoneWrite prunes the optional signed artifact cache and emits
 // the signing audit log after the backend write has succeeded.
 func (s *SigningService) completeSignedZoneWrite(artifact *SignedZoneArtifact) {
 	if artifact == nil {
 		return
 	}
+	s.pruneSignedZoneArtifacts(artifact.ZoneName)
+	s.logSignedZoneWrite(artifact)
+}
 
-	dnskeyAdded, rrsigAdded, nsec3Added, nsec3paramAdded := diffDNSSECTypes(artifact.UnsignedRRs, artifact.SignedRRs)
-
+func (s *SigningService) storeSignedZoneArtifact(artifact *SignedZoneArtifact) error {
+	if artifact == nil {
+		return nil
+	}
 	if s.artifactDir != "" {
 		if err := s.storeArtifact(artifact.ZoneName, artifact.Version, []byte(artifact.SignedZone)); err != nil {
-			s.logger.Warn("Failed to store signed artifact (continuing without cache)",
-				zap.String("zone", artifact.ZoneName),
-				zap.String("version", artifact.Version),
-				zap.Error(err))
-		} else if err := s.pruneArtifacts(artifact.ZoneName); err != nil {
-			s.logger.Warn("Failed to prune signed artifact cache",
-				zap.String("zone", artifact.ZoneName),
-				zap.Int("max_versions", s.maxArtifacts),
-				zap.Error(err))
+			return fmt.Errorf("store signed artifact for zone %s version %s: %w", artifact.ZoneName, artifact.Version, err)
 		}
 	}
+	return nil
+}
 
+func (s *SigningService) removeSignedZoneArtifact(artifact *SignedZoneArtifact) error {
+	if artifact == nil || s.artifactDir == "" {
+		return nil
+	}
+	err := os.Remove(s.artifactPath(artifact.ZoneName, artifact.Version))
+	if err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func (s *SigningService) pruneSignedZoneArtifacts(zoneName string) {
+	if s.artifactDir == "" {
+		return
+	}
+	if err := s.pruneArtifacts(zoneName); err != nil {
+		s.logger.Warn("Failed to prune signed artifact cache",
+			zap.String("zone", zoneName),
+			zap.Int("max_versions", s.maxArtifacts),
+			zap.Error(err))
+	}
+}
+
+func (s *SigningService) logSignedZoneWrite(artifact *SignedZoneArtifact) {
+	if artifact == nil {
+		return
+	}
+	dnskeyAdded, rrsigAdded, nsec3Added, nsec3paramAdded := diffDNSSECTypes(artifact.UnsignedRRs, artifact.SignedRRs)
 	s.logger.Info("Zone signed successfully",
 		zap.String("zone", artifact.ZoneName),
 		zap.String("version", artifact.Version),
@@ -450,6 +497,32 @@ func (s *SigningService) completeSignedZoneWrite(artifact *SignedZoneArtifact) {
 		zap.Int("dnssec_added_rrsig", rrsigAdded),
 		zap.Int("dnssec_added_nsec3", nsec3Added),
 		zap.Int("dnssec_added_nsec3param", nsec3paramAdded))
+}
+
+func (s *SigningService) persistSignedZoneArtifactAndMetadata(ctx context.Context, zone *model.Zone, artifact *SignedZoneArtifact) error {
+	if err := s.storeSignedZoneArtifact(artifact); err != nil {
+		s.logger.Error("Failed to store signed artifact",
+			zap.String("zone", artifact.ZoneName),
+			zap.String("version", artifact.Version),
+			zap.Error(err))
+		return err
+	}
+	if err := s.persistDNSSECMetadata(ctx, zone.Name, artifact.DNSSEC); err != nil {
+		if removeErr := s.removeSignedZoneArtifact(artifact); removeErr != nil {
+			s.logger.Warn("Failed to remove signed artifact after metadata persistence failure",
+				zap.String("zone", artifact.ZoneName),
+				zap.String("version", artifact.Version),
+				zap.Error(removeErr))
+		}
+		s.logger.Error("Failed to persist DNSSEC metadata",
+			zap.String("zone", zone.Name),
+			zap.Error(err))
+		return err
+	}
+	zone.DNSSEC = cloneDNSSECConfig(artifact.DNSSEC)
+	s.pruneSignedZoneArtifacts(artifact.ZoneName)
+	s.logSignedZoneWrite(artifact)
+	return nil
 }
 
 func (s *SigningService) persistDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
@@ -557,11 +630,9 @@ func (s *SigningService) getSignedZoneLocked(ctx context.Context, zone *model.Zo
 		if err != nil {
 			return nil, err
 		}
-		if err := s.persistDNSSECMetadata(ctx, zone.Name, artifact.DNSSEC); err != nil {
+		if err := s.persistSignedZoneArtifactAndMetadata(ctx, zone, artifact); err != nil {
 			return nil, err
 		}
-		zone.DNSSEC = cloneDNSSECConfig(artifact.DNSSEC)
-		s.completeSignedZoneWrite(artifact)
 		return artifact, nil
 	}
 
@@ -570,11 +641,9 @@ func (s *SigningService) getSignedZoneLocked(ctx context.Context, zone *model.Zo
 	if err != nil {
 		return nil, err
 	}
-	if err := s.persistDNSSECMetadata(ctx, zone.Name, artifact.DNSSEC); err != nil {
+	if err := s.persistSignedZoneArtifactAndMetadata(ctx, zone, artifact); err != nil {
 		return nil, err
 	}
-	zone.DNSSEC = cloneDNSSECConfig(artifact.DNSSEC)
-	s.completeSignedZoneWrite(artifact)
 	return artifact, nil
 }
 

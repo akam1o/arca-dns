@@ -63,6 +63,45 @@ func setupSigningFailureTest(t *testing.T) (*httptest.Server, *backend.MemoryBac
 	return server, store
 }
 
+func setupArtifactStoreFailureTest(t *testing.T) (*httptest.Server, *backend.MemoryBackend) {
+	t.Helper()
+
+	logger := zap.NewNop()
+	store := backend.NewMemoryBackend()
+	tmpDir := t.TempDir()
+
+	masterKey, err := dnssec.GenerateMasterKey()
+	require.NoError(t, err)
+
+	keyManager, err := dnssec.NewKeyManager(dnssec.KeyManagerOptions{
+		KeyDirectory: filepath.Join(tmpDir, "keys"),
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	artifactPath := filepath.Join(tmpDir, "artifacts")
+	require.NoError(t, os.WriteFile(artifactPath, []byte("not a directory"), 0600))
+
+	signingService := service.NewSigningService(store, keyManager, artifactPath, nil, logger)
+	handler := NewHandler(store, signingService, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = false
+	apiCfg.RateLimit.Enabled = false
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("tcp listen not permitted in this environment: %v", err)
+	}
+	server := httptest.NewUnstartedServer(router)
+	server.Listener = ln
+	server.Start()
+
+	return server, store
+}
+
 type mutateAfterFirstGetStore struct {
 	inner   *backend.MemoryBackend
 	target  string
@@ -213,6 +252,32 @@ func TestCreateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 	assert.Empty(t, resp.Header.Get("ETag"))
 
 	_, err = store.GetZone(context.Background(), "signing-fails.com.")
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+}
+
+func TestCreateZone_DoesNotPersistWhenSignedArtifactStoreFails(t *testing.T) {
+	server, store := setupArtifactStoreFailureTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "artifact-store-fails.com.",
+		SOA:  model.DefaultSOA("ns1.artifact-store-fails.com.", "admin.artifact-store-fails.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+
+	body, err := json.Marshal(zone)
+	require.NoError(t, err)
+
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get("ETag"))
+
+	_, err = store.GetZone(context.Background(), "artifact-store-fails.com.")
 	assert.ErrorIs(t, err, model.ErrZoneNotFound)
 }
 

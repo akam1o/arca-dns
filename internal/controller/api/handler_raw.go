@@ -167,6 +167,10 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 	}
 	defer signedWrite.Abort()
 
+	if !h.storeSignedZoneWrite(c, signedWrite, "raw zone creation") {
+		return
+	}
+
 	// Create zone in backend (same pattern as CreateZone)
 	if err := h.store.CreateZone(c.Request.Context(), modelZone); err != nil {
 		if err == model.ErrZoneAlreadyExists {
@@ -199,7 +203,9 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		return
 	}
 
-	h.completeSignedZoneWrite(signedWrite)
+	if !h.completeSignedZoneWrite(c, signedWrite, "raw zone creation") {
+		return
+	}
 
 	// Set response headers
 	c.Header("ETag", formatETag(createdZone.Version))

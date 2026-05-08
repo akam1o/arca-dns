@@ -484,6 +484,10 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 	}
 	defer signedWrite.Abort()
 
+	if !h.storeSignedZoneWrite(c, signedWrite, "record mutation") {
+		return nil, false
+	}
+
 	if err := h.store.UpdateZone(c.Request.Context(), zone, expectedVersion); err != nil {
 		if err == model.ErrZoneNotFound {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
@@ -521,7 +525,9 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 		return nil, false
 	}
 
-	h.completeSignedZoneWrite(signedWrite)
+	if !h.completeSignedZoneWrite(c, signedWrite, "record mutation") {
+		return nil, false
+	}
 
 	c.Header("ETag", formatETag(updated.Version))
 	return updated, true

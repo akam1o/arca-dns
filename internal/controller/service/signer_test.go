@@ -455,6 +455,39 @@ func TestSigningService_SignAndStoreZone(t *testing.T) {
 	}
 }
 
+func TestSigningService_SignAndStoreZoneReturnsArtifactStoreError(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	artifactPath := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.WriteFile(artifactPath, []byte("not a directory"), 0600); err != nil {
+		t.Fatalf("failed to create artifact path: %v", err)
+	}
+	service.artifactDir = artifactPath
+
+	err := service.SignAndStoreZone(ctx, zone)
+	if err == nil {
+		t.Fatal("SignAndStoreZone succeeded despite artifact store failure")
+	}
+	if !strings.Contains(err.Error(), "store signed artifact") {
+		t.Fatalf("SignAndStoreZone returned unexpected error: %v", err)
+	}
+
+	persisted, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone: %v", err)
+	}
+	if persisted.DNSSEC != nil && persisted.DNSSEC.Enabled {
+		t.Fatal("DNSSEC metadata was persisted despite artifact store failure")
+	}
+}
+
 func TestSigningService_GetSignedZone(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()

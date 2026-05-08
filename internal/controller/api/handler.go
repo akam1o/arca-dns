@@ -39,6 +39,12 @@ type BuildInfo struct {
 	Date    string `json:"date"`
 }
 
+type createZoneRequest struct {
+	Name    string          `json:"name"`
+	SOA     model.SOARecord `json:"soa"`
+	Records []model.Record  `json:"records"`
+}
+
 type updateZoneRequest struct {
 	Name string          `json:"name"`
 	SOA  model.SOARecord `json:"soa"`
@@ -116,8 +122,8 @@ func (h *Handler) Metrics(c *gin.Context) {
 
 // CreateZone handles POST /api/v1/zones
 func (h *Handler) CreateZone(c *gin.Context) {
-	var zone model.Zone
-	if err := c.ShouldBindJSON(&zone); err != nil {
+	var req createZoneRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Invalid request body", zap.Error(err))
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
@@ -125,6 +131,15 @@ func (h *Handler) CreateZone(c *gin.Context) {
 			map[string]interface{}{"error": "internal error"},
 		))
 		return
+	}
+
+	zone := model.Zone{
+		Name:    req.Name,
+		SOA:     req.SOA,
+		Records: append([]model.Record(nil), req.Records...),
+	}
+	for i := range zone.Records {
+		zone.Records[i].ID = ""
 	}
 
 	if err := model.NormalizeZoneDerivedFields(&zone); err != nil {
@@ -167,6 +182,10 @@ func (h *Handler) CreateZone(c *gin.Context) {
 	}
 	defer signedWrite.Abort()
 
+	if !h.storeSignedZoneWrite(c, signedWrite, "zone creation") {
+		return
+	}
+
 	// Create zone in backend
 	if err := h.store.CreateZone(c.Request.Context(), &zone); err != nil {
 		if err == model.ErrZoneAlreadyExists {
@@ -198,7 +217,9 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		return
 	}
 
-	h.completeSignedZoneWrite(signedWrite)
+	if !h.completeSignedZoneWrite(c, signedWrite, "zone creation") {
+		return
+	}
 
 	// Set ETag header
 	c.Header("ETag", formatETag(created.Version))
@@ -653,6 +674,10 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	}
 	defer signedWrite.Abort()
 
+	if !h.storeSignedZoneWrite(c, signedWrite, "zone update") {
+		return
+	}
+
 	// Update zone in backend
 	if err := h.store.UpdateZone(c.Request.Context(), &zone, expectedVersion); err != nil {
 		if err == model.ErrZoneNotFound {
@@ -692,7 +717,9 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
-	h.completeSignedZoneWrite(signedWrite)
+	if !h.completeSignedZoneWrite(c, signedWrite, "zone update") {
+		return
+	}
 
 	// Set ETag header
 	c.Header("ETag", formatETag(updated.Version))
@@ -1048,11 +1075,40 @@ func (h *Handler) prepareSignedZoneWrite(c *gin.Context, zone *model.Zone, opera
 	return signedWrite, true
 }
 
-func (h *Handler) completeSignedZoneWrite(signedWrite *service.SignedZoneWrite) {
+func (h *Handler) storeSignedZoneWrite(c *gin.Context, signedWrite *service.SignedZoneWrite, operation string) bool {
 	if h.signingService == nil || signedWrite == nil {
-		return
+		return true
 	}
-	signedWrite.Complete()
+	if err := signedWrite.Store(); err != nil {
+		h.logger.Error("Failed to store signed zone artifact",
+			zap.String("operation", operation),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to sign zone",
+			map[string]interface{}{"error": "signing failed"},
+		))
+		return false
+	}
+	return true
+}
+
+func (h *Handler) completeSignedZoneWrite(c *gin.Context, signedWrite *service.SignedZoneWrite, operation string) bool {
+	if h.signingService == nil || signedWrite == nil {
+		return true
+	}
+	if err := signedWrite.Complete(); err != nil {
+		h.logger.Error("Failed to complete signed zone write",
+			zap.String("operation", operation),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to sign zone",
+			map[string]interface{}{"error": "signing failed"},
+		))
+		return false
+	}
+	return true
 }
 
 // GetDSRecords handles GET /api/v1/zones/:name/ds

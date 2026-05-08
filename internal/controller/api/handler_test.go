@@ -175,6 +175,58 @@ func TestCreateZone(t *testing.T) {
 	assert.NotZero(t, created.SOA.Serial)
 }
 
+func TestCreateZone_IgnoresClientManagedFields(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	clientTime := time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)
+	body, err := json.Marshal(map[string]interface{}{
+		"name":       "managed.example.",
+		"version":    "client-version",
+		"created_at": clientTime,
+		"updated_at": clientTime,
+		"dnssec": map[string]interface{}{
+			"enabled":   true,
+			"algorithm": 13,
+		},
+		"soa": model.DefaultSOA("ns1.managed.example.", "admin.managed.example."),
+		"records": []map[string]interface{}{
+			{
+				"id":    "client-record-id",
+				"name":  "@",
+				"type":  "A",
+				"ttl":   300,
+				"value": "192.0.2.1",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var created model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+	assert.NotEqual(t, "client-version", created.Version)
+	assert.False(t, created.CreatedAt.IsZero())
+	assert.False(t, created.UpdatedAt.IsZero())
+	assert.NotEqual(t, clientTime, created.CreatedAt)
+	assert.NotEqual(t, clientTime, created.UpdatedAt)
+	assert.Nil(t, created.DNSSEC)
+	require.Len(t, created.Records, 1)
+	assert.NotEmpty(t, created.Records[0].ID)
+	assert.NotEqual(t, "client-record-id", created.Records[0].ID)
+
+	persisted, err := store.GetZone(context.Background(), "managed.example.")
+	require.NoError(t, err)
+	assert.Nil(t, persisted.DNSSEC)
+	require.Len(t, persisted.Records, 1)
+	assert.NotEqual(t, "client-record-id", persisted.Records[0].ID)
+}
+
 func TestReadyRedactsBackendErrors(t *testing.T) {
 	logger := zap.NewNop()
 	store := &readinessFailingStore{MemoryBackend: backend.NewMemoryBackend()}
