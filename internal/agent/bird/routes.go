@@ -2,6 +2,7 @@ package bird
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -122,29 +123,32 @@ func (rm *RouteManager) AnnounceRoutesChanged(ctx context.Context) (bool, error)
 		return false, nil
 	}
 
-	changed := false
 	for _, name := range rm.protocolNames {
 		cmd := fmt.Sprintf("enable %s", name)
 		resp, err := rm.client.Exec(ctx, cmd)
 		if err != nil {
-			if changed {
-				rm.needsWithdraw = true
-			}
-			return false, fmt.Errorf("enable protocol %s: %w", name, err)
+			return false, rm.rollbackAnnounceFailure(ctx, fmt.Errorf("enable protocol %s: %w", name, err))
 		}
 		if resp.IsError() {
-			if changed {
-				rm.needsWithdraw = true
-			}
-			return false, fmt.Errorf("BIRD error enabling %s (%d): %s", name, resp.Code, resp.RawText)
+			return false, rm.rollbackAnnounceFailure(ctx, fmt.Errorf("BIRD error enabling %s (%d): %s", name, resp.Code, resp.RawText))
 		}
-		changed = true
 	}
 
 	rm.announced = true
 	rm.needsWithdraw = false
 	rm.lastChange = time.Now()
 	return true, nil
+}
+
+func (rm *RouteManager) rollbackAnnounceFailure(ctx context.Context, cause error) error {
+	rm.announced = false
+	if err := rm.withdrawRoutesLocked(ctx); err != nil {
+		rm.needsWithdraw = true
+		return errors.Join(cause, fmt.Errorf("rollback partial announce: %w", err))
+	}
+	rm.needsWithdraw = false
+	rm.lastChange = time.Now()
+	return cause
 }
 
 // WithdrawRoutes disables the BGP protocol to withdraw routes.
@@ -165,23 +169,29 @@ func (rm *RouteManager) WithdrawRoutesChanged(ctx context.Context) (bool, error)
 		return false, nil
 	}
 
-	for _, name := range rm.protocolNames {
-		cmd := fmt.Sprintf("disable %s", name)
-		resp, err := rm.client.Exec(ctx, cmd)
-		if err != nil {
-			rm.needsWithdraw = true
-			return false, fmt.Errorf("disable protocol %s: %w", name, err)
-		}
-		if resp.IsError() {
-			rm.needsWithdraw = true
-			return false, fmt.Errorf("BIRD error disabling %s (%d): %s", name, resp.Code, resp.RawText)
-		}
+	if err := rm.withdrawRoutesLocked(ctx); err != nil {
+		rm.needsWithdraw = true
+		return false, err
 	}
 
 	rm.announced = false
 	rm.needsWithdraw = false
 	rm.lastChange = time.Now()
 	return true, nil
+}
+
+func (rm *RouteManager) withdrawRoutesLocked(ctx context.Context) error {
+	for _, name := range rm.protocolNames {
+		cmd := fmt.Sprintf("disable %s", name)
+		resp, err := rm.client.Exec(ctx, cmd)
+		if err != nil {
+			return fmt.Errorf("disable protocol %s: %w", name, err)
+		}
+		if resp.IsError() {
+			return fmt.Errorf("BIRD error disabling %s (%d): %s", name, resp.Code, resp.RawText)
+		}
+	}
+	return nil
 }
 
 // IsAnnounced returns whether routes are currently announced.
