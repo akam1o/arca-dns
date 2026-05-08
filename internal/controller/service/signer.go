@@ -45,14 +45,15 @@ type SignedZoneArtifact struct {
 }
 
 // SignedZoneWrite is a prepared DNSSEC write with the zone signing lock held.
-// Call Store before the backend write, then Complete after the backend write
-// succeeds, or Abort on every error path.
+// Call Store before the backend write, Commit after the backend write succeeds,
+// then Complete after post-write reads finish. Call Abort on every error path.
 type SignedZoneWrite struct {
-	service  *SigningService
-	artifact *SignedZoneArtifact
-	unlock   func()
-	once     sync.Once
-	stored   bool
+	service   *SigningService
+	artifact  *SignedZoneArtifact
+	unlock    func()
+	once      sync.Once
+	stored    bool
+	committed bool
 }
 
 // Store persists the signed artifact while keeping the zone signing lock held.
@@ -70,8 +71,24 @@ func (w *SignedZoneWrite) Store() error {
 	return nil
 }
 
-// Complete stores the signed artifact cache if needed, logs the signing result,
-// and releases the zone signing lock.
+// Commit marks the prepared artifact as durable for a successful backend write
+// while keeping the zone signing lock held.
+func (w *SignedZoneWrite) Commit() error {
+	if w == nil {
+		return nil
+	}
+	if err := w.Store(); err != nil {
+		return err
+	}
+	if !w.committed {
+		w.service.completeSignedZoneWrite(w.artifact)
+		w.committed = true
+	}
+	return nil
+}
+
+// Complete commits the signed artifact if needed and releases the zone signing
+// lock.
 func (w *SignedZoneWrite) Complete() error {
 	if w == nil {
 		return nil
@@ -81,21 +98,19 @@ func (w *SignedZoneWrite) Complete() error {
 		if w.unlock != nil {
 			defer w.unlock()
 		}
-		if err = w.Store(); err != nil {
-			return
-		}
-		w.service.completeSignedZoneWrite(w.artifact)
+		err = w.Commit()
 	})
 	return err
 }
 
-// Abort removes any pre-stored artifact and releases the zone signing lock.
+// Abort removes any uncommitted pre-stored artifact and releases the zone
+// signing lock.
 func (w *SignedZoneWrite) Abort() {
 	if w == nil {
 		return
 	}
 	w.once.Do(func() {
-		if w.stored {
+		if w.stored && !w.committed {
 			if err := w.service.removeSignedZoneArtifact(w.artifact); err != nil {
 				w.service.logger.Warn("Failed to remove aborted signed artifact",
 					zap.String("zone", w.artifact.ZoneName),

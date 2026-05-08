@@ -205,7 +205,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		return
 	}
 
-	if !h.completeSignedZoneWrite(c, signedWrite, "zone creation") {
+	if !h.commitSignedZoneWrite(c, signedWrite, "zone creation") {
 		return
 	}
 
@@ -218,6 +218,10 @@ func (h *Handler) CreateZone(c *gin.Context) {
 			"Zone created but failed to retrieve",
 			map[string]interface{}{"error": "internal error"},
 		))
+		return
+	}
+
+	if !h.completeSignedZoneWrite(c, signedWrite, "zone creation") {
 		return
 	}
 
@@ -705,7 +709,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
-	if !h.completeSignedZoneWrite(c, signedWrite, "zone update") {
+	if !h.commitSignedZoneWrite(c, signedWrite, "zone update") {
 		return
 	}
 
@@ -718,6 +722,10 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 			"Zone updated but failed to retrieve",
 			map[string]interface{}{"error": "internal error"},
 		))
+		return
+	}
+
+	if !h.completeSignedZoneWrite(c, signedWrite, "zone update") {
 		return
 	}
 
@@ -1081,6 +1089,24 @@ func (h *Handler) storeSignedZoneWrite(c *gin.Context, signedWrite *service.Sign
 	}
 	if err := signedWrite.Store(); err != nil {
 		h.logger.Error("Failed to store signed zone artifact",
+			zap.String("operation", operation),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to sign zone",
+			map[string]interface{}{"error": "signing failed"},
+		))
+		return false
+	}
+	return true
+}
+
+func (h *Handler) commitSignedZoneWrite(c *gin.Context, signedWrite *service.SignedZoneWrite, operation string) bool {
+	if h.signingService == nil || signedWrite == nil {
+		return true
+	}
+	if err := signedWrite.Commit(); err != nil {
+		h.logger.Error("Failed to commit signed zone write",
 			zap.String("operation", operation),
 			zap.Error(err))
 		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(

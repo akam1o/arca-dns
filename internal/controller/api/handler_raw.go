@@ -191,7 +191,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		return
 	}
 
-	if !h.completeSignedZoneWrite(c, signedWrite, "raw zone creation") {
+	if !h.commitSignedZoneWrite(c, signedWrite, "raw zone creation") {
 		return
 	}
 
@@ -204,6 +204,10 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 			"Zone created but failed to retrieve",
 			map[string]interface{}{"error": "internal error"},
 		))
+		return
+	}
+
+	if !h.completeSignedZoneWrite(c, signedWrite, "raw zone creation") {
 		return
 	}
 

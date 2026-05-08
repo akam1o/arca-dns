@@ -347,6 +347,49 @@ func TestSigningService_PrepareSignedZoneWriteHoldsLockUntilAbort(t *testing.T) 
 	}
 }
 
+func TestSigningService_CommitHoldsLockUntilComplete(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	write, err := service.PrepareSignedZoneWrite(context.Background(), zone)
+	if err != nil {
+		t.Fatalf("PrepareSignedZoneWrite failed: %v", err)
+	}
+	if err := write.Store(); err != nil {
+		t.Fatalf("Store failed: %v", err)
+	}
+	if err := write.Commit(); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	started := make(chan struct{})
+	acquired := make(chan struct{})
+	go func() {
+		close(started)
+		lock := service.getZoneLock(model.NormalizeZoneName(zone.Name))
+		lock.Lock()
+		defer lock.Unlock()
+		close(acquired)
+	}()
+
+	<-started
+	select {
+	case <-acquired:
+		t.Fatal("zone signing lock was released before the write completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := write.Complete(); err != nil {
+		t.Fatalf("Complete failed: %v", err)
+	}
+	select {
+	case <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("zone signing lock was not released after complete")
+	}
+}
+
 func TestSigningService_GetSignedZoneWaitsForZoneLockBeforeSigning(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
