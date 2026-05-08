@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -145,6 +146,10 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return fmt.Errorf("invalid api.listen: empty")
 	}
 
+	if err := validateTrustedProxies(cfg.API.TrustedProxies); err != nil {
+		return err
+	}
+
 	if err := validateControllerAuthConfig(cfg.API.Auth); err != nil {
 		return err
 	}
@@ -241,6 +246,25 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
 	}
 
+	return nil
+}
+
+func validateTrustedProxies(trustedProxies []string) error {
+	for i, proxy := range trustedProxies {
+		value := strings.TrimSpace(proxy)
+		if value == "" {
+			return fmt.Errorf("invalid api.trusted_proxies[%d]: empty", i)
+		}
+		if strings.Contains(value, "/") {
+			if _, _, err := net.ParseCIDR(value); err != nil {
+				return fmt.Errorf("invalid api.trusted_proxies[%d]: %q is not a valid CIDR: %w", i, proxy, err)
+			}
+			continue
+		}
+		if net.ParseIP(value) == nil {
+			return fmt.Errorf("invalid api.trusted_proxies[%d]: %q is not a valid IP address or CIDR", i, proxy)
+		}
+	}
 	return nil
 }
 

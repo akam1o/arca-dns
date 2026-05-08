@@ -398,6 +398,17 @@ func TestValidateControllerConfig_Valid(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestValidateControllerConfig_TrustedProxies(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.API.TrustedProxies = []string{"127.0.0.1", "10.0.0.0/8", "2001:db8::/32"}
+	require.NoError(t, ValidateControllerConfig(cfg))
+
+	cfg.API.TrustedProxies = []string{"not-an-ip"}
+	err := ValidateControllerConfig(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "api.trusted_proxies[0]")
+}
+
 func TestValidateControllerConfig_AuthEnabledRequiresAPIKeys(t *testing.T) {
 	cfg := DefaultControllerConfig()
 	cfg.API.Auth.Enabled = true
