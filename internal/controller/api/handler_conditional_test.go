@@ -50,6 +50,17 @@ func TestGetZone_IfNoneMatch_NotModified(t *testing.T) {
 	assert.Empty(t, body)
 }
 
+func TestETagMatching_StrongAndWeakValidators(t *testing.T) {
+	assert.True(t, etagMatches(`W/"v1"`, "v1"))
+	assert.True(t, etagMatches(`"stale", W/"v1"`, "v1"))
+
+	assert.True(t, strongETagMatches(`"v1"`, "v1"))
+	assert.True(t, strongETagMatches(`"stale", "v1"`, "v1"))
+	assert.True(t, strongETagMatches("v1", "v1"))
+	assert.False(t, strongETagMatches(`W/"v1"`, "v1"))
+	assert.False(t, strongETagMatches(`"stale", W/"v1"`, "v1"))
+}
+
 func TestGetSignedZoneMetadata_IfNoneMatch_NotModified(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()

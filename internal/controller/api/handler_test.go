@@ -549,6 +549,37 @@ func TestUpdateZone(t *testing.T) {
 	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
 }
 
+func TestUpdateZone_RejectsWeakIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	retrieved.SOA.Refresh = 7200
+
+	body, err := json.Marshal(retrieved)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", `W/"`+retrieved.Version+`"`)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, uint32(3600), unchanged.SOA.Refresh)
+}
+
 func TestUpdateZone_NormalizesURLAndBodyNamesBeforeComparison(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()

@@ -299,10 +299,24 @@ func etagMatches(ifNoneMatch, current string) bool {
 		return true
 	}
 
-	// If-None-Match can be a comma-separated list. We accept exact match with optional quotes.
+	// If-None-Match can be a comma-separated list and uses weak comparison.
 	for _, part := range strings.Split(ifNoneMatch, ",") {
 		tag := strings.TrimSpace(part)
 		tag = strings.TrimPrefix(tag, "W/")
+		tag = strings.Trim(tag, "\"")
+		if tag == current {
+			return true
+		}
+	}
+	return false
+}
+
+func strongETagMatches(ifMatch, current string) bool {
+	for _, part := range strings.Split(ifMatch, ",") {
+		tag := strings.TrimSpace(part)
+		if strings.HasPrefix(tag, "W/") {
+			continue
+		}
 		tag = strings.Trim(tag, "\"")
 		if tag == current {
 			return true
@@ -597,7 +611,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
-	// Resolve If-Match into a concrete expected version (accepts quoted/unquoted, W/, and lists).
+	// Resolve If-Match into a concrete expected version (accepts quoted/unquoted strong tags and lists).
 	expectedVersion := ""
 	var current *model.Zone
 	current, err := h.store.GetZone(c.Request.Context(), zone.Name)
@@ -619,7 +633,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
-	if !etagMatches(ifMatch, current.Version) {
+	if !strongETagMatches(ifMatch, current.Version) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",
@@ -772,7 +786,7 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 		return
 	}
 
-	if !etagMatches(ifMatch, current.Version) {
+	if !strongETagMatches(ifMatch, current.Version) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",

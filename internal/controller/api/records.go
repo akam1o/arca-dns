@@ -397,7 +397,7 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 		return nil, "", false
 	}
 
-	if !etagMatches(ifMatch, zone.Version) {
+	if !strongETagMatches(ifMatch, zone.Version) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",
