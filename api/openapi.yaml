@@ -100,7 +100,7 @@ paths:
     get:
       tags: [zones]
       summary: List all zones
-      description: Returns a paginated list of all zones
+      description: Returns a paginated list of zones. Agent API keys may call this operation only with fields=summary.
       operationId: listZones
       parameters:
         - name: limit
@@ -148,6 +148,8 @@ paths:
                     $ref: '#/components/schemas/Pagination'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -203,6 +205,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           description: Zone already exists
           content:
@@ -334,6 +338,8 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           description: Zone already exists
           content:
@@ -359,10 +365,40 @@ paths:
           type: string
           example: "example.com."
 
+    head:
+      tags: [zones]
+      summary: Get zone headers
+      description: Returns zone metadata headers without a response body. Requires an admin API key.
+      operationId: headZone
+      parameters:
+        - name: If-None-Match
+          in: header
+          description: Zone version ETag - returns 304 if the zone matches
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Zone exists
+          headers:
+            ETag:
+              description: Zone version
+              schema:
+                type: string
+        '304':
+          description: Not modified (when If-None-Match matches current version)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
     get:
       tags: [zones]
       summary: Get a specific zone
-      description: Returns detailed information about a zone
+      description: Returns detailed information about a zone. Requires an admin API key.
       operationId: getZone
       responses:
         '200':
@@ -380,6 +416,8 @@ paths:
           description: Not modified (when If-None-Match matches current version)
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -419,6 +457,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -453,6 +493,8 @@ paths:
           description: Zone deleted successfully
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           description: Conflict - If-Match mismatch
           content:
@@ -506,6 +548,8 @@ paths:
                       $ref: '#/components/schemas/Record'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -549,6 +593,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -610,6 +656,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -677,6 +725,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -720,6 +770,8 @@ paths:
                 $ref: '#/components/schemas/Zone'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -745,6 +797,56 @@ paths:
         description: Fully qualified domain name of the zone
         schema:
           type: string
+
+    head:
+      tags: [zones]
+      summary: Get signed zone file headers (for agents)
+      description: |
+        Returns signed zone artifact headers without a response body.
+        Supports conditional requests with If-None-Match (ETag).
+      operationId: headSignedZone
+      parameters:
+        - name: If-None-Match
+          in: header
+          description: Signed artifact ETag - returns 304 if the artifact matches
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Signed zone file headers
+          headers:
+            ETag:
+              description: Signed artifact SHA256 ETag
+              schema:
+                type: string
+            X-Zone-Serial:
+              description: SOA serial number
+              schema:
+                type: integer
+            X-Zone-Hash:
+              description: SHA256 hash of signed zone file (hex)
+              schema:
+                type: string
+            X-Zone-Hash8:
+              description: First 8 characters of X-Zone-Hash
+              schema:
+                type: string
+            X-Zone-Signature:
+              description: HMAC signature of the artifact when api.artifact_signature_key is configured
+              schema:
+                type: string
+            Content-Length:
+              description: Signed zone file size in bytes
+              schema:
+                type: integer
+        '304':
+          description: Not modified (signed artifact matches If-None-Match)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
     get:
       tags: [zones]
@@ -876,7 +978,7 @@ paths:
     get:
       tags: [zones]
       summary: List zone versions
-      description: Returns version history for a zone (requires RevisionStore backend)
+      description: Returns version history for a zone (requires RevisionStore backend). Requires an admin API key.
       operationId: listZoneVersions
       parameters:
         - name: limit
@@ -905,6 +1007,8 @@ paths:
                     $ref: '#/components/schemas/Pagination'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '501':
@@ -932,7 +1036,7 @@ paths:
     get:
       tags: [zones]
       summary: Get a specific zone version
-      description: Returns a specific historical version of a zone
+      description: Returns a specific historical version of a zone. Requires an admin API key.
       operationId: getZoneVersion
       responses:
         '200':
@@ -943,10 +1047,48 @@ paths:
                 $ref: '#/components/schemas/Zone'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '501':
           description: Not implemented (backend doesn't support versioning)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /zones/{zoneName}/ds:
+    parameters:
+      - name: zoneName
+        in: path
+        required: true
+        schema:
+          type: string
+
+    get:
+      tags: [dnssec]
+      summary: Get DS records for parent zone
+      description: Returns DS records to be added to the parent zone. Requires an admin API key.
+      operationId: getDSRecordsAlias
+      responses:
+        '200':
+          description: DS records
+          content:
+            text/plain:
+              schema:
+                type: string
+                description: DS records in BIND format
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: DNSSEC signing service is not available
           content:
             application/json:
               schema:
@@ -965,7 +1107,7 @@ paths:
     get:
       tags: [dnssec]
       summary: Get DS records for parent zone
-      description: Returns DS records to be added to the parent zone
+      description: Returns DS records to be added to the parent zone. Requires an admin API key.
       operationId: getDSRecords
       responses:
         '200':
@@ -977,8 +1119,16 @@ paths:
                 description: DS records in BIND format
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          description: DNSSEC signing service is not available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -1366,6 +1516,13 @@ components:
 
     Unauthorized:
       description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Forbidden:
+      description: API key role is not allowed for this endpoint
       content:
         application/json:
           schema:

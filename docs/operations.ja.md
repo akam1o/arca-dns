@@ -602,9 +602,9 @@ systemctl reload nginx
 # Agent auto-discovers and syncs zones
 # BGP routes announced automatically when healthy
 
-# Verify from controller
-curl -H "X-API-Key: $API_KEY" \
-  https://controller:8080/api/v1/agents
+# agent key で controller の同期用 view を読めることを確認
+curl -H "X-API-Key: $ARCA_DNS_AGENT_API_KEY" \
+  "https://controller:8080/api/v1/zones?fields=summary"
 ```
 
 ### controller のスケール（Active-Passive）
