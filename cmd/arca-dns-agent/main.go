@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -110,6 +111,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	} else {
 		logger.Info("Using default configuration with environment overrides")
 	}
+	warnPlaintextAPIKeyTransport(cfg.Controller, logger)
 
 	// Create controller client
 	client, err := zonesync.NewClient(cfg.Controller)
@@ -566,6 +568,21 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func warnPlaintextAPIKeyTransport(cfg config.ControllerClientConfig, logger *zap.Logger) {
+	if strings.TrimSpace(cfg.APIKey) == "" || logger == nil {
+		return
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(cfg.URL))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "http") {
+		return
+	}
+
+	logger.Warn("Controller API key will be sent over plaintext HTTP",
+		zap.String("url", cfg.URL),
+		zap.String("recommendation", "use HTTPS/TLS termination or an intentionally trusted transport"))
 }
 
 func applyZoneServiceReferences(ctx context.Context, zoneName string, authServer plugin.AuthoritativeServer, resolver plugin.Resolver) error {

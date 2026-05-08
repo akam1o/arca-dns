@@ -15,6 +15,8 @@ import (
 	zonesync "github.com/akam1o/arca-dns/internal/agent/sync"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestReexecSelf_UsesExecutableAsArgv0(t *testing.T) {
@@ -122,6 +124,66 @@ func TestNewStatusServer_HasTimeouts(t *testing.T) {
 	}
 	if server.IdleTimeout != 60*time.Second {
 		t.Fatalf("IdleTimeout=%s, want 60s", server.IdleTimeout)
+	}
+}
+
+func TestWarnPlaintextAPIKeyTransport(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfg      config.ControllerClientConfig
+		wantWarn bool
+	}{
+		{
+			name: "http with api key",
+			cfg: config.ControllerClientConfig{
+				URL:    "http://controller:8080",
+				APIKey: "secret",
+			},
+			wantWarn: true,
+		},
+		{
+			name: "https with api key",
+			cfg: config.ControllerClientConfig{
+				URL:    "https://controller.example.com",
+				APIKey: "secret",
+			},
+		},
+		{
+			name: "http without api key",
+			cfg: config.ControllerClientConfig{
+				URL: "http://controller:8080",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			core, logs := observer.New(zapcore.WarnLevel)
+			logger := zap.New(core)
+
+			warnPlaintextAPIKeyTransport(tc.cfg, logger)
+
+			if tc.wantWarn {
+				if logs.Len() != 1 {
+					t.Fatalf("expected one warning, got %d", logs.Len())
+				}
+				entry := logs.All()[0]
+				if entry.Message != "Controller API key will be sent over plaintext HTTP" {
+					t.Fatalf("unexpected warning message %q", entry.Message)
+				}
+				if got := entry.ContextMap()["url"]; got != tc.cfg.URL {
+					t.Fatalf("warning url field = %v, want %s", got, tc.cfg.URL)
+				}
+				if _, ok := entry.ContextMap()["api_key"]; ok {
+					t.Fatalf("warning must not log api_key")
+				}
+				return
+			}
+
+			if logs.Len() != 0 {
+				t.Fatalf("expected no warnings, got %d", logs.Len())
+			}
+		})
 	}
 }
 

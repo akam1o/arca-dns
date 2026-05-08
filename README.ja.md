@@ -159,6 +159,8 @@ dnssec:
 
 ```yaml
 controller:
+  # 意図して信頼したローカル/プライベート transport でない限り https:// を推奨します。
+  # api_key と http:// を併用すると警告ログを出します。
   url: "http://localhost:8080"
   api_key: "REPLACE_WITH_RAW_API_KEY"
 

@@ -161,6 +161,8 @@ dnssec:
 
 ```yaml
 controller:
+  # Prefer https:// unless this is an intentionally trusted local/private transport.
+  # Using http:// with api_key logs a warning.
   url: "http://localhost:8080"
   api_key: "REPLACE_WITH_RAW_API_KEY"
 
