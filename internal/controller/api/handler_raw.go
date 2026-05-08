@@ -191,6 +191,10 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		return
 	}
 
+	if !h.completeSignedZoneWrite(c, signedWrite, "raw zone creation") {
+		return
+	}
+
 	// Retrieve created zone to get version (same pattern as CreateZone)
 	createdZone, err := h.store.GetZone(c.Request.Context(), modelZone.Name)
 	if err != nil {
@@ -200,10 +204,6 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 			"Zone created but failed to retrieve",
 			map[string]interface{}{"error": "internal error"},
 		))
-		return
-	}
-
-	if !h.completeSignedZoneWrite(c, signedWrite, "raw zone creation") {
 		return
 	}
 

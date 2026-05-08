@@ -514,6 +514,10 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 		return nil, false
 	}
 
+	if !h.completeSignedZoneWrite(c, signedWrite, "record mutation") {
+		return nil, false
+	}
+
 	updated, err := h.store.GetZone(c.Request.Context(), zone.Name)
 	if err != nil {
 		h.logger.Error("Failed to retrieve updated zone", zap.String("zone", zone.Name), zap.Error(err))
@@ -522,10 +526,6 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 			"Record updated but failed to retrieve zone",
 			map[string]interface{}{"error": "internal error"},
 		))
-		return nil, false
-	}
-
-	if !h.completeSignedZoneWrite(c, signedWrite, "record mutation") {
 		return nil, false
 	}
 

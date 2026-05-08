@@ -205,6 +205,10 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		return
 	}
 
+	if !h.completeSignedZoneWrite(c, signedWrite, "zone creation") {
+		return
+	}
+
 	// Retrieve created zone to get version
 	created, err := h.store.GetZone(c.Request.Context(), zone.Name)
 	if err != nil {
@@ -214,10 +218,6 @@ func (h *Handler) CreateZone(c *gin.Context) {
 			"Zone created but failed to retrieve",
 			map[string]interface{}{"error": "internal error"},
 		))
-		return
-	}
-
-	if !h.completeSignedZoneWrite(c, signedWrite, "zone creation") {
 		return
 	}
 
@@ -705,6 +705,10 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
+	if !h.completeSignedZoneWrite(c, signedWrite, "zone update") {
+		return
+	}
+
 	// Retrieve updated zone to get new version
 	updated, err := h.store.GetZone(c.Request.Context(), zone.Name)
 	if err != nil {
@@ -714,10 +718,6 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 			"Zone updated but failed to retrieve",
 			map[string]interface{}{"error": "internal error"},
 		))
-		return
-	}
-
-	if !h.completeSignedZoneWrite(c, signedWrite, "zone update") {
 		return
 	}
 
