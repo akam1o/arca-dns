@@ -539,26 +539,59 @@ server:
 ### API Key Rotation
 
 ```bash
-# Generate new key
-NEW_KEY=$(openssl rand -hex 32)
-NEW_HASH=$(echo -n "$NEW_KEY" | sha256sum | cut -d' ' -f1)
+# Rotate an admin key
+NEW_ADMIN_KEY=$(openssl rand -hex 32)
+NEW_ADMIN_HASH=$(printf '%s' "$NEW_ADMIN_KEY" | sha256sum | cut -d' ' -f1)
 
 # Update controller config
-# Add new key while keeping old
+# Add the new admin key while keeping the old admin and agent keys.
+# Do not distribute admin keys to agents.
 api:
   auth:
     api_keys:
-      old_admin: "sha256:OLD_HASH"
-      new_admin: "sha256:$NEW_HASH"
+      old_admin: "sha256:OLD_ADMIN_HASH"
+      new_admin: "sha256:$NEW_ADMIN_HASH"
+      agent: "sha256:CURRENT_AGENT_HASH"
+    api_key_roles:
+      old_admin: "admin"
+      new_admin: "admin"
+      agent: "agent"
 
 # Reload controller
 systemctl reload arca-dns-controller
 
-# Update agents with new key
-# Test new key works
-curl -H "X-API-Key: $NEW_KEY" https://controller:8080/api/v1/zones
+# Test the new admin key
+curl -H "X-API-Key: $NEW_ADMIN_KEY" https://controller:8080/api/v1/zones
 
-# Remove old key from config after migration
+# Remove old_admin from config after migration
+```
+
+```bash
+# Rotate an agent key separately
+NEW_AGENT_KEY=$(openssl rand -hex 32)
+NEW_AGENT_HASH=$(printf '%s' "$NEW_AGENT_KEY" | sha256sum | cut -d' ' -f1)
+
+# Update controller config
+# Keep an admin key and mark both agent keys with the agent role.
+api:
+  auth:
+    api_keys:
+      admin: "sha256:CURRENT_ADMIN_HASH"
+      old_agent: "sha256:OLD_AGENT_HASH"
+      new_agent: "sha256:$NEW_AGENT_HASH"
+    api_key_roles:
+      admin: "admin"
+      old_agent: "agent"
+      new_agent: "agent"
+
+# Reload controller, then update agents with NEW_AGENT_KEY
+systemctl reload arca-dns-controller
+
+# Test the new agent key against the agent sync view
+curl -H "X-API-Key: $NEW_AGENT_KEY" \
+  "https://controller:8080/api/v1/zones?fields=summary"
+
+# Remove old_agent from config after all agents are updated
 ```
 
 ### Master Key Rotation
