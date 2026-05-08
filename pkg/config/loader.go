@@ -146,9 +146,11 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return fmt.Errorf("invalid api.listen: empty")
 	}
 
-	if err := validateTrustedProxies(cfg.API.TrustedProxies); err != nil {
+	trustedProxies, err := normalizeTrustedProxies(cfg.API.TrustedProxies)
+	if err != nil {
 		return err
 	}
+	cfg.API.TrustedProxies = trustedProxies
 
 	if err := validateControllerAuthConfig(cfg.API.Auth); err != nil {
 		return err
@@ -249,23 +251,30 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	return nil
 }
 
-func validateTrustedProxies(trustedProxies []string) error {
+func normalizeTrustedProxies(trustedProxies []string) ([]string, error) {
+	if len(trustedProxies) == 0 {
+		return trustedProxies, nil
+	}
+
+	normalized := make([]string, len(trustedProxies))
 	for i, proxy := range trustedProxies {
 		value := strings.TrimSpace(proxy)
 		if value == "" {
-			return fmt.Errorf("invalid api.trusted_proxies[%d]: empty", i)
+			return nil, fmt.Errorf("invalid api.trusted_proxies[%d]: empty", i)
 		}
 		if strings.Contains(value, "/") {
 			if _, _, err := net.ParseCIDR(value); err != nil {
-				return fmt.Errorf("invalid api.trusted_proxies[%d]: %q is not a valid CIDR: %w", i, proxy, err)
+				return nil, fmt.Errorf("invalid api.trusted_proxies[%d]: %q is not a valid CIDR: %w", i, proxy, err)
 			}
+			normalized[i] = value
 			continue
 		}
 		if net.ParseIP(value) == nil {
-			return fmt.Errorf("invalid api.trusted_proxies[%d]: %q is not a valid IP address or CIDR", i, proxy)
+			return nil, fmt.Errorf("invalid api.trusted_proxies[%d]: %q is not a valid IP address or CIDR", i, proxy)
 		}
+		normalized[i] = value
 	}
-	return nil
+	return normalized, nil
 }
 
 func validateControllerAuthConfig(auth AuthConfig) error {

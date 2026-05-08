@@ -400,8 +400,9 @@ func TestValidateControllerConfig_Valid(t *testing.T) {
 
 func TestValidateControllerConfig_TrustedProxies(t *testing.T) {
 	cfg := validControllerConfigForTest()
-	cfg.API.TrustedProxies = []string{"127.0.0.1", "10.0.0.0/8", "2001:db8::/32"}
+	cfg.API.TrustedProxies = []string{" 127.0.0.1 ", "10.0.0.0/8", "\t2001:db8::/32\n"}
 	require.NoError(t, ValidateControllerConfig(cfg))
+	assert.Equal(t, []string{"127.0.0.1", "10.0.0.0/8", "2001:db8::/32"}, cfg.API.TrustedProxies)
 
 	cfg.API.TrustedProxies = []string{"not-an-ip"}
 	err := ValidateControllerConfig(cfg)
