@@ -73,7 +73,7 @@ func ValidateRecordSetConstraints(zone *Zone) error {
 	seenRecords := make(map[string]int)
 	for i, record := range zone.Records {
 		owner := canonicalRecordOwnerName(record.Name, zoneName)
-		duplicateKey := canonicalRecordDuplicateKey(record, owner)
+		duplicateKey := canonicalRecordDuplicateKey(record, owner, zoneName)
 		if firstIndex, ok := seenRecords[duplicateKey]; ok {
 			return fmt.Errorf("invalid record at index %d: duplicate record matches index %d", i, firstIndex)
 		}
@@ -183,27 +183,27 @@ func normalizeRecordDerivedFields(record *Record, rejectMismatch bool) error {
 	return nil
 }
 
-func canonicalRecordDuplicateKey(record Record, owner string) string {
+func canonicalRecordDuplicateKey(record Record, owner, zoneName string) string {
 	return strings.Join([]string{
 		owner,
 		record.Type,
 		strconv.FormatUint(uint64(record.TTL), 10),
-		canonicalRecordValue(record.Type, record.Value),
+		canonicalRecordValue(record.Type, record.Value, zoneName),
 	}, "\x00")
 }
 
-func canonicalRecordValue(recordType, value string) string {
+func canonicalRecordValue(recordType, value, zoneName string) string {
 	switch recordType {
 	case RecordTypeA, RecordTypeAAAA:
 		if ip := net.ParseIP(value); ip != nil {
 			return ip.String()
 		}
 	case RecordTypeCNAME, RecordTypeNS, RecordTypePTR:
-		return NormalizeDomainName(value)
+		return NormalizeDomainTargetName(value, zoneName)
 	case RecordTypeMX:
 		parts := strings.Fields(value)
 		if len(parts) == 2 {
-			return parts[0] + " " + NormalizeDomainName(parts[1])
+			return parts[0] + " " + NormalizeDomainTargetName(parts[1], zoneName)
 		}
 	case RecordTypeSRV:
 		parts := strings.Fields(value)
@@ -212,7 +212,7 @@ func canonicalRecordValue(recordType, value string) string {
 				parts[0],
 				parts[1],
 				parts[2],
-				NormalizeDomainName(parts[3]),
+				NormalizeDomainTargetName(parts[3], zoneName),
 			}, " ")
 		}
 	}

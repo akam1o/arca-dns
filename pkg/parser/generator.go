@@ -118,24 +118,16 @@ func convertRecordToRR(origin string, record *model.Record) (dns.RR, error) {
 
 	case model.RecordTypeCNAME:
 		hdr.Rrtype = dns.TypeCNAME
-		target := record.Value
-		if !strings.HasSuffix(target, ".") {
-			target = target + "."
-		}
 		return &dns.CNAME{
 			Hdr:    hdr,
-			Target: target,
+			Target: model.NormalizeDomainTargetName(record.Value, origin),
 		}, nil
 
 	case model.RecordTypeNS:
 		hdr.Rrtype = dns.TypeNS
-		ns := record.Value
-		if !strings.HasSuffix(ns, ".") {
-			ns = ns + "."
-		}
 		return &dns.NS{
 			Hdr: hdr,
-			Ns:  ns,
+			Ns:  model.NormalizeDomainTargetName(record.Value, origin),
 		}, nil
 
 	case model.RecordTypeMX:
@@ -150,14 +142,10 @@ func convertRecordToRR(origin string, record *model.Record) (dns.RR, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid MX priority: %s", parts[0])
 		}
-		mx := parts[1]
-		if !strings.HasSuffix(mx, ".") {
-			mx = mx + "."
-		}
 		return &dns.MX{
 			Hdr:        hdr,
 			Preference: priority,
-			Mx:         mx,
+			Mx:         model.NormalizeDomainTargetName(parts[1], origin),
 		}, nil
 
 	case model.RecordTypeTXT:
@@ -169,13 +157,9 @@ func convertRecordToRR(origin string, record *model.Record) (dns.RR, error) {
 
 	case model.RecordTypePTR:
 		hdr.Rrtype = dns.TypePTR
-		ptr := record.Value
-		if !strings.HasSuffix(ptr, ".") {
-			ptr = ptr + "."
-		}
 		return &dns.PTR{
 			Hdr: hdr,
-			Ptr: ptr,
+			Ptr: model.NormalizeDomainTargetName(record.Value, origin),
 		}, nil
 
 	case model.RecordTypeSRV:
@@ -198,16 +182,12 @@ func convertRecordToRR(origin string, record *model.Record) (dns.RR, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid SRV port: %s", parts[2])
 		}
-		target := parts[3]
-		if !strings.HasSuffix(target, ".") {
-			target = target + "."
-		}
 		return &dns.SRV{
 			Hdr:      hdr,
 			Priority: priority,
 			Weight:   weight,
 			Port:     port,
-			Target:   target,
+			Target:   model.NormalizeDomainTargetName(parts[3], origin),
 		}, nil
 
 	case model.RecordTypeCAA:

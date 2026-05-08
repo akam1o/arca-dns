@@ -583,6 +583,13 @@ func TestValidateZone_RejectsDuplicateRecords(t *testing.T) {
 				{Name: "example.com.", Type: RecordTypeNS, TTL: 300, Value: "ns1.example.com"},
 			},
 		},
+		{
+			name: "relative RDATA target duplicate",
+			records: []Record{
+				{Name: "@", Type: RecordTypeMX, TTL: 300, Value: "10 mail"},
+				{Name: "example.com.", Type: RecordTypeMX, TTL: 300, Value: "10 mail.example.com"},
+			},
+		},
 	}
 
 	for _, tt := range tests {

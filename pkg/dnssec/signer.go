@@ -265,19 +265,11 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 
 	case model.RecordTypeNS:
 		hdr.Rrtype = dns.TypeNS
-		ns := record.Value
-		if !strings.HasSuffix(ns, ".") {
-			ns = ns + "."
-		}
-		return &dns.NS{Hdr: hdr, Ns: ns}, nil
+		return &dns.NS{Hdr: hdr, Ns: model.NormalizeDomainTargetName(record.Value, origin)}, nil
 
 	case model.RecordTypeCNAME:
 		hdr.Rrtype = dns.TypeCNAME
-		target := record.Value
-		if !strings.HasSuffix(target, ".") {
-			target = target + "."
-		}
-		return &dns.CNAME{Hdr: hdr, Target: target}, nil
+		return &dns.CNAME{Hdr: hdr, Target: model.NormalizeDomainTargetName(record.Value, origin)}, nil
 
 	case model.RecordTypeMX:
 		hdr.Rrtype = dns.TypeMX
@@ -290,11 +282,7 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 		if err != nil || n != 1 {
 			return nil, fmt.Errorf("invalid MX priority: %s", parts[0])
 		}
-		mx := parts[1]
-		if !strings.HasSuffix(mx, ".") {
-			mx = mx + "."
-		}
-		return &dns.MX{Hdr: hdr, Preference: prio, Mx: mx}, nil
+		return &dns.MX{Hdr: hdr, Preference: prio, Mx: model.NormalizeDomainTargetName(parts[1], origin)}, nil
 
 	case model.RecordTypeTXT:
 		hdr.Rrtype = dns.TypeTXT
@@ -302,11 +290,7 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 
 	case model.RecordTypePTR:
 		hdr.Rrtype = dns.TypePTR
-		ptr := record.Value
-		if !strings.HasSuffix(ptr, ".") {
-			ptr = ptr + "."
-		}
-		return &dns.PTR{Hdr: hdr, Ptr: ptr}, nil
+		return &dns.PTR{Hdr: hdr, Ptr: model.NormalizeDomainTargetName(record.Value, origin)}, nil
 
 	case model.RecordTypeSRV:
 		hdr.Rrtype = dns.TypeSRV
@@ -317,10 +301,7 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 		if err != nil || n != 4 {
 			return nil, fmt.Errorf("invalid SRV value: %s", record.Value)
 		}
-		if !strings.HasSuffix(target, ".") {
-			target = target + "."
-		}
-		return &dns.SRV{Hdr: hdr, Priority: priority, Weight: weight, Port: port, Target: target}, nil
+		return &dns.SRV{Hdr: hdr, Priority: priority, Weight: weight, Port: port, Target: model.NormalizeDomainTargetName(target, origin)}, nil
 
 	case model.RecordTypeCAA:
 		hdr.Rrtype = dns.TypeCAA

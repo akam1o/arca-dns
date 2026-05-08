@@ -106,6 +106,31 @@ func TestGenerateBINDZoneFile_RelativeNames(t *testing.T) {
 	assert.Contains(t, zoneFile, "mail.example.com.")
 }
 
+func TestGenerateBINDZoneFile_RelativeRDATATargets(t *testing.T) {
+	zone := &model.Zone{
+		Name:    "example.com.",
+		Version: "v1",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "alias", Type: "CNAME", TTL: 300, Value: "target"},
+			{Name: "@", Type: "NS", TTL: 300, Value: "ns1"},
+			{Name: "@", Type: "MX", TTL: 300, Value: "10 mail"},
+			{Name: "ptr", Type: "PTR", TTL: 300, Value: "host"},
+			{Name: "_sip._tcp", Type: "SRV", TTL: 300, Value: "10 60 5060 sip"},
+		},
+	}
+
+	zoneFile, err := GenerateBINDZoneFile(zone)
+	require.NoError(t, err)
+
+	assert.Contains(t, zoneFile, "target.example.com.")
+	assert.Contains(t, zoneFile, "ns1.example.com.")
+	assert.Contains(t, zoneFile, "mail.example.com.")
+	assert.Contains(t, zoneFile, "host.example.com.")
+	assert.Contains(t, zoneFile, "sip.example.com.")
+	assert.NotContains(t, zoneFile, "\tMX\t10 mail.\n")
+}
+
 func TestGenerateBINDZoneFile_FQDNWithoutTrailingDot(t *testing.T) {
 	zone := &model.Zone{
 		Name:    "example.com.",

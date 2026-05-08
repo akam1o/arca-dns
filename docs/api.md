@@ -118,7 +118,7 @@ The controller validates `record.value` based on `record.type` (see `pkg/model/v
 - `TXT`: any non-empty string up to 65535 chars (example: `"v=spf1 -all"`)
 - `CAA`: `"flags tag value"` (example: `"0 issue letsencrypt.org"`)
 
-Domain names accept a trailing dot or not (both are currently treated as valid); for clarity, prefer FQDNs with a trailing dot in `value`.
+Domain targets without a trailing dot are interpreted relative to the zone origin unless they already end with the zone origin. For external targets, use an FQDN with a trailing dot in `value`.
 
 ### Zones (Raw BIND mode)
 

@@ -118,7 +118,7 @@ controller は `record.type` に応じて `record.value` を検証します（`p
 - `TXT`: 1〜65535 文字の任意文字列（例: `"v=spf1 -all"`）
 - `CAA`: `"flags tag value"`（例: `"0 issue letsencrypt.org"`）
 
-ドメイン名は末尾ドットあり/なしのどちらも現在は有効として扱います。混乱を避けるため、`value` では末尾ドット付き FQDN を推奨します。
+末尾ドットのないドメインターゲットは、既に zone origin で終わっている場合を除き、zone origin からの相対名として解釈されます。外部ターゲットを指定する場合は、`value` で末尾ドット付き FQDN を使ってください。
 
 ### Zones（Raw BIND モード）
 

@@ -328,6 +328,69 @@ func TestZoneSigner_MXValueNormalizesWhitespace(t *testing.T) {
 	}
 }
 
+func TestZoneSigner_RecordToRRNormalizesRelativeRDATATargets(t *testing.T) {
+	signer := &ZoneSigner{}
+	tests := []struct {
+		name     string
+		record   model.Record
+		expected string
+	}{
+		{
+			name:     "NS",
+			record:   model.Record{Name: "@", Type: model.RecordTypeNS, TTL: 300, Value: "ns1"},
+			expected: "ns1.example.com.",
+		},
+		{
+			name:     "CNAME",
+			record:   model.Record{Name: "alias", Type: model.RecordTypeCNAME, TTL: 300, Value: "target"},
+			expected: "target.example.com.",
+		},
+		{
+			name:     "MX",
+			record:   model.Record{Name: "@", Type: model.RecordTypeMX, TTL: 300, Value: "10 mail"},
+			expected: "mail.example.com.",
+		},
+		{
+			name:     "PTR",
+			record:   model.Record{Name: "ptr", Type: model.RecordTypePTR, TTL: 300, Value: "host"},
+			expected: "host.example.com.",
+		},
+		{
+			name:     "SRV",
+			record:   model.Record{Name: "_sip._tcp", Type: model.RecordTypeSRV, TTL: 300, Value: "10 60 5060 sip"},
+			expected: "sip.example.com.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rr, err := signer.recordToRR("example.com.", &tt.record)
+			if err != nil {
+				t.Fatalf("failed to convert %s record: %v", tt.record.Type, err)
+			}
+
+			var got string
+			switch typed := rr.(type) {
+			case *dns.NS:
+				got = typed.Ns
+			case *dns.CNAME:
+				got = typed.Target
+			case *dns.MX:
+				got = typed.Mx
+			case *dns.PTR:
+				got = typed.Ptr
+			case *dns.SRV:
+				got = typed.Target
+			default:
+				t.Fatalf("recordToRR returned %T", rr)
+			}
+			if got != tt.expected {
+				t.Fatalf("%s target = %q, want %q", tt.record.Type, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestZoneSigner_SignRRset(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
