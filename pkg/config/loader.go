@@ -653,7 +653,7 @@ func normalizeControllerURL(rawURL string) (string, error) {
 
 func healthTestRecordNeedsZone(record string) bool {
 	record = strings.TrimSpace(record)
-	return record != "" && !strings.HasSuffix(record, ".") && !strings.Contains(record, ".")
+	return record != "" && !strings.HasSuffix(record, ".")
 }
 
 func applyAgentSignatureKeyAliases(cfg *AgentConfig) error {
