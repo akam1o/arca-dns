@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/miekg/dns"
 )
 
@@ -52,6 +53,7 @@ type KeyPair struct {
 //   - "example.com." -> "example.com."
 //   - "EXAMPLE.COM" -> "example.com."
 func NormalizeZoneFQDN(zone string) (string, error) {
+	zone = strings.TrimSpace(zone)
 	if zone == "" {
 		return "", fmt.Errorf("zone name cannot be empty")
 	}
@@ -64,9 +66,11 @@ func NormalizeZoneFQDN(zone string) (string, error) {
 		zone = zone + "."
 	}
 
-	// Validate DNS name
-	if !dns.IsFqdn(zone) {
-		return "", fmt.Errorf("invalid DNS name: %s", zone)
+	// Validate as an arca-dns zone, not just as a syntactically absolute DNS
+	// string. DNSSEC key names are used in filesystem paths, so reject owner
+	// shorthand, root, path separators, and other non-zone input here.
+	if err := model.ValidateZoneName(zone); err != nil {
+		return "", fmt.Errorf("invalid DNS zone name %q: %w", zone, err)
 	}
 
 	return zone, nil

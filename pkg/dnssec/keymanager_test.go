@@ -105,6 +105,24 @@ func TestGenerateKSK_ECDSA(t *testing.T) {
 	assert.FileExists(t, filepath.Join(zoneDir, "active.json"))
 }
 
+func TestGenerateZoneKeysRejectsUnsafeZoneName(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyDir := filepath.Join(tmpDir, "keys")
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: keyDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	_, _, err = km.GenerateZoneKeys("../escape", false)
+	require.Error(t, err)
+	assert.NoDirExists(t, filepath.Join(tmpDir, "escape"))
+}
+
 func TestGenerateZSK_ECDSA(t *testing.T) {
 	tmpDir := t.TempDir()
 	masterKey, err := GenerateMasterKey()
