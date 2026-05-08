@@ -47,6 +47,24 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestNewClient_NormalizesTrailingSlash(t *testing.T) {
+	cfg := config.ControllerClientConfig{
+		URL:           "http://localhost:8080/",
+		Timeout:       30 * time.Second,
+		RetryAttempts: 3,
+		RetryDelay:    1 * time.Second,
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+
+	if client.baseURL != "http://localhost:8080" {
+		t.Errorf("Expected normalized baseURL http://localhost:8080, got %s", client.baseURL)
+	}
+}
+
 func TestListZones(t *testing.T) {
 	requireTCPListener(t)
 	// Create mock server
@@ -191,6 +209,36 @@ func TestListZones_Paginates(t *testing.T) {
 
 	if zones[1000].Name != "zone-1000.example.com." {
 		t.Errorf("Expected final zone name zone-1000.example.com., got %s", zones[1000].Name)
+	}
+}
+
+func TestListZones_NormalizesTrailingSlash(t *testing.T) {
+	requireTCPListener(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/zones" {
+			t.Errorf("Expected path /api/v1/zones, got %s", r.URL.Path)
+		}
+
+		writeListZonesPage(w, 0, 0)
+	}))
+	defer server.Close()
+
+	cfg := config.ControllerClientConfig{
+		URL:           server.URL + "/",
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.ListZones(context.Background()); err != nil {
+		t.Fatalf("ListZones failed: %v", err)
 	}
 }
 

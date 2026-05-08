@@ -127,7 +127,7 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 
 	return &Client{
 		httpClient:      httpClient,
-		baseURL:         cfg.URL,
+		baseURL:         strings.TrimRight(cfg.URL, "/"),
 		apiKey:          cfg.APIKey,
 		config:          cfg,
 		verifyChecksums: true,
