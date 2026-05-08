@@ -79,6 +79,9 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	applyServeFlagOverrides(cmd, cfg)
+	if err := config.ValidateControllerConfig(cfg); err != nil {
+		bootstrapLogger.Fatal("Invalid configuration after applying command-line flags", zap.Error(err))
+	}
 
 	logger, err := applogging.NewLogger(cfg.Logging)
 	if err != nil {

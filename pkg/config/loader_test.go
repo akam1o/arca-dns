@@ -821,6 +821,59 @@ func TestValidateAgentConfig_EmptyControllerURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "controller.url")
 }
 
+func TestValidateAgentConfig_InvalidControllerURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "missing scheme",
+			url:  "controller.example.com",
+			want: "missing scheme",
+		},
+		{
+			name: "missing host",
+			url:  "https:///api",
+			want: "missing host",
+		},
+		{
+			name: "unsupported scheme",
+			url:  "ftp://controller.example.com",
+			want: "unsupported scheme",
+		},
+		{
+			name: "query string",
+			url:  "https://controller.example.com?tenant=prod",
+			want: "query strings",
+		},
+		{
+			name: "fragment",
+			url:  "https://controller.example.com#agent",
+			want: "fragments",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.Controller.URL = tc.url
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "controller.url")
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateAgentConfig_NormalizesControllerURL(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Controller.URL = " https://controller.example.com/base/ "
+
+	require.NoError(t, ValidateAgentConfig(cfg))
+	assert.Equal(t, "https://controller.example.com/base", cfg.Controller.URL)
+}
+
 func TestValidateAgentConfig_InvalidControllerClientSettings(t *testing.T) {
 	tests := []struct {
 		name   string

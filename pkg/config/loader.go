@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -415,9 +416,11 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return err
 	}
 
-	if cfg.Controller.URL == "" {
-		return fmt.Errorf("invalid controller.url: empty")
+	controllerURL, err := normalizeControllerURL(cfg.Controller.URL)
+	if err != nil {
+		return err
 	}
+	cfg.Controller.URL = controllerURL
 	if cfg.Controller.Timeout <= 0 {
 		return fmt.Errorf("invalid controller.timeout: must be greater than 0")
 	}
@@ -610,6 +613,34 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	return nil
+}
+
+func normalizeControllerURL(rawURL string) (string, error) {
+	value := strings.TrimSpace(rawURL)
+	if value == "" {
+		return "", fmt.Errorf("invalid controller.url: empty")
+	}
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("invalid controller.url: %w", err)
+	}
+	if parsed.Scheme == "" {
+		return "", fmt.Errorf("invalid controller.url: missing scheme (use http or https)")
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("invalid controller.url: missing host")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("invalid controller.url: unsupported scheme %q (must be http or https)", parsed.Scheme)
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("invalid controller.url: query strings and fragments are not supported")
+	}
+
+	return strings.TrimRight(value, "/"), nil
 }
 
 func healthTestRecordNeedsZone(record string) bool {
