@@ -187,6 +187,47 @@ func TestRouteManagerForceWithdrawRoutesAttemptsAllProtocolsOnErrors(t *testing.
 	}
 }
 
+func TestRouteManagerWithdrawRoutesChangedAttemptsAllProtocolsOnErrors(t *testing.T) {
+	client := &recordingClient{
+		errs: map[string]error{
+			"disable anycast_1": errors.New("socket closed"),
+		},
+		responses: map[string]*Response{
+			"disable anycast_2": {Code: 9001, RawText: "9001 syntax error"},
+		},
+	}
+	manager := mustNewRouteManager(t, client, []string{"anycast_1", "anycast_2", "anycast_3"})
+	manager.announced = true
+
+	changed, err := manager.WithdrawRoutesChanged(context.Background())
+	if err == nil {
+		t.Fatal("expected withdraw error")
+	}
+	if changed {
+		t.Fatal("expected failed withdraw not to report a completed change")
+	}
+	for _, want := range []string{
+		"disable protocol anycast_1: socket closed",
+		"BIRD error disabling anycast_2",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got %v", want, err)
+		}
+	}
+	if !manager.needsWithdraw {
+		t.Fatal("expected failed withdraw to require another withdraw")
+	}
+
+	wantCommands := []string{
+		"disable anycast_1",
+		"disable anycast_2",
+		"disable anycast_3",
+	}
+	if !reflect.DeepEqual(client.commands, wantCommands) {
+		t.Fatalf("commands mismatch\nwant: %v\n got: %v", wantCommands, client.commands)
+	}
+}
+
 func TestRouteManagerWithdrawsAfterPartialAnnounceFailure(t *testing.T) {
 	client := &recordingClient{
 		responses: map[string]*Response{
@@ -253,7 +294,9 @@ func TestRouteManagerAnnounceFailureKeepsPendingWithdrawWhenRollbackFails(t *tes
 		"enable anycast_1",
 		"enable anycast_2",
 		"disable anycast_1",
+		"disable anycast_2",
 		"disable anycast_1",
+		"disable anycast_2",
 	}
 	if !reflect.DeepEqual(client.commands, want) {
 		t.Fatalf("commands mismatch\nwant: %v\n got: %v", want, client.commands)
