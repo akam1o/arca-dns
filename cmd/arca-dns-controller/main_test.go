@@ -41,6 +41,20 @@ func TestNewStoreFromConfig_PostgresRequiresDSN(t *testing.T) {
 	}
 }
 
+func TestNewStoreFromConfig_RejectsMemory(t *testing.T) {
+	cfg := config.DefaultControllerConfig()
+	cfg.Backend.Type = "memory"
+
+	store, err := newStoreFromConfig(cfg)
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("expected error for memory backend")
+	}
+	if !strings.Contains(err.Error(), "unsupported backend type: memory") {
+		t.Fatalf("expected memory backend error, got %v", err)
+	}
+}
+
 func TestSignerOptionsFromConfig(t *testing.T) {
 	cfg := config.DNSSECConfig{
 		SignatureValidity:  48 * time.Hour,

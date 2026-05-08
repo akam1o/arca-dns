@@ -67,7 +67,7 @@ arca-dns は、BGP Anycast とコントロール/データプレーン分離ア�
    - 差し替え可能なストレージ: SQLite（既定）/ PostgreSQL / MySQL / Git / etcd
    - capability ベースのインターフェイス（ZoneStore, TransactionalStore, RevisionStore, WatchableStore）
    - トランザクション（SQLite, PostgreSQL, MySQL）、バージョニング（Git）、watch（etcd）
-   - Memory バックエンドはテスト用に利用可能（本番は非推奨）
+   - 使い捨てのローカルテストには SQLite の `:memory:` を使用
 
 **データフロー**:
 ```
@@ -367,4 +367,3 @@ type Zone struct {
 4. **高度な RBAC**: ゾーン単位の権限
 5. **Geo-steering**: クライアント地域に応じた応答
 6. **クエリアナリティクス**: 異常検知など
-

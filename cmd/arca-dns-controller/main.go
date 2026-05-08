@@ -267,9 +267,6 @@ func newStoreFromConfig(cfg *config.ControllerConfig) (backend.ZoneStore, error)
 	configMap := make(map[string]interface{})
 
 	switch cfg.Backend.Type {
-	case "memory":
-		return backend.NewBackend("memory", configMap)
-
 	case "sqlite":
 		if cfg.Backend.SQLite.DSN != "" {
 			configMap["dsn"] = cfg.Backend.SQLite.DSN

@@ -282,7 +282,7 @@ api:
     api_keys:
       admin: "` + validTestAPIKeyHash + `"
 backend:
-  type: "memory"
+  type: "sqlite"
 logging:
   level: "info"
 `
@@ -514,11 +514,15 @@ func TestValidateControllerConfig_EmptyAPIListen(t *testing.T) {
 }
 
 func TestValidateControllerConfig_InvalidBackendType(t *testing.T) {
-	cfg := validControllerConfigForTest()
-	cfg.Backend.Type = "invalid"
-	err := ValidateControllerConfig(cfg)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "backend.type")
+	for _, backendType := range []string{"invalid", "memory"} {
+		t.Run(backendType, func(t *testing.T) {
+			cfg := validControllerConfigForTest()
+			cfg.Backend.Type = backendType
+			err := ValidateControllerConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "backend.type")
+		})
+	}
 }
 
 func TestValidateControllerConfig_InvalidRateLimit(t *testing.T) {

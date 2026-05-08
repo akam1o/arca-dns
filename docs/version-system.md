@@ -194,7 +194,6 @@ another client's changes after reading stale data.
 | MySQL      | Optional   | `zone_versions` table |
 | Git        | Yes        | Git commits and version trailers |
 | etcd       | Yes        | etcd revisions |
-| Memory     | No         | Current in-memory value only |
 
 ### Listing Versions
 

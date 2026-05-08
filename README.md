@@ -149,7 +149,7 @@ api:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
 
 backend:
-  type: "sqlite"  # Options: sqlite, postgres, mysql, git, etcd, memory
+  type: "sqlite"  # Options: sqlite, postgres, mysql, git, etcd
 
 dnssec:
   enabled: true

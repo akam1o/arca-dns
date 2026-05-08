@@ -14,7 +14,8 @@ import (
 )
 
 // MemoryBackend is an in-memory implementation of ZoneStore.
-// It is thread-safe and suitable for testing and development.
+// Deprecated: retained only for tests. Use SQLite with DSN ":memory:" for
+// disposable runtime storage.
 type MemoryBackend struct {
 	mu     sync.RWMutex
 	zones  map[string]*model.Zone
@@ -22,6 +23,8 @@ type MemoryBackend struct {
 }
 
 // NewMemoryBackend creates a new in-memory backend.
+// Deprecated: retained only for tests. Use NewSQLiteBackend(":memory:") for
+// disposable runtime storage.
 func NewMemoryBackend() *MemoryBackend {
 	return &MemoryBackend{
 		zones: make(map[string]*model.Zone),
@@ -244,7 +247,7 @@ func (m *MemoryBackend) Info() BackendInfo {
 		Type:         "memory",
 		Capabilities: []string{"ZoneStore", "DNSSECMetadataStore"},
 		Consistency:  "strong",
-		Description:  "In-memory storage (non-persistent, for testing and development)",
+		Description:  "In-memory storage (test-only, not registered as runtime backend)",
 	}
 }
 
@@ -265,6 +268,12 @@ func copyZone(zone *model.Zone) *model.Zone {
 	}
 
 	copy(copied.Records, zone.Records)
+	for i := range copied.Records {
+		if zone.Records[i].Priority != nil {
+			priority := *zone.Records[i].Priority
+			copied.Records[i].Priority = &priority
+		}
+	}
 
 	if zone.DNSSEC != nil {
 		copied.DNSSEC = cloneDNSSECConfig(zone.DNSSEC)
@@ -305,14 +314,4 @@ func generateSerial(currentSerial uint32) uint32 {
 
 	// No larger uint32 value exists. Avoid moving backwards.
 	return currentSerial
-}
-
-// memoryBackendFactory is the factory function for memory backend.
-func memoryBackendFactory(config map[string]interface{}) (ZoneStore, error) {
-	return NewMemoryBackend(), nil
-}
-
-func init() {
-	// Register the memory backend
-	RegisterBackend("memory", memoryBackendFactory)
 }

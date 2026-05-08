@@ -200,7 +200,7 @@ const (
 
 // BackendInfo provides metadata about a backend implementation.
 type BackendInfo struct {
-	// Type is the backend type (memory, mysql, git, etcd).
+	// Type is the backend type (sqlite, postgres, mysql, git, etcd).
 	Type string
 
 	// Capabilities lists the optional interfaces this backend implements.

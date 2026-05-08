@@ -23,7 +23,7 @@ api:
     burst: 200
 
 backend:
-  type: "sqlite" # sqlite|postgres|mysql|git|etcd|memory
+  type: "sqlite" # sqlite|postgres|mysql|git|etcd
   sqlite:
     dsn: "file:/var/lib/arca-dns/arca-dns.db" # persistent path or ":memory:" for testing
   postgres:

@@ -178,7 +178,6 @@ Client                    Controller
 | MySQL      | Optional   | `zone_versions` table |
 | Git        | Yes        | Git commits and version trailers |
 | etcd       | Yes        | etcd revisions |
-| Memory     | No         | current in-memory value only |
 
 ### バージョン一覧
 
