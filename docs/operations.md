@@ -543,22 +543,23 @@ server:
 NEW_ADMIN_KEY=$(openssl rand -hex 32)
 NEW_ADMIN_HASH=$(printf '%s' "$NEW_ADMIN_KEY" | sha256sum | cut -d' ' -f1)
 
-# Update controller config
+# Update controller config.
+# Replace <...> placeholders with the generated hash values.
 # Add the new admin key while keeping the old admin and agent keys.
 # Do not distribute admin keys to agents.
 api:
   auth:
     api_keys:
-      old_admin: "sha256:OLD_ADMIN_HASH"
-      new_admin: "sha256:$NEW_ADMIN_HASH"
-      agent: "sha256:CURRENT_AGENT_HASH"
+      old_admin: "sha256:<OLD_ADMIN_HASH>"
+      new_admin: "sha256:<NEW_ADMIN_HASH>"
+      agent: "sha256:<CURRENT_AGENT_HASH>"
     api_key_roles:
       old_admin: "admin"
       new_admin: "admin"
       agent: "agent"
 
-# Reload controller
-systemctl reload arca-dns-controller
+# Restart controller so the new key is loaded
+systemctl restart arca-dns-controller
 
 # Test the new admin key
 curl -H "X-API-Key: $NEW_ADMIN_KEY" https://controller:8080/api/v1/zones
@@ -571,21 +572,22 @@ curl -H "X-API-Key: $NEW_ADMIN_KEY" https://controller:8080/api/v1/zones
 NEW_AGENT_KEY=$(openssl rand -hex 32)
 NEW_AGENT_HASH=$(printf '%s' "$NEW_AGENT_KEY" | sha256sum | cut -d' ' -f1)
 
-# Update controller config
+# Update controller config.
+# Replace <...> placeholders with the generated hash values.
 # Keep an admin key and mark both agent keys with the agent role.
 api:
   auth:
     api_keys:
-      admin: "sha256:CURRENT_ADMIN_HASH"
-      old_agent: "sha256:OLD_AGENT_HASH"
-      new_agent: "sha256:$NEW_AGENT_HASH"
+      admin: "sha256:<CURRENT_ADMIN_HASH>"
+      old_agent: "sha256:<OLD_AGENT_HASH>"
+      new_agent: "sha256:<NEW_AGENT_HASH>"
     api_key_roles:
       admin: "admin"
       old_agent: "agent"
       new_agent: "agent"
 
-# Reload controller, then update agents with NEW_AGENT_KEY
-systemctl reload arca-dns-controller
+# Restart controller, then update agents with NEW_AGENT_KEY
+systemctl restart arca-dns-controller
 
 # Test the new agent key against the agent sync view
 curl -H "X-API-Key: $NEW_AGENT_KEY" \

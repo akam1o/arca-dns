@@ -545,21 +545,22 @@ NEW_ADMIN_KEY=$(openssl rand -hex 32)
 NEW_ADMIN_HASH=$(printf '%s' "$NEW_ADMIN_KEY" | sha256sum | cut -d' ' -f1)
 
 # controller config を更新
+# <...> placeholder を生成した hash 値に置き換えてください。
 # 既存の admin key と agent key を残したまま、新しい admin key を追加します。
 # admin key を agent に配布しないでください。
 api:
   auth:
     api_keys:
-      old_admin: "sha256:OLD_ADMIN_HASH"
-      new_admin: "sha256:$NEW_ADMIN_HASH"
-      agent: "sha256:CURRENT_AGENT_HASH"
+      old_admin: "sha256:<OLD_ADMIN_HASH>"
+      new_admin: "sha256:<NEW_ADMIN_HASH>"
+      agent: "sha256:<CURRENT_AGENT_HASH>"
     api_key_roles:
       old_admin: "admin"
       new_admin: "admin"
       agent: "agent"
 
-# controller を reload
-systemctl reload arca-dns-controller
+# 新しい key を読み込むため controller を restart
+systemctl restart arca-dns-controller
 
 # 新しい admin key を確認
 curl -H "X-API-Key: $NEW_ADMIN_KEY" https://controller:8080/api/v1/zones
@@ -573,20 +574,21 @@ NEW_AGENT_KEY=$(openssl rand -hex 32)
 NEW_AGENT_HASH=$(printf '%s' "$NEW_AGENT_KEY" | sha256sum | cut -d' ' -f1)
 
 # controller config を更新
+# <...> placeholder を生成した hash 値に置き換えてください。
 # admin key を残し、agent key は両方 agent role にします。
 api:
   auth:
     api_keys:
-      admin: "sha256:CURRENT_ADMIN_HASH"
-      old_agent: "sha256:OLD_AGENT_HASH"
-      new_agent: "sha256:$NEW_AGENT_HASH"
+      admin: "sha256:<CURRENT_ADMIN_HASH>"
+      old_agent: "sha256:<OLD_AGENT_HASH>"
+      new_agent: "sha256:<NEW_AGENT_HASH>"
     api_key_roles:
       admin: "admin"
       old_agent: "agent"
       new_agent: "agent"
 
-# controller を reload してから、agent に NEW_AGENT_KEY を設定
-systemctl reload arca-dns-controller
+# controller を restart してから、agent に NEW_AGENT_KEY を設定
+systemctl restart arca-dns-controller
 
 # 新しい agent key を同期用 view で確認
 curl -H "X-API-Key: $NEW_AGENT_KEY" \
