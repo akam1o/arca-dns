@@ -1,4 +1,4 @@
-.PHONY: build test lint clean install-tools
+.PHONY: build test lint vulncheck clean install-tools
 
 # Go parameters
 GOCMD=go
@@ -8,6 +8,7 @@ GOMODCACHE?=$(CURDIR)/.cache/gomod
 GOLANGCI_LINT_CACHE?=$(CURDIR)/.cache/golangci-lint
 GOLANGCI_LINT_VERSION?=v1.64.8
 GOLANGCI_LINT_MODULE?=github.com/golangci/golangci-lint/cmd/golangci-lint
+GOVULNCHECK_VERSION?=latest
 export GOCACHE
 export GOPATH
 export GOMODCACHE
@@ -56,6 +57,11 @@ lint:
 	@test -x "$(TOOLS_BIN)/golangci-lint" || { echo "golangci-lint not installed. Run: make install-tools"; exit 1; }
 	$(TOOLS_BIN)/golangci-lint run $(GOLANGCI_LINT_FLAGS) ./...
 
+vulncheck:
+	@echo "Running govulncheck..."
+	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(TOOLS_BIN)"
+	$(GOCMD) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+
 install-tools:
 	@echo "Installing development tools..."
 	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(TOOLS_BIN)"
@@ -102,6 +108,7 @@ help:
 	@echo "  test             - Run tests with race detector"
 	@echo "  test-coverage    - Generate test coverage report"
 	@echo "  lint             - Run golangci-lint"
+	@echo "  vulncheck        - Run govulncheck"
 	@echo "  clean            - Remove build artifacts"
 	@echo "  fmt              - Format code"
 	@echo "  vet              - Run go vet"
