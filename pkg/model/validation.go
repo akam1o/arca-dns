@@ -126,7 +126,23 @@ func NormalizeZoneDerivedFields(zone *Zone) error {
 	}
 
 	for i := range zone.Records {
-		if err := NormalizeRecordDerivedFields(&zone.Records[i]); err != nil {
+		if err := normalizeRecordDerivedFields(&zone.Records[i], true); err != nil {
+			return fmt.Errorf("invalid record at index %d: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+// RepairZoneDerivedFields normalizes fields derived from trusted persisted
+// record data, overwriting stale derived values instead of rejecting them.
+func RepairZoneDerivedFields(zone *Zone) error {
+	if zone == nil {
+		return fmt.Errorf("zone is nil")
+	}
+
+	for i := range zone.Records {
+		if err := normalizeRecordDerivedFields(&zone.Records[i], false); err != nil {
 			return fmt.Errorf("invalid record at index %d: %w", i, err)
 		}
 	}
@@ -137,6 +153,16 @@ func NormalizeZoneDerivedFields(zone *Zone) error {
 // NormalizeRecordDerivedFields normalizes record fields that must mirror the
 // canonical RDATA representation.
 func NormalizeRecordDerivedFields(record *Record) error {
+	return normalizeRecordDerivedFields(record, true)
+}
+
+// RepairRecordDerivedFields overwrites stale derived fields in trusted
+// persisted record data.
+func RepairRecordDerivedFields(record *Record) error {
+	return normalizeRecordDerivedFields(record, false)
+}
+
+func normalizeRecordDerivedFields(record *Record, rejectMismatch bool) error {
 	if record == nil {
 		return fmt.Errorf("record is nil")
 	}
@@ -149,7 +175,7 @@ func NormalizeRecordDerivedFields(record *Record) error {
 		record.Priority = nil
 		return nil
 	}
-	if record.Priority != nil && *record.Priority != priority {
+	if rejectMismatch && record.Priority != nil && *record.Priority != priority {
 		return fmt.Errorf("%s priority %d does not match value priority %d", record.Type, *record.Priority, priority)
 	}
 

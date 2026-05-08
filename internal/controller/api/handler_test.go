@@ -80,6 +80,71 @@ func (s *zoneStoreWithoutConditionalDelete) Close() error {
 	return s.inner.Close()
 }
 
+type singleZoneStore struct {
+	zone *model.Zone
+}
+
+func (s *singleZoneStore) GetZone(ctx context.Context, name string) (*model.Zone, error) {
+	if s.zone == nil || model.NormalizeZoneName(s.zone.Name) != model.NormalizeZoneName(name) {
+		return nil, model.ErrZoneNotFound
+	}
+	return cloneAPITestZone(s.zone), nil
+}
+
+func (s *singleZoneStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	if s.zone == nil {
+		return []*model.Zone{}, nil
+	}
+	return []*model.Zone{cloneAPITestZone(s.zone)}, nil
+}
+
+func (s *singleZoneStore) CreateZone(ctx context.Context, zone *model.Zone) error {
+	if s.zone != nil {
+		return model.ErrZoneAlreadyExists
+	}
+	s.zone = cloneAPITestZone(zone)
+	return nil
+}
+
+func (s *singleZoneStore) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
+	if s.zone == nil || model.NormalizeZoneName(s.zone.Name) != model.NormalizeZoneName(zone.Name) {
+		return model.ErrZoneNotFound
+	}
+	if expectedVersion != "" && expectedVersion != s.zone.Version {
+		return model.ErrConflict
+	}
+	s.zone = cloneAPITestZone(zone)
+	return nil
+}
+
+func (s *singleZoneStore) DeleteZone(ctx context.Context, name string) error {
+	if s.zone == nil || model.NormalizeZoneName(s.zone.Name) != model.NormalizeZoneName(name) {
+		return model.ErrZoneNotFound
+	}
+	s.zone = nil
+	return nil
+}
+
+func (s *singleZoneStore) Close() error {
+	return nil
+}
+
+func cloneAPITestZone(zone *model.Zone) *model.Zone {
+	if zone == nil {
+		return nil
+	}
+	copied := *zone
+	copied.Records = make([]model.Record, len(zone.Records))
+	copy(copied.Records, zone.Records)
+	for i := range copied.Records {
+		if copied.Records[i].Priority != nil {
+			priority := *copied.Records[i].Priority
+			copied.Records[i].Priority = &priority
+		}
+	}
+	return &copied
+}
+
 func TestCreateZone(t *testing.T) {
 	_, _, server := setupTest(t)
 	defer server.Close()
@@ -472,6 +537,45 @@ func TestUpdateZone_OmittedRecordsPreservesExistingRecords(t *testing.T) {
 	assert.Len(t, updated.Records, 2)
 	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
 	assert.Equal(t, "192.0.2.2", updated.Records[1].Value)
+}
+
+func TestUpdateZone_RepairsStoredDerivedPriority(t *testing.T) {
+	priority := uint16(20)
+	store := &singleZoneStore{
+		zone: &model.Zone{
+			Name:    "example.com.",
+			Version: "v1",
+			SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+			Records: []model.Record{
+				{Name: "@", Type: model.RecordTypeMX, TTL: 300, Value: "10 mail.example.com.", Priority: &priority},
+			},
+		},
+	}
+	_, server := setupTestWithStore(t, store)
+
+	soa := store.zone.SOA
+	soa.Refresh = 7200
+	body, err := json.Marshal(map[string]interface{}{
+		"name": "example.com.",
+		"soa":  soa,
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", "v1")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.Len(t, updated.Records, 1)
+	require.NotNil(t, updated.Records[0].Priority)
+	assert.Equal(t, uint16(10), *updated.Records[0].Priority)
+	assert.Equal(t, uint16(10), *store.zone.Records[0].Priority)
 }
 
 func TestUpdateZone_EmptyRecordsPreservesExistingRecords(t *testing.T) {

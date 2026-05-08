@@ -607,7 +607,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	zone.Records = current.Records
 	zone.DNSSEC = current.DNSSEC
 
-	if err := model.NormalizeZoneDerivedFields(&zone); err != nil {
+	if err := model.RepairZoneDerivedFields(&zone); err != nil {
 		h.logger.Warn("Zone normalization failed", zap.String("zone", zone.Name), zap.Error(err))
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,

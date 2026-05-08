@@ -406,6 +406,16 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 		return nil, "", false
 	}
 
+	if err := model.RepairZoneDerivedFields(zone); err != nil {
+		h.logger.Warn("Zone normalization failed before record mutation", zap.String("zone", zone.Name), zap.Error(err))
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Zone validation failed",
+			map[string]interface{}{"error": err.Error()},
+		))
+		return nil, "", false
+	}
+
 	return zone, zone.Version, true
 }
 

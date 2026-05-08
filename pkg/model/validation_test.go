@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateDomainName(t *testing.T) {
@@ -248,6 +249,23 @@ func TestNormalizeRecordDerivedFields_RejectsPriorityMismatch(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "priority")
 	assert.Equal(t, priority, *record.Priority)
+}
+
+func TestRepairRecordDerivedFields_OverwritesPriorityMismatch(t *testing.T) {
+	priority := uint16(20)
+	record := &Record{
+		Name:     "@",
+		Type:     RecordTypeMX,
+		TTL:      300,
+		Value:    "10 mail.example.com.",
+		Priority: &priority,
+	}
+
+	err := RepairRecordDerivedFields(record)
+
+	assert.NoError(t, err)
+	require.NotNil(t, record.Priority)
+	assert.Equal(t, uint16(10), *record.Priority)
 }
 
 func TestNormalizeRecordDerivedFields_ClearsNonDerivedPriority(t *testing.T) {
