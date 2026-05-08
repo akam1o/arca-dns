@@ -188,6 +188,7 @@ func (rm *RouteManager) WithdrawRoutesChanged(ctx context.Context) (bool, error)
 	}
 
 	if err := rm.withdrawRoutesLocked(ctx); err != nil {
+		rm.announced = false
 		rm.needsWithdraw = true
 		return false, err
 	}

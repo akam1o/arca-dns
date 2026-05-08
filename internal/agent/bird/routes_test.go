@@ -217,6 +217,9 @@ func TestRouteManagerWithdrawRoutesChangedAttemptsAllProtocolsOnErrors(t *testin
 	if !manager.needsWithdraw {
 		t.Fatal("expected failed withdraw to require another withdraw")
 	}
+	if manager.IsAnnounced() {
+		t.Fatal("expected failed withdraw not to leave manager fully announced")
+	}
 
 	wantCommands := []string{
 		"disable anycast_1",
@@ -225,6 +228,29 @@ func TestRouteManagerWithdrawRoutesChangedAttemptsAllProtocolsOnErrors(t *testin
 	}
 	if !reflect.DeepEqual(client.commands, wantCommands) {
 		t.Fatalf("commands mismatch\nwant: %v\n got: %v", wantCommands, client.commands)
+	}
+
+	changed, err = manager.AnnounceRoutesChanged(context.Background())
+	if err != nil {
+		t.Fatalf("announce after failed withdraw failed: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected announce after failed withdraw to re-enable protocols")
+	}
+	if !manager.IsAnnounced() {
+		t.Fatal("expected announce after failed withdraw to mark routes announced")
+	}
+	if manager.needsWithdraw {
+		t.Fatal("expected successful announce to clear pending withdraw")
+	}
+
+	wantCommands = append(wantCommands,
+		"enable anycast_1",
+		"enable anycast_2",
+		"enable anycast_3",
+	)
+	if !reflect.DeepEqual(client.commands, wantCommands) {
+		t.Fatalf("commands mismatch after reannounce\nwant: %v\n got: %v", wantCommands, client.commands)
 	}
 }
 
