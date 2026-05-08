@@ -1,8 +1,11 @@
 package api
 
 import (
+	"net/http"
+
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/middleware"
+	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -41,36 +44,42 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 	protected := v1.Group("")
 	if cfg != nil && cfg.Auth.Enabled {
 		authConfig := middleware.AuthConfig{
-			APIKeys:    cfg.Auth.APIKeys,
-			HeaderName: "X-API-Key",
+			APIKeys:     cfg.Auth.APIKeys,
+			APIKeyRoles: cfg.Auth.APIKeyRoles,
+			HeaderName:  "X-API-Key",
 		}
 		authenticator := middleware.NewAuthenticator(authConfig)
 		protected.Use(authenticator.Middleware())
 	}
-	protected.Use(requestValidator.Middleware())
+
+	authEnabled := cfg != nil && cfg.Auth.Enabled
+	adminOnly := protected.Group("")
+	adminOnly.Use(roleGuard(authEnabled, middleware.AuthRoleAdmin), requestValidator.Middleware())
+	agentReadable := protected.Group("")
+	agentReadable.Use(roleGuard(authEnabled, middleware.AuthRoleAgent), requestValidator.Middleware())
 	{
 		// Zone management
-		protected.POST("/zones", handler.CreateZone)
-		protected.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
-		protected.GET("/zones", handler.ListZones)
-		protected.HEAD("/zones/:name", handler.HeadZone)
-		protected.GET("/zones/:name", handler.GetZone)
-		protected.GET("/zones/:name/versions", handler.ListZoneVersions)
-		protected.GET("/zones/:name/versions/:version", handler.GetZoneRevision)
-		protected.PUT("/zones/:name", handler.UpdateZone)
-		protected.DELETE("/zones/:name", handler.DeleteZone)
-		protected.GET("/zones/:name/records", handler.ListRecords)
-		protected.POST("/zones/:name/records", handler.CreateRecord)
-		protected.POST("/zones/:name/records/batch", handler.BulkRecords)
-		protected.PUT("/zones/:name/records/:id", handler.UpdateRecord)
-		protected.DELETE("/zones/:name/records/:id", handler.DeleteRecord)
+		adminOnly.POST("/zones", handler.CreateZone)
+		adminOnly.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
+		agentReadable.GET("/zones", requireSummaryListForAgent(), handler.ListZones)
+		adminOnly.HEAD("/zones/:name", handler.HeadZone)
+		adminOnly.GET("/zones/:name", handler.GetZone)
+		adminOnly.GET("/zones/:name/versions", handler.ListZoneVersions)
+		adminOnly.GET("/zones/:name/versions/:version", handler.GetZoneRevision)
+		adminOnly.PUT("/zones/:name", handler.UpdateZone)
+		adminOnly.DELETE("/zones/:name", handler.DeleteZone)
+		adminOnly.GET("/zones/:name/records", handler.ListRecords)
+		adminOnly.POST("/zones/:name/records", handler.CreateRecord)
+		adminOnly.POST("/zones/:name/records/batch", handler.BulkRecords)
+		adminOnly.PUT("/zones/:name/records/:id", handler.UpdateRecord)
+		adminOnly.DELETE("/zones/:name/records/:id", handler.DeleteRecord)
 
 		// Zone file download (for agents)
-		protected.HEAD("/zones/:name/signed", handler.HeadSignedZone)
-		protected.GET("/zones/:name/signed", handler.GetSignedZone)
-		protected.GET("/zones/:name/signed/metadata", handler.GetSignedZoneMetadata)
-		protected.GET("/zones/:name/ds", handler.GetDSRecords)
-		protected.GET("/zones/:name/dnssec/ds", handler.GetDSRecords)
+		agentReadable.HEAD("/zones/:name/signed", handler.HeadSignedZone)
+		agentReadable.GET("/zones/:name/signed", handler.GetSignedZone)
+		agentReadable.GET("/zones/:name/signed/metadata", handler.GetSignedZoneMetadata)
+		adminOnly.GET("/zones/:name/ds", handler.GetDSRecords)
+		adminOnly.GET("/zones/:name/dnssec/ds", handler.GetDSRecords)
 	}
 
 	return router
@@ -121,6 +130,31 @@ func registerObservabilityRoutes(routes routeGroup, handler *Handler) {
 	routes.GET("/ready", handler.Ready)
 	routes.GET("/status", handler.Status)
 	routes.GET("/metrics", handler.Metrics)
+}
+
+func roleGuard(authEnabled bool, allowedRoles ...string) gin.HandlerFunc {
+	if !authEnabled {
+		return func(c *gin.Context) {
+			c.Next()
+		}
+	}
+	return middleware.RequireRole(allowedRoles...)
+}
+
+func requireSummaryListForAgent() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.GetString("auth_role") != middleware.AuthRoleAgent || listZonesSummaryOnly(c) {
+			c.Next()
+			return
+		}
+
+		c.JSON(http.StatusForbidden, model.NewAPIErrorWithDetails(
+			model.ErrorCodeForbidden,
+			"Agent API keys may only list zone summaries",
+			map[string]interface{}{"required_query": "fields=summary"},
+		))
+		c.Abort()
+	}
 }
 
 func writeRPSFromReadRPS(readRPS int) int {

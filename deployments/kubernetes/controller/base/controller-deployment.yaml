@@ -29,6 +29,11 @@ spec:
                 secretKeyRef:
                   name: arca-dns-secrets
                   key: api-key-hash
+            - name: ARCA_DNS_API_AUTH_API_KEYS_AGENT
+              valueFrom:
+                secretKeyRef:
+                  name: arca-dns-secrets
+                  key: agent-api-key-hash
             - name: ARCA_DNS_DNSSEC_MASTER_KEY_B64
               valueFrom:
                 secretKeyRef:

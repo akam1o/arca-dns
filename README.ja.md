@@ -145,6 +145,10 @@ api:
     enabled: true
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
+    api_key_roles:
+      admin: "admin"
+      agent: "agent"
 
 observability:
   # 認証なしの /health, /ready, /status, /metrics endpoint です。
@@ -166,7 +170,7 @@ controller:
   # 意図して信頼したローカル/プライベート transport でない限り https:// を推奨します。
   # api_key と http:// を併用すると警告ログを出します。
   url: "http://localhost:8080"
-  api_key: "REPLACE_WITH_RAW_API_KEY"
+  api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
 
 sync:
   sync_interval: "30s"

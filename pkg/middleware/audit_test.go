@@ -47,4 +47,5 @@ func TestAuditLogger_Middleware_LogsAuthenticatedPrincipal(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, "api_request", entries[0].Message)
 	assert.Equal(t, "test_admin", entries[0].ContextMap()["auth_principal"])
+	assert.Equal(t, AuthRoleAdmin, entries[0].ContextMap()["auth_role"])
 }

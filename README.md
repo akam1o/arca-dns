@@ -147,6 +147,10 @@ api:
     enabled: true
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
+    api_key_roles:
+      admin: "admin"
+      agent: "agent"
 
 observability:
   # Unauthenticated /health, /ready, /status, and /metrics endpoints.
@@ -168,7 +172,7 @@ controller:
   # Prefer https:// unless this is an intentionally trusted local/private transport.
   # Using http:// with api_key logs a warning.
   url: "http://localhost:8080"
-  api_key: "REPLACE_WITH_RAW_API_KEY"
+  api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
 
 sync:
   sync_interval: "30s"

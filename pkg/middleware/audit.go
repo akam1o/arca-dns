@@ -47,6 +47,10 @@ func (al *AuditLogger) Middleware() gin.HandlerFunc {
 		if authPrincipal == "" {
 			authPrincipal = "anonymous"
 		}
+		authRole := c.GetString("auth_role")
+		if authRole == "" {
+			authRole = "none"
+		}
 
 		// Log audit entry
 		al.logger.Info("api_request",
@@ -59,6 +63,7 @@ func (al *AuditLogger) Middleware() gin.HandlerFunc {
 			zap.String("client_ip", c.ClientIP()),
 			zap.String("user_agent", c.Request.UserAgent()),
 			zap.String("auth_principal", authPrincipal),
+			zap.String("auth_role", authRole),
 			zap.Int("response_size", c.Writer.Size()),
 		)
 	}

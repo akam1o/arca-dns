@@ -31,7 +31,8 @@ func TestAuthenticator_Middleware_ValidKey(t *testing.T) {
 	router.Use(auth.Middleware())
 	router.GET("/test", func(c *gin.Context) {
 		principal := c.GetString("auth_principal")
-		c.JSON(200, gin.H{"principal": principal})
+		role := c.GetString("auth_role")
+		c.JSON(200, gin.H{"principal": principal, "role": role})
 	})
 
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -41,6 +42,78 @@ func TestAuthenticator_Middleware_ValidKey(t *testing.T) {
 
 	assert.Equal(t, 200, w.Code)
 	assert.Contains(t, w.Body.String(), "test_admin")
+	assert.Contains(t, w.Body.String(), AuthRoleAdmin)
+}
+
+func TestAuthenticator_Middleware_SetsConfiguredRole(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	testKey := "agent-api-key-12345"
+	hash := sha256.Sum256([]byte(testKey))
+	hashStr := "sha256:" + hex.EncodeToString(hash[:])
+
+	auth := NewAuthenticator(AuthConfig{
+		APIKeys: map[string]string{
+			"agent": hashStr,
+		},
+		APIKeyRoles: map[string]string{
+			"agent": AuthRoleAgent,
+		},
+	})
+	router := gin.New()
+	router.Use(auth.Middleware())
+	router.GET("/test", func(c *gin.Context) {
+		c.JSON(200, gin.H{"role": c.GetString("auth_role")})
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("X-API-Key", testKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, 200, w.Code)
+	assert.Contains(t, w.Body.String(), AuthRoleAgent)
+}
+
+func TestRequireRole_AllowsAdminForAgentEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("auth_role", AuthRoleAdmin)
+		c.Next()
+	})
+	router.Use(RequireRole(AuthRoleAgent))
+	router.GET("/test", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, 200, w.Code)
+}
+
+func TestRequireRole_RejectsAgentForAdminEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("auth_role", AuthRoleAgent)
+		c.Next()
+	})
+	router.Use(RequireRole(AuthRoleAdmin))
+	router.GET("/test", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, 403, w.Code)
+	assert.Contains(t, w.Body.String(), "forbidden")
 }
 
 func TestAuthenticator_Middleware_NormalizesConfiguredHash(t *testing.T) {

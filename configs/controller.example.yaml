@@ -17,6 +17,10 @@ api:
       # Generate: echo -n 'your-api-key' | sha256sum
       # Then prefix with "sha256:".
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
+    api_key_roles:
+      admin: "admin"
+      agent: "agent"
   rate_limit:
     enabled: true
     requests_per_second: 100

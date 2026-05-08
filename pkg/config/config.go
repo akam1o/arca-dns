@@ -126,6 +126,10 @@ type AuthConfig struct {
 
 	// APIKeys is a map of API key name to hashed key
 	APIKeys map[string]string `mapstructure:"api_keys"`
+
+	// APIKeyRoles maps API key names to roles. Supported roles: admin, agent.
+	// Keys without an explicit role default to admin for backward compatibility.
+	APIKeyRoles map[string]string `mapstructure:"api_key_roles"`
 }
 
 // RateLimitConfig configures rate limiting.

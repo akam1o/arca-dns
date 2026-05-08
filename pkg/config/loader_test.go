@@ -341,6 +341,7 @@ func TestLoadControllerConfig_NestedEnvOverrides(t *testing.T) {
 func TestLoadControllerConfig_APIKeyEnvMergesAndOverridesYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", alternateValidTestAPIKeyHash)
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_EDGE_AGENT", validTestAPIKeyHash)
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEY_ROLES_EDGE_AGENT", "agent")
 	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 
 	tmpDir := t.TempDir()
@@ -353,6 +354,8 @@ api:
     api_keys:
       admin: "` + validTestAPIKeyHash + `"
       readonly: "` + validTestAPIKeyHash + `"
+    api_key_roles:
+      readonly: "agent"
 `
 	err := os.WriteFile(configPath, []byte(configContent), 0644)
 	require.NoError(t, err)
@@ -363,6 +366,9 @@ api:
 	assert.Equal(t, alternateValidTestAPIKeyHash, cfg.API.Auth.APIKeys["admin"])
 	assert.Equal(t, validTestAPIKeyHash, cfg.API.Auth.APIKeys["edge_agent"])
 	assert.Equal(t, validTestAPIKeyHash, cfg.API.Auth.APIKeys["readonly"])
+	assert.Equal(t, "admin", cfg.API.Auth.APIKeyRoles["admin"])
+	assert.Equal(t, "agent", cfg.API.Auth.APIKeyRoles["edge_agent"])
+	assert.Equal(t, "agent", cfg.API.Auth.APIKeyRoles["readonly"])
 }
 
 func TestLoadControllerConfig_NormalizesAPIKeyHashes(t *testing.T) {
@@ -454,6 +460,55 @@ func TestValidateControllerConfig_AuthEnabledNormalizesAPIKeyHashes(t *testing.T
 	require.NoError(t, err)
 
 	assert.Equal(t, "sha256:"+strings.Repeat("b", 64), cfg.API.Auth.APIKeys["admin"])
+	assert.Equal(t, "admin", cfg.API.Auth.APIKeyRoles["admin"])
+}
+
+func TestValidateControllerConfig_AuthRoles(t *testing.T) {
+	t.Run("allows admin and agent roles", func(t *testing.T) {
+		cfg := validControllerConfigForTest()
+		cfg.API.Auth.APIKeys["agent"] = alternateValidTestAPIKeyHash
+		cfg.API.Auth.APIKeyRoles = map[string]string{
+			"agent": " agent ",
+		}
+
+		err := ValidateControllerConfig(cfg)
+		require.NoError(t, err)
+		assert.Equal(t, "admin", cfg.API.Auth.APIKeyRoles["admin"])
+		assert.Equal(t, "agent", cfg.API.Auth.APIKeyRoles["agent"])
+	})
+
+	t.Run("rejects unknown role", func(t *testing.T) {
+		cfg := validControllerConfigForTest()
+		cfg.API.Auth.APIKeyRoles = map[string]string{
+			"admin": "readonly",
+		}
+
+		err := ValidateControllerConfig(cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "api.auth.api_key_roles.admin")
+	})
+
+	t.Run("rejects role for unknown key", func(t *testing.T) {
+		cfg := validControllerConfigForTest()
+		cfg.API.Auth.APIKeyRoles = map[string]string{
+			"agent": "agent",
+		}
+
+		err := ValidateControllerConfig(cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "api.auth.api_key_roles.agent")
+	})
+
+	t.Run("requires at least one admin key", func(t *testing.T) {
+		cfg := validControllerConfigForTest()
+		cfg.API.Auth.APIKeyRoles = map[string]string{
+			"admin": "agent",
+		}
+
+		err := ValidateControllerConfig(cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at least one admin")
+	})
 }
 
 func TestValidateControllerConfig_AuthDisabledAllowsEmptyAPIKeys(t *testing.T) {

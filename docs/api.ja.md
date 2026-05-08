@@ -17,6 +17,8 @@ controller 設定で API 認証を有効にしている場合、*保護された
 X-API-Key: <api-key>
 ```
 
+API キーには `api.auth.api_key_roles` で role を割り当てられます。`admin` key は管理 API にアクセスでき、`agent` key は zone summary 一覧と signed artifact 読み取りに制限されます。
+
 Observability endpoint（`/health`, `/ready`, `/status`, `/metrics`）は認証不要で、分離された observability listener から提供されます。
 
 ## データモデル（Zone）

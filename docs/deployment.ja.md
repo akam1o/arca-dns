@@ -65,12 +65,16 @@ agent container image には `arca-dns-agent` のみが含まれます。`nsd.en
 controller の既定は `api.auth.enabled: true` です。認証が有効な場合、`api.auth.api_keys` に `sha256:<64 hex>` 形式のハッシュが 1 つ以上必要です。
 
 ```bash
-API_KEY="$(openssl rand -hex 32)"
-API_KEY_HASH="sha256:$(printf '%s' "$API_KEY" | sha256sum | awk '{print $1}')"
+ADMIN_API_KEY="$(openssl rand -hex 32)"
+ADMIN_API_KEY_HASH="sha256:$(printf '%s' "$ADMIN_API_KEY" | sha256sum | awk '{print $1}')"
+AGENT_API_KEY="$(openssl rand -hex 32)"
+AGENT_API_KEY_HASH="sha256:$(printf '%s' "$AGENT_API_KEY" | sha256sum | awk '{print $1}')"
 SHARED_SIGNATURE_KEY="$(openssl rand -base64 32)"
 
-printf 'raw api key: %s\n' "$API_KEY"
-printf 'hash: %s\n' "$API_KEY_HASH"
+printf 'raw admin api key: %s\n' "$ADMIN_API_KEY"
+printf 'admin hash: %s\n' "$ADMIN_API_KEY_HASH"
+printf 'raw agent api key: %s\n' "$AGENT_API_KEY"
+printf 'agent hash: %s\n' "$AGENT_API_KEY_HASH"
 ```
 
 controller にはハッシュを設定します。
@@ -83,6 +87,10 @@ api:
     enabled: true
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
+    api_key_roles:
+      admin: "admin"
+      agent: "agent"
 ```
 
 agent には生の API キーを設定します。
@@ -90,7 +98,7 @@ agent には生の API キーを設定します。
 ```yaml
 controller:
   url: "https://controller.example.com"
-  api_key: "REPLACE_WITH_RAW_API_KEY"
+  api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
 
 sync:
   verify_signatures: true
@@ -101,7 +109,9 @@ sync:
 環境変数だけで controller の API キーを渡す場合は、次の形式を使えます。suffix は小文字化され、principal 名になります。
 
 ```bash
-export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$ADMIN_API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEYS_AGENT="$AGENT_API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEY_ROLES_AGENT="agent"
 export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$SHARED_SIGNATURE_KEY"
 ```
 
@@ -333,6 +343,8 @@ Compose 例は `deployments/compose/controller-mysql/docker-compose.yaml` にあ
 ```bash
 export ARCA_DNS_API_KEY="$(openssl rand -hex 32)"
 export ARCA_DNS_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_API_KEY" | sha256sum | awk '{print $1}')"
+export ARCA_DNS_AGENT_API_KEY="$(openssl rand -hex 32)"
+export ARCA_DNS_AGENT_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_AGENT_API_KEY" | sha256sum | awk '{print $1}')"
 export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
 export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$(openssl rand -base64 32)"
 ```
@@ -376,7 +388,7 @@ Kustomize entrypoint:
 
 ### 1. Secret を置き換える
 
-`deployments/kubernetes/controller/base/controller-secret.yaml` の `api-key-hash`、`dnssec-master-key-b64`、`artifact-signature-key` を置き換えます。
+`deployments/kubernetes/controller/base/controller-secret.yaml` の `api-key-hash`、`agent-api-key-hash`、`dnssec-master-key-b64`、`artifact-signature-key` を置き換えます。
 
 ```bash
 openssl rand -base64 32
@@ -391,7 +403,7 @@ openssl rand -base64 32
 - `storage.*`
 - `dnssec.*`
 
-Deployment は `api-key-hash` を `ARCA_DNS_API_AUTH_API_KEYS_ADMIN` として読み込むため、Secret の値が ConfigMap の placeholder hash を上書きします。demo overlay を使う場合も、適用前に placeholder 値を置き換えるか上書きしてください。
+Deployment は `api-key-hash` を `ARCA_DNS_API_AUTH_API_KEYS_ADMIN`、`agent-api-key-hash` を `ARCA_DNS_API_AUTH_API_KEYS_AGENT` として読み込むため、Secret の値が ConfigMap の placeholder hash を上書きします。demo overlay を使う場合も、適用前に placeholder 値を置き換えるか上書きしてください。
 
 ### 3. PVC を確認する
 
@@ -429,10 +441,10 @@ Ingress 例は `deployments/kubernetes/controller/examples/ingress.yaml` にあ�
 
 agent は controller から次の API を利用します。
 
-- `GET /api/v1/zones`
+- `GET /api/v1/zones?fields=summary`
 - `GET /api/v1/zones/:name/signed`
 
-controller の API 認証が有効な場合、agent は `X-API-Key` header に `controller.api_key` を付与します。
+controller の API 認証が有効な場合、agent は `X-API-Key` header に `controller.api_key` を付与します。`agent` role の API キーを使ってください。この role は zone summary 一覧と signed artifact 読み取りに制限されます。
 
 zone 同期では次を行います。
 

@@ -65,12 +65,16 @@ The agent container image contains only `arca-dns-agent`. If you run an agent in
 The controller default is `api.auth.enabled: true`. When auth is enabled, `api.auth.api_keys` must contain at least one `sha256:<64 hex>` hash.
 
 ```bash
-API_KEY="$(openssl rand -hex 32)"
-API_KEY_HASH="sha256:$(printf '%s' "$API_KEY" | sha256sum | awk '{print $1}')"
+ADMIN_API_KEY="$(openssl rand -hex 32)"
+ADMIN_API_KEY_HASH="sha256:$(printf '%s' "$ADMIN_API_KEY" | sha256sum | awk '{print $1}')"
+AGENT_API_KEY="$(openssl rand -hex 32)"
+AGENT_API_KEY_HASH="sha256:$(printf '%s' "$AGENT_API_KEY" | sha256sum | awk '{print $1}')"
 SHARED_SIGNATURE_KEY="$(openssl rand -base64 32)"
 
-printf 'raw api key: %s\n' "$API_KEY"
-printf 'hash: %s\n' "$API_KEY_HASH"
+printf 'raw admin api key: %s\n' "$ADMIN_API_KEY"
+printf 'admin hash: %s\n' "$ADMIN_API_KEY_HASH"
+printf 'raw agent api key: %s\n' "$AGENT_API_KEY"
+printf 'agent hash: %s\n' "$AGENT_API_KEY_HASH"
 ```
 
 Set the hash on the controller:
@@ -83,6 +87,10 @@ api:
     enabled: true
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
+    api_key_roles:
+      admin: "admin"
+      agent: "agent"
 ```
 
 Set the raw API key on agents:
@@ -90,7 +98,7 @@ Set the raw API key on agents:
 ```yaml
 controller:
   url: "https://controller.example.com"
-  api_key: "REPLACE_WITH_RAW_API_KEY"
+  api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
 
 sync:
   verify_signatures: true
@@ -101,7 +109,9 @@ sync:
 For env-only controller deployments, API keys can be supplied as:
 
 ```bash
-export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$ADMIN_API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEYS_AGENT="$AGENT_API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEY_ROLES_AGENT="agent"
 export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$SHARED_SIGNATURE_KEY"
 ```
 
@@ -334,6 +344,8 @@ Prepare secrets first:
 ```bash
 export ARCA_DNS_API_KEY="$(openssl rand -hex 32)"
 export ARCA_DNS_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_API_KEY" | sha256sum | awk '{print $1}')"
+export ARCA_DNS_AGENT_API_KEY="$(openssl rand -hex 32)"
+export ARCA_DNS_AGENT_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_AGENT_API_KEY" | sha256sum | awk '{print $1}')"
 export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
 export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$(openssl rand -base64 32)"
 ```
@@ -377,7 +389,7 @@ Kustomize entrypoints:
 
 ### 1. Replace the Secret
 
-Replace `api-key-hash`, `dnssec-master-key-b64`, and `artifact-signature-key` in `deployments/kubernetes/controller/base/controller-secret.yaml`.
+Replace `api-key-hash`, `agent-api-key-hash`, `dnssec-master-key-b64`, and `artifact-signature-key` in `deployments/kubernetes/controller/base/controller-secret.yaml`.
 
 ```bash
 openssl rand -base64 32
@@ -392,7 +404,7 @@ Edit `deployments/kubernetes/controller/base/controller.yaml`.
 - `storage.*`
 - `dnssec.*`
 
-The Deployment reads `api-key-hash` through `ARCA_DNS_API_AUTH_API_KEYS_ADMIN`, so the Secret value overrides the placeholder hash in the ConfigMap. If you use the demo overlay, also replace or override its placeholder values before applying.
+The Deployment reads `api-key-hash` through `ARCA_DNS_API_AUTH_API_KEYS_ADMIN` and `agent-api-key-hash` through `ARCA_DNS_API_AUTH_API_KEYS_AGENT`, so the Secret values override the placeholder hashes in the ConfigMap. If you use the demo overlay, also replace or override its placeholder values before applying.
 
 ### 3. Check the PVC
 
@@ -430,10 +442,10 @@ Ingress example: `deployments/kubernetes/controller/examples/ingress.yaml`. Term
 
 The agent uses these controller APIs:
 
-- `GET /api/v1/zones`
+- `GET /api/v1/zones?fields=summary`
 - `GET /api/v1/zones/:name/signed`
 
-When controller API auth is enabled, the agent sends `controller.api_key` in the `X-API-Key` header.
+When controller API auth is enabled, the agent sends `controller.api_key` in the `X-API-Key` header. Use an API key with the `agent` role; it is limited to zone summary listing and signed artifact reads.
 
 Zone sync does the following:
 

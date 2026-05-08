@@ -13,6 +13,8 @@ import (
 )
 
 const minArtifactSignatureKeyBytes = 32
+const apiKeyRoleAdmin = "admin"
+const apiKeyRoleAgent = "agent"
 
 // LoadControllerConfig loads the controller configuration from the specified file.
 // Priority: defaults < YAML file < environment variables
@@ -159,7 +161,7 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	}
 	cfg.API.TrustedProxies = trustedProxies
 
-	if err := validateControllerAuthConfig(cfg.API.Auth); err != nil {
+	if err := validateControllerAuthConfig(&cfg.API.Auth); err != nil {
 		return err
 	}
 
@@ -302,7 +304,7 @@ func isWildcardListenHost(host string) bool {
 	return host == "" || host == "0.0.0.0" || host == "::"
 }
 
-func validateControllerAuthConfig(auth AuthConfig) error {
+func validateControllerAuthConfig(auth *AuthConfig) error {
 	if !auth.Enabled {
 		return nil
 	}
@@ -321,6 +323,40 @@ func validateControllerAuthConfig(auth AuthConfig) error {
 		}
 		auth.APIKeys[name] = normalizedHash
 	}
+
+	normalizedRoles := make(map[string]string, len(auth.APIKeys))
+	for name := range auth.APIKeys {
+		normalizedRoles[name] = apiKeyRoleAdmin
+	}
+	for name, role := range auth.APIKeyRoles {
+		keyName := strings.TrimSpace(name)
+		if keyName == "" {
+			return fmt.Errorf("invalid api.auth.api_key_roles: key name must not be empty")
+		}
+		if _, ok := auth.APIKeys[keyName]; !ok {
+			return fmt.Errorf("invalid api.auth.api_key_roles.%s: role specified for unknown api.auth.api_keys entry", keyName)
+		}
+
+		normalizedRole := strings.ToLower(strings.TrimSpace(role))
+		switch normalizedRole {
+		case apiKeyRoleAdmin, apiKeyRoleAgent:
+			normalizedRoles[keyName] = normalizedRole
+		default:
+			return fmt.Errorf("invalid api.auth.api_key_roles.%s: must be one of: admin, agent", keyName)
+		}
+	}
+
+	hasAdmin := false
+	for _, role := range normalizedRoles {
+		if role == apiKeyRoleAdmin {
+			hasAdmin = true
+			break
+		}
+	}
+	if !hasAdmin {
+		return fmt.Errorf("invalid api.auth.api_key_roles: at least one admin API key is required when api.auth.enabled is true")
+	}
+	auth.APIKeyRoles = normalizedRoles
 
 	return nil
 }
@@ -606,26 +642,41 @@ func bindControllerEnvVars(v *viper.Viper) {
 }
 
 func bindControllerAPIKeyEnvVars(v *viper.Viper) {
-	const prefix = "ARCA_DNS_API_AUTH_API_KEYS_"
+	const keyPrefix = "ARCA_DNS_API_AUTH_API_KEYS_"
+	const rolePrefix = "ARCA_DNS_API_AUTH_API_KEY_ROLES_"
 
 	apiKeys := make(map[string]string)
 	for name, hash := range v.GetStringMapString("api.auth.api_keys") {
 		apiKeys[name] = hash
 	}
+	apiKeyRoles := make(map[string]string)
+	for name, role := range v.GetStringMapString("api.auth.api_key_roles") {
+		apiKeyRoles[name] = role
+	}
 
 	for _, env := range os.Environ() {
 		name, value, ok := strings.Cut(env, "=")
-		if !ok || !strings.HasPrefix(name, prefix) {
+		if !ok {
 			continue
 		}
 
-		keyName := strings.TrimPrefix(name, prefix)
-		keyName = strings.ToLower(keyName)
-		apiKeys[keyName] = value
+		switch {
+		case strings.HasPrefix(name, keyPrefix):
+			keyName := strings.TrimPrefix(name, keyPrefix)
+			keyName = strings.ToLower(keyName)
+			apiKeys[keyName] = value
+		case strings.HasPrefix(name, rolePrefix):
+			keyName := strings.TrimPrefix(name, rolePrefix)
+			keyName = strings.ToLower(keyName)
+			apiKeyRoles[keyName] = value
+		}
 	}
 
 	if len(apiKeys) > 0 {
 		v.Set("api.auth.api_keys", apiKeys)
+	}
+	if len(apiKeyRoles) > 0 {
+		v.Set("api.auth.api_key_roles", apiKeyRoles)
 	}
 }
 
