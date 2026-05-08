@@ -343,6 +343,7 @@ func TestLoadControllerConfig_APIKeyEnvMergesAndOverridesYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_EDGE_AGENT", validTestAPIKeyHash)
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEY_ROLES_EDGE_AGENT", "agent")
 	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
+	readonlyHash := "sha256:" + strings.Repeat("2", 64)
 
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "controller.yaml")
@@ -353,7 +354,7 @@ api:
     enabled: true
     api_keys:
       admin: "` + validTestAPIKeyHash + `"
-      readonly: "` + validTestAPIKeyHash + `"
+      readonly: "` + readonlyHash + `"
     api_key_roles:
       readonly: "agent"
 `
@@ -365,7 +366,7 @@ api:
 
 	assert.Equal(t, alternateValidTestAPIKeyHash, cfg.API.Auth.APIKeys["admin"])
 	assert.Equal(t, validTestAPIKeyHash, cfg.API.Auth.APIKeys["edge_agent"])
-	assert.Equal(t, validTestAPIKeyHash, cfg.API.Auth.APIKeys["readonly"])
+	assert.Equal(t, readonlyHash, cfg.API.Auth.APIKeys["readonly"])
 	assert.Equal(t, "admin", cfg.API.Auth.APIKeyRoles["admin"])
 	assert.Equal(t, "agent", cfg.API.Auth.APIKeyRoles["edge_agent"])
 	assert.Equal(t, "agent", cfg.API.Auth.APIKeyRoles["readonly"])
@@ -446,6 +447,16 @@ func TestValidateControllerConfig_AuthEnabledRejectsInvalidAPIKeyHash(t *testing
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "api.auth.api_keys.admin")
 	assert.Contains(t, err.Error(), "sha256:<64 hex characters>")
+}
+
+func TestValidateControllerConfig_AuthEnabledRejectsDuplicateAPIKeyHashes(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.API.Auth.APIKeys["agent"] = " sha256:" + strings.ToUpper(strings.TrimPrefix(validTestAPIKeyHash, "sha256:")) + " "
+
+	err := ValidateControllerConfig(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate hash")
+	assert.Contains(t, err.Error(), "api.auth.api_keys")
 }
 
 func TestValidateControllerConfig_AuthEnabledNormalizesAPIKeyHashes(t *testing.T) {

@@ -314,6 +314,7 @@ func validateControllerAuthConfig(auth *AuthConfig) error {
 		return fmt.Errorf("invalid api.auth.api_keys: at least one API key is required when api.auth.enabled is true; add api.auth.api_keys.<name>: sha256:<64-hex-sha256> (generate with: echo -n '<api-key>' | sha256sum), or set api.auth.enabled: false only for intentionally unauthenticated local development")
 	}
 
+	seenHashes := make(map[string]string, len(auth.APIKeys))
 	for name, hash := range auth.APIKeys {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("invalid api.auth.api_keys: key name must not be empty")
@@ -322,6 +323,10 @@ func validateControllerAuthConfig(auth *AuthConfig) error {
 		if !ok {
 			return fmt.Errorf("invalid api.auth.api_keys.%s: expected sha256:<64 hex characters>; generate with: echo -n '<api-key>' | sha256sum", name)
 		}
+		if existingName, exists := seenHashes[normalizedHash]; exists {
+			return fmt.Errorf("invalid api.auth.api_keys.%s: duplicate hash also used by api.auth.api_keys.%s", name, existingName)
+		}
+		seenHashes[normalizedHash] = name
 		auth.APIKeys[name] = normalizedHash
 	}
 
