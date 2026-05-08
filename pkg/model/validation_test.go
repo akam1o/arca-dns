@@ -44,9 +44,9 @@ func TestValidateDomainTargetRejectsApexShorthand(t *testing.T) {
 	assert.NoError(t, ValidateDomainTarget("example.com."))
 }
 
-func TestValidateZoneNameRejectsApexShorthand(t *testing.T) {
+func TestValidateZoneNameRejectsShorthandAndRoot(t *testing.T) {
 	assert.Error(t, ValidateZoneName("@"))
-	assert.NoError(t, ValidateZoneName("."))
+	assert.Error(t, ValidateZoneName("."))
 	assert.NoError(t, ValidateZoneName("example.com."))
 }
 

@@ -341,6 +341,9 @@ func ValidateZoneName(name string) error {
 	if name == "@" {
 		return fmt.Errorf("zone name must not be @")
 	}
+	if name == "." {
+		return fmt.Errorf("zone name must not be root")
+	}
 	return ValidateDomainName(name)
 }
 
