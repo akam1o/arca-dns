@@ -24,9 +24,9 @@ info:
 
 servers:
   - url: http://localhost:8080/api/v1
-    description: Local development server
+    description: Local management API server
   - url: https://dns-controller.example.com/api/v1
-    description: Production server
+    description: Production management API server
 
 security:
   - ApiKeyAuth: []
@@ -44,8 +44,13 @@ paths:
     get:
       tags: [health]
       summary: Prometheus metrics
-      description: Returns Prometheus metrics in text exposition format.
+      description: Returns Prometheus metrics in text exposition format from the observability listener.
       operationId: getMetrics
+      servers:
+        - url: http://localhost:9053
+          description: Local observability server
+        - url: https://dns-controller.example.com
+          description: Production observability server
       security: []  # No authentication required
       responses:
         '200':
@@ -59,8 +64,13 @@ paths:
     get:
       tags: [health]
       summary: Readiness check endpoint
-      description: Returns readiness status of the controller (includes backend connectivity).
+      description: Returns readiness status of the controller from the observability listener (includes backend connectivity).
       operationId: readyCheck
+      servers:
+        - url: http://localhost:9053
+          description: Local observability server
+        - url: https://dns-controller.example.com
+          description: Production observability server
       security: []  # No authentication required
       responses:
         '200':
@@ -976,8 +986,13 @@ paths:
     get:
       tags: [health]
       summary: Health check endpoint
-      description: Returns the health status of the controller
+      description: Returns the health status of the controller from the observability listener
       operationId: healthCheck
+      servers:
+        - url: http://localhost:9053
+          description: Local observability server
+        - url: https://dns-controller.example.com
+          description: Production observability server
       security: []  # No authentication required
       responses:
         '200':
@@ -1006,8 +1021,13 @@ paths:
     get:
       tags: [health]
       summary: Detailed status information
-      description: Returns detailed status information about the controller
+      description: Returns detailed status information about the controller from the observability listener
       operationId: getStatus
+      servers:
+        - url: http://localhost:9053
+          description: Local observability server
+        - url: https://dns-controller.example.com
+          description: Production observability server
       security: []  # No authentication required
       responses:
         '200':
