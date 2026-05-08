@@ -597,6 +597,76 @@ func TestCreateRecord(t *testing.T) {
 	assert.Equal(t, "192.0.2.2", updated.Records[1].Value)
 }
 
+func TestCreateRecord_NormalizesDerivedPriority(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	record := model.Record{Name: "@", Type: "MX", TTL: 300, Value: "0 mail.example.com."}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.Len(t, updated.Records, 2)
+	require.NotNil(t, updated.Records[1].Priority)
+	assert.Equal(t, uint16(0), *updated.Records[1].Priority)
+}
+
+func TestCreateRecord_RejectsPriorityMismatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	priority := uint16(20)
+	record := model.Record{Name: "@", Type: "MX", TTL: 300, Value: "10 mail.example.com.", Priority: &priority}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Len(t, unchanged.Records, 1)
+}
+
 func TestUpdateRecord(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()

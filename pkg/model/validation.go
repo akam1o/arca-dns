@@ -118,6 +118,45 @@ func ValidateRecordSetConstraints(zone *Zone) error {
 	return nil
 }
 
+// NormalizeZoneDerivedFields normalizes fields that are derived from canonical
+// record data before validation and persistence.
+func NormalizeZoneDerivedFields(zone *Zone) error {
+	if zone == nil {
+		return fmt.Errorf("zone is nil")
+	}
+
+	for i := range zone.Records {
+		if err := NormalizeRecordDerivedFields(&zone.Records[i]); err != nil {
+			return fmt.Errorf("invalid record at index %d: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+// NormalizeRecordDerivedFields normalizes record fields that must mirror the
+// canonical RDATA representation.
+func NormalizeRecordDerivedFields(record *Record) error {
+	if record == nil {
+		return fmt.Errorf("record is nil")
+	}
+
+	priority, hasPriority, err := recordPriorityFromValue(record.Type, record.Value)
+	if err != nil {
+		return err
+	}
+	if !hasPriority {
+		record.Priority = nil
+		return nil
+	}
+	if record.Priority != nil && *record.Priority != priority {
+		return fmt.Errorf("%s priority %d does not match value priority %d", record.Type, *record.Priority, priority)
+	}
+
+	record.Priority = uint16Ptr(priority)
+	return nil
+}
+
 func canonicalRecordDuplicateKey(record Record, owner string) string {
 	return strings.Join([]string{
 		owner,
@@ -219,6 +258,30 @@ func ValidateRecord(record *Record) error {
 	// Validate value based on type
 	if err := ValidateRecordValue(record.Type, record.Value); err != nil {
 		return err
+	}
+
+	if err := ValidateRecordPriority(record); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ValidateRecordPriority validates that derived Priority mirrors MX/SRV RDATA.
+func ValidateRecordPriority(record *Record) error {
+	if record == nil {
+		return fmt.Errorf("record is nil")
+	}
+
+	priority, hasPriority, err := recordPriorityFromValue(record.Type, record.Value)
+	if err != nil {
+		return err
+	}
+	if !hasPriority || record.Priority == nil {
+		return nil
+	}
+	if *record.Priority != priority {
+		return fmt.Errorf("%s priority %d does not match value priority %d", record.Type, *record.Priority, priority)
 	}
 
 	return nil
@@ -499,4 +562,45 @@ func ValidateCAAValue(value string) error {
 	}
 
 	return nil
+}
+
+func recordPriorityFromValue(recordType, value string) (uint16, bool, error) {
+	parts := strings.Fields(value)
+	switch recordType {
+	case RecordTypeMX:
+		if len(parts) != 2 {
+			return 0, false, fmt.Errorf("MX value must be 'priority domain': %s", value)
+		}
+		priority, err := parseUint16Field(parts[0])
+		if err != nil {
+			return 0, false, fmt.Errorf("invalid MX priority: %s", parts[0])
+		}
+		return priority, true, nil
+	case RecordTypeSRV:
+		if len(parts) != 4 {
+			return 0, false, fmt.Errorf("SRV value must be 'priority weight port target': %s", value)
+		}
+		priority, err := parseUint16Field(parts[0])
+		if err != nil {
+			return 0, false, fmt.Errorf("invalid SRV priority: %s", parts[0])
+		}
+		return priority, true, nil
+	default:
+		return 0, false, nil
+	}
+}
+
+func parseUint16Field(value string) (uint16, error) {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	if parsed < 0 || parsed > 65535 {
+		return 0, fmt.Errorf("value outside uint16 range: %s", value)
+	}
+	return uint16(parsed), nil
+}
+
+func uint16Ptr(value uint16) *uint16 {
+	return &value
 }

@@ -1125,7 +1125,7 @@ func (m *MySQLBackend) insertRecords(ctx context.Context, tx *sql.Tx, zoneID int
 	for _, rec := range records {
 		valueHash := computeValueHash(rec.Value)
 		var priority interface{}
-		if rec.Priority != nil && *rec.Priority > 0 {
+		if rec.Priority != nil {
 			priority = *rec.Priority
 		}
 

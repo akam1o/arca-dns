@@ -631,7 +631,7 @@ func (p *PostgresBackend) insertRecordsPGTx(ctx context.Context, tx *sql.Tx, zon
 		hash := sha256.Sum256([]byte(rec.Value))
 		valueHash := hex.EncodeToString(hash[:])
 		var priority interface{}
-		if rec.Priority != nil && *rec.Priority > 0 {
+		if rec.Priority != nil {
 			priority = *rec.Priority
 		}
 

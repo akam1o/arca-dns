@@ -192,6 +192,80 @@ func TestValidateSRVValue(t *testing.T) {
 	}
 }
 
+func TestNormalizeRecordDerivedFields_DerivesPriority(t *testing.T) {
+	tests := []struct {
+		name     string
+		record   Record
+		priority uint16
+	}{
+		{
+			name: "MX zero priority",
+			record: Record{
+				Name:  "@",
+				Type:  RecordTypeMX,
+				TTL:   300,
+				Value: "0 mail.example.com.",
+			},
+			priority: 0,
+		},
+		{
+			name: "SRV priority",
+			record: Record{
+				Name:  "_sip._tcp",
+				Type:  RecordTypeSRV,
+				TTL:   300,
+				Value: "20 10 5060 sip.example.com.",
+			},
+			priority: 20,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record := tt.record
+			err := NormalizeRecordDerivedFields(&record)
+
+			assert.NoError(t, err)
+			if assert.NotNil(t, record.Priority) {
+				assert.Equal(t, tt.priority, *record.Priority)
+			}
+		})
+	}
+}
+
+func TestNormalizeRecordDerivedFields_RejectsPriorityMismatch(t *testing.T) {
+	priority := uint16(20)
+	record := &Record{
+		Name:     "@",
+		Type:     RecordTypeMX,
+		TTL:      300,
+		Value:    "10 mail.example.com.",
+		Priority: &priority,
+	}
+
+	err := NormalizeRecordDerivedFields(record)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "priority")
+	assert.Equal(t, priority, *record.Priority)
+}
+
+func TestNormalizeRecordDerivedFields_ClearsNonDerivedPriority(t *testing.T) {
+	priority := uint16(10)
+	record := &Record{
+		Name:     "www",
+		Type:     RecordTypeA,
+		TTL:      300,
+		Value:    "192.0.2.1",
+		Priority: &priority,
+	}
+
+	err := NormalizeRecordDerivedFields(record)
+
+	assert.NoError(t, err)
+	assert.Nil(t, record.Priority)
+}
+
 func TestValidateCAAValue(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -254,6 +328,17 @@ func TestValidateRecord(t *testing.T) {
 				Value: "10 mail.example.com.",
 			},
 			wantErr: false,
+		},
+		{
+			name: "MX priority must match value",
+			record: &Record{
+				Name:     "@",
+				Type:     "MX",
+				TTL:      3600,
+				Value:    "10 mail.example.com.",
+				Priority: uint16Ptr(20),
+			},
+			wantErr: true,
 		},
 		{
 			name: "valid empty TXT record",

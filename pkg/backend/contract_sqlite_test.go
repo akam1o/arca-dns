@@ -123,3 +123,26 @@ func TestSQLiteBackend_IgnoresClientRecordIDsOnCreate(t *testing.T) {
 	require.Len(t, created.Records, 1)
 	assert.NotEqual(t, "1", created.Records[0].ID)
 }
+
+func TestSQLiteBackend_PreservesZeroRecordPriority(t *testing.T) {
+	store, err := NewSQLiteBackend(":memory:")
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.InitSchema())
+
+	ctx := context.Background()
+	zone := &model.Zone{
+		Name: "zero-priority.example.com.",
+		SOA:  model.DefaultSOA("ns1.zero-priority.example.com.", "admin.zero-priority.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: model.RecordTypeMX, TTL: 300, Value: "0 mail.zero-priority.example.com."},
+		},
+	}
+	require.NoError(t, store.CreateZone(ctx, zone))
+
+	created, err := store.GetZone(ctx, zone.Name)
+	require.NoError(t, err)
+	require.Len(t, created.Records, 1)
+	require.NotNil(t, created.Records[0].Priority)
+	assert.Equal(t, uint16(0), *created.Records[0].Priority)
+}

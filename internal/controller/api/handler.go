@@ -127,6 +127,16 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		return
 	}
 
+	if err := model.NormalizeZoneDerivedFields(&zone); err != nil {
+		h.logger.Warn("Zone normalization failed", zap.String("zone", zone.Name), zap.Error(err))
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Zone validation failed",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
 	// Validate zone
 	if err := model.ValidateZone(&zone); err != nil {
 		h.logger.Warn("Zone validation failed", zap.String("zone", zone.Name), zap.Error(err))
@@ -596,6 +606,16 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 
 	zone.Records = current.Records
 	zone.DNSSEC = current.DNSSEC
+
+	if err := model.NormalizeZoneDerivedFields(&zone); err != nil {
+		h.logger.Warn("Zone normalization failed", zap.String("zone", zone.Name), zap.Error(err))
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Zone validation failed",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
 
 	// Validate zone after defaulting omitted fields.
 	if err := model.ValidateZone(&zone); err != nil {

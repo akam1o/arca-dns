@@ -140,6 +140,15 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		return
 	}
 
+	if err := model.NormalizeZoneDerivedFields(modelZone); err != nil {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"zone validation failed",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
 	version, err := model.NewZoneVersion()
 	if err != nil {
 		h.logger.Error("Failed to generate zone version", zap.Error(err))

@@ -410,6 +410,14 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 }
 
 func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record *model.Record) bool {
+	if err := model.NormalizeRecordDerivedFields(record); err != nil {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Record validation failed",
+			map[string]interface{}{"error": err.Error()},
+		))
+		return false
+	}
 	if err := model.ValidateRecord(record); err != nil {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
