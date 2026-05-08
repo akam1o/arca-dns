@@ -18,7 +18,7 @@ import (
 )
 
 // setupEtcdBackend creates a test etcd backend.
-// Requires etcd to be running on localhost:2379
+// Requires etcd to be running on localhost:2379, or endpoints provided via ETCD_ENDPOINTS.
 func setupEtcdBackend(t *testing.T) (*EtcdBackend, func()) {
 	endpoints := []string{"localhost:2379"}
 

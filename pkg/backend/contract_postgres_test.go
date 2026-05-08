@@ -27,4 +27,8 @@ func TestPostgresBackend_Contract(t *testing.T) {
 	t.Run("ZoneStoreCRUD", func(t *testing.T) {
 		RunZoneStoreCRUDSuite(t, store)
 	})
+
+	t.Run("TransactionalStore", func(t *testing.T) {
+		RunTransactionalStoreSuite(t, store)
+	})
 }

@@ -14,7 +14,7 @@ import (
 
 // setupMySQLBackend creates a test MySQL backend.
 // Requires MySQL to be running and accessible via MYSQL_DSN environment variable.
-// Example DSN: root:testpass@tcp(localhost:3306)/arca_dns_test?parseTime=true
+// Example DSN: root:testpass@tcp(localhost:3306)/arca_dns_test?parseTime=true&multiStatements=true
 func setupMySQLBackend(t *testing.T) (*MySQLBackend, func()) {
 	dsn := os.Getenv("MYSQL_DSN")
 	if dsn == "" {
