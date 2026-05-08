@@ -682,6 +682,90 @@ func TestFetchSignedZone_SignatureVerificationForcesFullFetch(t *testing.T) {
 	}
 }
 
+func TestFetchSignedZone_SignatureVerificationUsesConditionalFetchWithCurrentBody(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	signatureKey := "test-signature-key"
+
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+	expectedIfNoneMatch := `"` + hashHex + `"`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("If-None-Match"); got != expectedIfNoneMatch {
+			t.Errorf("If-None-Match = %q, want %q", got, expectedIfNoneMatch)
+		}
+
+		w.Header().Set("ETag", expectedIfNoneMatch)
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), signatureKey))
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetSignatureVerification(true, signatureKey)
+
+	content, etag, notModified, err := client.FetchSignedZoneWithCurrent(context.Background(), "example.com.", hashHex, zoneContent)
+	if err != nil {
+		t.Fatalf("FetchSignedZoneWithCurrent failed: %v", err)
+	}
+	if !notModified {
+		t.Fatal("Expected signed conditional fetch to return not modified")
+	}
+	if content != "" {
+		t.Errorf("Expected empty content for 304, got %q", content)
+	}
+	if etag != hashHex {
+		t.Errorf("Expected ETag %q, got %q", hashHex, etag)
+	}
+}
+
+func TestFetchSignedZone_SignatureVerificationRejectsUnsignedNotModified(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	signatureKey := "test-signature-key"
+
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"`+hashHex+`"`)
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetSignatureVerification(true, signatureKey)
+
+	_, _, _, err = client.FetchSignedZoneWithCurrent(context.Background(), "example.com.", hashHex, zoneContent)
+	if err == nil {
+		t.Fatal("Expected unsigned 304 response to fail")
+	}
+	if !strings.Contains(err.Error(), "signature header") {
+		t.Errorf("Expected signature header error, got %v", err)
+	}
+}
+
 func TestFetchSignedZone_MissingSignatureRejected(t *testing.T) {
 	requireTCPListener(t)
 	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`

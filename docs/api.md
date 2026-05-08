@@ -131,7 +131,7 @@ Unsupported/rejected features (API returns `400`):
 ### Zone Artifacts (for agents)
 
 - `GET /zones/:name/signed`: download the signed zone file (BIND format)
-  - Response headers include `ETag`, `X-Zone-Serial`, `X-Zone-Hash`, `Content-Disposition`.
+  - Response headers include `ETag`, `X-Zone-Serial`, `X-Zone-Hash`, optional `X-Zone-Signature`, and `Content-Disposition`.
   - If signing service is unavailable, the controller falls back to an unsigned generated zone file.
 
 ### DNSSEC

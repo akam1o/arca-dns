@@ -359,20 +359,26 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 	// Get current state
 	s.mu.RLock()
 	currentETag := ""
+	currentBody := ""
 	if state, exists := s.zoneStates[zone.Name]; exists {
 		currentETag = state.Version
 	}
 	s.mu.RUnlock()
 
-	if currentETag != "" && !s.localZoneFileMatchesState(zone.Name, currentETag) {
-		s.logger.Warn("Local zone file missing or mismatched, forcing full fetch",
-			zap.String("zone", zone.Name),
-			zap.String("etag", currentETag))
-		currentETag = ""
+	if currentETag != "" {
+		var matches bool
+		currentBody, matches = s.localZoneFileForState(zone.Name, currentETag)
+		if !matches {
+			s.logger.Warn("Local zone file missing or mismatched, forcing full fetch",
+				zap.String("zone", zone.Name),
+				zap.String("etag", currentETag))
+			currentETag = ""
+			currentBody = ""
+		}
 	}
 
 	// Step 3: Conditional fetch using ETag
-	zoneContent, newETag, notModified, err := s.client.FetchSignedZone(ctx, zone.Name, currentETag)
+	zoneContent, newETag, notModified, err := s.client.FetchSignedZoneWithCurrent(ctx, zone.Name, currentETag, currentBody)
 	if err != nil {
 		return fmt.Errorf("failed to fetch zone: %w", err)
 	}
@@ -467,23 +473,27 @@ func (s *Syncer) rollbackAppliedZone(ctx context.Context, zoneName string, hadPr
 	return nil
 }
 
-func (s *Syncer) localZoneFileMatchesState(zoneName, currentETag string) bool {
+func (s *Syncer) localZoneFileForState(zoneName, currentETag string) (string, bool) {
 	if !s.fileMgr.ZoneExists(zoneName) {
-		return false
+		return "", false
 	}
 
 	expectedHash := etagValue(currentETag)
 	if len(expectedHash) != 64 || !isHex(expectedHash) {
-		return true
+		return "", true
 	}
 
 	content, err := s.fileMgr.ReadZoneFile(zoneName)
 	if err != nil {
-		return false
+		return "", false
 	}
 
 	sum := sha256.Sum256([]byte(content))
-	return hex.EncodeToString(sum[:]) == expectedHash
+	if hex.EncodeToString(sum[:]) != expectedHash {
+		return "", false
+	}
+
+	return content, true
 }
 
 func etagValue(etag string) string {

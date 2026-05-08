@@ -233,12 +233,24 @@ func (c *Client) listZonesPage(ctx context.Context, offset, limit int) (*listZon
 	return &result, nil
 }
 
-// FetchSignedZone fetches a signed zone file from the controller.
-// If currentETag is provided, it performs a conditional fetch using If-None-Match
-// unless artifact signatures are required. A 304 response has no body, so the
-// agent cannot verify a body signature for that response.
+// FetchSignedZone fetches a signed zone file from the controller. If currentETag
+// is provided, it performs a conditional fetch using If-None-Match unless
+// artifact signatures are required. Use FetchSignedZoneWithCurrent when the
+// caller can provide the locally cached body for signed 304 verification.
 // Returns (zoneContent, newETag, isNotModified, error).
 func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentETag string) (string, string, bool, error) {
+	return c.fetchSignedZone(ctx, zoneName, currentETag, "")
+}
+
+// FetchSignedZoneWithCurrent fetches a signed zone and may use conditional GET
+// when currentBody is the locally cached artifact for currentETag. When
+// signature verification is enabled, a 304 response is accepted only if the
+// controller signs the local body with X-Zone-Signature.
+func (c *Client) FetchSignedZoneWithCurrent(ctx context.Context, zoneName string, currentETag string, currentBody string) (string, string, bool, error) {
+	return c.fetchSignedZone(ctx, zoneName, currentETag, currentBody)
+}
+
+func (c *Client) fetchSignedZone(ctx context.Context, zoneName string, currentETag string, currentBody string) (string, string, bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -256,10 +268,7 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 	}
 
 	// Add If-None-Match header for conditional fetch (ETag-based).
-	requestETag := ""
-	if !c.verifySignatures {
-		requestETag = normalizeIfNoneMatch(currentETag)
-	}
+	requestETag := c.conditionalRequestETag(currentETag, currentBody)
 	if requestETag != "" {
 		req.Header.Set("If-None-Match", requestETag)
 	}
@@ -292,6 +301,19 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 			responseHash := etagValue(responseETag)
 			if !strings.EqualFold(responseHash, zoneHash) {
 				return "", "", false, fmt.Errorf("checksum header mismatch in 304 response: ETag %s, X-Zone-Hash %s", responseHash, zoneHash)
+			}
+			if currentBody != "" {
+				computedHash := sha256.Sum256([]byte(currentBody))
+				computedHashHex := hex.EncodeToString(computedHash[:])
+				if !strings.EqualFold(computedHashHex, zoneHash) {
+					return "", "", false, fmt.Errorf("local artifact checksum mismatch in 304 response: local %s, X-Zone-Hash %s", computedHashHex, zoneHash)
+				}
+			}
+		}
+
+		if c.verifySignatures {
+			if err := verifyArtifactSignature([]byte(currentBody), resp.Header.Get("X-Zone-Signature"), c.signatureKey); err != nil {
+				return "", "", false, fmt.Errorf("invalid signature header in 304 response: %w", err)
 			}
 		}
 
@@ -346,6 +368,36 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 	_ = zoneHash8  // Short hash is display metadata only; verification uses X-Zone-Hash.
 
 	return string(body), newETag, false, nil
+}
+
+func (c *Client) conditionalRequestETag(currentETag string, currentBody string) string {
+	requestETag := normalizeIfNoneMatch(currentETag)
+	if requestETag == "" {
+		return ""
+	}
+
+	if !c.verifySignatures {
+		return requestETag
+	}
+
+	if currentBody == "" {
+		return ""
+	}
+
+	expectedHash := etagValue(requestETag)
+	if len(expectedHash) != sha256.Size*2 {
+		return ""
+	}
+	if _, err := hex.DecodeString(expectedHash); err != nil {
+		return ""
+	}
+
+	computedHash := sha256.Sum256([]byte(currentBody))
+	if !strings.EqualFold(hex.EncodeToString(computedHash[:]), expectedHash) {
+		return ""
+	}
+
+	return requestETag
 }
 
 func validateFullChecksumHeader(zoneHash string) error {
