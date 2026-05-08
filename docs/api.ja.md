@@ -48,14 +48,17 @@ X-API-Key: <api-key>
 
 ## 同時更新制御（ETag / If-Match）
 
-- `POST /zones`, `GET /zones/:name`, `PUT /zones/:name` の成功レスポンスには `ETag` ヘッダ（`ETag: <zone.version>`）が含まれます。
-- `PUT /zones/:name` と `DELETE /zones/:name` は `If-Match: <etag>` が必須です。並行更新があると `409 Conflict` を返します。
-- `GET /zones/:name/signed` は `If-None-Match: <etag>` をサポートし、変更が無い場合は `304 Not Modified`（`ETag` + メタデータヘッダ付き）を返します。
-  - Note: `ETag` は引用符付き（例: `ETag: "<zone.version>"`）で返されます。クライアントは `If-Match` / `If-None-Match` に同値を返してください（引用符付き/なしどちらも受理します）。
+- `POST /zones`, `GET /zones/:name`, `PUT /zones/:name` の成功レスポンスには zone resource `ETag`（`ETag: "<zone.version>"`）が含まれます。
+- `PUT /zones/:name` と `DELETE /zones/:name` は、zone resource ETag を `If-Match` に指定する必要があります。並行更新があると `409 Conflict` を返します。
+- `GET /zones/:name` は zone resource ETag による `If-None-Match` をサポートし、変更が無い場合は `304 Not Modified` を返します。
 
 署名済みアーティファクトについて:
-- `X-Zone-Hash` は返却ボディ（ゾーンファイル）の SHA256（hex）全体
+- `GET /zones/:name/signed` と `GET /zones/:name/signed/metadata` は、zone resource ETag ではなく signed artifact `ETag` を返します。
+- signed artifact `ETag` は署名済みゾーンファイル本文の SHA256（hex）全体を HTTP ETag として引用符付きで返したものです。
+- 署名済みアーティファクトの条件付きリクエストでは、この signed artifact ETag を `If-None-Match` に指定してください。
+- `X-Zone-Hash` は同じ SHA256 値を引用符なしで返します。
 - `X-Zone-Hash8` は `X-Zone-Hash` の先頭 8 文字（短縮）
+- 条件付きリクエストヘッダでは、引用符付き/なしのどちらの ETag 値も受理します。
 
 ## エンドポイント
 

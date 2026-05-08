@@ -48,14 +48,17 @@ Error `code` values are defined in `pkg/model/errors.go` (e.g. `NOT_FOUND`, `ALR
 
 ## Concurrency Control (ETag / If-Match)
 
-- Successful `POST /zones`, `GET /zones/:name`, and `PUT /zones/:name` return an `ETag` header (`ETag: <zone.version>`).
-- `PUT /zones/:name` and `DELETE /zones/:name` require `If-Match: <etag>`; if the zone was updated concurrently, the API returns `409 Conflict`.
-- `GET /zones/:name/signed` supports `If-None-Match: <etag>` and returns `304 Not Modified` (with `ETag` + metadata headers) when unchanged.
-  - Note: `ETag` values are returned as quoted strings (e.g. `ETag: "<zone.version>"`). Clients should send the value back in `If-Match`/`If-None-Match` (quoted or unquoted are accepted).
+- Successful `POST /zones`, `GET /zones/:name`, and `PUT /zones/:name` return a zone resource `ETag` (`ETag: "<zone.version>"`).
+- `PUT /zones/:name` and `DELETE /zones/:name` require `If-Match` with the zone resource ETag; if the zone was updated concurrently, the API returns `409 Conflict`.
+- `GET /zones/:name` supports `If-None-Match` with the zone resource ETag and returns `304 Not Modified` when unchanged.
 
 For signed artifacts:
-- `X-Zone-Hash` is the full SHA256 (hex) of the returned zone file body.
+- `GET /zones/:name/signed` and `GET /zones/:name/signed/metadata` return a signed artifact `ETag`, not the zone resource ETag.
+- The signed artifact `ETag` is the full SHA256 (hex) of the signed zone file body, quoted as an HTTP ETag.
+- Send the signed artifact ETag in `If-None-Match` for signed artifact conditional requests.
+- `X-Zone-Hash` is the same SHA256 value without quotes.
 - `X-Zone-Hash8` is the first 8 characters of `X-Zone-Hash` (short form).
+- Quoted or unquoted ETag values are accepted in conditional request headers.
 
 ## Endpoints
 
