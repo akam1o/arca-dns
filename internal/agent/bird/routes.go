@@ -164,7 +164,8 @@ func (rm *RouteManager) ForceWithdrawRoutes(ctx context.Context) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	if err := rm.withdrawRoutesLocked(ctx); err != nil {
+	if err := rm.forceWithdrawRoutesLocked(ctx); err != nil {
+		rm.announced = false
 		rm.needsWithdraw = true
 		return err
 	}
@@ -209,6 +210,22 @@ func (rm *RouteManager) withdrawRoutesLocked(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (rm *RouteManager) forceWithdrawRoutesLocked(ctx context.Context) error {
+	var errs []error
+	for _, name := range rm.protocolNames {
+		cmd := fmt.Sprintf("disable %s", name)
+		resp, err := rm.client.Exec(ctx, cmd)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("disable protocol %s: %w", name, err))
+			continue
+		}
+		if resp.IsError() {
+			errs = append(errs, fmt.Errorf("BIRD error disabling %s (%d): %s", name, resp.Code, resp.RawText))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // IsAnnounced returns whether routes are currently announced.
