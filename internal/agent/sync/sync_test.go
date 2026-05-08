@@ -515,7 +515,10 @@ func TestSyncer_SyncZone_RollsBackNewZoneFileWhenApplyHookFails(t *testing.T) {
 	assert.True(t, rollbackCalled)
 	assert.False(t, rollbackHadPrevious)
 	assert.NoFileExists(t, fileMgr.GetZonePath("example.com"))
-	assert.Nil(t, syncer.GetZoneState("example.com"))
+	state := syncer.GetZoneState("example.com")
+	require.NotNil(t, state)
+	assert.Equal(t, 1, state.FailCount)
+	assert.False(t, state.LastAttempt.IsZero())
 
 	managedZones, err := fileMgr.listManagedZones()
 	require.NoError(t, err)
@@ -622,7 +625,10 @@ func TestSyncer_SyncZone_RestoresPreviousZoneFileWhenApplyHookFails(t *testing.T
 	content, err := fileMgr.ReadZoneFile("example.com")
 	require.NoError(t, err)
 	assert.Equal(t, oldZoneContent, content)
-	assert.Nil(t, syncer.GetZoneState("example.com"))
+	state := syncer.GetZoneState("example.com")
+	require.NotNil(t, state)
+	assert.Equal(t, 1, state.FailCount)
+	assert.False(t, state.LastAttempt.IsZero())
 
 	managedZones, err := fileMgr.listManagedZones()
 	require.NoError(t, err)
@@ -892,11 +898,21 @@ func TestSyncer_SyncZone(t *testing.T) {
 	// Verify zone file was created
 	zonePath := fileMgr.GetZonePath("example.com")
 	assert.FileExists(t, zonePath)
+	state := syncer.GetZoneState("example.com")
+	require.NotNil(t, state)
+	assert.Equal(t, 0, state.FailCount)
+	assert.False(t, state.LastSync.IsZero())
+	assert.False(t, state.LastAttempt.IsZero())
+	assert.False(t, syncer.GetLastSuccessTime().IsZero())
 
 	// Test sync non-existent zone
 	err = syncer.SyncZone(ctx, "notfound.com")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "zone not found")
+	state = syncer.GetZoneState("notfound.com")
+	require.NotNil(t, state)
+	assert.Equal(t, 1, state.FailCount)
+	assert.False(t, state.LastAttempt.IsZero())
 }
 
 func TestSyncer_IsStale(t *testing.T) {

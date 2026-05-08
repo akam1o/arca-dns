@@ -179,23 +179,10 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 				zap.Error(err))
 			errorCount++
 			zoneErrorCount++
-
-			// Update failure count
-			s.mu.Lock()
-			state := s.getOrCreateStateLocked(zone.Name)
-			state.FailCount++
-			state.LastAttempt = time.Now()
-			s.mu.Unlock()
+			s.recordZoneSyncFailure(zone.Name, time.Now())
 		} else {
 			successCount++
-
-			// Reset failure count and update state
-			s.mu.Lock()
-			state := s.getOrCreateStateLocked(zone.Name)
-			state.LastSync = time.Now()
-			state.LastAttempt = time.Now()
-			state.FailCount = 0
-			s.mu.Unlock()
+			s.recordZoneSyncSuccess(zone.Name, time.Now())
 		}
 	}
 
@@ -205,9 +192,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 
 	// Update last success time only after a fully clean reconciliation.
 	if errorCount == 0 && (successCount > 0 || len(zones) == 0) {
-		s.mu.Lock()
-		s.lastSuccess = time.Now()
-		s.mu.Unlock()
+		s.recordSyncSuccess(time.Now())
 	}
 
 	s.logger.Info("Sync cycle completed",
@@ -351,10 +336,29 @@ func (s *Syncer) rollbackDeletedZone(ctx context.Context, zoneName string) error
 }
 
 func (s *Syncer) recordDeleteFailure(zoneName string) {
+	s.recordZoneSyncFailure(zoneName, time.Now())
+}
+
+func (s *Syncer) recordZoneSyncFailure(zoneName string, now time.Time) {
 	s.mu.Lock()
 	state := s.getOrCreateStateLocked(zoneName)
 	state.FailCount++
-	state.LastAttempt = time.Now()
+	state.LastAttempt = now
+	s.mu.Unlock()
+}
+
+func (s *Syncer) recordZoneSyncSuccess(zoneName string, now time.Time) {
+	s.mu.Lock()
+	state := s.getOrCreateStateLocked(zoneName)
+	state.LastSync = now
+	state.LastAttempt = now
+	state.FailCount = 0
+	s.mu.Unlock()
+}
+
+func (s *Syncer) recordSyncSuccess(now time.Time) {
+	s.mu.Lock()
+	s.lastSuccess = now
 	s.mu.Unlock()
 }
 
@@ -518,6 +522,7 @@ func (s *Syncer) SyncZone(ctx context.Context, zoneName string) error {
 	// Fetch zone info from controller
 	zones, err := s.client.ListZones(ctx)
 	if err != nil {
+		s.recordZoneSyncFailure(zoneName, time.Now())
 		return fmt.Errorf("failed to list zones: %w", err)
 	}
 
@@ -531,10 +536,19 @@ func (s *Syncer) SyncZone(ctx context.Context, zoneName string) error {
 	}
 
 	if targetZone == nil {
+		s.recordZoneSyncFailure(zoneName, time.Now())
 		return fmt.Errorf("zone not found: %s", zoneName)
 	}
 
-	return s.syncZone(ctx, *targetZone)
+	if err := s.syncZone(ctx, *targetZone); err != nil {
+		s.recordZoneSyncFailure(targetZone.Name, time.Now())
+		return err
+	}
+
+	now := time.Now()
+	s.recordZoneSyncSuccess(targetZone.Name, now)
+	s.recordSyncSuccess(now)
+	return nil
 }
 
 // GetZoneState returns the current sync state for a zone.
