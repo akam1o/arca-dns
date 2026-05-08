@@ -113,7 +113,7 @@ func TestRequireRole_RejectsAgentForAdminEndpoint(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, 403, w.Code)
-	assert.Contains(t, w.Body.String(), "forbidden")
+	assert.JSONEq(t, `{"code":"FORBIDDEN","message":"API key role is not allowed for this endpoint"}`, w.Body.String())
 }
 
 func TestAuthenticator_Middleware_NormalizesConfiguredHash(t *testing.T) {
@@ -169,7 +169,7 @@ func TestAuthenticator_Middleware_InvalidKey(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, 401, w.Code)
-	assert.Contains(t, w.Body.String(), "Invalid API key")
+	assert.JSONEq(t, `{"code":"UNAUTHORIZED","message":"Invalid API key"}`, w.Body.String())
 }
 
 func TestAuthenticator_Middleware_MissingKey(t *testing.T) {
@@ -193,7 +193,7 @@ func TestAuthenticator_Middleware_MissingKey(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, 401, w.Code)
-	assert.Contains(t, w.Body.String(), "API key required")
+	assert.JSONEq(t, `{"code":"UNAUTHORIZED","message":"API key required"}`, w.Body.String())
 }
 
 func TestAuthenticator_Middleware_CustomHeader(t *testing.T) {

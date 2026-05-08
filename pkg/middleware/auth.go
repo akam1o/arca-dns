@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/gin-gonic/gin"
 )
 
@@ -78,10 +79,7 @@ func (a *Authenticator) Middleware() gin.HandlerFunc {
 		// Get API key from header
 		apiKey := c.GetHeader(a.config.HeaderName)
 		if apiKey == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error":   "unauthorized",
-				"message": "API key required",
-			})
+			c.JSON(http.StatusUnauthorized, model.NewAPIError(model.ErrorCodeUnauthorized, "API key required"))
 			c.Abort()
 			return
 		}
@@ -106,10 +104,7 @@ func (a *Authenticator) Middleware() gin.HandlerFunc {
 		}
 
 		if !authenticated {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error":   "unauthorized",
-				"message": "Invalid API key",
-			})
+			c.JSON(http.StatusUnauthorized, model.NewAPIError(model.ErrorCodeUnauthorized, "Invalid API key"))
 			c.Abort()
 			return
 		}
@@ -140,10 +135,7 @@ func RequireRole(allowedRoles ...string) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusForbidden, gin.H{
-			"error":   "forbidden",
-			"message": "API key role is not allowed for this endpoint",
-		})
+		c.JSON(http.StatusForbidden, model.NewAPIError(model.ErrorCodeForbidden, "API key role is not allowed for this endpoint"))
 		c.Abort()
 	}
 }
