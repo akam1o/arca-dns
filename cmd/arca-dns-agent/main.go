@@ -233,9 +233,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			Timeout:    cfg.BIRD.CommandTimeout,
 		})
 		if clientErr != nil {
-			logger.Warn("Failed to create BIRD client, BIRD control disabled",
-				zap.Error(clientErr))
-			cfg.BIRD.Enabled = false
+			return fmt.Errorf("BIRD control enabled but failed to create BIRD client: %w", clientErr)
 		} else {
 			logger.Info("BIRD client initialized", zap.String("socket", cfg.BIRD.SocketPath))
 		}
@@ -297,12 +295,21 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to create BIRD route manager: %w", err)
 		}
 		reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := routeManager.Reconcile(reconcileCtx); err != nil {
-			reconcileCancel()
-			logger.Warn("Failed to reconcile BIRD state, assuming routes not announced",
-				zap.Error(err))
+		reconcileErr := routeManager.Reconcile(reconcileCtx)
+		reconcileCancel()
+		if reconcileErr != nil {
+			withdrawTimeout := cfg.BIRD.CommandTimeout
+			if withdrawTimeout <= 0 {
+				withdrawTimeout = 10 * time.Second
+			}
+			withdrawCtx, withdrawCancel := context.WithTimeout(context.Background(), withdrawTimeout)
+			withdrawErr := routeManager.ForceWithdrawRoutes(withdrawCtx)
+			withdrawCancel()
+			if withdrawErr != nil {
+				return fmt.Errorf("failed to reconcile BIRD state and force route withdraw: reconcile: %v; withdraw: %w", reconcileErr, withdrawErr)
+			}
+			return fmt.Errorf("failed to reconcile BIRD state; forced route withdraw: %w", reconcileErr)
 		} else {
-			reconcileCancel()
 			logger.Info("BIRD route manager reconciled",
 				zap.Bool("announced", routeManager.IsAnnounced()))
 		}

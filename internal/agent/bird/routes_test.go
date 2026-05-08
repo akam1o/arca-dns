@@ -121,6 +121,26 @@ func TestRouteManagerWithdrawRoutesChangedSkipsFullyWithdrawn(t *testing.T) {
 	}
 }
 
+func TestRouteManagerForceWithdrawRoutesAlwaysDisablesProtocols(t *testing.T) {
+	client := &recordingClient{}
+	manager := mustNewRouteManager(t, client, []string{"anycast_1", "anycast_2"})
+
+	if err := manager.ForceWithdrawRoutes(context.Background()); err != nil {
+		t.Fatalf("force withdraw failed: %v", err)
+	}
+	if manager.IsAnnounced() {
+		t.Fatal("expected forced withdraw to mark routes withdrawn")
+	}
+
+	want := []string{
+		"disable anycast_1",
+		"disable anycast_2",
+	}
+	if !reflect.DeepEqual(client.commands, want) {
+		t.Fatalf("commands mismatch\nwant: %v\n got: %v", want, client.commands)
+	}
+}
+
 func TestRouteManagerWithdrawsAfterPartialAnnounceFailure(t *testing.T) {
 	client := &recordingClient{
 		responses: map[string]*Response{

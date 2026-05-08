@@ -158,6 +158,23 @@ func (rm *RouteManager) WithdrawRoutes(ctx context.Context) error {
 	return err
 }
 
+// ForceWithdrawRoutes disables every configured protocol even when the cached
+// route state says routes are already withdrawn.
+func (rm *RouteManager) ForceWithdrawRoutes(ctx context.Context) error {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	if err := rm.withdrawRoutesLocked(ctx); err != nil {
+		rm.needsWithdraw = true
+		return err
+	}
+
+	rm.announced = false
+	rm.needsWithdraw = false
+	rm.lastChange = time.Now()
+	return nil
+}
+
 // WithdrawRoutesChanged disables the BGP protocol and reports whether a route
 // state change was applied.
 func (rm *RouteManager) WithdrawRoutesChanged(ctx context.Context) (bool, error) {
