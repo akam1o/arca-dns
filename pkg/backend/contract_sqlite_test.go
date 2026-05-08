@@ -2,6 +2,8 @@ package backend
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -25,6 +27,38 @@ func TestSQLiteBackend_Contract(t *testing.T) {
 	t.Run("ZoneStoreCRUD", func(t *testing.T) {
 		RunZoneStoreCRUDSuite(t, store)
 	})
+}
+
+func TestSQLiteDSNWithDefaultPragmas_AddsMissingPragmas(t *testing.T) {
+	dsn := sqliteDSNWithDefaultPragmas("file:arca.db?_pragma=journal_mode(wal)")
+
+	assert.Contains(t, dsn, "_pragma=journal_mode(wal)")
+	assert.Contains(t, dsn, "_pragma=foreign_keys(1)")
+	assert.Contains(t, dsn, "_pragma=busy_timeout(5000)")
+	assert.Equal(t, 1, strings.Count(dsn, "journal_mode"))
+}
+
+func TestSQLiteBackend_PartialPragmaDSNEnablesCascadeDelete(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "arca.db") + "?_pragma=journal_mode(wal)"
+	store, err := NewSQLiteBackend(dsn)
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.InitSchema())
+
+	ctx := context.Background()
+	zone := &model.Zone{
+		Name: "cascade.example.com.",
+		SOA:  model.DefaultSOA("ns1.cascade.example.com.", "admin.cascade.example.com."),
+		Records: []model.Record{
+			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(ctx, zone))
+	require.NoError(t, store.DeleteZone(ctx, zone.Name))
+
+	var recordCount int
+	require.NoError(t, store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM records").Scan(&recordCount))
+	assert.Equal(t, 0, recordCount)
 }
 
 func TestSQLiteBackend_PreservesRecordIDOnUpdate(t *testing.T) {

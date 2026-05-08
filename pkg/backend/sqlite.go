@@ -29,12 +29,7 @@ type SQLiteBackend struct {
 //   - "file::memory:?cache=shared" (in-memory, shared across connections)
 //   - ":memory:" (in-memory, single connection)
 func NewSQLiteBackend(dsn string) (*SQLiteBackend, error) {
-	// Append WAL mode and foreign keys pragmas if not already present
-	if !strings.Contains(dsn, "_pragma") && !strings.Contains(dsn, "?") {
-		dsn += "?_pragma=journal_mode(wal)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	} else if !strings.Contains(dsn, "journal_mode") {
-		dsn += "&_pragma=journal_mode(wal)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	}
+	dsn = sqliteDSNWithDefaultPragmas(dsn)
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -57,6 +52,46 @@ func NewSQLiteBackend(dsn string) (*SQLiteBackend, error) {
 		db:  db,
 		dsn: dsn,
 	}, nil
+}
+
+func sqliteDSNWithDefaultPragmas(dsn string) string {
+	defaults := []struct {
+		name  string
+		value string
+	}{
+		{name: "journal_mode", value: "journal_mode(wal)"},
+		{name: "foreign_keys", value: "foreign_keys(1)"},
+		{name: "busy_timeout", value: "busy_timeout(5000)"},
+	}
+
+	for _, pragma := range defaults {
+		if sqliteDSNHasQueryOption(dsn, pragma.name) {
+			continue
+		}
+		dsn += sqliteDSNQuerySeparator(dsn) + "_pragma=" + pragma.value
+	}
+
+	return dsn
+}
+
+func sqliteDSNHasQueryOption(dsn, option string) bool {
+	queryIndex := strings.Index(dsn, "?")
+	if queryIndex == -1 {
+		return false
+	}
+
+	query := strings.ToLower(dsn[queryIndex+1:])
+	return strings.Contains(query, strings.ToLower(option))
+}
+
+func sqliteDSNQuerySeparator(dsn string) string {
+	if strings.HasSuffix(dsn, "?") || strings.HasSuffix(dsn, "&") {
+		return ""
+	}
+	if strings.Contains(dsn, "?") {
+		return "&"
+	}
+	return "?"
 }
 
 // InitSchema creates the database schema inline (for in-memory or first-run usage).
