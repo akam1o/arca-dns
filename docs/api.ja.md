@@ -76,7 +76,7 @@ X-API-Key: <api-key>
 
 Notes:
 - `PUT` では JSON ボディ内の `name` がパスパラメータ `:name` と一致している必要があります。
-- 作成/更新後、controller は非同期に DNSSEC 署名を試みます（署名に失敗してもリクエスト自体は成功し、ログに記録されます）。
+- DNSSEC が有効な controller では、作成/更新の backend 書き込み前に同期的に署名します。署名に失敗した場合、リクエストは `500 Failed to sign zone` で失敗し、zone は保存されません。
 
 #### レコード操作（records をどう更新するか）
 

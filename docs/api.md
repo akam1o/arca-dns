@@ -76,7 +76,7 @@ For signed artifacts:
 
 Notes:
 - `PUT` requires the JSON body `name` to match the `:name` path parameter.
-- After create/update, the controller will attempt DNSSEC signing asynchronously (the request still succeeds even if signing fails; it is logged).
+- When DNSSEC is enabled on the controller, create/update signs the zone synchronously before the backend write. If signing fails, the request fails with `500 Failed to sign zone` and the zone is not saved.
 
 #### Record Operations (How to “hit” records)
 
