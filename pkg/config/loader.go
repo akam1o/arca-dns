@@ -631,6 +631,9 @@ func normalizeControllerURL(rawURL string) (string, error) {
 	if parsed.Host == "" {
 		return "", fmt.Errorf("invalid controller.url: missing host")
 	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("invalid controller.url: userinfo is not supported")
+	}
 	switch strings.ToLower(parsed.Scheme) {
 	case "http", "https":
 	default:

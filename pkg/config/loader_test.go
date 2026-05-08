@@ -843,6 +843,11 @@ func TestValidateAgentConfig_InvalidControllerURL(t *testing.T) {
 			want: "unsupported scheme",
 		},
 		{
+			name: "userinfo",
+			url:  "https://agent:secret@controller.example.com",
+			want: "userinfo",
+		},
+		{
 			name: "query string",
 			url:  "https://controller.example.com?tenant=prod",
 			want: "query strings",
