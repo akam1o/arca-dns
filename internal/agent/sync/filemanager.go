@@ -89,15 +89,10 @@ func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, conte
 		return nil, err
 	}
 
-	// Write to temporary file
-	if err := os.WriteFile(tmpPath, []byte(content), 0644); err != nil {
+	// Write to temporary file and sync it before publishing.
+	if err := fm.writeFileSync(tmpPath, []byte(content), 0644); err != nil {
+		_ = os.Remove(tmpPath)
 		return nil, fmt.Errorf("failed to write temporary file: %w", err)
-	}
-
-	// Fsync the temporary file to ensure it's written to disk
-	if err := fm.fsyncFile(tmpPath); err != nil {
-		os.Remove(tmpPath)
-		return nil, fmt.Errorf("failed to fsync temporary file: %w", err)
 	}
 
 	if validate != nil {
@@ -132,6 +127,17 @@ func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, conte
 				zap.Error(rollbackErr))
 		}
 		return nil, fmt.Errorf("failed to rename temporary file: %w", err)
+	}
+	if err := fm.fsyncDir(filepath.Dir(targetPath)); err != nil {
+		var errs []error
+		errs = append(errs, fmt.Errorf("fsync zone directory: %w", err))
+		if rollbackErr := restoreZoneFileSnapshot(targetPath, snapshot); rollbackErr != nil {
+			errs = append(errs, rollbackErr)
+		}
+		if rollbackErr := rollbackManagedZone(); rollbackErr != nil {
+			errs = append(errs, fmt.Errorf("roll back managed zone index: %w", rollbackErr))
+		}
+		return nil, errors.Join(errs...)
 	}
 
 	// Clean up old backups
@@ -208,9 +214,12 @@ func (fm *FileManager) DeleteZoneFile(zoneName string) error {
 
 func (fm *FileManager) deleteZoneFiles(zoneName string) error {
 	targetPath := fm.GetZonePath(zoneName)
+	changed := false
 
 	// Delete main file
-	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(targetPath); err == nil {
+		changed = true
+	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete zone file: %w", err)
 	}
 
@@ -220,14 +229,27 @@ func (fm *FileManager) deleteZoneFiles(zoneName string) error {
 		fm.logger.Warn("Failed to list backups after deleting zone file",
 			zap.String("zone", zoneName),
 			zap.Error(err))
+		if changed {
+			if syncErr := fm.fsyncDir(fm.zoneDir); syncErr != nil {
+				return fmt.Errorf("fsync zone directory after delete: %w", syncErr)
+			}
+		}
 		return nil
 	}
 
 	for _, backup := range backups {
-		if err := os.Remove(backup); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(backup); err == nil {
+			changed = true
+		} else if !os.IsNotExist(err) {
 			fm.logger.Warn("Failed to delete backup",
 				zap.String("path", backup),
 				zap.Error(err))
+		}
+	}
+
+	if changed {
+		if err := fm.fsyncDir(fm.zoneDir); err != nil {
+			return fmt.Errorf("fsync zone directory after delete: %w", err)
 		}
 	}
 
@@ -246,8 +268,13 @@ func (fm *FileManager) backupFile(path string) (string, error) {
 		return "", fmt.Errorf("failed to read file for backup: %w", err)
 	}
 
-	if err := os.WriteFile(backupPath, content, 0644); err != nil {
+	if err := fm.writeFileSync(backupPath, content, 0644); err != nil {
+		_ = os.Remove(backupPath)
 		return "", fmt.Errorf("failed to write backup file: %w", err)
+	}
+	if err := fm.fsyncDir(filepath.Dir(backupPath)); err != nil {
+		_ = os.Remove(backupPath)
+		return "", fmt.Errorf("failed to fsync backup directory: %w", err)
 	}
 
 	return backupPath, nil
@@ -281,7 +308,11 @@ func snapshotZoneFile(path string) (zoneFileSnapshot, error) {
 
 func restoreZoneFileSnapshot(path string, snapshot zoneFileSnapshot) error {
 	if !snapshot.exists {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(path); err == nil {
+			if err := syncDir(filepath.Dir(path)); err != nil {
+				return fmt.Errorf("fsync rolled back zone directory: %w", err)
+			}
+		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("remove rolled back zone file: %w", err)
 		}
 		return nil
@@ -313,6 +344,9 @@ func restoreZoneFileSnapshot(path string, snapshot zoneFileSnapshot) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename rollback zone file: %w", err)
 	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("fsync rollback zone directory: %w", err)
+	}
 	return nil
 }
 
@@ -325,6 +359,7 @@ func (fm *FileManager) cleanupBackups(zoneName string) error {
 
 	// If we have more backups than the limit, delete the oldest ones
 	if len(backups) > fm.backupVersions {
+		deleted := false
 		// Sort by modification time (oldest first)
 		sort.Slice(backups, func(i, j int) bool {
 			infoI, errI := os.Stat(backups[i])
@@ -346,6 +381,13 @@ func (fm *FileManager) cleanupBackups(zoneName string) error {
 				fm.logger.Warn("Failed to delete old backup",
 					zap.String("path", backups[i]),
 					zap.Error(err))
+			} else {
+				deleted = true
+			}
+		}
+		if deleted {
+			if err := fm.fsyncDir(fm.zoneDir); err != nil {
+				return fmt.Errorf("fsync zone directory after backup cleanup: %w", err)
 			}
 		}
 	}
@@ -438,12 +480,16 @@ func (fm *FileManager) writeManagedZones(zones map[string]string) error {
 
 	path := fm.managedZonesIndexPath()
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := fm.writeFileSync(tmpPath, data, 0644); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write managed zone index tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename managed zone index: %w", err)
+	}
+	if err := fm.fsyncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("fsync managed zone index directory: %w", err)
 	}
 	return nil
 }
@@ -522,6 +568,13 @@ func (fm *FileManager) listManagedZoneFiles() ([]string, error) {
 	return zoneNames, nil
 }
 
+func (fm *FileManager) writeFileSync(path string, data []byte, perm os.FileMode) error {
+	if err := os.WriteFile(path, data, perm); err != nil {
+		return err
+	}
+	return fm.fsyncFile(path)
+}
+
 // fsyncFile performs fsync on a file to ensure it's written to disk.
 func (fm *FileManager) fsyncFile(path string) error {
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
@@ -534,6 +587,26 @@ func (fm *FileManager) fsyncFile(path string) error {
 		return err
 	}
 
+	return nil
+}
+
+func (fm *FileManager) fsyncDir(path string) error {
+	return syncDir(path)
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+
+	if err := dir.Sync(); err != nil {
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 
