@@ -806,31 +806,11 @@ func (g *GitBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.
 
 // CreateZone creates a new zone
 func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
-	normalized := model.NormalizeZoneName(zone.Name)
-	zone.Name = normalized
-
-	// Auto-generate serial if not set
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-
-	// Set timestamps
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-
-	// Ensure version is set (normally issued by controller).
-	if zone.Version == "" {
-		version, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = version
-	}
-
-	if err := validateZoneForWrite(zone); err != nil {
+	writeZone, err := prepareZoneForCreate(zone, model.NormalizeZoneName)
+	if err != nil {
 		return err
 	}
+	normalized := writeZone.Name
 
 	zoneMu, err := g.acquireLock(ctx, normalized)
 	if err != nil {
@@ -858,13 +838,17 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	}
 
 	// Write zone file
-	if err := g.writeZone(normalized, zone); err != nil {
+	if err := g.writeZone(normalized, writeZone); err != nil {
 		return err
 	}
 
 	// Commit
-	summary := fmt.Sprintf("created zone with %d records", len(zone.Records))
-	return g.commitZone(ctx, normalized, "create", summary, zone, rollback)
+	summary := fmt.Sprintf("created zone with %d records", len(writeZone.Records))
+	if err := g.commitZone(ctx, normalized, "create", summary, writeZone, rollback); err != nil {
+		return err
+	}
+	copyZoneInto(zone, writeZone)
+	return nil
 }
 
 // UpdateZone updates an existing zone with optimistic locking

@@ -269,31 +269,11 @@ func (e *EtcdBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) (
 
 // CreateZone creates a new zone.
 func (e *EtcdBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
-	normalized := model.NormalizeZoneName(zone.Name)
-	zone.Name = normalized
-
-	// Auto-generate serial if not set
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-
-	// Set timestamps
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-
-	// Ensure version is set (normally issued by controller).
-	if zone.Version == "" {
-		version, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = version
-	}
-
-	if err := validateZoneForWrite(zone); err != nil {
+	writeZone, err := prepareZoneForCreate(zone, model.NormalizeZoneName)
+	if err != nil {
 		return err
 	}
+	normalized := writeZone.Name
 
 	// Acquire zone lock
 	zoneMu := e.acquireZoneLock(normalized)
@@ -303,7 +283,7 @@ func (e *EtcdBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	defer cancel()
 
 	// Marshal zone data
-	zoneData, err := json.Marshal(zone)
+	zoneData, err := json.Marshal(writeZone)
 	if err != nil {
 		return fmt.Errorf("failed to marshal zone: %w", err)
 	}
@@ -311,13 +291,13 @@ func (e *EtcdBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	// Transaction: create zone + version metadata + history snapshot
 	zoneKey := e.zoneKey(normalized)
 	versionKey := e.versionKey(normalized)
-	historyKey := e.historyKey(normalized, zone.Version)
+	historyKey := e.historyKey(normalized, writeZone.Version)
 
 	txn := e.client.Txn(ctx).
 		If(clientv3.Compare(clientv3.CreateRevision(zoneKey), "=", 0)).
 		Then(
 			clientv3.OpPut(zoneKey, string(zoneData)),
-			clientv3.OpPut(versionKey, zone.Version),
+			clientv3.OpPut(versionKey, writeZone.Version),
 			clientv3.OpPut(historyKey, string(zoneData)),
 		)
 
@@ -331,6 +311,7 @@ func (e *EtcdBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	}
 
 	// Watch events will be triggered by etcd's watch mechanism
+	copyZoneInto(zone, writeZone)
 	return nil
 }
 

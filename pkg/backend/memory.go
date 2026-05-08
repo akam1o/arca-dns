@@ -108,47 +108,27 @@ func (m *MemoryBackend) ListZoneSummaries(ctx context.Context, opts ListOptions)
 
 // CreateZone creates a new zone.
 func (m *MemoryBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
+	writeZone, err := prepareZoneForCreate(zone, model.NormalizeZoneName)
+	if err != nil {
+		return err
+	}
+	normalized := writeZone.Name
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	normalized := model.NormalizeZoneName(zone.Name)
 	if _, exists := m.zones[normalized]; exists {
 		return model.ErrZoneAlreadyExists
 	}
 
-	// Normalize zone name in the zone object itself
-	zone.Name = normalized
-
-	// Set timestamps
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-
-	// Auto-generate serial if not set
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-
-	// Ensure version is set (normally issued by controller).
-	if zone.Version == "" {
-		version, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = version
-	}
-
-	if err := validateZoneForWrite(zone); err != nil {
-		return err
-	}
-
 	// Assign IDs to records
-	for i := range zone.Records {
+	for i := range writeZone.Records {
 		m.nextID++
-		zone.Records[i].ID = strconv.Itoa(m.nextID)
+		writeZone.Records[i].ID = strconv.Itoa(m.nextID)
 	}
 
-	m.zones[normalized] = copyZone(zone)
+	m.zones[normalized] = copyZone(writeZone)
+	copyZoneInto(zone, writeZone)
 	return nil
 }
 

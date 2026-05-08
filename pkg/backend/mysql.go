@@ -310,37 +310,21 @@ func (m *MySQLBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) 
 
 // CreateZone creates a new zone.
 func (m *MySQLBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
-	return m.withRetry(ctx, func(ctx context.Context) error {
-		return m.createZone(ctx, zone)
-	})
-}
-
-func (m *MySQLBackend) createZone(ctx context.Context, zone *model.Zone) error {
-	zone.Name = normalizeZoneName(zone.Name)
-
-	// Auto-generate serial if not set
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-
-	// Ensure version is set (normally issued by controller).
-	if zone.Version == "" {
-		version, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = version
-	}
-
-	// Set timestamps
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-
-	if err := validateZoneForWrite(zone); err != nil {
+	writeZone, err := prepareZoneForCreate(zone, normalizeZoneName)
+	if err != nil {
 		return err
 	}
 
+	if err := m.withRetry(ctx, func(ctx context.Context) error {
+		return m.createZone(ctx, writeZone)
+	}); err != nil {
+		return err
+	}
+	copyZoneInto(zone, writeZone)
+	return nil
+}
+
+func (m *MySQLBackend) createZone(ctx context.Context, zone *model.Zone) error {
 	// Start transaction
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -348,6 +332,14 @@ func (m *MySQLBackend) createZone(ctx context.Context, zone *model.Zone) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err := m.insertZone(ctx, tx, zone); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (m *MySQLBackend) insertZone(ctx context.Context, tx *sql.Tx, zone *model.Zone) error {
 	// Insert zone
 	zoneQuery := `
 		INSERT INTO zones (
@@ -404,7 +396,7 @@ func (m *MySQLBackend) createZone(ctx context.Context, zone *model.Zone) error {
 		return err
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 // UpdateZone updates an existing zone.
@@ -904,84 +896,17 @@ func (t *MySQLTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*Z
 
 // CreateZone creates a new zone within the transaction.
 func (t *MySQLTx) CreateZone(ctx context.Context, zone *model.Zone) error {
-	zone.Name = normalizeZoneName(zone.Name)
-
-	// Auto-generate serial if not set
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-
-	// Ensure version is set (normally issued by controller).
-	if zone.Version == "" {
-		version, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = version
-	}
-
-	// Set timestamps
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-
-	if err := validateZoneForWrite(zone); err != nil {
+	writeZone, err := prepareZoneForCreate(zone, normalizeZoneName)
+	if err != nil {
 		return err
 	}
 
-	// Insert zone
-	zoneQuery := `
-		INSERT INTO zones (
-			name, version,
-			soa_mname, soa_rname, soa_serial, soa_refresh, soa_retry, soa_expire, soa_minimum,
-			dnssec_enabled, dnssec_algorithm, dnssec_ksk_key_tag, dnssec_zsk_key_tag,
-			dnssec_nsec3_enabled, dnssec_nsec3_iterations, dnssec_nsec3_salt, dnssec_signature_expiration,
-			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`
-
-	var dnssecAlgorithm, dnssecKSKKeyTag, dnssecZSKKeyTag interface{}
-	var dnssecNSEC3Iterations interface{}
-	var dnssecNSEC3Salt, dnssecSignatureExpiration interface{}
-	dnssecEnabled := false
-	dnssecNSEC3Enabled := false
-
-	if zone.DNSSEC != nil && zone.DNSSEC.Enabled {
-		dnssecEnabled = true
-		dnssecAlgorithm = zone.DNSSEC.Algorithm
-		dnssecKSKKeyTag = zone.DNSSEC.KSKKeyTag
-		dnssecZSKKeyTag = zone.DNSSEC.ZSKKeyTag
-		dnssecNSEC3Enabled = zone.DNSSEC.NSEC3Enabled
-		dnssecNSEC3Iterations = zone.DNSSEC.NSEC3Iterations
-		dnssecNSEC3Salt = zone.DNSSEC.NSEC3Salt
-		if zone.DNSSEC.SignatureExpiration != nil && !zone.DNSSEC.SignatureExpiration.IsZero() {
-			dnssecSignatureExpiration = zone.DNSSEC.SignatureExpiration
-		}
+	if err := t.backend.insertZone(ctx, t.tx, writeZone); err != nil {
+		return err
 	}
 
-	result, err := t.tx.ExecContext(ctx, zoneQuery,
-		zone.Name, zone.Version,
-		zone.SOA.MName, zone.SOA.RName, zone.SOA.Serial, zone.SOA.Refresh,
-		zone.SOA.Retry, zone.SOA.Expire, zone.SOA.Minimum,
-		dnssecEnabled, dnssecAlgorithm, dnssecKSKKeyTag, dnssecZSKKeyTag,
-		dnssecNSEC3Enabled, dnssecNSEC3Iterations, dnssecNSEC3Salt, dnssecSignatureExpiration,
-		zone.CreatedAt, zone.UpdatedAt,
-	)
-
-	if err != nil {
-		if isMySQLDuplicateError(err) {
-			return model.ErrZoneAlreadyExists
-		}
-		return fmt.Errorf("failed to insert zone: %w", err)
-	}
-
-	zoneID, err := result.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("failed to get zone ID: %w", err)
-	}
-
-	// Insert records
-	return t.backend.insertRecords(ctx, t.tx, zoneID, zone.Records, nil)
+	copyZoneInto(zone, writeZone)
+	return nil
 }
 
 // UpdateZone updates an existing zone within the transaction.

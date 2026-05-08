@@ -73,8 +73,10 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 
 		// Try to create again
 		zone2 := createTestZone("duplicate.example.com.")
+		before := copyZone(zone2)
 		err = store.CreateZone(ctx, zone2)
 		assert.ErrorIs(t, err, model.ErrZoneAlreadyExists)
+		assert.Equal(t, before, zone2, "failed create must not mutate caller zone")
 	})
 
 	t.Run("CreateZone_DuplicateRecords", func(t *testing.T) {
@@ -83,10 +85,13 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
 			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
 		}
+		zone.SOA.Serial = 0
+		before := copyZone(zone)
 
 		err := store.CreateZone(ctx, zone)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "duplicate record")
+		assert.Equal(t, before, zone, "failed create must not mutate caller zone")
 	})
 
 	t.Run("GetZone", func(t *testing.T) {

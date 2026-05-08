@@ -191,22 +191,8 @@ func (p *PostgresBackend) ListZoneSummaries(ctx context.Context, opts ListOption
 
 // CreateZone creates a new zone.
 func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
-	zone.Name = normalizeZoneName(zone.Name)
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-	if zone.Version == "" {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate version: %w", err)
-		}
-		zone.Version = v
-	}
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-
-	if err := validateZoneForWrite(zone); err != nil {
+	writeZone, err := prepareZoneForCreate(zone, normalizeZoneName)
+	if err != nil {
 		return err
 	}
 
@@ -216,14 +202,18 @@ func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) erro
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	zoneID, err := p.insertZonePGTx(ctx, tx, zone)
+	zoneID, err := p.insertZonePGTx(ctx, tx, writeZone)
 	if err != nil {
 		return err
 	}
-	if err := p.insertRecordsPGTx(ctx, tx, zoneID, zone.Records, nil); err != nil {
+	if err := p.insertRecordsPGTx(ctx, tx, zoneID, writeZone.Records, nil); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	copyZoneInto(zone, writeZone)
+	return nil
 }
 
 // UpdateZone updates an existing zone.
@@ -759,28 +749,19 @@ func (t *pgTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*Zone
 }
 
 func (t *pgTx) CreateZone(ctx context.Context, zone *model.Zone) error {
-	zone.Name = normalizeZoneName(zone.Name)
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-	if zone.Version == "" {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate version: %w", err)
-		}
-		zone.Version = v
-	}
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-	if err := validateZoneForWrite(zone); err != nil {
-		return err
-	}
-	zoneID, err := t.backend.insertZonePGTx(ctx, t.tx, zone)
+	writeZone, err := prepareZoneForCreate(zone, normalizeZoneName)
 	if err != nil {
 		return err
 	}
-	return t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, zone.Records, nil)
+	zoneID, err := t.backend.insertZonePGTx(ctx, t.tx, writeZone)
+	if err != nil {
+		return err
+	}
+	if err := t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, writeZone.Records, nil); err != nil {
+		return err
+	}
+	copyZoneInto(zone, writeZone)
+	return nil
 }
 
 func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
