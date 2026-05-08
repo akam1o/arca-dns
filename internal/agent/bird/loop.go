@@ -40,27 +40,33 @@ func (cl *ControlLoop) Run(ctx context.Context, signalChan <-chan HealthSignal) 
 	for {
 		select {
 		case <-ctx.Done():
-			cl.logger.Info("BGP control loop stopping")
-			// Graceful shutdown: withdraw routes before exit
-			if cl.routeManager.IsAnnounced() {
-				cl.logger.Info("Withdrawing routes for graceful shutdown")
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				if err := cl.routeManager.WithdrawRoutes(shutdownCtx); err != nil {
-					cl.logger.Error("Failed to withdraw routes on shutdown", zap.Error(err))
-				} else {
-					cl.logger.Info("Routes withdrawn successfully")
-				}
-				cancel()
-			}
+			cl.shutdown()
 			return ctx.Err()
 
 		case signal, ok := <-signalChan:
 			if !ok {
 				cl.logger.Info("Signal channel closed, stopping control loop")
+				cl.shutdown()
 				return nil
 			}
 			cl.processSignal(ctx, signal)
 		}
+	}
+}
+
+func (cl *ControlLoop) shutdown() {
+	cl.logger.Info("BGP control loop stopping")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	changed, err := cl.routeManager.WithdrawRoutesChanged(shutdownCtx)
+	if err != nil {
+		cl.logger.Error("Failed to withdraw routes on shutdown", zap.Error(err))
+		return
+	}
+	if changed {
+		cl.logger.Info("Routes withdrawn successfully")
 	}
 }
 

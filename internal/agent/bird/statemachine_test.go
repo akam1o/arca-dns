@@ -110,3 +110,63 @@ func TestControlLoop_DoesNotDebounceWithdrawAfterNoopAnnounce(t *testing.T) {
 		t.Fatalf("commands mismatch\nwant: %v\n got: %v", want, client.commands)
 	}
 }
+
+func TestControlLoop_WithdrawsWhenSignalChannelCloses(t *testing.T) {
+	client := &recordingClient{}
+	manager := mustNewRouteManager(t, client, []string{"anycast_1"})
+	manager.announced = true
+
+	stateMachine := NewStateMachine(StateMachineConfig{
+		FailureThreshold:  1,
+		RecoveryThreshold: 1,
+	}, zap.NewNop())
+	controlLoop := NewControlLoop(stateMachine, manager, zap.NewNop())
+
+	signalChan := make(chan HealthSignal)
+	close(signalChan)
+
+	if err := controlLoop.Run(context.Background(), signalChan); err != nil {
+		t.Fatalf("control loop returned error: %v", err)
+	}
+
+	want := []string{"disable anycast_1"}
+	if !reflect.DeepEqual(client.commands, want) {
+		t.Fatalf("commands mismatch\nwant: %v\n got: %v", want, client.commands)
+	}
+}
+
+func TestControlLoop_WithdrawsPartialReconcileOnShutdown(t *testing.T) {
+	client := &recordingClient{
+		responses: map[string]*Response{
+			"show protocols anycast_1": {Code: 0, RawText: "anycast_1 BGP master up"},
+			"show protocols anycast_2": {Code: 0, RawText: "anycast_2 BGP master Disabled"},
+		},
+	}
+	manager := mustNewRouteManager(t, client, []string{"anycast_1", "anycast_2"})
+	if err := manager.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	stateMachine := NewStateMachine(StateMachineConfig{
+		FailureThreshold:  1,
+		RecoveryThreshold: 1,
+	}, zap.NewNop())
+	controlLoop := NewControlLoop(stateMachine, manager, zap.NewNop())
+
+	signalChan := make(chan HealthSignal)
+	close(signalChan)
+
+	if err := controlLoop.Run(context.Background(), signalChan); err != nil {
+		t.Fatalf("control loop returned error: %v", err)
+	}
+
+	want := []string{
+		"show protocols anycast_1",
+		"show protocols anycast_2",
+		"disable anycast_1",
+		"disable anycast_2",
+	}
+	if !reflect.DeepEqual(client.commands, want) {
+		t.Fatalf("commands mismatch\nwant: %v\n got: %v", want, client.commands)
+	}
+}
