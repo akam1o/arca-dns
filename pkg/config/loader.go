@@ -145,11 +145,11 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return fmt.Errorf("invalid api.listen: empty")
 	}
 
-	if err := validateArtifactSignatureKey("api.artifact_signature_key", cfg.API.ArtifactSignatureKey, false); err != nil {
+	if err := validateControllerAuthConfig(cfg.API.Auth); err != nil {
 		return err
 	}
 
-	if err := validateControllerAuthConfig(cfg.API.Auth); err != nil {
+	if err := validateArtifactSignatureKey("api.artifact_signature_key", cfg.API.ArtifactSignatureKey, cfg.API.Auth.Enabled); err != nil {
 		return err
 	}
 
@@ -291,7 +291,7 @@ func validateArtifactSignatureKey(field string, key string, required bool) error
 	value := strings.TrimSpace(key)
 	if value == "" {
 		if required {
-			return fmt.Errorf("invalid %s: required when sync.verify_signatures is true; generate a shared secret with: openssl rand -base64 32", field)
+			return fmt.Errorf("invalid %s: required for artifact signature verification; generate a shared secret with: openssl rand -base64 32", field)
 		}
 		return nil
 	}

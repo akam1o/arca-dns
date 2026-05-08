@@ -19,6 +19,7 @@ const validEnvArtifactSignatureKey = "env-artifact-signature-key-32-bytes"
 
 func validControllerConfigForTest() *ControllerConfig {
 	cfg := DefaultControllerConfig()
+	cfg.API.ArtifactSignatureKey = validTestArtifactSignatureKey
 	cfg.API.Auth.APIKeys = map[string]string{
 		"admin": validTestAPIKeyHash,
 	}
@@ -53,14 +54,26 @@ func TestLoadControllerConfig_AuthDisabledFromEnvAllowsDefaults(t *testing.T) {
 
 func TestLoadControllerConfig_APIKeysFromEnvAllowsDefaults(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", validTestAPIKeyHash)
+	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 
 	cfg, err := LoadControllerConfig("")
 	require.NoError(t, err)
 
 	assert.True(t, cfg.API.Auth.Enabled)
+	assert.Equal(t, validEnvArtifactSignatureKey, cfg.API.ArtifactSignatureKey)
 	assert.Equal(t, map[string]string{
 		"admin": validTestAPIKeyHash,
 	}, cfg.API.Auth.APIKeys)
+}
+
+func TestLoadControllerConfig_APIKeysFromEnvRequireArtifactSignatureKey(t *testing.T) {
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", validTestAPIKeyHash)
+
+	cfg, err := LoadControllerConfig("")
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "api.artifact_signature_key")
+	assert.Contains(t, err.Error(), "generate a shared secret")
 }
 
 func TestDefaultControllerConfig_Defaults(t *testing.T) {
@@ -319,6 +332,7 @@ func TestLoadControllerConfig_NestedEnvOverrides(t *testing.T) {
 func TestLoadControllerConfig_APIKeyEnvMergesAndOverridesYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", alternateValidTestAPIKeyHash)
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_EDGE_AGENT", validTestAPIKeyHash)
+	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "controller.yaml")
@@ -346,6 +360,7 @@ func TestLoadControllerConfig_NormalizesAPIKeyHashes(t *testing.T) {
 	upperHash := "sha256:" + strings.Repeat("A", 64)
 	expectedHash := "sha256:" + strings.Repeat("a", 64)
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", "  "+upperHash+"  ")
+	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 
 	cfg, err := LoadControllerConfig("")
 	require.NoError(t, err)
@@ -408,6 +423,7 @@ func TestValidateControllerConfig_AuthEnabledRejectsInvalidAPIKeyHash(t *testing
 
 func TestValidateControllerConfig_AuthEnabledNormalizesAPIKeyHashes(t *testing.T) {
 	cfg := DefaultControllerConfig()
+	cfg.API.ArtifactSignatureKey = validTestArtifactSignatureKey
 	cfg.API.Auth.Enabled = true
 	cfg.API.Auth.APIKeys = map[string]string{
 		"admin": "  sha256:" + strings.Repeat("B", 64) + "  ",
@@ -455,6 +471,26 @@ func TestValidateControllerConfig_RejectsInvalidArtifactSignatureKey(t *testing.
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
+}
+
+func TestValidateControllerConfig_RejectsMissingArtifactSignatureKeyWhenAuthEnabled(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.API.ArtifactSignatureKey = ""
+
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "api.artifact_signature_key")
+	assert.Contains(t, err.Error(), "required")
+}
+
+func TestValidateControllerConfig_AllowsMissingArtifactSignatureKeyWhenAuthDisabled(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.API.Auth.Enabled = false
+	cfg.API.Auth.APIKeys = nil
+	cfg.API.ArtifactSignatureKey = ""
+
+	err := ValidateControllerConfig(cfg)
+	assert.NoError(t, err)
 }
 
 func TestValidateControllerConfig_EmptyAPIListen(t *testing.T) {
