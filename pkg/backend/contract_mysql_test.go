@@ -6,6 +6,7 @@ package backend
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,9 @@ func setupMySQLBackend(t *testing.T) (*MySQLBackend, func()) {
 
 	backend, err := NewMySQLBackend(dsn)
 	require.NoError(t, err, "Failed to create MySQL backend")
+
+	err = backend.RunMigrations(filepath.Join("..", "..", "migrations", "mysql"))
+	require.NoError(t, err, "Failed to run MySQL migrations")
 
 	// Clean up any existing test data
 	ctx := context.Background()

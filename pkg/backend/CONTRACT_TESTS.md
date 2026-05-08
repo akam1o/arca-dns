@@ -56,7 +56,7 @@ docker run -d --name mysql-test \
   mysql:8.0
 
 # Set DSN environment variable
-export MYSQL_DSN="root:testpass@tcp(localhost:3306)/arca_dns_test?parseTime=true"
+export MYSQL_DSN="root:testpass@tcp(localhost:3306)/arca_dns_test?parseTime=true&multiStatements=true"
 
 # Run MySQL contract tests
 go test -v -tags=integration -run TestMySQLBackend_Contract ./pkg/backend/
@@ -90,7 +90,7 @@ docker rm -f etcd-test
 
 ```bash
 # Requires PostgreSQL, MySQL and etcd running
-ARCA_POSTGRES_DSN="..." MYSQL_DSN="..." go test -v -tags=integration -run Contract ./pkg/backend/
+ARCA_POSTGRES_DSN="..." MYSQL_DSN="..." ETCD_ENDPOINTS="localhost:2379" go test -v -tags=integration -run Contract ./pkg/backend/
 ```
 
 ## Contract Invariants Tested

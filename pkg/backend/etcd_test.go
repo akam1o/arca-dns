@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,8 +23,10 @@ func setupEtcdBackend(t *testing.T) (*EtcdBackend, func()) {
 	endpoints := []string{"localhost:2379"}
 
 	// Allow override via environment variable for CI
-	if etcdEndpoint := os.Getenv("ETCD_ENDPOINT"); etcdEndpoint != "" {
-		endpoints = []string{etcdEndpoint}
+	if etcdEndpoints := os.Getenv("ETCD_ENDPOINTS"); etcdEndpoints != "" {
+		endpoints = splitEtcdEndpoints(etcdEndpoints)
+	} else if etcdEndpoint := os.Getenv("ETCD_ENDPOINT"); etcdEndpoint != "" {
+		endpoints = splitEtcdEndpoints(etcdEndpoint)
 	}
 
 	// Use a unique prefix for each test to avoid conflicts
@@ -47,6 +50,21 @@ func setupEtcdBackend(t *testing.T) (*EtcdBackend, func()) {
 	}
 
 	return backend, cleanup
+}
+
+func splitEtcdEndpoints(value string) []string {
+	parts := strings.Split(value, ",")
+	endpoints := make([]string, 0, len(parts))
+	for _, part := range parts {
+		endpoint := strings.TrimSpace(part)
+		if endpoint != "" {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	if len(endpoints) == 0 {
+		return []string{"localhost:2379"}
+	}
+	return endpoints
 }
 
 func TestEtcdBackend_CreateZone(t *testing.T) {
