@@ -38,12 +38,12 @@ func NewNSEC3Params(ttl uint32, iterations uint16, saltLength int) NSEC3Params {
 // generateRandomSalt creates a random hex salt with the requested byte length.
 func generateRandomSalt(length int) string {
 	if length <= 0 {
-		return "-"
+		return ""
 	}
 
 	b := make([]byte, length)
 	if _, err := rand.Read(b); err != nil {
-		return "-" // fallback to empty salt on error
+		return "" // fallback to empty salt on error
 	}
 	return hex.EncodeToString(b)
 }
