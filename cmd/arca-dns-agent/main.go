@@ -771,7 +771,6 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 			"version":           version,
 			"zone_count":        len(zoneStates),
 			"failed_zones":      syncer.FailedZoneCount(),
-			"zones":             zoneStates,
 			"last_sync":         syncer.GetLastSuccessTime(),
 			"is_stale":          syncer.IsStale(),
 			"health":            healthStatus.Healthy,

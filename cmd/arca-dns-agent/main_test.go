@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -103,6 +104,34 @@ func TestStatusRouter_MetricsEnabledUsesConfiguredPath(t *testing.T) {
 	router.ServeHTTP(resp, req)
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("GET /metrics status=%d, want %d", resp.Code, http.StatusNotFound)
+	}
+}
+
+func TestStatusRouter_DoesNotExposeZoneDetails(t *testing.T) {
+	router := newTestStatusRouter(config.MetricsConfig{
+		Enabled: true,
+		Path:    "/metrics",
+	})
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /status status=%d, want %d", resp.Code, http.StatusOK)
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode /status response: %v", err)
+	}
+	if _, ok := body["zones"]; ok {
+		t.Fatalf("GET /status exposed per-zone details")
+	}
+	if _, ok := body["zone_count"]; !ok {
+		t.Fatalf("GET /status missing zone_count")
+	}
+	if _, ok := body["failed_zones"]; !ok {
+		t.Fatalf("GET /status missing failed_zones")
 	}
 }
 
