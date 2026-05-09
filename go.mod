@@ -20,14 +20,14 @@ require (
 	go.etcd.io/etcd/client/v3 v3.6.7
 	go.uber.org/zap v1.27.0
 	golang.org/x/time v0.14.0
-	google.golang.org/protobuf v1.36.7
+	google.golang.org/protobuf v1.36.10
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	modernc.org/sqlite v1.46.1
 )
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
-	filippo.io/edwards25519 v1.1.0 // indirect
+	filippo.io/edwards25519 v1.1.1 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/bytedance/sonic v1.9.1 // indirect
@@ -92,9 +92,9 @@ require (
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20250818200422-3122310a409c // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250818200422-3122310a409c // indirect
-	google.golang.org/grpc v1.74.2 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	google.golang.org/grpc v1.79.3 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
