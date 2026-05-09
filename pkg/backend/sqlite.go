@@ -54,6 +54,14 @@ func NewSQLiteBackend(dsn string) (*SQLiteBackend, error) {
 	}, nil
 }
 
+// HealthCheck verifies that SQLite is reachable without loading zone data.
+func (s *SQLiteBackend) HealthCheck(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("sqlite health check failed: %w", err)
+	}
+	return nil
+}
+
 func sqliteDSNWithDefaultPragmas(dsn string) string {
 	defaults := []struct {
 		name  string

@@ -140,6 +140,17 @@ func (e *EtcdBackend) historyPrefixForZone(name string) string {
 	return fmt.Sprintf("%s/%s/%s/", e.prefix, etcdHistoryPrefix, model.NormalizeZoneName(name))
 }
 
+// HealthCheck verifies that etcd is reachable without scanning zone data.
+func (e *EtcdBackend) HealthCheck(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
+	defer cancel()
+
+	if _, err := e.client.Get(ctx, e.prefix, clientv3.WithLimit(1)); err != nil {
+		return fmt.Errorf("etcd health check failed: %w", err)
+	}
+	return nil
+}
+
 // Per-zone mutex helpers
 func (e *EtcdBackend) acquireZoneLock(zoneName string) *sync.Mutex {
 	normalized := model.NormalizeZoneName(zoneName)

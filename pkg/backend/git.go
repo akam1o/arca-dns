@@ -197,6 +197,28 @@ func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitB
 	}, nil
 }
 
+// HealthCheck verifies that the local Git repository is usable without loading
+// zone contents or contacting the remote.
+func (g *GitBackend) HealthCheck(ctx context.Context) error {
+	if err := g.acquireFileLock(ctx); err != nil {
+		return err
+	}
+	defer g.releaseFileLock()
+
+	if _, err := os.Stat(g.repoPath); err != nil {
+		return fmt.Errorf("git repository path unavailable: %w", err)
+	}
+	if _, err := g.repo.Head(); err != nil && err != plumbing.ErrReferenceNotFound {
+		return fmt.Errorf("git repository head unavailable: %w", err)
+	}
+
+	zonesDir := filepath.Join(g.repoPath, "zones")
+	if _, err := os.Stat(zonesDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("git zones directory unavailable: %w", err)
+	}
+	return nil
+}
+
 // openOrInitRepo opens an existing repository or initializes a new one
 func openOrInitRepo(path, branch string) (*git.Repository, error) {
 	// Try to open existing repository

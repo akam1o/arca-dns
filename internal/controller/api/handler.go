@@ -77,8 +77,7 @@ func (h *Handler) Ready(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 	defer cancel()
 
-	_, err := h.store.ListZones(ctx, backend.ListOptions{Limit: 1, Offset: 0})
-	if err != nil {
+	if err := backend.CheckHealth(ctx, h.store); err != nil {
 		h.logger.Warn("Readiness check failed", zap.Error(err))
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status": "not_ready",

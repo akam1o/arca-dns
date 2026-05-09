@@ -207,20 +207,8 @@ func runServe(cmd *cobra.Command, args []string) {
 	observabilityRouter := api.SetupObservabilityRouter(handler, &cfg.API, logger)
 
 	// Create HTTP servers
-	apiSrv := &http.Server{
-		Addr:         cfg.API.Listen,
-		Handler:      apiRouter,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
-	observabilitySrv := &http.Server{
-		Addr:         cfg.Observability.Listen,
-		Handler:      observabilityRouter,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+	apiSrv := newControllerHTTPServer(cfg.API.Listen, apiRouter)
+	observabilitySrv := newControllerHTTPServer(cfg.Observability.Listen, observabilityRouter)
 
 	// Start servers in goroutines
 	go func() {
@@ -393,4 +381,15 @@ func signerOptionsFromConfig(cfg config.DNSSECConfig) dnssec.SignerOptions {
 	options.NSEC3Iterations = cfg.NSEC3Iterations
 	options.NSEC3SaltLength = cfg.NSEC3SaltLength
 	return options
+}
+
+func newControllerHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 }

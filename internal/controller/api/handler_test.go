@@ -48,8 +48,28 @@ type readinessFailingStore struct {
 	*backend.MemoryBackend
 }
 
+func (s *readinessFailingStore) HealthCheck(ctx context.Context) error {
+	return errors.New("dial tcp db.internal:5432: schema path /var/lib/arca-dns")
+}
+
 func (s *readinessFailingStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
 	return nil, errors.New("dial tcp db.internal:5432: schema path /var/lib/arca-dns")
+}
+
+type readinessHealthStore struct {
+	*backend.MemoryBackend
+	healthCalls int
+	listCalls   int
+}
+
+func (s *readinessHealthStore) HealthCheck(ctx context.Context) error {
+	s.healthCalls++
+	return nil
+}
+
+func (s *readinessHealthStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	s.listCalls++
+	return nil, errors.New("ListZones should not be used for readiness")
 }
 
 type zoneStoreWithoutConditionalDelete struct {
@@ -248,6 +268,24 @@ func TestReadyRedactsBackendErrors(t *testing.T) {
 	assert.Equal(t, "backend unavailable", body["error"])
 	assert.NotContains(t, w.Body.String(), "db.internal")
 	assert.NotContains(t, w.Body.String(), "/var/lib/arca-dns")
+}
+
+func TestReadyUsesBackendHealthCheck(t *testing.T) {
+	logger := zap.NewNop()
+	store := &readinessHealthStore{MemoryBackend: backend.NewMemoryBackend()}
+	handler := NewHandler(store, nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = false
+	apiCfg.RateLimit.Enabled = false
+	router := SetupObservabilityRouter(handler, &apiCfg, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 1, store.healthCalls)
+	assert.Equal(t, 0, store.listCalls)
 }
 
 func TestHeadZoneReturnsETagWithoutBody(t *testing.T) {

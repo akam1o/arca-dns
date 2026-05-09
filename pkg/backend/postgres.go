@@ -47,6 +47,14 @@ func NewPostgresBackendWithPool(dsn string, pool SQLPoolConfig) (*PostgresBacken
 	return &PostgresBackend{db: db, dsn: dsn}, nil
 }
 
+// HealthCheck verifies that PostgreSQL is reachable without loading zone data.
+func (p *PostgresBackend) HealthCheck(ctx context.Context) error {
+	if err := p.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("postgres health check failed: %w", err)
+	}
+	return nil
+}
+
 // InitSchema creates tables if they don't exist (for simple deployments).
 func (p *PostgresBackend) InitSchema() error {
 	schema := `

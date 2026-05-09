@@ -65,6 +65,12 @@ type ZoneSummaryStore interface {
 	ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error)
 }
 
+// HealthStore is an optional capability for backends that can perform a cheap
+// readiness check without loading zone contents.
+type HealthStore interface {
+	HealthCheck(ctx context.Context) error
+}
+
 // ListZoneSummaries returns lightweight zone metadata, using an optimized
 // backend projection when available and falling back to ListZones otherwise.
 func ListZoneSummaries(ctx context.Context, store ZoneStore, opts ListOptions) ([]*ZoneSummary, error) {
@@ -85,6 +91,18 @@ func ListZoneSummaries(ctx context.Context, store ZoneStore, opts ListOptions) (
 		})
 	}
 	return summaries, nil
+}
+
+// CheckHealth verifies that the backend is reachable. Backends with a cheap
+// health probe should implement HealthStore; the fallback preserves existing
+// behavior for custom stores.
+func CheckHealth(ctx context.Context, store ZoneStore) error {
+	if healthStore, ok := store.(HealthStore); ok {
+		return healthStore.HealthCheck(ctx)
+	}
+
+	_, err := ListZoneSummaries(ctx, store, ListOptions{Limit: 1, Offset: 0})
+	return err
 }
 
 // DNSSECMetadataStore is an optional capability for backends that can update

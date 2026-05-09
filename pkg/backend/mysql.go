@@ -54,6 +54,14 @@ func NewMySQLBackendWithPool(dsn string, pool SQLPoolConfig) (*MySQLBackend, err
 	}, nil
 }
 
+// HealthCheck verifies that MySQL is reachable without loading zone data.
+func (m *MySQLBackend) HealthCheck(ctx context.Context) error {
+	if err := m.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("mysql health check failed: %w", err)
+	}
+	return nil
+}
+
 // RunMigrations applies database migrations.
 func (m *MySQLBackend) RunMigrations(migrationsPath string) error {
 	driver, err := mysql.WithInstance(m.db, &mysql.Config{})

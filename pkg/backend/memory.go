@@ -31,6 +31,16 @@ func NewMemoryBackend() *MemoryBackend {
 	}
 }
 
+// HealthCheck verifies that the in-memory backend can serve requests.
+func (m *MemoryBackend) HealthCheck(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+
 // GetZone retrieves a zone by name.
 func (m *MemoryBackend) GetZone(ctx context.Context, name string) (*model.Zone, error) {
 	m.mu.RLock()
