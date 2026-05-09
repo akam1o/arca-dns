@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -772,6 +773,34 @@ func TestSigningService_GetDSRecordsWaitsForZoneLock(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("GetDSRecords did not complete after the zone signing lock was released")
+	}
+}
+
+func TestSigningService_GetDSRecordsContextCancelledWhileWaitingForZoneLock(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	lock := service.getZoneLock(model.NormalizeZoneName(zone.Name))
+	lock.Lock()
+	defer lock.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.GetDSRecords(ctx, zone.Name)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("GetDSRecords error = %v, want %v", err, context.DeadlineExceeded)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GetDSRecords did not return after context deadline")
 	}
 }
 
