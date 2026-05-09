@@ -1,6 +1,7 @@
 package dnssec
 
 import (
+	"context"
 	"crypto"
 	"fmt"
 	"net"
@@ -79,6 +80,11 @@ func NewZoneSigner(keyManager *KeyManager, opts SignerOptions) *ZoneSigner {
 // SignZone signs a zone and returns the signed zone with DNSSEC records.
 // It returns the signed RRs (including DNSKEY and RRSIG records) and updated zone metadata.
 func (s *ZoneSigner) SignZone(zone *model.Zone) (*model.Zone, []dns.RR, error) {
+	return s.SignZoneContext(context.Background(), zone)
+}
+
+// SignZoneContext signs a zone and honors ctx while loading DNSSEC keys.
+func (s *ZoneSigner) SignZoneContext(ctx context.Context, zone *model.Zone) (*model.Zone, []dns.RR, error) {
 	if zone == nil {
 		return nil, nil, fmt.Errorf("zone is nil")
 	}
@@ -90,11 +96,32 @@ func (s *ZoneSigner) SignZone(zone *model.Zone) (*model.Zone, []dns.RR, error) {
 	}
 
 	// Ensure keys exist for this zone
-	ksk, zsk, err := s.keyManager.EnsureZoneKeys(normalizedZoneName)
+	ksk, zsk, err := s.keyManager.EnsureZoneKeysContext(ctx, normalizedZoneName)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get zone keys: %w", err)
 	}
 
+	return s.signZoneWithKeys(zone, normalizedZoneName, ksk, zsk)
+}
+
+// SignZoneWithKeys signs a zone with a caller-provided key snapshot.
+func (s *ZoneSigner) SignZoneWithKeys(zone *model.Zone, ksk, zsk *KeyPair) (*model.Zone, []dns.RR, error) {
+	if zone == nil {
+		return nil, nil, fmt.Errorf("zone is nil")
+	}
+	if ksk == nil || zsk == nil {
+		return nil, nil, fmt.Errorf("dnssec keys are required")
+	}
+
+	normalizedZoneName, err := NormalizeZoneFQDN(zone.Name)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid zone name: %w", err)
+	}
+
+	return s.signZoneWithKeys(zone, normalizedZoneName, ksk, zsk)
+}
+
+func (s *ZoneSigner) signZoneWithKeys(zone *model.Zone, normalizedZoneName string, ksk, zsk *KeyPair) (*model.Zone, []dns.RR, error) {
 	// Convert zone to RRs
 	rrs, err := s.modelToRRs(zone, normalizedZoneName)
 	if err != nil {

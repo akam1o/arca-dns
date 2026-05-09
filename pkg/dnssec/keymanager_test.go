@@ -1,11 +1,13 @@
 package dnssec
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -373,6 +375,33 @@ func TestEnsureZoneKeys_Concurrent(t *testing.T) {
 		assert.Equal(t, kskTags[0], kskTags[i])
 		assert.Equal(t, zskTags[0], zskTags[i])
 	}
+}
+
+func TestEnsureZoneKeysContext_CancelledWhileWaitingForZoneLock(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	zoneFQDN, err := NormalizeZoneFQDN("example.com")
+	require.NoError(t, err)
+	release, err := km.acquireZoneMutex(context.Background(), zoneFQDN)
+	require.NoError(t, err)
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	ksk, zsk, err := km.EnsureZoneKeysContext(ctx, "example.com")
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Nil(t, ksk)
+	assert.Nil(t, zsk)
 }
 
 func TestGenerateZoneKeys_RotateFailureKeepsExistingActiveKeys(t *testing.T) {

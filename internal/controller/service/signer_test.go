@@ -699,9 +699,23 @@ func TestSigningService_GetDSRecords(t *testing.T) {
 	}
 
 	// Verify DS record format (should be BIND format)
+	var keyTag uint16
 	for i, ds := range dsRecords {
 		if ds == "" {
 			t.Errorf("DS record %d is empty", i)
+		}
+		rr, err := dns.NewRR(ds)
+		if err != nil {
+			t.Fatalf("DS record %d is invalid: %v", i, err)
+		}
+		dsRR, ok := rr.(*dns.DS)
+		if !ok {
+			t.Fatalf("DS record %d parsed as %T, want *dns.DS", i, rr)
+		}
+		if i == 0 {
+			keyTag = dsRR.KeyTag
+		} else if dsRR.KeyTag != keyTag {
+			t.Fatalf("DS record %d key tag = %d, want %d", i, dsRR.KeyTag, keyTag)
 		}
 		t.Logf("DS record %d: %s", i, ds)
 	}

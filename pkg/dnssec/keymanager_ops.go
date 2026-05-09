@@ -1,6 +1,7 @@
 package dnssec
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,11 +15,16 @@ import (
 // GenerateZoneKeys ensures (or rotates) both KSK and ZSK for a zone.
 // If rotate is true, new keys are always generated and become active together.
 func (km *KeyManager) GenerateZoneKeys(zone string, rotate bool) (ksk *KeyPair, zsk *KeyPair, err error) {
+	return km.GenerateZoneKeysContext(context.Background(), zone, rotate)
+}
+
+// GenerateZoneKeysContext ensures (or rotates) both KSK and ZSK for a zone.
+func (km *KeyManager) GenerateZoneKeysContext(ctx context.Context, zone string, rotate bool) (ksk *KeyPair, zsk *KeyPair, err error) {
 	if !rotate {
-		return km.EnsureZoneKeys(zone)
+		return km.EnsureZoneKeysContext(ctx, zone)
 	}
 
-	err = km.withZoneKeyLock(zone, true, func(zoneFQDN string) error {
+	err = km.withZoneKeyLock(ctx, zone, true, func(zoneFQDN string) error {
 		var err error
 		ksk, err = km.generateKeyLocked(zoneFQDN, KeyRoleKSK, km.kskBits, dnskeyKSKFlags, false)
 		if err != nil {
@@ -47,7 +53,12 @@ func (km *KeyManager) GenerateZoneKeys(zone string, rotate bool) (ksk *KeyPair, 
 // This is intended for post-rollover cleanup once DS has been updated at the parent.
 // It keeps only the key files referenced by active.json.
 func (km *KeyManager) RemoveOldKeys(zone string) (removedFiles int, err error) {
-	err = km.withZoneKeyLock(zone, false, func(zoneFQDN string) error {
+	return km.RemoveOldKeysContext(context.Background(), zone)
+}
+
+// RemoveOldKeysContext deletes non-active key files for a zone.
+func (km *KeyManager) RemoveOldKeysContext(ctx context.Context, zone string) (removedFiles int, err error) {
+	err = km.withZoneKeyLock(ctx, zone, false, func(zoneFQDN string) error {
 		zoneDir, err := km.getZoneDir(zoneFQDN)
 		if err != nil {
 			return err

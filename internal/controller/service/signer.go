@@ -188,7 +188,7 @@ func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*Signe
 	}
 
 	// Ensure keys exist for the zone
-	ksk, zsk, err := s.keyManager.EnsureZoneKeys(zone.Name)
+	ksk, zsk, err := s.keyManager.EnsureZoneKeysContext(ctx, zone.Name)
 	if err != nil {
 		status = "error"
 		return nil, fmt.Errorf("failed to ensure zone keys: %w", err)
@@ -197,7 +197,7 @@ func (s *SigningService) SignZone(ctx context.Context, zone *model.Zone) (*Signe
 	signer := dnssec.NewZoneSigner(s.keyManager, s.options)
 
 	// Sign the zone
-	signedZone, signedRRs, err := signer.SignZone(zone)
+	signedZone, signedRRs, err := signer.SignZoneWithKeys(zone, ksk, zsk)
 	if err != nil {
 		status = "error"
 		return nil, fmt.Errorf("failed to sign zone: %w", err)
@@ -669,7 +669,7 @@ func (s *SigningService) GetDSRecords(ctx context.Context, zoneName string) ([]s
 	defer lock.Unlock()
 
 	// Ensure keys exist
-	ksk, _, err := s.keyManager.EnsureZoneKeys(zoneName)
+	ksk, _, err := s.keyManager.EnsureZoneKeysContext(ctx, zoneName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get zone keys: %w", err)
 	}
@@ -677,9 +677,9 @@ func (s *SigningService) GetDSRecords(ctx context.Context, zoneName string) ([]s
 	// Export DS records for both SHA-256 and SHA-384
 	var dsStrings []string
 	for _, digestType := range []uint8{dns.SHA256, dns.SHA384} {
-		ds, err := s.keyManager.ExportDS(zoneName, digestType)
-		if err != nil {
-			return nil, fmt.Errorf("failed to export DS record (digest type %d): %w", digestType, err)
+		ds := ksk.DNSKEY.ToDS(digestType)
+		if ds == nil {
+			return nil, fmt.Errorf("failed to export DS record (digest type %d)", digestType)
 		}
 		dsStrings = append(dsStrings, ds.String())
 	}
