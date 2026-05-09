@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
+	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -311,6 +313,66 @@ func TestEnsureZoneKeys_Load(t *testing.T) {
 	// Should return same keys
 	assert.Equal(t, ksk1.ID.KeyTag, ksk2.ID.KeyTag)
 	assert.Equal(t, zsk1.ID.KeyTag, zsk2.ID.KeyTag)
+}
+
+func TestLoadKSK_DoesNotCreateMissingZoneDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	ksk, err := km.LoadKSK("missing.example")
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	assert.Nil(t, ksk)
+	assert.NoDirExists(t, filepath.Join(tmpDir, "missing.example"))
+}
+
+func TestEnsureZoneKeys_Concurrent(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	const goroutines = 8
+	kskTags := make([]uint16, goroutines)
+	zskTags := make([]uint16, goroutines)
+	errs := make([]error, goroutines)
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer wg.Done()
+			ksk, zsk, err := km.EnsureZoneKeys("example.com")
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			kskTags[i] = ksk.ID.KeyTag
+			zskTags[i] = zsk.ID.KeyTag
+		}(i)
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		require.NoError(t, err)
+	}
+	for i := 1; i < goroutines; i++ {
+		assert.Equal(t, kskTags[0], kskTags[i])
+		assert.Equal(t, zskTags[0], zskTags[i])
+	}
 }
 
 func TestGenerateZoneKeys_RotateFailureKeepsExistingActiveKeys(t *testing.T) {
