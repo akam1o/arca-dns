@@ -13,13 +13,13 @@
 **Controller**:
 ```bash
 # Liveness check
-curl http://controller:9053/health
+curl http://controller:8080/health
 
 # Readiness check (includes backend connectivity)
-curl http://controller:9053/ready
+curl http://controller:8080/ready
 
-# Full status with metrics
-curl http://controller:9053/status
+# Full status
+curl http://controller:8080/status
 ```
 
 **Agent**:
@@ -401,7 +401,7 @@ journalctl -u arca-dns-controller | grep "dnssec_error"
 **症状**: ゾーン同期が失敗する
 ```bash
 # Check controller connectivity
-curl -I http://controller:9053/health
+curl -I http://controller:8080/health
 
 # Check API key
 curl -H "X-API-Key: your-key" https://controller:8080/api/v1/zones

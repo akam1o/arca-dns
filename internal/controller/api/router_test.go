@@ -88,7 +88,7 @@ func TestSetupRouter_ProtectedRoutesStillLimitBodySize(t *testing.T) {
 	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 }
 
-func TestSetupRouter_ObservabilityRoutesAreNotOnAPIRouter(t *testing.T) {
+func TestSetupRouter_StatusRoutesBypassAuthAndMetricsStaysSeparate(t *testing.T) {
 	logger := zap.NewNop()
 	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
 	apiCfg := config.DefaultControllerConfig().API
@@ -98,11 +98,25 @@ func TestSetupRouter_ObservabilityRoutesAreNotOnAPIRouter(t *testing.T) {
 
 	router := SetupRouter(handler, &apiCfg, logger)
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	tests := []struct {
+		path string
+		want int
+	}{
+		{path: "/health", want: http.StatusOK},
+		{path: "/ready", want: http.StatusOK},
+		{path: "/status", want: http.StatusOK},
+		{path: "/metrics", want: http.StatusNotFound},
+	}
 
-	require.Equal(t, http.StatusNotFound, w.Code)
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			require.Equal(t, tt.want, w.Code)
+		})
+	}
 }
 
 func TestSetupObservabilityRouter_RoutesBypassAuth(t *testing.T) {
@@ -115,12 +129,28 @@ func TestSetupObservabilityRouter_RoutesBypassAuth(t *testing.T) {
 
 	router := SetupObservabilityRouter(handler, &apiCfg, logger)
 
-	for _, path := range []string{"/health", "/api/v1/health"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+	tests := []struct {
+		path string
+		want int
+	}{
+		{path: "/health", want: http.StatusOK},
+		{path: "/ready", want: http.StatusOK},
+		{path: "/status", want: http.StatusOK},
+		{path: "/metrics", want: http.StatusNotImplemented},
+		{path: "/api/v1/health", want: http.StatusOK},
+		{path: "/api/v1/ready", want: http.StatusOK},
+		{path: "/api/v1/status", want: http.StatusOK},
+		{path: "/api/v1/metrics", want: http.StatusNotImplemented},
+	}
 
-		require.Equal(t, http.StatusOK, w.Code)
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			require.Equal(t, tt.want, w.Code)
+		})
 	}
 }
 

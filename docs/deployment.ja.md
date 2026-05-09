@@ -53,8 +53,8 @@ agent container image には `arca-dns-agent` のみが含まれます。`nsd.en
 
 | Component | Port | 内容 |
 | --- | --- | --- |
-| controller | `8080` | 管理 API |
-| controller | `9053` | health、readiness、status、metrics |
+| controller | `8080` | 管理 API、health、readiness、status |
+| controller | `9053` | Prometheus metrics、過去互換の health/readiness/status alias |
 | agent | `9090` | status、health、readiness、metrics |
 | DNS | `53/tcp`, `53/udp` | エッジノードの DNS サービス |
 
@@ -375,8 +375,8 @@ docker compose \
 controller 確認:
 
 ```bash
-curl http://localhost:9053/health
-curl http://localhost:9053/ready
+curl http://localhost:8080/health
+curl http://localhost:8080/ready
 curl -H "X-API-Key: $ARCA_DNS_API_KEY" http://localhost:8080/api/v1/zones
 ```
 
@@ -436,8 +436,8 @@ kubectl apply -k deployments/kubernetes/controller/overlays/demo-etcd
 kubectl get deploy,po,svc,pvc
 kubectl logs deploy/arca-dns-controller
 kubectl port-forward svc/arca-dns-controller 8080:8080 9053:9053
-curl http://localhost:9053/health
-curl http://localhost:9053/ready
+curl http://localhost:8080/health
+curl http://localhost:8080/ready
 ```
 
 Ingress 例は `deployments/kubernetes/controller/examples/ingress.yaml` にあります。TLS は ingress controller または外部 LB で終端してください。
@@ -470,8 +470,9 @@ agent の HTTP endpoint:
 | `GET /status` | 同期状態、health、BGP announce 状態 |
 | `GET /metrics` | Prometheus metrics |
 
-controller の observability endpoint は、分離された `observability.listen`
-（提供 manifest では `0.0.0.0:9053`）で listen します。
+controller の health/readiness/status endpoint は API address
+（提供 manifest では `0.0.0.0:8080`）で listen します。Prometheus metrics は
+分離された `observability.listen`（`0.0.0.0:9053`）で listen します。
 
 agent の status server はデフォルトで `127.0.0.1:9090` を listen します。
 `metrics.listen` をリモートアドレスに変更する場合は、network control
@@ -482,9 +483,9 @@ agent の status server はデフォルトで `127.0.0.1:9090` を listen しま
 controller:
 
 ```bash
-curl http://controller:9053/health
-curl http://controller:9053/ready
-curl http://controller:9053/status
+curl http://controller:8080/health
+curl http://controller:8080/ready
+curl http://controller:8080/status
 curl http://controller:9053/metrics
 ```
 

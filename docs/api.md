@@ -6,8 +6,8 @@ The source of truth for the Controller API is `api/openapi.yaml` (OpenAPI 3.0). 
 
 ## Base URL
 
-- API base: `http://<controller-host>:8080/api/v1`
-- Observability base (also exposed under `/api/v1/*` as aliases): `http://<controller-host>:9053`
+- API base: `http://<controller-host>:8080/api/v1`; unauthenticated health/readiness/status endpoints are on `http://<controller-host>:8080`
+- Observability base: `http://<controller-host>:9053` for Prometheus metrics and historical health/readiness/status aliases
 
 ## Authentication
 
@@ -19,7 +19,7 @@ X-API-Key: <api-key>
 
 API keys can be assigned roles with `api.auth.api_key_roles`. `admin` keys can access the management API; `agent` keys are limited to zone summary listing and signed artifact reads.
 
-Observability endpoints (`/health`, `/ready`, `/status`, `/metrics`) do not require auth and are served on the separate observability listener.
+Health/readiness/status endpoints (`/health`, `/ready`, `/status`) and observability metrics (`/metrics`) do not require auth. Health/readiness/status are served on the API listener; metrics are served on the observability listener.
 
 ## Data Model (Zone)
 
@@ -66,10 +66,9 @@ For signed artifacts:
 
 ### Health / Status / Metrics (no auth)
 
-- `GET /health` (and `GET /api/v1/health`): liveness (`{"status":"ok"}`)
-- `GET /ready` (and `GET /api/v1/ready`): readiness (`{"status":"ready"}` or `503 {"status":"not_ready","error":"..."}`)
-- `GET /status` (and `GET /api/v1/status`): build info (`status`, `version`, `commit`, `date`)
-- `GET /metrics` (and `GET /api/v1/metrics`): Prometheus metrics (may return `501` if metrics are disabled)
+- API listener (`:8080`): `GET /health`, `GET /ready`, and `GET /status`
+- Observability listener (`:9053`): `GET /metrics`
+- The observability listener also keeps historical `/health`, `/ready`, `/status`, and `/api/v1/*` aliases for compatibility.
 
 ### Zones (JSON mode)
 

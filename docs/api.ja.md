@@ -6,8 +6,8 @@ Controller API の source of truth は `api/openapi.yaml`（OpenAPI 3.0）です
 
 ## Base URL
 
-- API base: `http://<controller-host>:8080/api/v1`
-- Observability base（`/api/v1/*` でも alias あり）: `http://<controller-host>:9053`
+- API base: `http://<controller-host>:8080/api/v1`。認証不要の health/readiness/status endpoint は `http://<controller-host>:8080`
+- Observability base: `http://<controller-host>:9053`。Prometheus metrics と過去互換の health/readiness/status alias を提供します。
 
 ## 認証
 
@@ -19,7 +19,7 @@ X-API-Key: <api-key>
 
 API キーには `api.auth.api_key_roles` で role を割り当てられます。`admin` key は管理 API にアクセスでき、`agent` key は zone summary 一覧と signed artifact 読み取りに制限されます。
 
-Observability endpoint（`/health`, `/ready`, `/status`, `/metrics`）は認証不要で、分離された observability listener から提供されます。
+Health/readiness/status endpoint（`/health`, `/ready`, `/status`）と observability metrics（`/metrics`）は認証不要です。Health/readiness/status は API listener、metrics は observability listener で提供されます。
 
 ## データモデル（Zone）
 
@@ -66,10 +66,9 @@ Observability endpoint（`/health`, `/ready`, `/status`, `/metrics`）は認証�
 
 ### Health / Status / Metrics（認証不要）
 
-- `GET /health`（および `GET /api/v1/health`）: liveness（`{"status":"ok"}`）
-- `GET /ready`（および `GET /api/v1/ready`）: readiness（`{"status":"ready"}` または `503 {"status":"not_ready","error":"..."}`）
-- `GET /status`（および `GET /api/v1/status`）: ビルド情報（`status`, `version`, `commit`, `date`）
-- `GET /metrics`（および `GET /api/v1/metrics`）: Prometheus メトリクス（メトリクス無効時は `501` になることがあります）
+- API listener（`:8080`）: `GET /health`, `GET /ready`, `GET /status`
+- Observability listener（`:9053`）: `GET /metrics`
+- Observability listener には過去互換の `/health`, `/ready`, `/status`, `/api/v1/*` alias も残しています。
 
 ### Zones（JSON モード）
 

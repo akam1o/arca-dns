@@ -13,7 +13,7 @@ info:
     - Zone versioning with ETag support for optimistic concurrency control
     - Pluggable storage backends (SQLite, PostgreSQL, MySQL, Git, etcd)
     - Artifact distribution for agents with integrity verification
-    - Health/status/metrics endpoints are served on the separate observability listener (default port 9053)
+    - Health/readiness/status endpoints are served on the API listener (default port 8080); Prometheus metrics are served on the observability listener (default port 9053)
   version: 1.0.0
   contact:
     name: arca-dns
@@ -64,13 +64,15 @@ paths:
     get:
       tags: [health]
       summary: Readiness check endpoint
-      description: Returns readiness status of the controller from the observability listener (includes backend connectivity).
+      description: Returns readiness status of the controller from the API listener (includes backend connectivity).
       operationId: readyCheck
       servers:
+        - url: http://localhost:8080
+          description: Local controller API server
         - url: http://localhost:9053
-          description: Local observability server
+          description: Local observability server compatibility route
         - url: https://dns-controller.example.com
-          description: Production observability server
+          description: Production controller API server
       security: []  # No authentication required
       responses:
         '200':
@@ -1136,13 +1138,15 @@ paths:
     get:
       tags: [health]
       summary: Health check endpoint
-      description: Returns the health status of the controller from the observability listener
+      description: Returns the health status of the controller from the API listener
       operationId: healthCheck
       servers:
+        - url: http://localhost:8080
+          description: Local controller API server
         - url: http://localhost:9053
-          description: Local observability server
+          description: Local observability server compatibility route
         - url: https://dns-controller.example.com
-          description: Production observability server
+          description: Production controller API server
       security: []  # No authentication required
       responses:
         '200':
@@ -1171,13 +1175,15 @@ paths:
     get:
       tags: [health]
       summary: Detailed status information
-      description: Returns detailed status information about the controller from the observability listener
+      description: Returns detailed status information about the controller from the API listener
       operationId: getStatus
       servers:
+        - url: http://localhost:8080
+          description: Local controller API server
         - url: http://localhost:9053
-          description: Local observability server
+          description: Local observability server compatibility route
         - url: https://dns-controller.example.com
-          description: Production observability server
+          description: Production controller API server
       security: []  # No authentication required
       responses:
         '200':

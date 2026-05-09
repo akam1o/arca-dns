@@ -153,7 +153,7 @@ api:
       agent: "agent"
 
 observability:
-  # Unauthenticated /health, /ready, /status, and /metrics endpoints.
+  # Prometheus /metrics endpoint. /health, /ready, and /status are on the API listener.
   listen: "0.0.0.0:9053"
 
 backend:

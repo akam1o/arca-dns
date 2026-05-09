@@ -27,8 +27,8 @@ api:
     burst: 200
 
 observability:
-  # Unauthenticated health/readiness/status/metrics endpoints are served here,
-  # separate from the management API listener.
+  # Prometheus metrics are served here, separate from the API listener.
+  # Health/readiness/status endpoints are served on the API listener.
   listen: "0.0.0.0:9053"
 
 backend:

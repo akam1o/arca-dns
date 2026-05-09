@@ -66,12 +66,12 @@ func (h *Handler) SetArtifactSignatureKey(key string) {
 	h.artifactSignatureKey = strings.TrimSpace(key)
 }
 
-// Health handles GET /health on the observability listener.
+// Health handles GET /health on the controller listeners.
 func (h *Handler) Health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// Ready handles GET /ready on the observability listener.
+// Ready handles GET /ready on the controller listeners.
 // Readiness includes backend connectivity (best-effort) to match docs.
 func (h *Handler) Ready(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
@@ -90,7 +90,7 @@ func (h *Handler) Ready(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ready"})
 }
 
-// Status handles GET /status on the observability listener.
+// Status handles GET /status on the controller listeners.
 func (h *Handler) Status(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "operational",

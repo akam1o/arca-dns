@@ -151,7 +151,7 @@ api:
       agent: "agent"
 
 observability:
-  # 認証なしの /health, /ready, /status, /metrics endpoint です。
+  # Prometheus /metrics endpoint です。/health, /ready, /status は API listener で提供されます。
   listen: "0.0.0.0:9053"
 
 backend:

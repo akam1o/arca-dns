@@ -10,17 +10,19 @@ import (
 	"go.uber.org/zap"
 )
 
-// SetupRouter configures the Gin router with authenticated management API routes.
+// SetupRouter configures status endpoints and authenticated management API routes.
 func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *gin.Engine {
 	return SetupAPIRouter(handler, cfg, logger)
 }
 
-// SetupAPIRouter configures the Gin router with authenticated management API routes.
+// SetupAPIRouter configures status endpoints and authenticated management API routes.
 func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *gin.Engine {
 	// Set Gin mode based on environment
 	gin.SetMode(gin.ReleaseMode)
 
 	router := newControllerRouter(handler, cfg, logger, true)
+
+	registerStatusRoutes(router, handler)
 
 	// Audit and rate limiting are scoped to the management API listener.
 	auditLogger := middleware.NewAuditLogger(logger)
@@ -126,10 +128,14 @@ type routeGroup interface {
 }
 
 func registerObservabilityRoutes(routes routeGroup, handler *Handler) {
+	registerStatusRoutes(routes, handler)
+	routes.GET("/metrics", handler.Metrics)
+}
+
+func registerStatusRoutes(routes routeGroup, handler *Handler) {
 	routes.GET("/health", handler.Health)
 	routes.GET("/ready", handler.Ready)
 	routes.GET("/status", handler.Status)
-	routes.GET("/metrics", handler.Metrics)
 }
 
 func roleGuard(authEnabled bool, allowedRoles ...string) gin.HandlerFunc {
