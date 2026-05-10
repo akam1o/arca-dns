@@ -103,8 +103,8 @@ make test-coverage # coverage.html を生成
 make lint          # Lint 実行
 make fmt           # フォーマット
 make vet           # go vet 実行
-make run-controller# ビルドして controller を実行（serve）
-make run-agent     # ビルドして agent を実行（daemon）
+make run-controller CONTROLLER_RUN_CONFIG=/path/to/controller.yaml # ビルドして controller を実行
+make run-agent AGENT_RUN_CONFIG=/path/to/agent.yaml                # ビルドして agent を実行
 make docker-build  # Docker イメージをビルド
 make clean         # ビルド成果物を削除
 ```

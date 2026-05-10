@@ -21,6 +21,8 @@ TOOLS_BIN=$(GOPATH)/bin
 GOLANGCI_LINT_FLAGS?=--timeout=5m
 BINARY_CONTROLLER=bin/arca-dns-controller
 BINARY_AGENT=bin/arca-dns-agent
+CONTROLLER_RUN_CONFIG?=
+AGENT_RUN_CONFIG?=
 
 # Build flags
 LDFLAGS=-ldflags "-s -w"
@@ -88,12 +90,20 @@ deps:
 run-controller:
 	@echo "Running controller..."
 	$(GOBUILD) -o $(BINARY_CONTROLLER) ./cmd/arca-dns-controller
-	$(BINARY_CONTROLLER) serve
+	@test -n "$(CONTROLLER_RUN_CONFIG)" || { \
+		echo "Set CONTROLLER_RUN_CONFIG=path/to/controller.yaml before running this target"; \
+		exit 1; \
+	}
+	$(BINARY_CONTROLLER) serve --config "$(CONTROLLER_RUN_CONFIG)"
 
 run-agent:
 	@echo "Running agent..."
 	$(GOBUILD) -o $(BINARY_AGENT) ./cmd/arca-dns-agent
-	$(BINARY_AGENT) daemon
+	@test -n "$(AGENT_RUN_CONFIG)" || { \
+		echo "Set AGENT_RUN_CONFIG=path/to/agent.yaml before running this target"; \
+		exit 1; \
+	}
+	$(BINARY_AGENT) daemon --config "$(AGENT_RUN_CONFIG)"
 
 docker-build:
 	@echo "Building Docker images..."

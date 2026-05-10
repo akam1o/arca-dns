@@ -103,8 +103,8 @@ make test-coverage # Generate coverage.html
 make lint          # Run linters
 make fmt           # Format code
 make vet           # Run go vet
-make run-controller# Build + run controller (serve)
-make run-agent     # Build + run agent (daemon)
+make run-controller CONTROLLER_RUN_CONFIG=/path/to/controller.yaml # Build + run controller
+make run-agent AGENT_RUN_CONFIG=/path/to/agent.yaml                # Build + run agent
 make docker-build  # Build Docker images
 make clean         # Remove build artifacts
 ```
