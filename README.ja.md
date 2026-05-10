@@ -178,6 +178,9 @@ controller:
 
 sync:
   sync_interval: "30s"
+  verify_signatures: true
+  # 共有 HMAC secret。api.artifact_signature_key と一致させてください。
+  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 nsd:
   enabled: true
