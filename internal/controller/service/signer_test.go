@@ -839,6 +839,61 @@ func TestSigningService_GetEarliestExpiration(t *testing.T) {
 	t.Logf("Earliest expiration: %d", expiration)
 }
 
+func TestSigningService_GetEarliestExpiration_UsesEarlierCachedArtifactOverPersistedMetadata(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+
+	artifact, err := service.SignZone(ctx, zone)
+	if err != nil {
+		t.Fatalf("SignZone failed: %v", err)
+	}
+	zone.DNSSEC = artifact.DNSSEC
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	parsed, err := parser.ParseBINDZone(strings.NewReader(artifact.SignedZone), zone.Name, parser.DefaultParseOptions())
+	if err != nil {
+		t.Fatalf("failed to parse signed artifact: %v", err)
+	}
+	earlierExpiration := uint32(time.Now().Add(-time.Hour).Unix())
+	for _, rr := range parsed.Records {
+		if sig, ok := rr.(*dns.RRSIG); ok {
+			sig.Expiration = earlierExpiration
+		}
+	}
+
+	earlierZoneFile, err := parser.GenerateBINDZoneFileFromRRs(zone.Name, artifact.Version, parsed.Records)
+	if err != nil {
+		t.Fatalf("failed to generate earlier signed artifact: %v", err)
+	}
+	if err := service.storeArtifact(zone.Name, artifact.Version, []byte(earlierZoneFile)); err != nil {
+		t.Fatalf("failed to store earlier signed artifact: %v", err)
+	}
+
+	persisted, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone: %v", err)
+	}
+	if persisted.DNSSEC == nil || persisted.DNSSEC.SignatureExpiration == nil {
+		t.Fatal("missing persisted signature expiration")
+	}
+	if got := uint32(persisted.DNSSEC.SignatureExpiration.Unix()); got <= earlierExpiration {
+		t.Fatalf("test setup expected persisted expiration after artifact expiration, got %d <= %d", got, earlierExpiration)
+	}
+
+	expiration, err := service.GetEarliestExpiration(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetEarliestExpiration failed: %v", err)
+	}
+	if expiration != earlierExpiration {
+		t.Fatalf("Expiration = %d, want cached artifact expiration %d", expiration, earlierExpiration)
+	}
+}
+
 func TestSigningService_GetEarliestExpiration_UsesCachedArtifactWithoutResigning(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()

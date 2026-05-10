@@ -751,13 +751,21 @@ func (s *SigningService) GetEarliestExpiration(ctx context.Context, zoneName str
 		return 0, fmt.Errorf("DNSSEC not enabled for zone %s", zoneName)
 	}
 
+	var persistedExpiration uint32
 	if zone.DNSSEC.SignatureExpiration != nil && !zone.DNSSEC.SignatureExpiration.IsZero() {
-		return uint32(zone.DNSSEC.SignatureExpiration.Unix()), nil
+		persistedExpiration = uint32(zone.DNSSEC.SignatureExpiration.Unix())
 	}
 
 	artifact, err := s.loadCachedSignedZoneArtifact(zone)
 	if err == nil {
+		if persistedExpiration != 0 && persistedExpiration < artifact.Metadata.Expiration {
+			return persistedExpiration, nil
+		}
 		return artifact.Metadata.Expiration, nil
+	}
+
+	if persistedExpiration != 0 {
+		return persistedExpiration, nil
 	}
 
 	return 0, fmt.Errorf("%w for zone %s: %v", dnssec.ErrSignatureExpirationUnavailable, zoneName, err)
