@@ -301,15 +301,17 @@ func (s *Scheduler) recordFailure(zoneName string, now time.Time) {
 
 	state.failures++
 
-	// Exponential backoff: min * 2^failures (capped at max)
-	delay := s.config.FailureBackoffMin * time.Duration(1<<uint(state.failures))
-	if delay > s.config.FailureBackoffMax {
-		delay = s.config.FailureBackoffMax
-	}
+	delay := failureBackoffDelay(s.config.FailureBackoffMin, s.config.FailureBackoffMax, state.failures)
 
-	// Add small jitter (0-10% of delay)
-	jitter := time.Duration(rand.Int63n(int64(delay / 10)))
-	delay += jitter
+	// Add small jitter (0-10% of delay) without exceeding the configured max.
+	jitterLimit := delay / 10
+	if jitterLimit > 0 && delay < s.config.FailureBackoffMax {
+		remaining := s.config.FailureBackoffMax - delay
+		if jitterLimit > remaining {
+			jitterLimit = remaining
+		}
+		delay += time.Duration(rand.Int63n(int64(jitterLimit)))
+	}
 
 	state.nextAllowed = now.Add(delay)
 
@@ -318,6 +320,27 @@ func (s *Scheduler) recordFailure(zoneName string, now time.Time) {
 		zap.Int("failures", state.failures),
 		zap.Duration("backoff", delay),
 		zap.Time("next_allowed", state.nextAllowed))
+}
+
+func failureBackoffDelay(minDelay, maxDelay time.Duration, failures int) time.Duration {
+	if failures <= 0 || minDelay <= 0 {
+		return 0
+	}
+	if maxDelay <= 0 {
+		return minDelay
+	}
+	if minDelay >= maxDelay {
+		return maxDelay
+	}
+
+	delay := minDelay
+	for i := 0; i < failures; i++ {
+		if delay > maxDelay-delay {
+			return maxDelay
+		}
+		delay *= 2
+	}
+	return delay
 }
 
 // clearBackoff clears the backoff state for a zone after successful re-sign.
