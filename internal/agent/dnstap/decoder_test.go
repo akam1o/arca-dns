@@ -184,6 +184,7 @@ func TestQueryTypeToString(t *testing.T) {
 		{dns.TypeTXT, "TXT"},
 		{dns.TypeNS, "NS"},
 		{dns.TypeSOA, "SOA"},
+		{uint16(65280), "TYPE65280"},
 	}
 
 	for _, tc := range testCases {
@@ -206,6 +207,7 @@ func TestRCodeToString(t *testing.T) {
 		{uint16(dns.RcodeNameError), "NXDOMAIN"},
 		{uint16(dns.RcodeNotImplemented), "NOTIMP"},
 		{uint16(dns.RcodeRefused), "REFUSED"},
+		{uint16(65535), "RCODE65535"},
 	}
 
 	for _, tc := range testCases {
