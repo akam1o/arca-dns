@@ -438,6 +438,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	if cfg.Controller.RetryAttempts > 0 && cfg.Controller.RetryDelay == 0 {
 		return fmt.Errorf("invalid controller.retry_delay: must be greater than 0 when controller.retry_attempts is greater than 0")
 	}
+	if err := validateAgentControllerTLSConfig(cfg.Controller); err != nil {
+		return err
+	}
 
 	cfg.Authoritative = strings.ToLower(strings.TrimSpace(cfg.Authoritative))
 	if cfg.Authoritative == "" {
@@ -649,6 +652,32 @@ func normalizeControllerURL(rawURL string) (string, error) {
 	}
 
 	return strings.TrimRight(value, "/"), nil
+}
+
+func validateAgentControllerTLSConfig(controller ControllerClientConfig) error {
+	if controller.TLS.Enabled {
+		parsed, err := url.Parse(controller.URL)
+		if err != nil {
+			return fmt.Errorf("invalid controller.url: %w", err)
+		}
+		if strings.ToLower(parsed.Scheme) != "https" {
+			return fmt.Errorf("invalid controller.tls.enabled: requires controller.url to use https")
+		}
+	}
+
+	if !controller.TLS.ClientAuth {
+		return nil
+	}
+	if !controller.TLS.Enabled {
+		return fmt.Errorf("invalid controller.tls.client_auth: requires controller.tls.enabled")
+	}
+	if strings.TrimSpace(controller.TLS.CertFile) == "" {
+		return fmt.Errorf("invalid controller.tls.cert_file: empty when controller.tls.client_auth is true")
+	}
+	if strings.TrimSpace(controller.TLS.KeyFile) == "" {
+		return fmt.Errorf("invalid controller.tls.key_file: empty when controller.tls.client_auth is true")
+	}
+	return nil
 }
 
 func healthTestRecordNeedsZone(record string) bool {

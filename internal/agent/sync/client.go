@@ -93,6 +93,18 @@ func normalizeIfNoneMatch(etag string) string {
 
 // NewClient creates a new controller client with retry logic and connection pooling.
 func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
+	if cfg.TLS.ClientAuth {
+		if !cfg.TLS.Enabled {
+			return nil, fmt.Errorf("invalid TLS configuration: client_auth requires TLS to be enabled")
+		}
+		if strings.TrimSpace(cfg.TLS.CertFile) == "" {
+			return nil, fmt.Errorf("invalid TLS configuration: cert_file is required when client_auth is enabled")
+		}
+		if strings.TrimSpace(cfg.TLS.KeyFile) == "" {
+			return nil, fmt.Errorf("invalid TLS configuration: key_file is required when client_auth is enabled")
+		}
+	}
+
 	// Create TLS configuration if enabled
 	var tlsConfig *tls.Config
 	if cfg.TLS.Enabled {
@@ -115,7 +127,7 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 		}
 
 		// Load client certificate if mutual TLS is enabled
-		if cfg.TLS.ClientAuth && cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "" {
+		if cfg.TLS.ClientAuth {
 			cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to load client certificate: %w", err)

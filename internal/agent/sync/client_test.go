@@ -65,6 +65,63 @@ func TestNewClient_NormalizesTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestNewClient_RejectsIncompleteClientAuthTLS(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.ControllerClientConfig
+		want string
+	}{
+		{
+			name: "client auth without tls",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					ClientAuth: true,
+					CertFile:   "/tmp/client.crt",
+					KeyFile:    "/tmp/client.key",
+				},
+			},
+			want: "client_auth requires TLS",
+		},
+		{
+			name: "client auth without cert",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					ClientAuth: true,
+					KeyFile:    "/tmp/client.key",
+				},
+			},
+			want: "cert_file",
+		},
+		{
+			name: "client auth without key",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					ClientAuth: true,
+					CertFile:   "/tmp/client.crt",
+				},
+			},
+			want: "key_file",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewClient(tc.cfg)
+			if err == nil {
+				t.Fatal("Expected NewClient to fail")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Expected error to contain %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestListZones(t *testing.T) {
 	requireTCPListener(t)
 	// Create mock server
