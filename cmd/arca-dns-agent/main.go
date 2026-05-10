@@ -40,6 +40,12 @@ var (
 
 var execFn = syscall.Exec
 
+const (
+	bgpControlStatusActive   = "active"
+	bgpControlStatusDisabled = "disabled"
+	bgpControlStatusUnknown  = "unknown"
+)
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "arca-dns-agent",
@@ -751,6 +757,7 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 	router := gin.New()
 	router.Use(gin.Recovery())
 	birdConfigStatus = birdConfigStatus.normalized()
+	bgpStatus := bgpControlStatus(cfg, routeCtrl, birdConfigStatus)
 
 	// Status endpoint
 	router.GET("/status", func(c *gin.Context) {
@@ -775,11 +782,15 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 				"last_attempt": birdConfigStatus.LastAttempt,
 				"last_success": birdConfigStatus.LastSuccess,
 			},
-			"bgp_announced": func() bool {
-				if routeCtrl == nil {
-					return false
+			"bgp_control_status": bgpStatus,
+			"bgp_announced": func() any {
+				if routeCtrl != nil {
+					return routeCtrl.IsAnnounced()
 				}
-				return routeCtrl.IsAnnounced()
+				if bgpStatus == bgpControlStatusUnknown {
+					return nil
+				}
+				return false
 			}(),
 		})
 	})
@@ -873,12 +884,18 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 			sb.WriteString(fmt.Sprintf("arca_dns_agent_health_check_status{type=%q} %d\n", checkType, boolToInt(result.Success)))
 		}
 
+		sb.WriteString("\n# HELP arca_dns_agent_bgp_control_status BGP control status (1 for the current status, 0 otherwise).\n")
+		sb.WriteString("# TYPE arca_dns_agent_bgp_control_status gauge\n")
+		for _, status := range []string{bgpControlStatusActive, bgpControlStatusDisabled, bgpControlStatusUnknown} {
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_control_status{status=%q} %d\n", status, boolToInt(bgpStatus == status)))
+		}
+
 		if routeCtrl != nil {
 			sb.WriteString("\n# HELP arca_dns_agent_bgp_enabled Whether BGP control is enabled (1/0).\n")
 			sb.WriteString("# TYPE arca_dns_agent_bgp_enabled gauge\n")
 			sb.WriteString("arca_dns_agent_bgp_enabled 1\n")
 
-			sb.WriteString("\n# HELP arca_dns_agent_bgp_routes_announced Whether routes are currently announced (1/0).\n")
+			sb.WriteString("\n# HELP arca_dns_agent_bgp_routes_announced Whether routes are currently announced (1=announced, 0=withdrawn, -1=unknown).\n")
 			sb.WriteString("# TYPE arca_dns_agent_bgp_routes_announced gauge\n")
 			sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_routes_announced %d\n", boolToInt(routeCtrl.IsAnnounced())))
 
@@ -892,9 +909,13 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 			sb.WriteString("# TYPE arca_dns_agent_bgp_enabled gauge\n")
 			sb.WriteString("arca_dns_agent_bgp_enabled 0\n")
 
-			sb.WriteString("\n# HELP arca_dns_agent_bgp_routes_announced Whether routes are currently announced (1/0).\n")
+			sb.WriteString("\n# HELP arca_dns_agent_bgp_routes_announced Whether routes are currently announced (1=announced, 0=withdrawn, -1=unknown).\n")
 			sb.WriteString("# TYPE arca_dns_agent_bgp_routes_announced gauge\n")
-			sb.WriteString("arca_dns_agent_bgp_routes_announced 0\n")
+			if bgpStatus == bgpControlStatusUnknown {
+				sb.WriteString("arca_dns_agent_bgp_routes_announced -1\n")
+			} else {
+				sb.WriteString("arca_dns_agent_bgp_routes_announced 0\n")
+			}
 		}
 
 		sb.WriteString("\n# HELP arca_dns_agent_bird_config_status BIRD generated config status (1 for the current status, 0 otherwise).\n")
@@ -938,6 +959,16 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 	})
 
 	return router
+}
+
+func bgpControlStatus(cfg *config.AgentConfig, routeCtrl plugin.RouteController, birdConfigStatus birdConfigRuntimeStatus) string {
+	if routeCtrl != nil {
+		return bgpControlStatusActive
+	}
+	if cfg.BIRD.Enabled && birdConfigStatus.usingExisting() {
+		return bgpControlStatusUnknown
+	}
+	return bgpControlStatusDisabled
 }
 
 func metricPath(path string) string {

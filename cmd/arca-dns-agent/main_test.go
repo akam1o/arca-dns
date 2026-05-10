@@ -169,6 +169,12 @@ func TestStatusRouter_ExposesBIRDConfigFallback(t *testing.T) {
 	if got := birdConfig["error"]; got != status.Error {
 		t.Fatalf("bird_config.error=%v, want %s", got, status.Error)
 	}
+	if got := body["bgp_control_status"]; got != bgpControlStatusUnknown {
+		t.Fatalf("bgp_control_status=%v, want %s", got, bgpControlStatusUnknown)
+	}
+	if got, ok := body["bgp_announced"]; !ok || got != nil {
+		t.Fatalf("bgp_announced=%v, want null", got)
+	}
 
 	resp = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -179,6 +185,12 @@ func TestStatusRouter_ExposesBIRDConfigFallback(t *testing.T) {
 	metrics := resp.Body.String()
 	if !strings.Contains(metrics, `arca_dns_agent_bird_config_status{status="using_existing"} 1`) {
 		t.Fatalf("GET /metrics missing current BIRD config status:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `arca_dns_agent_bgp_control_status{status="unknown"} 1`) {
+		t.Fatalf("GET /metrics missing unknown BGP control status:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, "arca_dns_agent_bgp_routes_announced -1") {
+		t.Fatalf("GET /metrics should report unknown BGP announcement state:\n%s", metrics)
 	}
 	if !strings.Contains(metrics, "arca_dns_agent_bird_config_last_attempt_timestamp_seconds 123") {
 		t.Fatalf("GET /metrics missing BIRD config attempt timestamp:\n%s", metrics)
@@ -536,6 +548,9 @@ func newTestStatusServerWithBIRDConfigStatus(metrics config.MetricsConfig, statu
 	logger := zap.NewNop()
 	cfg := &config.AgentConfig{
 		Metrics: metrics,
+		BIRD: config.BIRDConfig{
+			Enabled: status.Enabled,
+		},
 	}
 	syncer := zonesync.NewSyncer(nil, nil, config.SyncConfig{
 		MaxStaleness: time.Hour,
