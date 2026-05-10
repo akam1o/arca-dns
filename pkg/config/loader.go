@@ -166,7 +166,7 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return err
 	}
 
-	if err := validateArtifactSignatureKey("api.artifact_signature_key", cfg.API.ArtifactSignatureKey, cfg.API.Auth.Enabled); err != nil {
+	if err := validateArtifactSignatureKey("api.artifact_signature_key", cfg.API.ArtifactSignatureKey, true); err != nil {
 		return err
 	}
 
