@@ -319,6 +319,45 @@ www.example.com. 300 IN A 192.0.2.1
 	}
 }
 
+func TestFetchSignedZoneArtifact_RejectsSerialHeaderMismatch(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400
+example.com. 3600 IN NS ns1.example.com.
+`
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"`+hashHex+`"`)
+		w.Header().Set("X-Zone-Serial", "2024122701")
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Hash8", hashHex[:8])
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.FetchSignedZoneArtifact(context.Background(), "example.com.", "")
+	if err == nil {
+		t.Fatal("Expected mismatched X-Zone-Serial to fail")
+	}
+	if !strings.Contains(err.Error(), "zone serial header mismatch") {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+}
+
 func TestFetchSignedZone_NotModified(t *testing.T) {
 	requireTCPListener(t)
 	currentETag := strings.Repeat("a", sha256.Size*2)
