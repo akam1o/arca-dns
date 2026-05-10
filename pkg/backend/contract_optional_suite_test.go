@@ -22,7 +22,7 @@ func newTestZone(name string) *model.Zone {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords(name),
 	}
 }
 
@@ -202,15 +202,15 @@ func RunRevisionStoreSuite(t *testing.T, store ZoneStore) {
 		// Immutability: older revision should not contain later records.
 		z1, err := rs.GetRevision(ctx, "revisions.example.com.", v1)
 		require.NoError(t, err)
-		assert.Len(t, z1.Records, 0)
+		assert.Len(t, z1.Records, 1)
 
 		z2, err := rs.GetRevision(ctx, "revisions.example.com.", v2)
 		require.NoError(t, err)
-		assert.Len(t, z2.Records, 1)
+		assert.Len(t, z2.Records, 2)
 
 		z3, err := rs.GetRevision(ctx, "revisions.example.com.", v3)
 		require.NoError(t, err)
-		assert.Len(t, z3.Records, 2)
+		assert.Len(t, z3.Records, 3)
 
 		current, err := rs.GetCurrentVersion(ctx, "revisions.example.com.")
 		require.NoError(t, err)

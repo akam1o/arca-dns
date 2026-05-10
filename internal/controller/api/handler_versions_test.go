@@ -48,6 +48,7 @@ func TestZoneVersions_NotSupportedBackend(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -78,6 +79,7 @@ func TestZoneVersions_GitBackend(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}

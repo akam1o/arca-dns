@@ -20,6 +20,7 @@ func TestGetZone_IfNoneMatch_NotModified(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -69,6 +70,7 @@ func TestGetSignedZoneMetadata_IfNoneMatch_NotModified(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -107,6 +109,7 @@ func TestGetSignedZoneMetadata_BodyAndHeaders(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}

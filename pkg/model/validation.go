@@ -71,8 +71,12 @@ func ValidateRecordSetConstraints(zone *Zone) error {
 
 	owners := make(map[string]ownerState)
 	seenRecords := make(map[string]int)
+	hasApexNS := false
 	for i, record := range zone.Records {
 		owner := canonicalRecordOwnerName(record.Name, zoneName)
+		if owner == zoneName && record.Type == RecordTypeNS {
+			hasApexNS = true
+		}
 		duplicateKey := canonicalRecordDuplicateKey(record, owner, zoneName)
 		if firstIndex, ok := seenRecords[duplicateKey]; ok {
 			return fmt.Errorf("invalid record at index %d: duplicate record matches index %d", i, firstIndex)
@@ -113,6 +117,10 @@ func ValidateRecordSetConstraints(zone *Zone) error {
 		if state.cnameIndex >= 0 && len(state.types) > 1 {
 			return fmt.Errorf("invalid record at index %d: CNAME for owner %s cannot coexist with other record types", state.cnameIndex, owner)
 		}
+	}
+
+	if !hasApexNS {
+		return fmt.Errorf("zone %s must include at least one apex NS record", zoneName)
 	}
 
 	return nil

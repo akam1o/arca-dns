@@ -160,8 +160,9 @@ func TestSetupRouter_AgentRoleCanOnlyReadSyncArtifacts(t *testing.T) {
 	handler := NewHandler(store, nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
 
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.Background(), zone))
 

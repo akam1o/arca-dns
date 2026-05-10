@@ -49,9 +49,9 @@ func TestSQLiteBackend_PartialPragmaDSNEnablesCascadeDelete(t *testing.T) {
 	zone := &model.Zone{
 		Name: "cascade.example.com.",
 		SOA:  model.DefaultSOA("ns1.cascade.example.com.", "admin.cascade.example.com."),
-		Records: []model.Record{
-			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
-		},
+		Records: testZoneRecords("cascade.example.com.",
+			model.Record{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		),
 	}
 	require.NoError(t, store.CreateZone(ctx, zone))
 	require.NoError(t, store.DeleteZone(ctx, zone.Name))
@@ -71,26 +71,26 @@ func TestSQLiteBackend_PreservesRecordIDOnUpdate(t *testing.T) {
 	zone := &model.Zone{
 		Name: "record-id.example.com.",
 		SOA:  model.DefaultSOA("ns1.record-id.example.com.", "admin.record-id.example.com."),
-		Records: []model.Record{
-			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
-		},
+		Records: testZoneRecords("record-id.example.com.",
+			model.Record{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		),
 	}
 	require.NoError(t, store.CreateZone(ctx, zone))
 
 	created, err := store.GetZone(ctx, zone.Name)
 	require.NoError(t, err)
-	require.Len(t, created.Records, 1)
-	originalID := created.Records[0].ID
+	require.Len(t, created.Records, 2)
+	originalID := created.Records[1].ID
 	require.NotEmpty(t, originalID)
 
-	created.Records[0].Value = "192.0.2.2"
+	created.Records[1].Value = "192.0.2.2"
 	require.NoError(t, store.UpdateZone(ctx, created, created.Version))
 
 	updated, err := store.GetZone(ctx, zone.Name)
 	require.NoError(t, err)
-	require.Len(t, updated.Records, 1)
-	assert.Equal(t, originalID, updated.Records[0].ID)
-	assert.Equal(t, "192.0.2.2", updated.Records[0].Value)
+	require.Len(t, updated.Records, 2)
+	assert.Equal(t, originalID, updated.Records[1].ID)
+	assert.Equal(t, "192.0.2.2", updated.Records[1].Value)
 }
 
 func TestSQLiteBackend_IgnoresClientRecordIDsOnCreate(t *testing.T) {
@@ -103,25 +103,25 @@ func TestSQLiteBackend_IgnoresClientRecordIDsOnCreate(t *testing.T) {
 	first := &model.Zone{
 		Name: "first-record-id.example.com.",
 		SOA:  model.DefaultSOA("ns1.first-record-id.example.com.", "admin.first-record-id.example.com."),
-		Records: []model.Record{
-			{ID: "1", Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
-		},
+		Records: testZoneRecords("first-record-id.example.com.",
+			model.Record{ID: "1", Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		),
 	}
 	require.NoError(t, store.CreateZone(ctx, first))
 
 	second := &model.Zone{
 		Name: "second-record-id.example.com.",
 		SOA:  model.DefaultSOA("ns1.second-record-id.example.com.", "admin.second-record-id.example.com."),
-		Records: []model.Record{
-			{ID: "1", Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.2"},
-		},
+		Records: testZoneRecords("second-record-id.example.com.",
+			model.Record{ID: "1", Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.2"},
+		),
 	}
 	require.NoError(t, store.CreateZone(ctx, second))
 
 	created, err := store.GetZone(ctx, second.Name)
 	require.NoError(t, err)
-	require.Len(t, created.Records, 1)
-	assert.NotEqual(t, "1", created.Records[0].ID)
+	require.Len(t, created.Records, 2)
+	assert.NotEqual(t, "1", created.Records[1].ID)
 }
 
 func TestSQLiteBackend_PreservesZeroRecordPriority(t *testing.T) {
@@ -134,15 +134,23 @@ func TestSQLiteBackend_PreservesZeroRecordPriority(t *testing.T) {
 	zone := &model.Zone{
 		Name: "zero-priority.example.com.",
 		SOA:  model.DefaultSOA("ns1.zero-priority.example.com.", "admin.zero-priority.example.com."),
-		Records: []model.Record{
-			{Name: "@", Type: model.RecordTypeMX, TTL: 300, Value: "0 mail.zero-priority.example.com."},
-		},
+		Records: testZoneRecords("zero-priority.example.com.",
+			model.Record{Name: "@", Type: model.RecordTypeMX, TTL: 300, Value: "0 mail.zero-priority.example.com."},
+		),
 	}
 	require.NoError(t, store.CreateZone(ctx, zone))
 
 	created, err := store.GetZone(ctx, zone.Name)
 	require.NoError(t, err)
-	require.Len(t, created.Records, 1)
-	require.NotNil(t, created.Records[0].Priority)
-	assert.Equal(t, uint16(0), *created.Records[0].Priority)
+	require.Len(t, created.Records, 2)
+	var mxRecord *model.Record
+	for i := range created.Records {
+		if created.Records[i].Type == model.RecordTypeMX {
+			mxRecord = &created.Records[i]
+			break
+		}
+	}
+	require.NotNil(t, mxRecord)
+	require.NotNil(t, mxRecord.Priority)
+	assert.Equal(t, uint16(0), *mxRecord.Priority)
 }

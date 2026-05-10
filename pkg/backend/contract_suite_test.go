@@ -49,7 +49,7 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 				Expire:  604800,
 				Minimum: 86400,
 			},
-			Records: []model.Record{},
+			Records: testZoneRecords(name),
 		}
 	}
 
@@ -144,9 +144,9 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		time.Sleep(10 * time.Millisecond)
 
 		// Update zone
-		zone.Records = []model.Record{
-			{Name: "test.update.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
-		}
+		zone.Records = testZoneRecords("update.example.com.",
+			model.Record{Name: "test.update.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		)
 		err = store.UpdateZone(ctx, zone, originalVersion)
 		require.NoError(t, err)
 
@@ -171,7 +171,7 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 			"UpdatedAt should be updated (contract invariant)")
 
 		// Verify record was added
-		assert.Len(t, updated.Records, 1)
+		assert.Len(t, updated.Records, 2)
 	})
 
 	t.Run("UpdateZone_IgnoresClientSerialRollback", func(t *testing.T) {
@@ -183,9 +183,9 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		originalSerial := zone.SOA.Serial
 
 		zone.SOA.Serial = 1
-		zone.Records = []model.Record{
-			{Name: "test.serial-rollback.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
-		}
+		zone.Records = testZoneRecords("serial-rollback.example.com.",
+			model.Record{Name: "test.serial-rollback.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		)
 		err = store.UpdateZone(ctx, zone, originalVersion)
 		require.NoError(t, err)
 
@@ -205,9 +205,9 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		preparedSerial := originalSerial + 42
 
 		zone.SOA.Serial = preparedSerial
-		zone.Records = []model.Record{
-			{Name: "test.prepared-serial.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
-		}
+		zone.Records = testZoneRecords("prepared-serial.example.com.",
+			model.Record{Name: "test.prepared-serial.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		)
 		err = store.UpdateZone(ctx, zone, originalVersion)
 		require.NoError(t, err)
 
@@ -225,16 +225,16 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		currentVersion := zone.Version
 
 		// Update with correct version should succeed
-		zone.Records = []model.Record{
-			{Name: "test1.locking.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
-		}
+		zone.Records = testZoneRecords("locking.example.com.",
+			model.Record{Name: "test1.locking.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		)
 		err = store.UpdateZone(ctx, zone, currentVersion)
 		require.NoError(t, err)
 
 		// Update with old version should fail
-		zone.Records = []model.Record{
-			{Name: "test2.locking.example.com.", Type: "A", TTL: 300, Value: "192.0.2.2"},
-		}
+		zone.Records = testZoneRecords("locking.example.com.",
+			model.Record{Name: "test2.locking.example.com.", Type: "A", TTL: 300, Value: "192.0.2.2"},
+		)
 		err = store.UpdateZone(ctx, zone, currentVersion) // Using old version
 		assert.ErrorIs(t, err, model.ErrConflict,
 			"UpdateZone with stale expectedVersion must return ErrConflict (contract invariant)")
@@ -246,9 +246,9 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		require.NoError(t, err)
 
 		// Update with empty expectedVersion should succeed (no version check)
-		zone.Records = []model.Record{
-			{Name: "test.optional-version.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
-		}
+		zone.Records = testZoneRecords("optional-version.example.com.",
+			model.Record{Name: "test.optional-version.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		)
 		err = store.UpdateZone(ctx, zone, "") // Empty string = no version check
 		require.NoError(t, err, "UpdateZone with empty expectedVersion should skip version check (contract)")
 	})
@@ -264,9 +264,9 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		require.NotEqual(t, originalVersion, preparedVersion)
 
 		zone.Version = preparedVersion
-		zone.Records = []model.Record{
-			{Name: "test.prepared-version.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
-		}
+		zone.Records = testZoneRecords("prepared-version.example.com.",
+			model.Record{Name: "test.prepared-version.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		)
 		err = store.UpdateZone(ctx, zone, "")
 		require.NoError(t, err, "UpdateZone with empty expectedVersion should preserve caller-provided non-current version")
 
@@ -304,9 +304,9 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		require.NoError(t, err)
 
 		originalVersion := zone.Version
-		zone.Records = []model.Record{
-			{Name: "test.conditional-delete.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
-		}
+		zone.Records = testZoneRecords("conditional-delete.example.com.",
+			model.Record{Name: "test.conditional-delete.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		)
 		err = store.UpdateZone(ctx, zone, originalVersion)
 		require.NoError(t, err)
 

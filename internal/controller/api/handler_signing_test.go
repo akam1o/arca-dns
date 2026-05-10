@@ -202,6 +202,7 @@ func TestGetSignedZone_UsesArtifactMetadataAfterSigningRefetch(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -266,6 +267,7 @@ func TestCreateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 		Name: "signing-fails.com.",
 		SOA:  model.DefaultSOA("ns1.signing-fails.com.", "admin.signing-fails.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -292,6 +294,7 @@ func TestCreateZone_DoesNotPersistWhenSignedArtifactStoreFails(t *testing.T) {
 		Name: "artifact-store-fails.com.",
 		SOA:  model.DefaultSOA("ns1.artifact-store-fails.com.", "admin.artifact-store-fails.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -350,6 +353,7 @@ func TestCreateZone_KeepsSignedArtifactWhenPostCreateReadFails(t *testing.T) {
 		Name: zoneName,
 		SOA:  model.DefaultSOA("ns1."+zoneName, "admin."+zoneName),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -402,6 +406,7 @@ func TestUpdateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 		Name: "signing-fails.com.",
 		SOA:  model.DefaultSOA("ns1.signing-fails.com.", "admin.signing-fails.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -443,6 +448,7 @@ func TestCreateRecord_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 		Name: "signing-fails.com.",
 		SOA:  model.DefaultSOA("ns1.signing-fails.com.", "admin.signing-fails.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}

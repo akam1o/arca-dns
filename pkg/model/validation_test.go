@@ -8,6 +8,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func testApexNSRecord() Record {
+	return Record{Name: "@", Type: RecordTypeNS, TTL: 300, Value: "ns1.example.com."}
+}
+
+func withTestApexNS(records ...Record) []Record {
+	return append([]Record{testApexNSRecord()}, records...)
+}
+
 func TestValidateDomainName(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -512,6 +520,7 @@ func TestValidateZone_PTRRecordNameMustStayInZone(t *testing.T) {
 			Minimum: 86400,
 		},
 		Records: []Record{
+			testApexNSRecord(),
 			{Name: "1.2.0.192.in-addr.arpa.", Type: "PTR", TTL: 300, Value: "host.example.com."},
 		},
 	}
@@ -534,6 +543,7 @@ func TestValidateZone_PTRRecordNameAllowsReverseZone(t *testing.T) {
 			Minimum: 86400,
 		},
 		Records: []Record{
+			testApexNSRecord(),
 			{Name: "1.2.0.192.in-addr.arpa.", Type: "PTR", TTL: 300, Value: "host.example.com."},
 		},
 	}
@@ -554,6 +564,7 @@ func TestValidateZone_RejectsInconsistentRRsetTTL(t *testing.T) {
 			Minimum: 86400,
 		},
 		Records: []Record{
+			testApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
 			{Name: "www.example.com.", Type: "A", TTL: 600, Value: "192.0.2.2"},
 		},
@@ -686,11 +697,23 @@ func TestValidateZone(t *testing.T) {
 					Minimum: 86400,
 				},
 				Records: []Record{
+					testApexNSRecord(),
 					{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 					{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"},
 				},
 			},
 			wantErr: false,
+		},
+		{
+			name: "missing apex NS",
+			zone: &Zone{
+				Name: "example.com.",
+				SOA:  DefaultSOA("ns1.example.com.", "admin.example.com."),
+				Records: []Record{
+					{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+				},
+			},
+			wantErr: true,
 		},
 		{
 			name:    "nil zone",
@@ -747,42 +770,42 @@ func TestValidateZone_CNAMEConstraints(t *testing.T) {
 	}{
 		{
 			name: "cname without sibling records",
-			records: []Record{
-				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
-			},
+			records: withTestApexNS(
+				Record{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+			),
 		},
 		{
 			name: "cname cannot coexist with a record",
-			records: []Record{
-				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
-				{Name: "www", Type: RecordTypeA, TTL: 300, Value: "192.0.2.1"},
-			},
+			records: withTestApexNS(
+				Record{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+				Record{Name: "www", Type: RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+			),
 			wantErr:    true,
 			errContain: "cannot coexist",
 		},
 		{
 			name: "absolute cname owner cannot coexist with relative sibling",
-			records: []Record{
-				{Name: "www.example.com.", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
-				{Name: "www", Type: RecordTypeAAAA, TTL: 300, Value: "2001:db8::1"},
-			},
+			records: withTestApexNS(
+				Record{Name: "www.example.com.", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+				Record{Name: "www", Type: RecordTypeAAAA, TTL: 300, Value: "2001:db8::1"},
+			),
 			wantErr:    true,
 			errContain: "cannot coexist",
 		},
 		{
 			name: "multiple cname records for one owner",
-			records: []Record{
-				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target1.example.com."},
-				{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target2.example.com."},
-			},
+			records: withTestApexNS(
+				Record{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target1.example.com."},
+				Record{Name: "www", Type: RecordTypeCNAME, TTL: 300, Value: "target2.example.com."},
+			),
 			wantErr:    true,
 			errContain: "multiple CNAME",
 		},
 		{
 			name: "apex cname",
-			records: []Record{
-				{Name: "@", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
-			},
+			records: withTestApexNS(
+				Record{Name: "@", Type: RecordTypeCNAME, TTL: 300, Value: "target.example.com."},
+			),
 			wantErr:    true,
 			errContain: "zone apex",
 		},
