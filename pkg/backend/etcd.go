@@ -216,6 +216,9 @@ func (e *EtcdBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model
 
 	// Apply pagination
 	start := opts.Offset
+	if start < 0 {
+		start = 0
+	}
 	if start > len(zones) {
 		return make([]*model.Zone, 0), nil
 	}
@@ -637,6 +640,9 @@ func (e *EtcdBackend) ListRevisions(ctx context.Context, zoneName string, opts L
 
 	// Apply pagination
 	start := opts.Offset
+	if start < 0 {
+		start = 0
+	}
 	if start > len(versions) {
 		return make([]*model.ZoneVersion, 0), nil
 	}

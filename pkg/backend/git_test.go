@@ -544,6 +544,12 @@ func TestGitBackend_ListZones(t *testing.T) {
 	assert.Equal(t, "bbb.com.", result[1].Name)
 	assert.Equal(t, "ccc.com.", result[2].Name)
 
+	// Negative offsets are normalized to zero.
+	negativeOffset, err := backend.ListZones(ctx, ListOptions{Offset: -1, Limit: 2})
+	require.NoError(t, err)
+	assert.Len(t, negativeOffset, 2)
+	assert.Equal(t, "aaa.com.", negativeOffset[0].Name)
+
 	// Test pagination
 	page1, err := backend.ListZones(ctx, ListOptions{Offset: 0, Limit: 2})
 	require.NoError(t, err)

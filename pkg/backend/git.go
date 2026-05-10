@@ -809,6 +809,9 @@ func (g *GitBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.
 
 	// Apply pagination
 	start := opts.Offset
+	if start < 0 {
+		start = 0
+	}
 	if start > len(zones) {
 		return make([]*model.Zone, 0), nil
 	}
@@ -1199,6 +1202,9 @@ func (g *GitBackend) ListRevisions(ctx context.Context, zoneName string, opts Li
 
 	// Apply pagination
 	start := opts.Offset
+	if start < 0 {
+		start = 0
+	}
 	if start > len(versions) {
 		return make([]*model.ZoneVersion, 0), nil
 	}

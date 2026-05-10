@@ -312,6 +312,12 @@ func TestEtcdBackend_ListZones(t *testing.T) {
 	assert.Equal(t, "b.com.", listed[1].Name)
 	assert.Equal(t, "c.com.", listed[2].Name)
 
+	// Negative offsets are normalized to zero.
+	negativeOffset, err := backend.ListZones(ctx, ListOptions{Offset: -1, Limit: 2})
+	require.NoError(t, err)
+	assert.Len(t, negativeOffset, 2)
+	assert.Equal(t, "a.com.", negativeOffset[0].Name)
+
 	// Test pagination - limit
 	limited, err := backend.ListZones(ctx, ListOptions{Offset: 0, Limit: 2})
 	require.NoError(t, err)
