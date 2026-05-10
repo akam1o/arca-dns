@@ -573,6 +573,24 @@ func (e *EtcdBackend) Close() error {
 	return err
 }
 
+// Info returns backend metadata.
+func (e *EtcdBackend) Info() BackendInfo {
+	return BackendInfo{
+		Type: "etcd",
+		Capabilities: []string{
+			CapabilityZoneStore,
+			CapabilityZoneSummaryStore,
+			CapabilityHealthStore,
+			CapabilityDNSSECMetadataStore,
+			CapabilityConditionalDeleteStore,
+			CapabilityRevisionStore,
+			CapabilityWatchableStore,
+		},
+		Consistency: "strong",
+		Description: "etcd storage with revision history and watch notifications",
+	}
+}
+
 // RevisionStore implementation
 
 // GetRevision retrieves a specific version of a zone.

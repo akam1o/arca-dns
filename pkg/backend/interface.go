@@ -65,6 +65,8 @@ const (
 	CapabilityHealthStore            = "HealthStore"
 	CapabilityDNSSECMetadataStore    = "DNSSECMetadataStore"
 	CapabilityConditionalDeleteStore = "ConditionalDeleteStore"
+	CapabilityRevisionStore          = "RevisionStore"
+	CapabilityWatchableStore         = "WatchableStore"
 	CapabilityTransactionalStore     = "TransactionalStore"
 )
 

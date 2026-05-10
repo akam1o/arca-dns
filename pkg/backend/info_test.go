@@ -20,6 +20,9 @@ func TestBackendInfoCapabilitiesMatchImplementedInterfaces(t *testing.T) {
 		{name: "memory", store: NewMemoryBackend()},
 		{name: "sqlite", store: sqlite},
 		{name: "postgres", store: &PostgresBackend{}},
+		{name: "mysql", store: &MySQLBackend{}},
+		{name: "git", store: &GitBackend{}},
+		{name: "etcd", store: &EtcdBackend{}},
 	}
 
 	for _, tt := range tests {
@@ -27,7 +30,8 @@ func TestBackendInfoCapabilitiesMatchImplementedInterfaces(t *testing.T) {
 			info := tt.store.Info()
 			capabilities := capabilitySet(info.Capabilities)
 
-			assertCapability(t, capabilities, CapabilityZoneStore, true)
+			_, hasZoneStore := tt.store.(ZoneStore)
+			assertCapability(t, capabilities, CapabilityZoneStore, hasZoneStore)
 			_, hasSummary := tt.store.(ZoneSummaryStore)
 			assertCapability(t, capabilities, CapabilityZoneSummaryStore, hasSummary)
 			_, hasHealth := tt.store.(HealthStore)
@@ -36,8 +40,18 @@ func TestBackendInfoCapabilitiesMatchImplementedInterfaces(t *testing.T) {
 			assertCapability(t, capabilities, CapabilityDNSSECMetadataStore, hasDNSSECMetadata)
 			_, hasConditionalDelete := tt.store.(ConditionalDeleteStore)
 			assertCapability(t, capabilities, CapabilityConditionalDeleteStore, hasConditionalDelete)
+			_, hasRevision := tt.store.(RevisionStore)
+			assertCapability(t, capabilities, CapabilityRevisionStore, hasRevision)
+			_, hasWatchable := tt.store.(WatchableStore)
+			assertCapability(t, capabilities, CapabilityWatchableStore, hasWatchable)
 			_, hasTransactional := tt.store.(TransactionalStore)
 			assertCapability(t, capabilities, CapabilityTransactionalStore, hasTransactional)
+
+			for capability := range capabilities {
+				if _, ok := knownCapabilities()[capability]; !ok {
+					t.Fatalf("unknown capability %s", capability)
+				}
+			}
 		})
 	}
 }
@@ -48,6 +62,19 @@ func capabilitySet(capabilities []string) map[string]struct{} {
 		set[capability] = struct{}{}
 	}
 	return set
+}
+
+func knownCapabilities() map[string]struct{} {
+	return map[string]struct{}{
+		CapabilityZoneStore:              {},
+		CapabilityZoneSummaryStore:       {},
+		CapabilityHealthStore:            {},
+		CapabilityDNSSECMetadataStore:    {},
+		CapabilityConditionalDeleteStore: {},
+		CapabilityRevisionStore:          {},
+		CapabilityWatchableStore:         {},
+		CapabilityTransactionalStore:     {},
+	}
 }
 
 func assertCapability(t *testing.T, capabilities map[string]struct{}, capability string, want bool) {

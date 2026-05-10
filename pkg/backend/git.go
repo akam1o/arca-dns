@@ -1050,6 +1050,22 @@ func (g *GitBackend) Close() error {
 	return nil
 }
 
+// Info returns backend metadata.
+func (g *GitBackend) Info() BackendInfo {
+	return BackendInfo{
+		Type: "git",
+		Capabilities: []string{
+			CapabilityZoneStore,
+			CapabilityHealthStore,
+			CapabilityDNSSECMetadataStore,
+			CapabilityConditionalDeleteStore,
+			CapabilityRevisionStore,
+		},
+		Consistency: "eventual",
+		Description: "Git-backed storage with revision history and auditability",
+	}
+}
+
 // GetRevision retrieves a specific zone version from commit history
 func (g *GitBackend) GetRevision(ctx context.Context, zoneName, version string) (*model.Zone, error) {
 	normalized := model.NormalizeZoneName(zoneName)

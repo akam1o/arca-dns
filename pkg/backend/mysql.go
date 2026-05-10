@@ -659,6 +659,23 @@ func (m *MySQLBackend) Close() error {
 	return m.db.Close()
 }
 
+// Info returns backend metadata.
+func (m *MySQLBackend) Info() BackendInfo {
+	return BackendInfo{
+		Type: "mysql",
+		Capabilities: []string{
+			CapabilityZoneStore,
+			CapabilityZoneSummaryStore,
+			CapabilityHealthStore,
+			CapabilityTransactionalStore,
+			CapabilityDNSSECMetadataStore,
+			CapabilityConditionalDeleteStore,
+		},
+		Consistency: "strong",
+		Description: "MySQL storage (production, transactional)",
+	}
+}
+
 // BeginTx starts a new transaction (implements TransactionalStore).
 func (m *MySQLBackend) BeginTx(ctx context.Context) (Tx, error) {
 	sqlTx, err := m.db.BeginTx(ctx, nil)
