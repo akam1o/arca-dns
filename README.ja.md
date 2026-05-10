@@ -273,38 +273,57 @@ curl -X POST http://localhost:8080/api/v1/zones/raw \
 
 **レコードを 1 件追加（ETag / If-Match による更新）**:
 
-この API には専用の `/records` エンドポイントはありません。`PUT /api/v1/zones/:name` でゾーンの JSON 全体を更新します。
-
 ```bash
 BASE="http://localhost:8080/api/v1"
 API_KEY="your-api-key" # 認証を有効にしている場合のみ
 
-zone_json="$(curl -s "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}")"
 etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
 
-updated="$(printf '%s' "${zone_json}" | jq '.records += [{"name":"www","type":"A","ttl":300,"value":"203.0.113.2"}]')"
-
-curl -i -X PUT "${BASE}/zones/example.com." \
+curl -i -X POST "${BASE}/zones/example.com./records" \
   -H "X-API-Key: ${API_KEY}" \
   -H 'Content-Type: application/json' \
   -H "If-Match: ${etag}" \
-  --data-binary "${updated}"
+  -d '{"name":"www","type":"A","ttl":300,"value":"203.0.113.2"}'
 ```
 
-**複数レコードをまとめて追加**:
+**複数のレコード変更を原子的に適用**:
 
 ```bash
-updated="$(printf '%s' "${zone_json}" | jq '.records += [
-  {"name":"www","type":"A","ttl":300,"value":"203.0.113.2"},
-  {"name":"api","type":"AAAA","ttl":300,"value":"2001:db8::1"},
-  {"name":"@","type":"MX","ttl":3600,"value":"10 mail.example.com."}
-]')"
+etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+old_id="$(curl -s "${BASE}/zones/example.com./records" -H "X-API-Key: ${API_KEY}" | jq -r '.records[] | select(.name=="old" and .type=="A") | .id')"
 
-curl -i -X PUT "${BASE}/zones/example.com." \
+curl -i -X POST "${BASE}/zones/example.com./records/batch" \
   -H "X-API-Key: ${API_KEY}" \
   -H 'Content-Type: application/json' \
   -H "If-Match: ${etag}" \
-  --data-binary "${updated}"
+  -d "{
+    \"create\": [
+      {\"name\":\"api\",\"type\":\"AAAA\",\"ttl\":300,\"value\":\"2001:db8::1\"}
+    ],
+    \"delete\": [
+      {\"id\":\"${old_id}\"}
+    ]
+  }"
+```
+
+**レコードを更新または削除**:
+
+```bash
+record_id="$(curl -s "${BASE}/zones/example.com./records" -H "X-API-Key: ${API_KEY}" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+
+curl -i -X PUT "${BASE}/zones/example.com./records/${record_id}" \
+  -H "X-API-Key: ${API_KEY}" \
+  -H 'Content-Type: application/json' \
+  -H "If-Match: ${etag}" \
+  -d '{"name":"www","type":"A","ttl":300,"value":"203.0.113.3"}'
+
+etag="$(curl -sI "${BASE}/zones/example.com." -H "X-API-Key: ${API_KEY}" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')"
+record_id="$(curl -s "${BASE}/zones/example.com./records" -H "X-API-Key: ${API_KEY}" | jq -r '.records[] | select(.name=="www" and .type=="A") | .id')"
+
+curl -i -X DELETE "${BASE}/zones/example.com./records/${record_id}" \
+  -H "X-API-Key: ${API_KEY}" \
+  -H "If-Match: ${etag}"
 ```
 
 レコード値の形式など、より詳しい例は `docs/api.ja.md` を参照してください。
