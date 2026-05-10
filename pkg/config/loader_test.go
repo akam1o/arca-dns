@@ -767,7 +767,8 @@ logging:
 func TestLoadAgentConfig_EnvOverrideWithYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_CONTROLLER_URL", "https://env-controller.example.com")
 	t.Setenv("ARCA_DNS_CONTROLLER_API_KEY", "env-api-key")
-	t.Setenv("ARCA_DNS_CONTROLLER_TLS_CERT_FILE", "/env/client.crt")
+	t.Setenv("ARCA_DNS_CONTROLLER_TLS_ENABLED", "true")
+	t.Setenv("ARCA_DNS_CONTROLLER_TLS_CA_FILE", "/env/controller-ca.crt")
 	t.Setenv("ARCA_DNS_NSD_ENABLED", "false")
 	t.Setenv("ARCA_DNS_UNBOUND_STUB_ZONE_NSD_PORT", "5533")
 	t.Setenv("ARCA_DNS_SYNC_VERIFY_CHECKSUMS", "false")
@@ -786,7 +787,7 @@ controller:
   url: "https://yaml-controller.example.com"
   api_key: "yaml-api-key"
   tls:
-    cert_file: "/yaml/client.crt"
+    ca_file: "/yaml/controller-ca.crt"
 nsd:
   enabled: true
   zone_directory: "/tmp/nsd-zones"
@@ -813,7 +814,8 @@ logging:
 
 	assert.Equal(t, "https://env-controller.example.com", cfg.Controller.URL)
 	assert.Equal(t, "env-api-key", cfg.Controller.APIKey)
-	assert.Equal(t, "/env/client.crt", cfg.Controller.TLS.CertFile)
+	assert.True(t, cfg.Controller.TLS.Enabled)
+	assert.Equal(t, "/env/controller-ca.crt", cfg.Controller.TLS.CAFile)
 	assert.False(t, cfg.NSD.Enabled)
 	assert.Equal(t, 5533, cfg.Unbound.StubZoneConfig.NSDPort)
 	assert.False(t, cfg.Sync.VerifyChecksums)
@@ -954,6 +956,32 @@ func TestValidateAgentConfig_InvalidControllerClientSettings(t *testing.T) {
 			want: "controller.tls.enabled",
 		},
 		{
+			name: "ca file without tls enabled",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "https://controller.example.com"
+				cfg.Controller.TLS.CAFile = "/etc/arca-dns/controller-ca.crt"
+			},
+			want: "controller.tls.enabled",
+		},
+		{
+			name: "cert file without tls enabled",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "https://controller.example.com"
+				cfg.Controller.TLS.CertFile = "/etc/arca-dns/client.crt"
+			},
+			want: "controller.tls.enabled",
+		},
+		{
+			name: "client cert without client auth",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "https://controller.example.com"
+				cfg.Controller.TLS.Enabled = true
+				cfg.Controller.TLS.CertFile = "/etc/arca-dns/client.crt"
+				cfg.Controller.TLS.KeyFile = "/etc/arca-dns/client.key"
+			},
+			want: "controller.tls.client_auth",
+		},
+		{
 			name: "client auth without tls enabled",
 			mutate: func(cfg *AgentConfig) {
 				cfg.Controller.URL = "https://controller.example.com"
@@ -1003,6 +1031,16 @@ func TestValidateAgentConfig_AllowsControllerClientAuthTLS(t *testing.T) {
 	cfg.Controller.TLS.ClientAuth = true
 	cfg.Controller.TLS.CertFile = "/etc/arca-dns/client.crt"
 	cfg.Controller.TLS.KeyFile = "/etc/arca-dns/client.key"
+
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
+}
+
+func TestValidateAgentConfig_AllowsControllerCustomCATLS(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Controller.URL = "https://controller.example.com"
+	cfg.Controller.TLS.Enabled = true
+	cfg.Controller.TLS.CAFile = "/etc/arca-dns/controller-ca.crt"
 
 	err := ValidateAgentConfig(cfg)
 	assert.NoError(t, err)

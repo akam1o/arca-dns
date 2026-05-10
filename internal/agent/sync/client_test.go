@@ -84,6 +84,38 @@ func TestNewClient_RejectsIncompleteClientAuthTLS(t *testing.T) {
 			want: "client_auth requires TLS",
 		},
 		{
+			name: "ca file without tls",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					CAFile: "/tmp/controller-ca.crt",
+				},
+			},
+			want: "TLS must be enabled",
+		},
+		{
+			name: "client cert without client auth",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled:  true,
+					CertFile: "/tmp/client.crt",
+					KeyFile:  "/tmp/client.key",
+				},
+			},
+			want: "client_auth is required",
+		},
+		{
+			name: "tls enabled with http url",
+			cfg: config.ControllerClientConfig{
+				URL: "http://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled: true,
+				},
+			},
+			want: "https controller URL",
+		},
+		{
 			name: "client auth without cert",
 			cfg: config.ControllerClientConfig{
 				URL: "https://localhost:8080",

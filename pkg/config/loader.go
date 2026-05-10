@@ -655,6 +655,17 @@ func normalizeControllerURL(rawURL string) (string, error) {
 }
 
 func validateAgentControllerTLSConfig(controller ControllerClientConfig) error {
+	caFile := strings.TrimSpace(controller.TLS.CAFile)
+	certFile := strings.TrimSpace(controller.TLS.CertFile)
+	keyFile := strings.TrimSpace(controller.TLS.KeyFile)
+
+	if controller.TLS.ClientAuth && !controller.TLS.Enabled {
+		return fmt.Errorf("invalid controller.tls.client_auth: requires controller.tls.enabled")
+	}
+	if (caFile != "" || certFile != "" || keyFile != "") && !controller.TLS.Enabled {
+		return fmt.Errorf("invalid controller.tls.enabled: required when controller.tls.ca_file, cert_file, or key_file is set")
+	}
+
 	if controller.TLS.Enabled {
 		parsed, err := url.Parse(controller.URL)
 		if err != nil {
@@ -665,16 +676,23 @@ func validateAgentControllerTLSConfig(controller ControllerClientConfig) error {
 		}
 	}
 
+	if certFile == "" && keyFile != "" {
+		return fmt.Errorf("invalid controller.tls.cert_file: empty when controller.tls.key_file is set")
+	}
+	if certFile != "" && keyFile == "" {
+		return fmt.Errorf("invalid controller.tls.key_file: empty when controller.tls.cert_file is set")
+	}
+	if (certFile != "" || keyFile != "") && !controller.TLS.ClientAuth {
+		return fmt.Errorf("invalid controller.tls.client_auth: required when controller.tls.cert_file or key_file is set")
+	}
+
 	if !controller.TLS.ClientAuth {
 		return nil
 	}
-	if !controller.TLS.Enabled {
-		return fmt.Errorf("invalid controller.tls.client_auth: requires controller.tls.enabled")
-	}
-	if strings.TrimSpace(controller.TLS.CertFile) == "" {
+	if certFile == "" {
 		return fmt.Errorf("invalid controller.tls.cert_file: empty when controller.tls.client_auth is true")
 	}
-	if strings.TrimSpace(controller.TLS.KeyFile) == "" {
+	if keyFile == "" {
 		return fmt.Errorf("invalid controller.tls.key_file: empty when controller.tls.client_auth is true")
 	}
 	return nil

@@ -93,28 +93,24 @@ func normalizeIfNoneMatch(etag string) string {
 
 // NewClient creates a new controller client with retry logic and connection pooling.
 func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
-	if cfg.TLS.ClientAuth {
-		if !cfg.TLS.Enabled {
-			return nil, fmt.Errorf("invalid TLS configuration: client_auth requires TLS to be enabled")
-		}
-		if strings.TrimSpace(cfg.TLS.CertFile) == "" {
-			return nil, fmt.Errorf("invalid TLS configuration: cert_file is required when client_auth is enabled")
-		}
-		if strings.TrimSpace(cfg.TLS.KeyFile) == "" {
-			return nil, fmt.Errorf("invalid TLS configuration: key_file is required when client_auth is enabled")
-		}
+	if err := validateTLSConfig(cfg); err != nil {
+		return nil, err
 	}
 
 	// Create TLS configuration if enabled
 	var tlsConfig *tls.Config
 	if cfg.TLS.Enabled {
+		caFile := strings.TrimSpace(cfg.TLS.CAFile)
+		certFile := strings.TrimSpace(cfg.TLS.CertFile)
+		keyFile := strings.TrimSpace(cfg.TLS.KeyFile)
+
 		tlsConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		}
 
 		// Load CA certificate if provided
-		if cfg.TLS.CAFile != "" {
-			caCert, err := os.ReadFile(cfg.TLS.CAFile)
+		if caFile != "" {
+			caCert, err := os.ReadFile(caFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read CA certificate: %w", err)
 			}
@@ -128,7 +124,7 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 
 		// Load client certificate if mutual TLS is enabled
 		if cfg.TLS.ClientAuth {
-			cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to load client certificate: %w", err)
 			}
@@ -154,6 +150,46 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 		config:          cfg,
 		verifyChecksums: true,
 	}, nil
+}
+
+func validateTLSConfig(cfg config.ControllerClientConfig) error {
+	caFile := strings.TrimSpace(cfg.TLS.CAFile)
+	certFile := strings.TrimSpace(cfg.TLS.CertFile)
+	keyFile := strings.TrimSpace(cfg.TLS.KeyFile)
+
+	if cfg.TLS.ClientAuth {
+		if !cfg.TLS.Enabled {
+			return fmt.Errorf("invalid TLS configuration: client_auth requires TLS to be enabled")
+		}
+		if certFile == "" {
+			return fmt.Errorf("invalid TLS configuration: cert_file is required when client_auth is enabled")
+		}
+		if keyFile == "" {
+			return fmt.Errorf("invalid TLS configuration: key_file is required when client_auth is enabled")
+		}
+	}
+	if (caFile != "" || certFile != "" || keyFile != "") && !cfg.TLS.Enabled {
+		return fmt.Errorf("invalid TLS configuration: TLS must be enabled when ca_file, cert_file, or key_file is set")
+	}
+	if certFile == "" && keyFile != "" {
+		return fmt.Errorf("invalid TLS configuration: cert_file is required when key_file is set")
+	}
+	if certFile != "" && keyFile == "" {
+		return fmt.Errorf("invalid TLS configuration: key_file is required when cert_file is set")
+	}
+	if (certFile != "" || keyFile != "") && !cfg.TLS.ClientAuth {
+		return fmt.Errorf("invalid TLS configuration: client_auth is required when cert_file or key_file is set")
+	}
+	if cfg.TLS.Enabled {
+		parsed, err := url.Parse(cfg.URL)
+		if err != nil {
+			return fmt.Errorf("invalid TLS configuration: invalid controller URL: %w", err)
+		}
+		if strings.ToLower(parsed.Scheme) != "https" {
+			return fmt.Errorf("invalid TLS configuration: TLS requires an https controller URL")
+		}
+	}
+	return nil
 }
 
 // SetVerifyChecksums controls whether signed zone downloads must include and
