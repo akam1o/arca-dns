@@ -157,11 +157,14 @@ backend:
 
 The MySQL backend does not apply schema migrations during controller startup. Apply the SQL schema before starting the controller.
 
-The schema files currently live in the repository under `migrations/`. If you deploy from DEB/RPM packages, use the matching release source tree or ship these SQL files with your deployment artifact.
+The schema files live in the repository under `migrations/`. DEB/RPM packages install the same files under `/usr/share/arca-dns/migrations/`.
 
 ```bash
 mysql -h mysql.example.com -u dns_user -p arca_dns \
   < migrations/mysql/000001_initial_schema.up.sql
+# Package install path:
+# mysql -h mysql.example.com -u dns_user -p arca_dns \
+#   < /usr/share/arca-dns/migrations/mysql/000001_initial_schema.up.sql
 ```
 
 Example config:
@@ -177,11 +180,14 @@ backend:
 
 The PostgreSQL backend also requires schema creation before controller startup.
 
-The schema files currently live in the repository under `migrations/`. If you deploy from DEB/RPM packages, use the matching release source tree or ship these SQL files with your deployment artifact.
+The schema files live in the repository under `migrations/`. DEB/RPM packages install the same files under `/usr/share/arca-dns/migrations/`.
 
 ```bash
 psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
   -f migrations/postgres/000001_initial_schema.up.sql
+# Package install path:
+# psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
+#   -f /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
 ```
 
 Example config:

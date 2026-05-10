@@ -80,6 +80,19 @@ nfpms:
       - src: ./packaging/tmpfiles.d/arca-dns.conf
         dst: /usr/lib/tmpfiles.d/arca-dns.conf
 
+      - src: ./migrations/mysql/000001_initial_schema.up.sql
+        dst: /usr/share/arca-dns/migrations/mysql/000001_initial_schema.up.sql
+      - src: ./migrations/mysql/000001_initial_schema.down.sql
+        dst: /usr/share/arca-dns/migrations/mysql/000001_initial_schema.down.sql
+      - src: ./migrations/postgres/000001_initial_schema.up.sql
+        dst: /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
+      - src: ./migrations/postgres/000001_initial_schema.down.sql
+        dst: /usr/share/arca-dns/migrations/postgres/000001_initial_schema.down.sql
+      - src: ./migrations/sqlite/000001_initial_schema.up.sql
+        dst: /usr/share/arca-dns/migrations/sqlite/000001_initial_schema.up.sql
+      - src: ./migrations/sqlite/000001_initial_schema.down.sql
+        dst: /usr/share/arca-dns/migrations/sqlite/000001_initial_schema.down.sql
+
     scripts:
       postinstall: ./packaging/scripts/postinstall.sh
       postremove: ./packaging/scripts/postremove.sh

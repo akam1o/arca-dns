@@ -20,7 +20,7 @@ See the full deployment guide:
 - Controller and agent container images are based on distroless `nonroot`; mounted data directories must be writable by UID/GID `65532`.
 - The agent controls host NSD/Unbound/BIRD and is typically deployed on edge nodes or VMs rather than as a generic Kubernetes workload.
 - MySQL and PostgreSQL backends require schema creation before controller startup. SQLite creates its schema automatically.
-- SQL schema files live in the repository under `migrations/`; include the matching files in package-based deployments when using SQL backends.
+- SQL schema files live in the repository under `migrations/`; DEB/RPM packages install them under `/usr/share/arca-dns/migrations/`.
 
 ## Docker Compose: Controller + MySQL
 

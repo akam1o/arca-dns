@@ -155,11 +155,14 @@ backend:
 
 MySQL backend は controller 起動時にスキーマを自動投入しません。controller を起動する前に SQL を適用してください。
 
-schema ファイルは現状リポジトリの `migrations/` 配下にあります。DEB/RPM パッケージからデプロイする場合は、同じ release の source tree を使うか、これらの SQL ファイルをデプロイ artifact に含めてください。
+schema ファイルはリポジトリの `migrations/` 配下にあります。DEB/RPM パッケージは同じファイルを `/usr/share/arca-dns/migrations/` にインストールします。
 
 ```bash
 mysql -h mysql.example.com -u dns_user -p arca_dns \
   < migrations/mysql/000001_initial_schema.up.sql
+# パッケージインストール時:
+# mysql -h mysql.example.com -u dns_user -p arca_dns \
+#   < /usr/share/arca-dns/migrations/mysql/000001_initial_schema.up.sql
 ```
 
 設定例:
@@ -175,11 +178,14 @@ backend:
 
 PostgreSQL backend も controller 起動前に SQL の適用が必要です。
 
-schema ファイルは現状リポジトリの `migrations/` 配下にあります。DEB/RPM パッケージからデプロイする場合は、同じ release の source tree を使うか、これらの SQL ファイルをデプロイ artifact に含めてください。
+schema ファイルはリポジトリの `migrations/` 配下にあります。DEB/RPM パッケージは同じファイルを `/usr/share/arca-dns/migrations/` にインストールします。
 
 ```bash
 psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
   -f migrations/postgres/000001_initial_schema.up.sql
+# パッケージインストール時:
+# psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
+#   -f /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
 ```
 
 設定例:
