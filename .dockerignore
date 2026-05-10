@@ -1,0 +1,26 @@
+# VCS and local metadata
+.git
+.github
+.serena
+.claude
+
+# Local environment and editor state
+.env
+.idea
+.vscode
+.cache
+.DS_Store
+*.swp
+
+# Local build outputs
+arca-dns-agent
+arca-dns-controller
+bin
+dist
+
+# Test artifacts
+*.test
+*.out
+coverage.*
+*.coverprofile
+profile.cov
