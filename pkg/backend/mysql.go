@@ -198,6 +198,7 @@ func (m *MySQLBackend) loadRecords(ctx context.Context, zoneName string) ([]mode
 
 // ListZones returns all zones, optionally paginated.
 func (m *MySQLBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT
 			name, version,
@@ -212,10 +213,10 @@ func (m *MySQLBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mode
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += " LIMIT 18446744073709551615 OFFSET ?"
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 
 	rows, err := m.db.QueryContext(ctx, query, args...)
@@ -285,6 +286,7 @@ func (m *MySQLBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mode
 
 // ListZoneSummaries returns zone names and versions without loading records.
 func (m *MySQLBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT name, version
 		FROM zones
@@ -294,10 +296,10 @@ func (m *MySQLBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) 
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += " LIMIT 18446744073709551615 OFFSET ?"
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 
 	rows, err := m.db.QueryContext(ctx, query, args...)
@@ -789,6 +791,7 @@ func (t *MySQLTx) loadRecords(ctx context.Context, zoneName string) ([]model.Rec
 
 // ListZones returns all zones within the transaction.
 func (t *MySQLTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
+	offset := normalizeListOffset(opts.Offset)
 	// Transaction version doesn't lock all zones (performance concern)
 	// Just query normally
 	query := `
@@ -805,10 +808,10 @@ func (t *MySQLTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zon
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += " LIMIT 18446744073709551615 OFFSET ?"
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)
@@ -877,6 +880,7 @@ func (t *MySQLTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zon
 }
 
 func (t *MySQLTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT name, version
 		FROM zones
@@ -886,10 +890,10 @@ func (t *MySQLTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*Z
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += " LIMIT 18446744073709551615 OFFSET ?"
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)

@@ -121,6 +121,7 @@ func (p *PostgresBackend) GetZone(ctx context.Context, name string) (*model.Zone
 
 // ListZones returns all zones, optionally paginated.
 func (p *PostgresBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT
 			name, version,
@@ -134,10 +135,10 @@ func (p *PostgresBackend) ListZones(ctx context.Context, opts ListOptions) ([]*m
 	argN := 1
 	if opts.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argN, argN+1)
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += fmt.Sprintf(" OFFSET $%d", argN)
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
@@ -170,6 +171,7 @@ func (p *PostgresBackend) ListZones(ctx context.Context, opts ListOptions) ([]*m
 
 // ListZoneSummaries returns zone names and versions without loading records.
 func (p *PostgresBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT name, version
 		FROM zones ORDER BY name
@@ -177,10 +179,10 @@ func (p *PostgresBackend) ListZoneSummaries(ctx context.Context, opts ListOption
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT $1 OFFSET $2"
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += " OFFSET $1"
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
@@ -701,6 +703,7 @@ func (t *pgTx) GetZone(ctx context.Context, name string) (*model.Zone, error) {
 }
 
 func (t *pgTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT
 			name, version,
@@ -713,10 +716,10 @@ func (t *pgTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, 
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT $1 OFFSET $2"
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += " OFFSET $1"
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 	rows, err := t.tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -746,6 +749,7 @@ func (t *pgTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, 
 }
 
 func (t *pgTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT name, version
 		FROM zones ORDER BY name
@@ -753,10 +757,10 @@ func (t *pgTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*Zone
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT $1 OFFSET $2"
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += " OFFSET $1"
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)

@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -145,6 +146,40 @@ func RunTransactionalStoreSuite(t *testing.T, store ZoneStore) {
 		require.NoError(t, err)
 		assert.Len(t, outsideAfter.Records, len(original.Records))
 		assert.Equal(t, original.Version, outsideAfter.Version)
+	})
+
+	t.Run("ListPaginationNormalizesNegativeOffset", func(t *testing.T) {
+		prefix := fmt.Sprintf("tx-page-%d", time.Now().UnixNano())
+		for i := 0; i < 3; i++ {
+			zone := newTestZone(fmt.Sprintf("%s-%d.example.com.", prefix, i))
+			require.NoError(t, store.CreateZone(ctx, zone))
+		}
+
+		tx, err := txStore.BeginTx(ctx)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		page1, err := tx.ListZones(ctx, ListOptions{Limit: 2, Offset: 0})
+		require.NoError(t, err)
+		require.Len(t, page1, 2)
+
+		negativeOffset, err := tx.ListZones(ctx, ListOptions{Limit: 2, Offset: -1})
+		require.NoError(t, err)
+		require.Len(t, negativeOffset, len(page1), "Negative tx offset should be normalized to zero")
+		for i, zone := range negativeOffset {
+			assert.Equal(t, page1[i].Name, zone.Name,
+				"Negative tx offset should return the first page")
+		}
+
+		if summaryStore, ok := tx.(ZoneSummaryStore); ok {
+			summaries, err := summaryStore.ListZoneSummaries(ctx, ListOptions{Limit: 2, Offset: -1})
+			require.NoError(t, err)
+			require.Len(t, summaries, len(page1), "Negative tx summary offset should be normalized to zero")
+			for i, summary := range summaries {
+				assert.Equal(t, page1[i].Name, summary.Name,
+					"Negative tx summary offset should return the first page")
+			}
+		}
 	})
 }
 

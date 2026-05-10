@@ -388,6 +388,22 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		require.NoError(t, err)
 		assert.LessOrEqual(t, len(page1), 2, "First page should have at most 2 zones")
 
+		negativeOffset, err := store.ListZones(ctx, ListOptions{Limit: 2, Offset: -1})
+		require.NoError(t, err)
+		require.Len(t, negativeOffset, len(page1), "Negative offset should be normalized to zero")
+		for i, zone := range negativeOffset {
+			assert.Equal(t, page1[i].Name, zone.Name,
+				"Negative offset should return the first page")
+		}
+
+		negativeSummaries, err := ListZoneSummaries(ctx, store, ListOptions{Limit: 2, Offset: -1})
+		require.NoError(t, err)
+		require.Len(t, negativeSummaries, len(page1), "Negative summary offset should be normalized to zero")
+		for i, summary := range negativeSummaries {
+			assert.Equal(t, page1[i].Name, summary.Name,
+				"Negative summary offset should return the first page")
+		}
+
 		page2, err := store.ListZones(ctx, ListOptions{Limit: 2, Offset: 2})
 		require.NoError(t, err)
 		assert.LessOrEqual(t, len(page2), 2, "Second page should have at most 2 zones")

@@ -168,6 +168,7 @@ func (s *SQLiteBackend) GetZone(ctx context.Context, name string) (*model.Zone, 
 
 // ListZones returns all zones, optionally paginated.
 func (s *SQLiteBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT
 			name, version,
@@ -181,10 +182,10 @@ func (s *SQLiteBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mod
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += " LIMIT -1 OFFSET ?"
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -218,6 +219,7 @@ func (s *SQLiteBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mod
 
 // ListZoneSummaries returns zone names and versions without loading records.
 func (s *SQLiteBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT name, version
 		FROM zones
@@ -226,10 +228,10 @@ func (s *SQLiteBackend) ListZoneSummaries(ctx context.Context, opts ListOptions)
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += " LIMIT -1 OFFSET ?"
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -794,6 +796,7 @@ func (t *sqliteTx) GetZone(ctx context.Context, name string) (*model.Zone, error
 }
 
 func (t *sqliteTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT
 			name, version,
@@ -806,10 +809,10 @@ func (t *sqliteTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zo
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += " LIMIT -1 OFFSET ?"
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)
@@ -841,6 +844,7 @@ func (t *sqliteTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zo
 }
 
 func (t *sqliteTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT name, version
 		FROM zones
@@ -849,10 +853,10 @@ func (t *sqliteTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
-	} else if opts.Offset > 0 {
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
 		query += " LIMIT -1 OFFSET ?"
-		args = append(args, opts.Offset)
+		args = append(args, offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)
