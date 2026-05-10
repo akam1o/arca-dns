@@ -52,9 +52,13 @@ nfpms:
     overrides:
       deb:
         dependencies:
+          - nsd
+          - unbound
           - bird2
       rpm:
         dependencies:
+          - nsd
+          - unbound
           - bird
     formats:
       - deb
