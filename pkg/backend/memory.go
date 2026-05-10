@@ -254,10 +254,16 @@ func (m *MemoryBackend) Close() error {
 // Info returns metadata about this backend.
 func (m *MemoryBackend) Info() BackendInfo {
 	return BackendInfo{
-		Type:         "memory",
-		Capabilities: []string{"ZoneStore", "DNSSECMetadataStore"},
-		Consistency:  "strong",
-		Description:  "In-memory storage (test-only, not registered as runtime backend)",
+		Type: "memory",
+		Capabilities: []string{
+			CapabilityZoneStore,
+			CapabilityZoneSummaryStore,
+			CapabilityHealthStore,
+			CapabilityDNSSECMetadataStore,
+			CapabilityConditionalDeleteStore,
+		},
+		Consistency: "strong",
+		Description: "In-memory storage (test-only, not registered as runtime backend)",
 	}
 }
 

@@ -59,6 +59,15 @@ type ZoneSummary struct {
 	Version string `json:"version"`
 }
 
+const (
+	CapabilityZoneStore              = "ZoneStore"
+	CapabilityZoneSummaryStore       = "ZoneSummaryStore"
+	CapabilityHealthStore            = "HealthStore"
+	CapabilityDNSSECMetadataStore    = "DNSSECMetadataStore"
+	CapabilityConditionalDeleteStore = "ConditionalDeleteStore"
+	CapabilityTransactionalStore     = "TransactionalStore"
+)
+
 // ZoneSummaryStore is an optional capability for backends that can list zone
 // metadata without loading full zone records.
 type ZoneSummaryStore interface {

@@ -465,10 +465,17 @@ func (s *SQLiteBackend) Close() error {
 // Info returns backend metadata.
 func (s *SQLiteBackend) Info() BackendInfo {
 	return BackendInfo{
-		Type:         "sqlite",
-		Capabilities: []string{"ZoneStore", "TransactionalStore", "DNSSECMetadataStore"},
-		Consistency:  "strong",
-		Description:  "SQLite storage (default, single-binary, WAL mode)",
+		Type: "sqlite",
+		Capabilities: []string{
+			CapabilityZoneStore,
+			CapabilityZoneSummaryStore,
+			CapabilityHealthStore,
+			CapabilityTransactionalStore,
+			CapabilityDNSSECMetadataStore,
+			CapabilityConditionalDeleteStore,
+		},
+		Consistency: "strong",
+		Description: "SQLite storage (default, single-binary, WAL mode)",
 	}
 }
 

@@ -434,10 +434,17 @@ func (p *PostgresBackend) Close() error { return p.db.Close() }
 // Info returns backend metadata.
 func (p *PostgresBackend) Info() BackendInfo {
 	return BackendInfo{
-		Type:         "postgres",
-		Capabilities: []string{"ZoneStore", "TransactionalStore", "DNSSECMetadataStore"},
-		Consistency:  "strong",
-		Description:  "PostgreSQL storage (recommended for large-scale production)",
+		Type: "postgres",
+		Capabilities: []string{
+			CapabilityZoneStore,
+			CapabilityZoneSummaryStore,
+			CapabilityHealthStore,
+			CapabilityTransactionalStore,
+			CapabilityDNSSECMetadataStore,
+			CapabilityConditionalDeleteStore,
+		},
+		Consistency: "strong",
+		Description: "PostgreSQL storage (recommended for large-scale production)",
 	}
 }
 
