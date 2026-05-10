@@ -213,6 +213,9 @@ func (m *MySQLBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mode
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += " LIMIT 18446744073709551615 OFFSET ?"
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := m.db.QueryContext(ctx, query, args...)
@@ -292,6 +295,9 @@ func (m *MySQLBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) 
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += " LIMIT 18446744073709551615 OFFSET ?"
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := m.db.QueryContext(ctx, query, args...)
@@ -800,6 +806,9 @@ func (t *MySQLTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zon
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += " LIMIT 18446744073709551615 OFFSET ?"
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)
@@ -878,6 +887,9 @@ func (t *MySQLTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*Z
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += " LIMIT 18446744073709551615 OFFSET ?"
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)

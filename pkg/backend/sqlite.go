@@ -182,6 +182,9 @@ func (s *SQLiteBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mod
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += " LIMIT -1 OFFSET ?"
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -224,6 +227,9 @@ func (s *SQLiteBackend) ListZoneSummaries(ctx context.Context, opts ListOptions)
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += " LIMIT -1 OFFSET ?"
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -801,6 +807,9 @@ func (t *sqliteTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zo
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += " LIMIT -1 OFFSET ?"
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)
@@ -841,6 +850,9 @@ func (t *sqliteTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += " LIMIT -1 OFFSET ?"
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)

@@ -375,6 +375,14 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		require.NoError(t, err)
 		require.GreaterOrEqual(t, len(allZones), 5, "Should have at least 5 zones for pagination test")
 
+		offsetOnly, err := store.ListZones(ctx, ListOptions{Limit: 0, Offset: 2})
+		require.NoError(t, err)
+		require.Len(t, offsetOnly, len(allZones)-2, "Offset should apply even when Limit is zero")
+		for i, zone := range offsetOnly {
+			assert.Equal(t, allZones[i+2].Name, zone.Name,
+				"Offset-only pagination should skip the same ordered prefix as limited pagination")
+		}
+
 		// Test pagination: get first 2 pages
 		page1, err := store.ListZones(ctx, ListOptions{Limit: 2, Offset: 0})
 		require.NoError(t, err)

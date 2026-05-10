@@ -135,6 +135,9 @@ func (p *PostgresBackend) ListZones(ctx context.Context, opts ListOptions) ([]*m
 	if opts.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argN, argN+1)
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += fmt.Sprintf(" OFFSET $%d", argN)
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
@@ -175,6 +178,9 @@ func (p *PostgresBackend) ListZoneSummaries(ctx context.Context, opts ListOption
 	if opts.Limit > 0 {
 		query += " LIMIT $1 OFFSET $2"
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += " OFFSET $1"
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
@@ -697,6 +703,9 @@ func (t *pgTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, 
 	if opts.Limit > 0 {
 		query += " LIMIT $1 OFFSET $2"
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += " OFFSET $1"
+		args = append(args, opts.Offset)
 	}
 	rows, err := t.tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -734,6 +743,9 @@ func (t *pgTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*Zone
 	if opts.Limit > 0 {
 		query += " LIMIT $1 OFFSET $2"
 		args = append(args, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		query += " OFFSET $1"
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)
