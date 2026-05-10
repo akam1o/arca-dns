@@ -622,7 +622,7 @@ func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, messag
 			RemoteName: "origin",
 		})
 		if err != nil && err != git.NoErrAlreadyUpToDate {
-			return g.wrapWithRollback(rollback, fmt.Errorf("git push failed: %w", err))
+			return fmt.Errorf("git push failed after local commit was retained: %w", err)
 		}
 	}
 
@@ -668,7 +668,7 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 			RemoteName: "origin",
 		})
 		if err != nil && err != git.NoErrAlreadyUpToDate {
-			return g.wrapWithRollback(rollback, fmt.Errorf("git push failed: %w", err))
+			return fmt.Errorf("git push failed after local commit was retained: %w", err)
 		}
 	}
 

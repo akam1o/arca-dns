@@ -315,7 +315,7 @@ func TestGitBackend_DeleteZone(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "Zone file should not exist")
 }
 
-func TestGitBackend_CreateZone_RollsBackWhenAutoPushFails(t *testing.T) {
+func TestGitBackend_CreateZone_RetainsLocalCommitWhenAutoPushFails(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
 
@@ -325,18 +325,18 @@ func TestGitBackend_CreateZone_RollsBackWhenAutoPushFails(t *testing.T) {
 	err := backend.CreateZone(ctx, testGitZone("example.com."))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "git push failed")
+	assert.Contains(t, err.Error(), "local commit was retained")
 
-	_, err = backend.GetZone(ctx, "example.com.")
-	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	retrieved, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, "example.com.", retrieved.Name)
+	assert.FileExists(t, filepath.Join(backend.repoPath, "zones", "example.com..json"))
 
 	_, err = backend.repo.Head()
-	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
-
-	backend.autoPush = false
-	require.NoError(t, backend.CreateZone(ctx, testGitZone("example.com.")))
+	assert.NoError(t, err)
 }
 
-func TestGitBackend_UpdateZone_RollsBackWhenAutoPushFails(t *testing.T) {
+func TestGitBackend_UpdateZone_RetainsLocalCommitWhenAutoPushFails(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
 
@@ -356,15 +356,16 @@ func TestGitBackend_UpdateZone_RollsBackWhenAutoPushFails(t *testing.T) {
 	err = backend.UpdateZone(ctx, &updated, created.Version)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "git push failed")
-	assert.Equal(t, headBefore, gitHeadHash(t, backend))
+	assert.Contains(t, err.Error(), "local commit was retained")
+	assert.NotEqual(t, headBefore, gitHeadHash(t, backend))
 
 	retrieved, err := backend.GetZone(ctx, "example.com.")
 	require.NoError(t, err)
-	assert.Equal(t, created.Version, retrieved.Version)
-	assert.Equal(t, created.Records, retrieved.Records)
+	assert.NotEqual(t, created.Version, retrieved.Version)
+	assert.Equal(t, updated.Records, retrieved.Records)
 }
 
-func TestGitBackend_DeleteZone_RollsBackWhenAutoPushFails(t *testing.T) {
+func TestGitBackend_DeleteZone_RetainsLocalCommitWhenAutoPushFails(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
 
@@ -376,11 +377,12 @@ func TestGitBackend_DeleteZone_RollsBackWhenAutoPushFails(t *testing.T) {
 	err := backend.DeleteZone(ctx, "example.com.")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "git push failed")
-	assert.Equal(t, headBefore, gitHeadHash(t, backend))
+	assert.Contains(t, err.Error(), "local commit was retained")
+	assert.NotEqual(t, headBefore, gitHeadHash(t, backend))
 
 	_, err = backend.GetZone(ctx, "example.com.")
-	assert.NoError(t, err)
-	assert.FileExists(t, filepath.Join(backend.repoPath, "zones", "example.com..json"))
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	assert.NoFileExists(t, filepath.Join(backend.repoPath, "zones", "example.com..json"))
 }
 
 func TestGitBackend_AutoPullUsesConfiguredBranch(t *testing.T) {
