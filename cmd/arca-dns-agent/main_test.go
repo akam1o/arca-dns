@@ -135,6 +135,56 @@ func TestStatusRouter_DoesNotExposeZoneDetails(t *testing.T) {
 	}
 }
 
+func TestStatusRouter_ExposesBIRDConfigFallback(t *testing.T) {
+	status := birdConfigRuntimeStatus{
+		Enabled:     true,
+		Status:      birdConfigStatusUsingExisting,
+		Path:        "/etc/bird/arca-dns.conf",
+		Error:       "render failed",
+		LastAttempt: time.Unix(123, 0),
+	}
+	router := newTestStatusRouterWithBIRDConfigStatus(config.MetricsConfig{
+		Enabled: true,
+		Path:    "/metrics",
+	}, status)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /status status=%d, want %d", resp.Code, http.StatusOK)
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode /status response: %v", err)
+	}
+	birdConfig, ok := body["bird_config"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("GET /status missing bird_config")
+	}
+	if got := birdConfig["status"]; got != birdConfigStatusUsingExisting {
+		t.Fatalf("bird_config.status=%v, want %s", got, birdConfigStatusUsingExisting)
+	}
+	if got := birdConfig["error"]; got != status.Error {
+		t.Fatalf("bird_config.error=%v, want %s", got, status.Error)
+	}
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /metrics status=%d, want %d", resp.Code, http.StatusOK)
+	}
+	metrics := resp.Body.String()
+	if !strings.Contains(metrics, `arca_dns_agent_bird_config_status{status="using_existing"} 1`) {
+		t.Fatalf("GET /metrics missing current BIRD config status:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, "arca_dns_agent_bird_config_last_attempt_timestamp_seconds 123") {
+		t.Fatalf("GET /metrics missing BIRD config attempt timestamp:\n%s", metrics)
+	}
+}
+
 func TestNewStatusServer_HasTimeouts(t *testing.T) {
 	server := newTestStatusServer(config.MetricsConfig{
 		Listen:  "127.0.0.1:0",
@@ -238,7 +288,7 @@ func TestStartStatusServer_ReturnsBindError(t *testing.T) {
 		QueryTimeout: time.Millisecond,
 	}, health.CheckerOptions{}, logger)
 
-	server, err := startStatusServer(cfg, syncer, checker, nil, nil, logger)
+	server, err := startStatusServer(cfg, syncer, checker, nil, nil, birdConfigRuntimeStatus{}, logger)
 	if err == nil {
 		if server != nil {
 			_ = server.Close()
@@ -474,7 +524,15 @@ func newTestStatusRouter(metrics config.MetricsConfig) http.Handler {
 	return newTestStatusServer(metrics).Handler
 }
 
+func newTestStatusRouterWithBIRDConfigStatus(metrics config.MetricsConfig, status birdConfigRuntimeStatus) http.Handler {
+	return newTestStatusServerWithBIRDConfigStatus(metrics, status).Handler
+}
+
 func newTestStatusServer(metrics config.MetricsConfig) *http.Server {
+	return newTestStatusServerWithBIRDConfigStatus(metrics, birdConfigRuntimeStatus{})
+}
+
+func newTestStatusServerWithBIRDConfigStatus(metrics config.MetricsConfig, status birdConfigRuntimeStatus) *http.Server {
 	logger := zap.NewNop()
 	cfg := &config.AgentConfig{
 		Metrics: metrics,
@@ -485,5 +543,5 @@ func newTestStatusServer(metrics config.MetricsConfig) *http.Server {
 	checker := health.NewCheckerWithOptions(config.HealthConfig{
 		QueryTimeout: time.Millisecond,
 	}, health.CheckerOptions{}, logger)
-	return newStatusServer(cfg, syncer, checker, nil, nil, logger)
+	return newStatusServer(cfg, syncer, checker, nil, nil, status, logger)
 }
