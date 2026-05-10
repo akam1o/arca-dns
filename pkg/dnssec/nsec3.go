@@ -76,6 +76,7 @@ func GenerateNSECChain(zoneApex string, rrs []dns.RR, ttl uint32) ([]dns.RR, err
 			bitmap = []uint16{}
 		}
 		bitmap = appendUnique(bitmap, dns.TypeNSEC)
+		bitmap = appendUnique(bitmap, dns.TypeRRSIG)
 		sort.Slice(bitmap, func(i, j int) bool { return bitmap[i] < bitmap[j] })
 
 		nsecRecords = append(nsecRecords, &dns.NSEC{

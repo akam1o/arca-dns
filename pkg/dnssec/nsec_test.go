@@ -63,3 +63,62 @@ func TestGenerateNSECChain_UsesDNSSECCanonicalOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateNSECChain_EmptyNonTerminalBitmapIncludesNSECAndRRSIG(t *testing.T) {
+	zoneApex := "example.com."
+	rrs := []dns.RR{
+		&dns.SOA{
+			Hdr:     dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
+			Ns:      "ns1.example.com.",
+			Mbox:    "admin.example.com.",
+			Serial:  2026051101,
+			Refresh: 3600,
+			Retry:   600,
+			Expire:  86400,
+			Minttl:  300,
+		},
+		&dns.NS{
+			Hdr: dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 3600},
+			Ns:  "ns1.example.com.",
+		},
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "a.b.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+			A:   []byte{192, 0, 2, 1},
+		},
+	}
+
+	nsecRecords, err := GenerateNSECChain(zoneApex, rrs, 300)
+	if err != nil {
+		t.Fatalf("GenerateNSECChain failed: %v", err)
+	}
+
+	var ent *dns.NSEC
+	for _, rr := range nsecRecords {
+		nsec := rr.(*dns.NSEC)
+		if nsec.Hdr.Name == "b.example.com." {
+			ent = nsec
+			break
+		}
+	}
+	if ent == nil {
+		t.Fatal("empty non-terminal NSEC not found")
+	}
+	if !containsRRType(ent.TypeBitMap, dns.TypeNSEC) {
+		t.Fatalf("empty non-terminal bitmap missing NSEC: %v", ent.TypeBitMap)
+	}
+	if !containsRRType(ent.TypeBitMap, dns.TypeRRSIG) {
+		t.Fatalf("empty non-terminal bitmap missing RRSIG: %v", ent.TypeBitMap)
+	}
+	if containsRRType(ent.TypeBitMap, dns.TypeA) {
+		t.Fatalf("empty non-terminal bitmap unexpectedly contains A: %v", ent.TypeBitMap)
+	}
+}
+
+func containsRRType(types []uint16, rrtype uint16) bool {
+	for _, candidate := range types {
+		if candidate == rrtype {
+			return true
+		}
+	}
+	return false
+}
