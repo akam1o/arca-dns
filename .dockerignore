@@ -12,6 +12,10 @@
 .DS_Store
 *.swp
 
+# Go workspace files
+go.work
+go.work.sum
+
 # Local build outputs
 arca-dns-agent
 arca-dns-controller
