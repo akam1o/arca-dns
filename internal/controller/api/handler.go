@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -38,6 +39,8 @@ type BuildInfo struct {
 	Commit  string `json:"commit"`
 	Date    string `json:"date"`
 }
+
+var errConditionalDeleteUnsupported = errors.New("backend does not support conditional delete")
 
 type createZoneRequest struct {
 	Name    string          `json:"name"`
@@ -804,6 +807,14 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 			))
 			return
 		}
+		if errors.Is(err, errConditionalDeleteUnsupported) {
+			c.JSON(http.StatusNotImplemented, model.NewAPIErrorWithDetails(
+				model.ErrorCodeUnavailable,
+				"Backend does not support atomic conditional delete",
+				map[string]interface{}{"capability": "ConditionalDeleteStore"},
+			))
+			return
+		}
 		if err == model.ErrConflict {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
@@ -831,10 +842,7 @@ func (h *Handler) deleteZoneWithVersion(ctx context.Context, name string, expect
 		return conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
 	}
 
-	// Custom backends may only implement the core ZoneStore contract. The
-	// handler has already verified If-Match against the current version; without
-	// ConditionalDeleteStore this fallback is best-effort rather than atomic.
-	return h.store.DeleteZone(ctx, name)
+	return errConditionalDeleteUnsupported
 }
 
 // GetSignedZone handles GET /api/v1/zones/:name/signed
