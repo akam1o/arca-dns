@@ -652,6 +652,45 @@ func TestZoneSigner_ClockInjection(t *testing.T) {
 	}
 }
 
+func TestZoneSigner_MetadataExpirationUsesEarliestRRSIG(t *testing.T) {
+	opts := DefaultSignerOptions()
+	opts.Expiration = time.Hour
+
+	signer := newTestZoneSigner(t, opts)
+	firstSignTime := time.Date(2024, 12, 28, 12, 0, 0, 0, time.UTC)
+	calls := 0
+	signer.clock = func() time.Time {
+		now := firstSignTime.Add(time.Duration(calls) * time.Second)
+		calls++
+		return now
+	}
+
+	signedZone, signedRRs, err := signer.SignZone(testSignerZone(firstSignTime))
+	if err != nil {
+		t.Fatalf("failed to sign zone: %v", err)
+	}
+	if signedZone.DNSSEC == nil || signedZone.DNSSEC.SignatureExpiration == nil {
+		t.Fatal("missing DNSSEC signature expiration")
+	}
+
+	earliest, ok := earliestRRSIGExpiration(signedRRs)
+	if !ok {
+		t.Fatal("signed zone has no RRSIG expiration")
+	}
+	if !signedZone.DNSSEC.SignatureExpiration.Equal(earliest) {
+		t.Fatalf("metadata expiration=%s, want earliest RRSIG expiration=%s",
+			signedZone.DNSSEC.SignatureExpiration, earliest)
+	}
+
+	firstExpiration := firstSignTime.Add(opts.Expiration)
+	if !earliest.Equal(firstExpiration) {
+		t.Fatalf("earliest RRSIG expiration=%s, want first signing expiration=%s", earliest, firstExpiration)
+	}
+	if calls < 2 {
+		t.Fatalf("expected test clock to advance across signing calls, got %d calls", calls)
+	}
+}
+
 func TestZoneSigner_UsesCustomSignerOptions(t *testing.T) {
 	opts := DefaultSignerOptions()
 	opts.Inception = -2 * time.Hour

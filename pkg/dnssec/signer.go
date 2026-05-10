@@ -427,7 +427,10 @@ func (s *ZoneSigner) rrsToModel(originalZone *model.Zone, signedRRs []dns.RR, ks
 		CreatedAt: originalZone.CreatedAt,
 		UpdatedAt: now,
 	}
-	expiration := now.Add(s.options.Expiration)
+	expiration, ok := earliestRRSIGExpiration(signedRRs)
+	if !ok {
+		return nil, fmt.Errorf("signed RRs contain no RRSIG records")
+	}
 	signedZone.DNSSEC = &model.DNSSECConfig{
 		Enabled:             true,
 		Algorithm:           ksk.DNSKEY.Algorithm,
@@ -442,6 +445,23 @@ func (s *ZoneSigner) rrsToModel(originalZone *model.Zone, signedRRs []dns.RR, ks
 	signedZone.Records = originalZone.Records
 
 	return signedZone, nil
+}
+
+func earliestRRSIGExpiration(rrs []dns.RR) (time.Time, bool) {
+	var earliest uint32
+	for _, rr := range rrs {
+		rrsig, ok := rr.(*dns.RRSIG)
+		if !ok {
+			continue
+		}
+		if earliest == 0 || rrsig.Expiration < earliest {
+			earliest = rrsig.Expiration
+		}
+	}
+	if earliest == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(earliest), 0).UTC(), true
 }
 
 // groupRRsets groups RRs by (owner name, type) and validates TTL and class consistency.
