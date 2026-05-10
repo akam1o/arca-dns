@@ -211,8 +211,8 @@ arca-dns-controller dnssec export-ds --zone example.com. --format json
 **手動ローテーション**:
 ```bash
 # 先に maintenance window に入り、DNSSEC scheduler と zone/record 書き込みを止める。
-# generate-keys --rotate は新しい KSK/ZSK を即 active にする。
-arca-dns-controller dnssec generate-keys --zone example.com. --rotate
+# --activate-now は新しい KSK/ZSK を即 active にすることを明示的に確認する。
+arca-dns-controller dnssec generate-keys --zone example.com. --rotate --activate-now
 
 # 新しい DS を出力する
 arca-dns-controller dnssec export-ds --zone example.com.

@@ -191,7 +191,7 @@ DNSSEC key rotation should be performed periodically for security best practices
 
 **Timeline**: Allow 2× parent zone TTL between steps.
 
-The current release does not support a fully automatic pre-publish or double-signature rollover. `generate-keys --rotate` makes the new KSK/ZSK active immediately, so any scheduler run, zone update, record update, or on-demand re-sign before the parent publishes the new DS can break validation.
+The current release does not support a fully automatic pre-publish or double-signature rollover. `generate-keys --rotate --activate-now` makes the new KSK/ZSK active immediately, so any scheduler run, zone update, record update, or on-demand re-sign before the parent publishes the new DS can break validation.
 
 1. **Enter a controlled maintenance window** (before Day 0)
    - Disable the DNSSEC scheduler or stop controller instances that can re-sign zones.
@@ -200,8 +200,8 @@ The current release does not support a fully automatic pre-publish or double-sig
 
 2. **Generate and activate a new key pair** (Day 0)
    ```bash
-   # --rotate always generates new active KSK and ZSK keys.
-   arca-dns-controller dnssec generate-keys --zone example.com. --rotate
+   # --activate-now confirms that the new KSK/ZSK should become active immediately.
+   arca-dns-controller dnssec generate-keys --zone example.com. --rotate --activate-now
    ```
    This updates `active.json`; it does not by itself replace a cached signed zone artifact.
 
@@ -245,13 +245,13 @@ The current release does not support a fully automatic pre-publish or double-sig
 
 ### ZSK Rotation (Simplified)
 
-ZSK rotation does not require parent zone coordination, but the current CLI rotates KSK and ZSK together when `--rotate` is used. Treat `generate-keys --rotate` as a combined rollover and follow the KSK procedure above whenever the KSK changes.
+ZSK rotation does not require parent zone coordination, but the current CLI rotates KSK and ZSK together when `--rotate --activate-now` is used. Treat it as a combined rollover and follow the KSK procedure above whenever the KSK changes.
 
 **Timeline**: Allow 2× zone maximum TTL between steps.
 
 1. **Generate and activate new keys**
    ```bash
-   arca-dns-controller dnssec generate-keys --zone example.com. --rotate
+   arca-dns-controller dnssec generate-keys --zone example.com. --rotate --activate-now
    ```
 
 2. **Trigger re-signing**
