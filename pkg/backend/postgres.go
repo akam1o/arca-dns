@@ -209,6 +209,7 @@ func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) erro
 	if err != nil {
 		return err
 	}
+	normalizePostgresTimestamps(writeZone)
 
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -233,7 +234,7 @@ func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) erro
 // UpdateZone updates an existing zone.
 func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.UpdatedAt = time.Now()
+	zone.UpdatedAt = postgresTimestamp(time.Now())
 
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -353,7 +354,7 @@ func (p *PostgresBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName str
 	result, err := p.db.ExecContext(ctx, query,
 		enabled, algorithm, kskKeyTag, zskKeyTag,
 		nsec3Enabled, nsec3Iterations, nsec3Salt, signatureExpiration,
-		time.Now(), name,
+		postgresTimestamp(time.Now()), name,
 	)
 	if err != nil {
 		return fmt.Errorf("update DNSSEC metadata: %w", err)
@@ -453,6 +454,16 @@ type pgQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
+
+func normalizePostgresTimestamps(zone *model.Zone) {
+	zone.CreatedAt = postgresTimestamp(zone.CreatedAt)
+	zone.UpdatedAt = postgresTimestamp(zone.UpdatedAt)
+}
+
+func postgresTimestamp(t time.Time) time.Time {
+	// PostgreSQL stores timestamptz values at microsecond precision.
+	return t.Round(time.Microsecond)
 }
 
 func (p *PostgresBackend) scanZonePG(ctx context.Context, q pgQuerier, name string) (*model.Zone, error) {
@@ -773,6 +784,7 @@ func (t *pgTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	if err != nil {
 		return err
 	}
+	normalizePostgresTimestamps(writeZone)
 	zoneID, err := t.backend.insertZonePGTx(ctx, t.tx, writeZone)
 	if err != nil {
 		return err
@@ -786,7 +798,7 @@ func (t *pgTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 
 func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.UpdatedAt = time.Now()
+	zone.UpdatedAt = postgresTimestamp(time.Now())
 
 	var createdAt time.Time
 	var currentVersion string
