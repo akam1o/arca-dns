@@ -66,7 +66,7 @@ func GenerateNSECChain(zoneApex string, rrs []dns.RR, ttl uint32) ([]dns.RR, err
 		return nil, fmt.Errorf("failed to compute type bitmaps: %w", err)
 	}
 
-	sort.Strings(names)
+	sortCanonicalDNSSECNames(names)
 
 	nsecRecords := make([]dns.RR, 0, len(names))
 	for i, name := range names {
@@ -199,6 +199,26 @@ func GenerateNSEC3Chain(zoneApex string, rrs []dns.RR, params NSEC3Params) ([]dn
 	result = append(result, nsec3Records...)
 
 	return result, nil
+}
+
+func sortCanonicalDNSSECNames(names []string) {
+	sort.Slice(names, func(i, j int) bool {
+		return canonicalDNSSECLess(names[i], names[j])
+	})
+}
+
+func canonicalDNSSECLess(a, b string) bool {
+	aLabels := dns.SplitDomainName(dns.CanonicalName(a))
+	bLabels := dns.SplitDomainName(dns.CanonicalName(b))
+
+	for ai, bi := len(aLabels)-1, len(bLabels)-1; ai >= 0 && bi >= 0; ai, bi = ai-1, bi-1 {
+		if aLabels[ai] == bLabels[bi] {
+			continue
+		}
+		return aLabels[ai] < bLabels[bi]
+	}
+
+	return len(aLabels) < len(bLabels)
 }
 
 // collectAuthoritativeNames collects all owner names from RRs and derives empty non-terminals.
