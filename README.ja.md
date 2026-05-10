@@ -213,6 +213,8 @@ health:
   recovery_threshold: 5
   nsd_server: "127.0.0.1:5353"
   unbound_server: "127.0.0.1:53"
+  test_zone: "example.com."
+  test_record: "www"
 ```
 
 ### ローカルでのビルド/実行（dev）
