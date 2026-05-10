@@ -496,6 +496,51 @@ func (s *SigningService) signAndStoreZoneLocked(ctx context.Context, zone *model
 	return s.persistSignedZoneArtifactAndMetadata(ctx, zone, artifact)
 }
 
+func (s *SigningService) resignAndStoreZoneLocked(ctx context.Context, zone *model.Zone) (*SignedZoneArtifact, error) {
+	if zone == nil {
+		return nil, fmt.Errorf("zone is nil")
+	}
+
+	currentVersion := zone.Version
+	resignedZone := cloneZone(zone)
+	newVersion, err := model.NewZoneVersion()
+	if err != nil {
+		return nil, fmt.Errorf("generate zone version: %w", err)
+	}
+	resignedZone.Version = newVersion
+	resignedZone.SOA.Serial = backend.NextSOASerial(zone.SOA.Serial)
+
+	artifact, err := s.SignZone(ctx, resignedZone)
+	if err != nil {
+		s.logger.Error("Failed to re-sign zone",
+			zap.String("zone", zone.Name),
+			zap.Error(err))
+		return nil, err
+	}
+	resignedZone.DNSSEC = cloneDNSSECConfig(artifact.DNSSEC)
+
+	if err := s.storeSignedZoneArtifact(artifact); err != nil {
+		s.logger.Error("Failed to store signed artifact",
+			zap.String("zone", artifact.ZoneName),
+			zap.String("version", artifact.Version),
+			zap.Error(err))
+		return nil, err
+	}
+
+	if err := s.store.UpdateZone(ctx, resignedZone, currentVersion); err != nil {
+		if removeErr := s.removeSignedZoneArtifact(artifact); removeErr != nil {
+			s.logger.Warn("Failed to remove signed artifact after zone re-sign persistence failure",
+				zap.String("zone", artifact.ZoneName),
+				zap.String("version", artifact.Version),
+				zap.Error(removeErr))
+		}
+		return nil, fmt.Errorf("persist re-signed zone: %w", err)
+	}
+
+	s.completeSignedZoneWrite(artifact)
+	return artifact, nil
+}
+
 // completeSignedZoneWrite prunes the optional signed artifact cache and emits
 // the signing audit log after the backend write has succeeded.
 func (s *SigningService) completeSignedZoneWrite(artifact *SignedZoneArtifact) {
@@ -596,6 +641,23 @@ func (s *SigningService) persistDNSSECMetadata(ctx context.Context, zoneName str
 	return metadataStore.UpdateDNSSECMetadata(ctx, zoneName, cloneDNSSECConfig(dnssec))
 }
 
+func cloneZone(zone *model.Zone) *model.Zone {
+	if zone == nil {
+		return nil
+	}
+
+	cloned := *zone
+	cloned.Records = append([]model.Record(nil), zone.Records...)
+	for i := range cloned.Records {
+		if cloned.Records[i].Priority != nil {
+			priority := *cloned.Records[i].Priority
+			cloned.Records[i].Priority = &priority
+		}
+	}
+	cloned.DNSSEC = cloneDNSSECConfig(zone.DNSSEC)
+	return &cloned
+}
+
 func cloneDNSSECConfig(config *model.DNSSECConfig) *model.DNSSECConfig {
 	if config == nil {
 		return nil
@@ -685,26 +747,14 @@ func (s *SigningService) GetSignedZone(ctx context.Context, zoneName string) (*S
 func (s *SigningService) getSignedZoneLocked(ctx context.Context, zone *model.Zone) (*SignedZoneArtifact, error) {
 	// Check if zone has been signed (M4.5 fix: null-safety check)
 	if zone.DNSSEC == nil || !zone.DNSSEC.Enabled {
-		// Sign it now if not already signed
-		artifact, err := s.SignZone(ctx, zone)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.persistSignedZoneArtifactAndMetadata(ctx, zone, artifact); err != nil {
-			return nil, err
-		}
-		return artifact, nil
+		// Sign it now if not already signed. DNSSEC records change the served
+		// zone contents, so advance the SOA serial and logical zone version.
+		return s.resignAndStoreZoneLocked(ctx, zone)
 	}
 
-	// Fallback: re-sign on demand.
-	artifact, err := s.SignZone(ctx, zone)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.persistSignedZoneArtifactAndMetadata(ctx, zone, artifact); err != nil {
-		return nil, err
-	}
-	return artifact, nil
+	// Fallback: re-sign on demand. Refreshed RRSIG/NSEC data changes the DNS
+	// payload, so publish it as a new zone serial/version.
+	return s.resignAndStoreZoneLocked(ctx, zone)
 }
 
 // GetDSRecords returns DS records for the given zone (for parent zone delegation).
@@ -791,7 +841,8 @@ func (s *SigningService) ResignZone(ctx context.Context, zoneName string) error 
 		return fmt.Errorf("DNSSEC not enabled for zone %s", zoneName)
 	}
 
-	return s.signAndStoreZoneLocked(ctx, zone)
+	_, err = s.resignAndStoreZoneLocked(ctx, zone)
+	return err
 }
 
 func (s *SigningService) acquireZoneLock(ctx context.Context, zoneName string) (*zoneSigningLock, error) {

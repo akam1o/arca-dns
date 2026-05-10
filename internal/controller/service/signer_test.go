@@ -537,6 +537,8 @@ func TestSigningService_GetSignedZone(t *testing.T) {
 	defer cleanup()
 
 	zone := createTestZone()
+	originalVersion := zone.Version
+	originalSerial := zone.SOA.Serial
 	ctx := context.Background()
 
 	// Store unsigned zone
@@ -556,6 +558,23 @@ func TestSigningService_GetSignedZone(t *testing.T) {
 
 	if artifact.SignedZone == "" {
 		t.Error("SignedZone is empty")
+	}
+	if artifact.Version == originalVersion {
+		t.Fatalf("on-demand signing did not advance zone version: %s", artifact.Version)
+	}
+	if artifact.Serial <= originalSerial {
+		t.Fatalf("on-demand signing did not advance SOA serial: got %d, want > %d", artifact.Serial, originalSerial)
+	}
+
+	persisted, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone: %v", err)
+	}
+	if persisted.Version != artifact.Version {
+		t.Fatalf("persisted version = %s, want artifact version %s", persisted.Version, artifact.Version)
+	}
+	if persisted.SOA.Serial != artifact.Serial {
+		t.Fatalf("persisted serial = %d, want artifact serial %d", persisted.SOA.Serial, artifact.Serial)
 	}
 
 	t.Logf("Retrieved signed zone: %s (version %s)", artifact.ZoneName, artifact.Version)
@@ -672,6 +691,52 @@ func TestSigningService_GetSignedZone_StaleCacheIsResigned(t *testing.T) {
 	}
 	if got, want := persistedZone.DNSSEC.SignatureExpiration.Unix(), int64(freshArtifact.Metadata.Expiration); got != want {
 		t.Fatalf("persisted signature expiration = %d, want %d", got, want)
+	}
+	if freshArtifact.Version == artifact.Version {
+		t.Fatalf("stale cache re-sign did not advance zone version: %s", freshArtifact.Version)
+	}
+	if freshArtifact.Serial <= artifact.Serial {
+		t.Fatalf("stale cache re-sign did not advance SOA serial: got %d, want > %d", freshArtifact.Serial, artifact.Serial)
+	}
+	if persistedZone.Version != freshArtifact.Version {
+		t.Fatalf("persisted version = %s, want artifact version %s", persistedZone.Version, freshArtifact.Version)
+	}
+	if persistedZone.SOA.Serial != freshArtifact.Serial {
+		t.Fatalf("persisted serial = %d, want artifact serial %d", persistedZone.SOA.Serial, freshArtifact.Serial)
+	}
+}
+
+func TestSigningService_ResignZoneAdvancesVersionAndSerial(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	initialArtifact, err := service.GetSignedZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetSignedZone failed: %v", err)
+	}
+
+	if err := service.ResignZone(ctx, zone.Name); err != nil {
+		t.Fatalf("ResignZone failed: %v", err)
+	}
+
+	persisted, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone: %v", err)
+	}
+	if persisted.Version == initialArtifact.Version {
+		t.Fatalf("ResignZone did not advance zone version: %s", persisted.Version)
+	}
+	if persisted.SOA.Serial <= initialArtifact.Serial {
+		t.Fatalf("ResignZone did not advance SOA serial: got %d, want > %d", persisted.SOA.Serial, initialArtifact.Serial)
+	}
+	if persisted.DNSSEC == nil || persisted.DNSSEC.SignatureExpiration == nil {
+		t.Fatal("ResignZone did not persist DNSSEC metadata")
 	}
 }
 
