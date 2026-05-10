@@ -447,15 +447,15 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid authoritative: %s (supported: nsd)", cfg.Authoritative)
 	}
 
+	if cfg.NSD.ZoneDirectory == "" {
+		return fmt.Errorf("invalid nsd.zone_directory: empty; required for zone sync storage")
+	}
 	if cfg.NSD.Enabled {
 		if cfg.NSD.ConfigPath == "" {
 			return fmt.Errorf("invalid nsd.config_path: empty when NSD is enabled")
 		}
 		if cfg.NSD.ControlPath == "" {
 			return fmt.Errorf("invalid nsd.control_path: empty when NSD is enabled")
-		}
-		if cfg.NSD.ZoneDirectory == "" {
-			return fmt.Errorf("invalid nsd.zone_directory: empty when NSD is enabled")
 		}
 	}
 

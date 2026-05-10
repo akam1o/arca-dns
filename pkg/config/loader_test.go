@@ -964,6 +964,15 @@ func TestValidateAgentConfig_NSDMissingConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "nsd.config_path")
 }
 
+func TestValidateAgentConfig_NSDZoneDirectoryRequiredWhenNSDDisabled(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.NSD.Enabled = false
+	cfg.NSD.ZoneDirectory = ""
+	err := ValidateAgentConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nsd.zone_directory")
+}
+
 func TestValidateAgentConfig_UnboundMissingConfig(t *testing.T) {
 	cfg := validAgentConfigForTest()
 	cfg.Unbound.Enabled = true
