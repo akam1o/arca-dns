@@ -117,7 +117,7 @@ func NormalizeZoneForHashing(zone *model.Zone) ([]byte, error) {
 			Name:  ownerName,
 			Type:  rec.Type,
 			TTL:   rec.TTL,
-			Value: normalizeRecordValue(rec.Type, rec.Value),
+			Value: normalizeRecordValue(rec.Type, rec.Value, zoneName),
 		}
 	}
 
@@ -161,18 +161,18 @@ func expandOwnerName(name, zoneOrigin string) string {
 // normalizeRecordValue normalizes RDATA values that contain domain names.
 // For record types with domain names in RDATA, lowercase and add trailing dot.
 // Also normalizes whitespace for MX/SRV records.
-func normalizeRecordValue(recordType, value string) string {
+func normalizeRecordValue(recordType, value, zoneName string) string {
 	switch recordType {
 	case model.RecordTypeNS, model.RecordTypeCNAME, model.RecordTypePTR:
 		// These have a single domain name as value
-		return model.NormalizeDomainName(value)
+		return model.NormalizeDomainTargetName(value, zoneName)
 
 	case model.RecordTypeMX:
 		// Format: "priority target" (e.g., "10 mail.example.com")
 		// Use strings.Fields to normalize whitespace (handles "10   mail.example.com")
 		parts := strings.Fields(value)
 		if len(parts) == 2 {
-			return parts[0] + " " + model.NormalizeDomainName(parts[1])
+			return parts[0] + " " + model.NormalizeDomainTargetName(parts[1], zoneName)
 		}
 		return value
 
@@ -181,7 +181,7 @@ func normalizeRecordValue(recordType, value string) string {
 		// Use strings.Fields to normalize whitespace
 		parts := strings.Fields(value)
 		if len(parts) == 4 {
-			return parts[0] + " " + parts[1] + " " + parts[2] + " " + model.NormalizeDomainName(parts[3])
+			return parts[0] + " " + parts[1] + " " + parts[2] + " " + model.NormalizeDomainTargetName(parts[3], zoneName)
 		}
 		return value
 

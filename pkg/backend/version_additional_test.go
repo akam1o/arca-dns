@@ -44,6 +44,70 @@ func TestComputeZoneHash8_RelativeVsFQDN(t *testing.T) {
 	}
 }
 
+func TestComputeZoneHash8_RelativeRDATATargets(t *testing.T) {
+	tests := []struct {
+		name     string
+		relative model.Record
+		fqdn     model.Record
+	}{
+		{
+			name:     "NS",
+			relative: model.Record{Name: "@", Type: "NS", TTL: 3600, Value: "ns1"},
+			fqdn:     model.Record{Name: "@", Type: "NS", TTL: 3600, Value: "ns1.example.com."},
+		},
+		{
+			name:     "CNAME",
+			relative: model.Record{Name: "www", Type: "CNAME", TTL: 300, Value: "target"},
+			fqdn:     model.Record{Name: "www", Type: "CNAME", TTL: 300, Value: "target.example.com."},
+		},
+		{
+			name:     "MX",
+			relative: model.Record{Name: "@", Type: "MX", TTL: 3600, Value: "10 mail"},
+			fqdn:     model.Record{Name: "@", Type: "MX", TTL: 3600, Value: "10 mail.example.com."},
+		},
+		{
+			name:     "PTR",
+			relative: model.Record{Name: "1.2.0.192.in-addr.arpa.", Type: "PTR", TTL: 3600, Value: "host"},
+			fqdn:     model.Record{Name: "1.2.0.192.in-addr.arpa.", Type: "PTR", TTL: 3600, Value: "host.example.com."},
+		},
+		{
+			name:     "SRV",
+			relative: model.Record{Name: "_sip._tcp", Type: "SRV", TTL: 3600, Value: "10 60 5060 sip"},
+			fqdn:     model.Record{Name: "_sip._tcp", Type: "SRV", TTL: 3600, Value: "10 60 5060 sip.example.com."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			zone1 := &model.Zone{
+				Name:    "example.com.",
+				SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+				Records: []model.Record{tt.relative},
+			}
+			zone1.SOA.Serial = 2024122801
+
+			zone2 := &model.Zone{
+				Name:    "example.com.",
+				SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+				Records: []model.Record{tt.fqdn},
+			}
+			zone2.SOA.Serial = 2024122801
+
+			v1, err := ComputeZoneHash8(zone1)
+			if err != nil {
+				t.Fatalf("ComputeZoneHash8(zone1) failed: %v", err)
+			}
+			v2, err := ComputeZoneHash8(zone2)
+			if err != nil {
+				t.Fatalf("ComputeZoneHash8(zone2) failed: %v", err)
+			}
+			if v1 != v2 {
+				t.Fatalf("hashes differ for relative and FQDN RDATA targets: %q vs %q", v1, v2)
+			}
+		})
+	}
+}
+
 // TestComputeZoneHash8_WhitespaceNormalization tests MX/SRV whitespace normalization
 func TestComputeZoneHash8_WhitespaceNormalization(t *testing.T) {
 	tests := []struct {
