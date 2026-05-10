@@ -62,7 +62,10 @@ arca-dns は、大規模な DNS デプロイメント向けに以下の機能を
   ```bash
   export ARCA_DNS_API_KEY="$(openssl rand -hex 32)"
   export ARCA_DNS_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_API_KEY" | sha256sum | awk '{print $1}')"
+  export ARCA_DNS_AGENT_API_KEY="$(openssl rand -hex 32)"
+  export ARCA_DNS_AGENT_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_AGENT_API_KEY" | sha256sum | awk '{print $1}')"
   export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
+  export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$(openssl rand -base64 32)"
 
   docker compose -f deployments/compose/controller-mysql/docker-compose.yaml --project-directory . up -d
   ```
