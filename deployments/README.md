@@ -16,7 +16,7 @@ See the full deployment guide:
 ## Important Notes
 
 - The controller serves HTTP by default. Terminate TLS at an ingress, load balancer, or reverse proxy.
-- The controller API listens on 8080 by default, including unauthenticated health/readiness/status endpoints; Prometheus metrics listen separately on 9053.
+- The controller API listens on 8080 by default, including unauthenticated health/readiness/status endpoints; Prometheus metrics listen separately on 9053 and should stay on loopback or behind network controls.
 - Controller and agent container images are based on distroless `nonroot`; mounted data directories must be writable by UID/GID `65532`.
 - The agent controls host NSD/Unbound/BIRD and is typically deployed on edge nodes or VMs rather than as a generic Kubernetes workload.
 - MySQL and PostgreSQL backends require schema creation before controller startup. SQLite creates its schema automatically.

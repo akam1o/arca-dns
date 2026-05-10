@@ -37,6 +37,9 @@ curl http://localhost:9090/status
 The agent status server binds to `127.0.0.1:9090` by default because `/status`
 includes zone sync and BGP state. Expose `metrics.listen` remotely only behind
 network filtering, a tunnel, or another authenticated control plane.
+Controller observability endpoints are also unauthenticated. Keep
+`observability.listen` on loopback unless the listener is behind equivalent
+network controls or an authenticated proxy.
 
 ### Prometheus Metrics
 

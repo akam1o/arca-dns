@@ -63,6 +63,7 @@ agent container image には `arca-dns-agent` のみが含まれます。`nsd.en
 ### API キー
 
 controller の既定は `api.auth.enabled: true` です。認証が有効な場合、`api.auth.api_keys` に `sha256:<64 hex>` 形式のハッシュが 1 つ以上必要です。
+controller の observability listener は認証なしで、既定では `127.0.0.1:9053` に bind します。リモートアドレスに bind する場合は network control または認証付き proxy の背後に置いてください。
 
 ```bash
 ADMIN_API_KEY="$(openssl rand -hex 32)"
@@ -472,7 +473,9 @@ agent の HTTP endpoint:
 
 controller の health/readiness/status endpoint は API address
 （提供 manifest では `0.0.0.0:8080`）で listen します。Prometheus metrics は
-分離された `observability.listen`（`0.0.0.0:9053`）で listen します。
+分離された `observability.listen` で listen します。組み込みの既定は
+`127.0.0.1:9053` です。Kubernetes 例は Service scraping 用に
+`0.0.0.0:9053` を使うため、cluster network control で保護してください。
 
 agent の status server はデフォルトで `127.0.0.1:9090` を listen します。
 `metrics.listen` をリモートアドレスに変更する場合は、network control

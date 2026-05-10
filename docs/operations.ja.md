@@ -38,6 +38,9 @@ agent の status server はデフォルトで `127.0.0.1:9090` に bind しま�
 `/status` には zone 同期状態と BGP 状態が含まれるため、`metrics.listen`
 をリモート公開する場合は firewall、tunnel、または認証済みの control plane
 の背後に置いてください。
+controller の observability endpoint も認証なしです。`observability.listen`
+は、同等の network control または認証付き proxy の背後に置く場合を除き、
+loopback のままにしてください。
 
 ### Prometheus メトリクス
 

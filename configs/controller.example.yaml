@@ -29,7 +29,8 @@ api:
 observability:
   # Prometheus metrics are served here, separate from the API listener.
   # Health/readiness/status endpoints are served on the API listener.
-  listen: "0.0.0.0:9053"
+  # Bind to 0.0.0.0 only behind network controls or an authenticated proxy.
+  listen: "127.0.0.1:9053"
 
 backend:
   type: "sqlite" # sqlite|postgres|mysql|git|etcd

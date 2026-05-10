@@ -650,7 +650,7 @@ func DefaultControllerConfig() *ControllerConfig {
 			},
 		},
 		Observability: ObservabilityConfig{
-			Listen: "0.0.0.0:9053",
+			Listen: "127.0.0.1:9053",
 		},
 		Backend: BackendConfig{
 			Type: "sqlite",

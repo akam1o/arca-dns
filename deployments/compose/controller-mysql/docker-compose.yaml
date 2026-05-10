@@ -30,7 +30,8 @@ services:
     image: ghcr.io/akam1o/arca-dns-controller:latest
     ports:
       - "8080:8080"
-      - "9053:9053"
+      # Metrics and status aliases are unauthenticated; keep host access local.
+      - "127.0.0.1:9053:9053"
     environment:
       # Set before running:
       #   export ARCA_DNS_API_KEY_HASH="sha256:<64-hex>"

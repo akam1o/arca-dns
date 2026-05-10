@@ -63,6 +63,7 @@ The agent container image contains only `arca-dns-agent`. If you run an agent in
 ### API Key
 
 The controller default is `api.auth.enabled: true`. When auth is enabled, `api.auth.api_keys` must contain at least one `sha256:<64 hex>` hash.
+The controller observability listener is unauthenticated and binds to `127.0.0.1:9053` by default. Bind it to a remote address only behind network controls or an authenticated proxy.
 
 ```bash
 ADMIN_API_KEY="$(openssl rand -hex 32)"
@@ -473,7 +474,9 @@ Agent HTTP endpoints:
 
 Controller health/readiness/status endpoints listen on the API address
 (`0.0.0.0:8080` in the provided deployment examples). Prometheus metrics
-listen on the separate `observability.listen` address (`0.0.0.0:9053`).
+listen on the separate `observability.listen` address. The built-in default is
+`127.0.0.1:9053`; the Kubernetes examples use `0.0.0.0:9053` for Service
+scraping and should be protected with cluster network controls.
 
 By default the agent status server listens on `127.0.0.1:9090`. Set
 `metrics.listen` to a remote address only when the endpoint is protected by

@@ -80,7 +80,7 @@ func TestDefaultControllerConfig_Defaults(t *testing.T) {
 	cfg := DefaultControllerConfig()
 
 	assert.Equal(t, "0.0.0.0:8080", cfg.API.Listen)
-	assert.Equal(t, "0.0.0.0:9053", cfg.Observability.Listen)
+	assert.Equal(t, "127.0.0.1:9053", cfg.Observability.Listen)
 	assert.Empty(t, cfg.API.ArtifactSignatureKey)
 	assert.True(t, cfg.API.Auth.Enabled)
 	assert.Equal(t, "sqlite", cfg.Backend.Type)

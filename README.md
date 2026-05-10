@@ -154,7 +154,8 @@ api:
 
 observability:
   # Prometheus /metrics endpoint. /health, /ready, and /status are on the API listener.
-  listen: "0.0.0.0:9053"
+  # Bind to 0.0.0.0 only behind network controls or an authenticated proxy.
+  listen: "127.0.0.1:9053"
 
 backend:
   type: "sqlite"  # Options: sqlite, postgres, mysql, git, etcd
