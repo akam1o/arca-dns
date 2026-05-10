@@ -34,9 +34,13 @@ type failingRecreateStore struct {
 	failed  bool
 }
 
-func (s *failingRecreateStore) DeleteZone(ctx context.Context, name string) error {
+func (s *failingRecreateStore) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	s.deleted = true
-	return s.ZoneStore.DeleteZone(ctx, name)
+	conditionalStore, ok := s.ZoneStore.(backend.ConditionalDeleteStore)
+	if !ok {
+		return errOverwriteConditionalDeleteUnsupported
+	}
+	return conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
 }
 
 func (s *failingRecreateStore) CreateZone(ctx context.Context, zone *model.Zone) error {
@@ -48,6 +52,10 @@ func (s *failingRecreateStore) CreateZone(ctx context.Context, zone *model.Zone)
 		return errors.New("injected post-create failure")
 	}
 	return s.ZoneStore.CreateZone(ctx, zone)
+}
+
+type migrateZoneStoreWithoutConditionalDelete struct {
+	backend.ZoneStore
 }
 
 // TestMigrateExportMemory tests exporting zones from memory backend to JSON files.
@@ -197,6 +205,50 @@ func TestMigrateImportOverwritePreservesSourceSerial(t *testing.T) {
 	assert.Equal(t, sourceSOA.Serial, updated.SOA.Serial)
 	assert.NotEqual(t, existingVersion, updated.Version)
 	assert.NotEmpty(t, updated.Version)
+}
+
+func TestMigrateImportOverwriteRejectsStoreWithoutConditionalDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := context.Background()
+
+	importZone := &model.Zone{
+		Name: "no-conditional.example.com.",
+		SOA:  model.DefaultSOA("ns1.no-conditional.example.com.", "admin.no-conditional.example.com."),
+		Records: []model.Record{
+			migrateTestApexNSRecord(),
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.10"},
+		},
+	}
+	data, err := json.MarshalIndent(importZone, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "no_conditional_example_com.json"), data, 0644))
+
+	memoryStore := backend.NewMemoryBackend()
+	defer memoryStore.Close()
+
+	existingZone := &model.Zone{
+		Name: importZone.Name,
+		SOA:  model.DefaultSOA("ns1.no-conditional.example.com.", "admin.no-conditional.example.com."),
+		Records: []model.Record{
+			migrateTestApexNSRecord(),
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, memoryStore.CreateZone(ctx, existingZone))
+	before, err := memoryStore.GetZone(ctx, existingZone.Name)
+	require.NoError(t, err)
+
+	store := &migrateZoneStoreWithoutConditionalDelete{ZoneStore: memoryStore}
+	_, err = importToStore(ctx, store, tmpDir, false, true)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errOverwriteConditionalDeleteUnsupported))
+
+	unchanged, err := memoryStore.GetZone(ctx, existingZone.Name)
+	require.NoError(t, err)
+	assert.Equal(t, before.Version, unchanged.Version)
+	unchangedA := migrateRecordByNameType(unchanged.Records, "www", model.RecordTypeA)
+	require.NotNil(t, unchangedA)
+	assert.Equal(t, "192.0.2.1", unchangedA.Value)
 }
 
 func TestMigrateImportOverwriteRestoresExistingZoneOnRecreateFailure(t *testing.T) {
