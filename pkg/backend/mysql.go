@@ -64,8 +64,23 @@ func (m *MySQLBackend) HealthCheck(ctx context.Context) error {
 
 // RunMigrations applies database migrations.
 func (m *MySQLBackend) RunMigrations(migrationsPath string) error {
-	driver, err := mysql.WithInstance(m.db, &mysql.Config{})
+	migrationDB, err := sql.Open("mysql", m.dsn)
 	if err != nil {
+		return fmt.Errorf("failed to open MySQL migration connection: %w", err)
+	}
+	migrationDB.SetMaxOpenConns(1)
+	migrationDB.SetMaxIdleConns(1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrationDB.PingContext(ctx); err != nil {
+		migrationDB.Close()
+		return fmt.Errorf("failed to ping MySQL for migrations: %w", err)
+	}
+
+	driver, err := mysql.WithInstance(migrationDB, &mysql.Config{})
+	if err != nil {
+		migrationDB.Close()
 		return fmt.Errorf("failed to create migration driver: %w", err)
 	}
 
@@ -75,6 +90,7 @@ func (m *MySQLBackend) RunMigrations(migrationsPath string) error {
 		driver,
 	)
 	if err != nil {
+		migrationDB.Close()
 		return fmt.Errorf("failed to create migrator: %w", err)
 	}
 	defer mig.Close()
@@ -330,6 +346,7 @@ func (m *MySQLBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	if err != nil {
 		return err
 	}
+	normalizeMySQLTimestamps(writeZone)
 
 	if err := m.withRetry(ctx, func(ctx context.Context) error {
 		return m.createZone(ctx, writeZone)
@@ -470,9 +487,6 @@ func (m *MySQLBackend) updateDNSSECMetadata(ctx context.Context, zoneName string
 func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
 
-	// Update timestamp
-	zone.UpdatedAt = time.Now()
-
 	// Start transaction
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -481,15 +495,19 @@ func (m *MySQLBackend) updateZone(ctx context.Context, zone *model.Zone, expecte
 	defer func() { _ = tx.Rollback() }()
 
 	// Advance from the stored SOA serial, not client input.
+	var createdAt time.Time
+	var currentUpdatedAt time.Time
 	var currentVersion string
 	var currentSerial uint32
-	err = tx.QueryRowContext(ctx, "SELECT version, soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&currentVersion, &currentSerial)
+	err = tx.QueryRowContext(ctx, "SELECT created_at, updated_at, version, soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&createdAt, &currentUpdatedAt, &currentVersion, &currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
 		}
 		return fmt.Errorf("failed to query zone serial: %w", err)
 	}
+	zone.CreatedAt = mysqlTimestamp(createdAt)
+	zone.UpdatedAt = nextMySQLTimestamp(currentUpdatedAt)
 	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
 	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
 		return err
@@ -687,6 +705,27 @@ func (m *MySQLBackend) BeginTx(ctx context.Context) (Tx, error) {
 		backend: m,
 		tx:      sqlTx,
 	}, nil
+}
+
+func normalizeMySQLTimestamps(zone *model.Zone) {
+	zone.CreatedAt = mysqlTimestamp(zone.CreatedAt)
+	zone.UpdatedAt = mysqlTimestamp(zone.UpdatedAt)
+}
+
+func mysqlTimestamp(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	return t.Round(0).Truncate(time.Second)
+}
+
+func nextMySQLTimestamp(after time.Time) time.Time {
+	now := mysqlTimestamp(time.Now())
+	after = mysqlTimestamp(after)
+	if !now.After(after) {
+		return after.Add(time.Second)
+	}
+	return now
 }
 
 // MySQLTx implements the Tx interface for MySQL transactions.
@@ -941,6 +980,7 @@ func (t *MySQLTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 	if err != nil {
 		return err
 	}
+	normalizeMySQLTimestamps(writeZone)
 
 	if err := t.backend.insertZone(ctx, t.tx, writeZone); err != nil {
 		return err
@@ -954,19 +994,20 @@ func (t *MySQLTx) CreateZone(ctx context.Context, zone *model.Zone) error {
 func (t *MySQLTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
 
-	// Update timestamp
-	zone.UpdatedAt = time.Now()
-
 	// Advance from the stored SOA serial, not client input.
+	var createdAt time.Time
+	var currentUpdatedAt time.Time
 	var currentVersion string
 	var currentSerial uint32
-	err := t.tx.QueryRowContext(ctx, "SELECT version, soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&currentVersion, &currentSerial)
+	err := t.tx.QueryRowContext(ctx, "SELECT created_at, updated_at, version, soa_serial FROM zones WHERE name = ? FOR UPDATE", zone.Name).Scan(&createdAt, &currentUpdatedAt, &currentVersion, &currentSerial)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ErrZoneNotFound
 		}
 		return fmt.Errorf("failed to query zone serial: %w", err)
 	}
+	zone.CreatedAt = mysqlTimestamp(createdAt)
+	zone.UpdatedAt = nextMySQLTimestamp(currentUpdatedAt)
 	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
 	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
 		return err
