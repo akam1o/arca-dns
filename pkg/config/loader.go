@@ -20,6 +20,34 @@ const apiKeyRoleAgent = "agent"
 // LoadControllerConfig loads the controller configuration from the specified file.
 // Priority: defaults < YAML file < environment variables
 func LoadControllerConfig(path string) (*ControllerConfig, error) {
+	cfg, err := loadControllerConfig(path, true)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate configuration
+	if err := ValidateControllerConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// LoadControllerBackendConfig loads only the controller backend configuration.
+// It intentionally avoids validating unrelated API/DNSSEC secrets for offline
+// maintenance commands such as migrations.
+func LoadControllerBackendConfig(path string) (*ControllerConfig, error) {
+	cfg, err := loadControllerConfig(path, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateControllerBackendConfig(&cfg.Backend); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func loadControllerConfig(path string, applyKeyDirectoryAliases bool) (*ControllerConfig, error) {
 	cfg := DefaultControllerConfig()
 
 	if path != "" {
@@ -44,8 +72,10 @@ func LoadControllerConfig(path string) (*ControllerConfig, error) {
 		if err := v.Unmarshal(cfg); err != nil {
 			return nil, fmt.Errorf("unmarshal controller config: %w", err)
 		}
-		if err := applyControllerKeyDirectoryAliases(v, cfg); err != nil {
-			return nil, err
+		if applyKeyDirectoryAliases {
+			if err := applyControllerKeyDirectoryAliases(v, cfg); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		// No config file, only apply environment variables
@@ -60,14 +90,11 @@ func LoadControllerConfig(path string) (*ControllerConfig, error) {
 		if err := v.Unmarshal(cfg); err != nil {
 			return nil, fmt.Errorf("unmarshal controller config from env: %w", err)
 		}
-		if err := applyControllerKeyDirectoryAliases(v, cfg); err != nil {
-			return nil, err
+		if applyKeyDirectoryAliases {
+			if err := applyControllerKeyDirectoryAliases(v, cfg); err != nil {
+				return nil, err
+			}
 		}
-	}
-
-	// Validate configuration
-	if err := ValidateControllerConfig(cfg); err != nil {
-		return nil, err
 	}
 
 	return cfg, nil
@@ -179,19 +206,8 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		}
 	}
 
-	if cfg.Backend.Type == "" {
-		return fmt.Errorf("invalid backend.type: empty")
-	}
-
-	validBackendTypes := map[string]bool{
-		"mysql":    true,
-		"git":      true,
-		"etcd":     true,
-		"sqlite":   true,
-		"postgres": true,
-	}
-	if !validBackendTypes[cfg.Backend.Type] {
-		return fmt.Errorf("invalid backend.type: %s (must be one of: sqlite, postgres, mysql, git, etcd)", cfg.Backend.Type)
+	if err := ValidateControllerBackendConfig(&cfg.Backend); err != nil {
+		return err
 	}
 
 	if cfg.DNSSEC.Enabled {
@@ -257,6 +273,29 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
 	}
 
+	return nil
+}
+
+// ValidateControllerBackendConfig validates backend fields shared by the
+// controller and offline backend maintenance commands.
+func ValidateControllerBackendConfig(cfg *BackendConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("invalid backend: nil")
+	}
+	if cfg.Type == "" {
+		return fmt.Errorf("invalid backend.type: empty")
+	}
+
+	validBackendTypes := map[string]bool{
+		"mysql":    true,
+		"git":      true,
+		"etcd":     true,
+		"sqlite":   true,
+		"postgres": true,
+	}
+	if !validBackendTypes[cfg.Type] {
+		return fmt.Errorf("invalid backend.type: %s (must be one of: sqlite, postgres, mysql, git, etcd)", cfg.Type)
+	}
 	return nil
 }
 
