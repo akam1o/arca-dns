@@ -261,6 +261,30 @@ func TestGitBackend_DeleteZone_RemovesSafeAndLegacyZoneFiles(t *testing.T) {
 	assert.NoFileExists(t, legacyPath)
 }
 
+func TestGitBackend_DeleteZone_RemovesUntrackedZoneFile(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zone := testGitZone("untracked.example.com.")
+	data, err := json.Marshal(zone)
+	require.NoError(t, err)
+
+	zonePath := gitZonePath(t, backend, zone.Name)
+	require.NoError(t, os.MkdirAll(filepath.Dir(zonePath), 0755))
+	require.NoError(t, os.WriteFile(zonePath, data, 0644))
+
+	retrieved, err := backend.GetZone(ctx, zone.Name)
+	require.NoError(t, err)
+	assert.Equal(t, zone.Name, retrieved.Name)
+
+	require.NoError(t, backend.DeleteZone(ctx, zone.Name))
+
+	_, err = backend.GetZone(ctx, zone.Name)
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	assert.NoFileExists(t, zonePath)
+}
+
 func TestGitBackend_CreateZone_AlreadyExists(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()

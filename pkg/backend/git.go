@@ -746,17 +746,23 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 		return err
 	}
 
+	trackedRemovals := 0
 	for _, file := range rollback.files {
 		if file.indexTracked {
 			if _, err := g.worktree.Remove(file.relPath); err != nil {
 				return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove file from git: %w", err))
 			}
+			trackedRemovals++
 			continue
 		}
 
 		if err := os.Remove(file.absPath); err != nil && !os.IsNotExist(err) {
 			return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove untracked zone file: %w", err))
 		}
+	}
+
+	if trackedRemovals == 0 {
+		return nil
 	}
 
 	// Create commit message
