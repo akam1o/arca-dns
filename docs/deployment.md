@@ -25,7 +25,7 @@ Recommended production topology:
 | Docker Compose | local or single-host validation | `deployments/compose/controller-mysql/` runs controller + MySQL |
 | Kubernetes | controller cluster deployment | Agents usually still run outside the cluster on edge nodes |
 
-The agent container image contains only `arca-dns-agent`. If you run an agent in a container with `nsd.enabled`, `unbound.enabled`, or `bird.enabled`, mount the matching host binaries, sockets, and writable config/data paths, or disable those integrations in the agent config.
+The agent container image contains only `arca-dns-agent` and defaults to sync-only mode: NSD/Unbound/BIRD/DNSTap integrations are disabled, zones are written under `/var/lib/arca-dns/zones`, and the status listener binds to `0.0.0.0:9090`. If you enable host integrations in a container, mount the matching host binaries, sockets, configs, and writable data paths. For production edge nodes, DEB/RPM + systemd is usually the better fit.
 
 ## Common Prerequisites
 

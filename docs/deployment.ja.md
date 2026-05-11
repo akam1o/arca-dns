@@ -25,7 +25,7 @@ arca-dns は control plane と data plane を分けてデプロイします。
 | Docker Compose | ローカル検証、単一ホスト検証 | `deployments/compose/controller-mysql/` は controller + MySQL の例 |
 | Kubernetes | controller のクラスタ運用 | agent は通常クラスタ外のエッジノードで動かす |
 
-agent container image には `arca-dns-agent` のみが含まれます。`nsd.enabled`、`unbound.enabled`、または `bird.enabled` のまま container で動かす場合は、対応するホスト側 binary、socket、書き込み可能な config/data path を mount するか、agent 設定でそれらの連携を無効化してください。
+agent container image には `arca-dns-agent` のみが含まれ、既定では同期専用 mode で動きます。NSD/Unbound/BIRD/DNSTap 連携は無効化され、zone は `/var/lib/arca-dns/zones` に書き込まれ、status listener は `0.0.0.0:9090` に bind します。container でホスト連携を有効化する場合は、対応するホスト側 binary、socket、config、書き込み可能な data path を mount してください。本番の edge node では通常、DEB/RPM + systemd の方が適しています。
 
 ## 共通の前提条件
 

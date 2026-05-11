@@ -16,10 +16,20 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" -o /out/arca-dns-agent ./cmd/arca-dns-agent
+RUN mkdir -p /out/agent-state/zones
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /out/arca-dns-agent /arca-dns-agent
+COPY --from=build --chown=65532:65532 /out/agent-state /var/lib/arca-dns
+
+ENV ARCA_DNS_NSD_ENABLED=false \
+    ARCA_DNS_UNBOUND_ENABLED=false \
+    ARCA_DNS_BIRD_ENABLED=false \
+    ARCA_DNS_DNSTAP_ENABLED=false \
+    ARCA_DNS_NSD_ZONE_DIRECTORY=/var/lib/arca-dns/zones \
+    ARCA_DNS_METRICS_LISTEN=0.0.0.0:9090
+
 EXPOSE 9090
 ENTRYPOINT ["/arca-dns-agent"]
 CMD ["daemon"]
