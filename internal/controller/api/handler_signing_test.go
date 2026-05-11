@@ -177,6 +177,21 @@ func TestDeleteZone_CleansDNSSECArtifactsAndKeys(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "expected key directory to be removed, got %v", err)
 }
 
+func TestDeleteZone_InvalidZoneNameReturnsBadRequestBeforeDNSSECCleanup(t *testing.T) {
+	server, _ := setupSigningFailureTest(t)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/bad_zone.", nil)
+	require.NoError(t, err)
+	req.Header.Set("If-Match", "missing-version")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 type mutateAfterFirstGetStore struct {
 	inner   *backend.MemoryBackend
 	target  string

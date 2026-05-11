@@ -755,6 +755,15 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 // DeleteZone handles DELETE /api/v1/zones/:name
 func (h *Handler) DeleteZone(c *gin.Context) {
 	name := c.Param("name")
+	normalizedName := model.NormalizeZoneName(name)
+	if err := model.ValidateZoneName(normalizedName); err != nil {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Invalid zone name",
+			map[string]interface{}{"zone": name},
+		))
+		return
+	}
 
 	ifMatch := c.GetHeader("If-Match")
 	if ifMatch == "" {
