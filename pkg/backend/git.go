@@ -197,6 +197,28 @@ func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitB
 	}, nil
 }
 
+// HealthCheck verifies that the local Git repository is usable without loading
+// zone contents or contacting the remote.
+func (g *GitBackend) HealthCheck(ctx context.Context) error {
+	if err := g.acquireFileLock(ctx); err != nil {
+		return err
+	}
+	defer g.releaseFileLock()
+
+	if _, err := os.Stat(g.repoPath); err != nil {
+		return fmt.Errorf("git repository path unavailable: %w", err)
+	}
+	if _, err := g.repo.Head(); err != nil && err != plumbing.ErrReferenceNotFound {
+		return fmt.Errorf("git repository head unavailable: %w", err)
+	}
+
+	zonesDir := filepath.Join(g.repoPath, "zones")
+	if _, err := os.Stat(zonesDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("git zones directory unavailable: %w", err)
+	}
+	return nil
+}
+
 // openOrInitRepo opens an existing repository or initializes a new one
 func openOrInitRepo(path, branch string) (*git.Repository, error) {
 	// Try to open existing repository
@@ -600,7 +622,7 @@ func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, messag
 			RemoteName: "origin",
 		})
 		if err != nil && err != git.NoErrAlreadyUpToDate {
-			return g.wrapWithRollback(rollback, fmt.Errorf("git push failed: %w", err))
+			return fmt.Errorf("git push failed after local commit was retained: %w", err)
 		}
 	}
 
@@ -646,7 +668,7 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 			RemoteName: "origin",
 		})
 		if err != nil && err != git.NoErrAlreadyUpToDate {
-			return g.wrapWithRollback(rollback, fmt.Errorf("git push failed: %w", err))
+			return fmt.Errorf("git push failed after local commit was retained: %w", err)
 		}
 	}
 
@@ -787,6 +809,9 @@ func (g *GitBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.
 
 	// Apply pagination
 	start := opts.Offset
+	if start < 0 {
+		start = 0
+	}
 	if start > len(zones) {
 		return make([]*model.Zone, 0), nil
 	}
@@ -806,31 +831,11 @@ func (g *GitBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.
 
 // CreateZone creates a new zone
 func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
-	normalized := model.NormalizeZoneName(zone.Name)
-	zone.Name = normalized
-
-	// Auto-generate serial if not set
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-
-	// Set timestamps
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-
-	// Ensure version is set (normally issued by controller).
-	if zone.Version == "" {
-		version, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = version
-	}
-
-	if err := validateZoneForWrite(zone); err != nil {
+	writeZone, err := prepareZoneForCreate(zone, model.NormalizeZoneName)
+	if err != nil {
 		return err
 	}
+	normalized := writeZone.Name
 
 	zoneMu, err := g.acquireLock(ctx, normalized)
 	if err != nil {
@@ -858,13 +863,17 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	}
 
 	// Write zone file
-	if err := g.writeZone(normalized, zone); err != nil {
+	if err := g.writeZone(normalized, writeZone); err != nil {
 		return err
 	}
 
 	// Commit
-	summary := fmt.Sprintf("created zone with %d records", len(zone.Records))
-	return g.commitZone(ctx, normalized, "create", summary, zone, rollback)
+	summary := fmt.Sprintf("created zone with %d records", len(writeZone.Records))
+	if err := g.commitZone(ctx, normalized, "create", summary, writeZone, rollback); err != nil {
+		return err
+	}
+	copyZoneInto(zone, writeZone)
+	return nil
 }
 
 // UpdateZone updates an existing zone with optimistic locking
@@ -1041,6 +1050,22 @@ func (g *GitBackend) Close() error {
 	return nil
 }
 
+// Info returns backend metadata.
+func (g *GitBackend) Info() BackendInfo {
+	return BackendInfo{
+		Type: "git",
+		Capabilities: []string{
+			CapabilityZoneStore,
+			CapabilityHealthStore,
+			CapabilityDNSSECMetadataStore,
+			CapabilityConditionalDeleteStore,
+			CapabilityRevisionStore,
+		},
+		Consistency: "eventual",
+		Description: "Git-backed storage with revision history and auditability",
+	}
+}
+
 // GetRevision retrieves a specific zone version from commit history
 func (g *GitBackend) GetRevision(ctx context.Context, zoneName, version string) (*model.Zone, error) {
 	normalized := model.NormalizeZoneName(zoneName)
@@ -1193,6 +1218,9 @@ func (g *GitBackend) ListRevisions(ctx context.Context, zoneName string, opts Li
 
 	// Apply pagination
 	start := opts.Offset
+	if start < 0 {
+		start = 0
+	}
 	if start > len(versions) {
 		return make([]*model.ZoneVersion, 0), nil
 	}

@@ -362,6 +362,73 @@ func TestDefaultNSEC3Params(t *testing.T) {
 	}
 }
 
+func TestNewNSEC3Params_ZeroSaltLengthUsesEmptySalt(t *testing.T) {
+	params := NewNSEC3Params(86400, 1, 0)
+
+	if params.Salt != "" {
+		t.Fatalf("salt = %q, want empty string for no salt", params.Salt)
+	}
+}
+
+func TestGenerateNSEC3Chain_NoSaltUsesEmptyWireSalt(t *testing.T) {
+	zoneApex := "example.com."
+	rrs := []dns.RR{
+		&dns.SOA{
+			Hdr:  dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
+			Ns:   "ns1.example.com.",
+			Mbox: "admin.example.com.",
+		},
+		&dns.NS{
+			Hdr: dns.RR_Header{Name: zoneApex, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 3600},
+			Ns:  "ns1.example.com.",
+		},
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+			A:   []byte{192, 0, 2, 1},
+		},
+	}
+	params := NSEC3Params{
+		HashAlg:    dns.SHA1,
+		Flags:      0,
+		Iterations: 1,
+		Salt:       "",
+		TTL:        86400,
+	}
+
+	result, err := GenerateNSEC3Chain(zoneApex, rrs, params)
+	if err != nil {
+		t.Fatalf("GenerateNSEC3Chain failed: %v", err)
+	}
+
+	wantApexHash := dns.HashName(zoneApex, params.HashAlg, params.Iterations, "")
+	foundApex := false
+	for _, rr := range result {
+		switch typed := rr.(type) {
+		case *dns.NSEC3PARAM:
+			if typed.Salt != "" {
+				t.Fatalf("NSEC3PARAM salt = %q, want empty", typed.Salt)
+			}
+			if typed.SaltLength != 0 {
+				t.Fatalf("NSEC3PARAM salt length = %d, want 0", typed.SaltLength)
+			}
+		case *dns.NSEC3:
+			if typed.Salt != "" {
+				t.Fatalf("NSEC3 salt = %q, want empty", typed.Salt)
+			}
+			if typed.SaltLength != 0 {
+				t.Fatalf("NSEC3 salt length = %d, want 0", typed.SaltLength)
+			}
+			hash := typed.Header().Name[:len(typed.Header().Name)-len(zoneApex)-1]
+			if hash == wantApexHash {
+				foundApex = true
+			}
+		}
+	}
+	if !foundApex {
+		t.Fatalf("apex NSEC3 hash for empty salt was not generated: %s", wantApexHash)
+	}
+}
+
 func TestParentDomain(t *testing.T) {
 	tests := []struct {
 		name     string

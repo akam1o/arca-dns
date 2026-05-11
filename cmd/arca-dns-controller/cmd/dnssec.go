@@ -116,16 +116,20 @@ func runExportDS(configFile string, zoneName string, digestType uint8, outputFor
 
 func newGenerateKeysCmd() *cobra.Command {
 	var (
-		configFile string
-		zoneFlag   string
-		rotate     bool
+		configFile  string
+		zoneFlag    string
+		rotate      bool
+		activateNow bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "generate-keys [ZONE]",
 		Short: "Generate KSK/ZSK for a zone",
-		Long:  "Generate DNSSEC keys for a zone. If keys already exist, it is a no-op unless --rotate is set.",
-		Args:  cobra.RangeArgs(0, 1),
+		Long: `Generate DNSSEC keys for a zone. If keys already exist, it is a no-op unless --rotate is set.
+
+Rotating keys makes the new KSK/ZSK active immediately. Pass --activate-now
+with --rotate only after DS rollover coordination and write controls are ready.`,
+		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			zoneName := zoneFlag
 			if zoneName == "" && len(args) == 1 {
@@ -134,18 +138,23 @@ func newGenerateKeysCmd() *cobra.Command {
 			if zoneName == "" {
 				return fmt.Errorf("zone is required (pass ZONE arg or --zone)")
 			}
-			return runGenerateKeys(configFile, zoneName, rotate)
+			return runGenerateKeys(configFile, zoneName, rotate, activateNow)
 		},
 	}
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "Path to configuration file")
 	cmd.Flags().StringVar(&zoneFlag, "zone", "", "Zone name (alternative to positional argument)")
-	cmd.Flags().BoolVar(&rotate, "rotate", false, "Always generate new keys and activate them")
+	cmd.Flags().BoolVar(&rotate, "rotate", false, "Generate new keys instead of reusing existing keys")
+	cmd.Flags().BoolVar(&activateNow, "activate-now", false, "Confirm that rotated keys should become active immediately")
 
 	return cmd
 }
 
-func runGenerateKeys(configFile string, zoneName string, rotate bool) error {
+func runGenerateKeys(configFile string, zoneName string, rotate bool, activateNow bool) error {
+	if err := validateGenerateKeysFlags(rotate, activateNow); err != nil {
+		return err
+	}
+
 	cfg, err := config.LoadControllerConfig(configFile)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -185,6 +194,16 @@ func runGenerateKeys(configFile string, zoneName string, rotate bool) error {
 	fmt.Fprintf(os.Stderr, "KSK KeyTag: %d\n", ksk.ID.KeyTag)
 	fmt.Fprintf(os.Stderr, "ZSK KeyTag: %d\n", zsk.ID.KeyTag)
 
+	return nil
+}
+
+func validateGenerateKeysFlags(rotate bool, activateNow bool) error {
+	if rotate && !activateNow {
+		return fmt.Errorf("refusing DNSSEC key rotation: --rotate activates a new KSK/ZSK immediately; pass --activate-now only after DS rollover coordination and scheduler/write controls are in place")
+	}
+	if activateNow && !rotate {
+		return fmt.Errorf("--activate-now requires --rotate")
+	}
 	return nil
 }
 

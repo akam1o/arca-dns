@@ -191,7 +191,7 @@ DNSSEC 鍵のローテーションは、セキュリティ上のベストプラ�
 
 **タイムライン**: 各ステップ間は「親ゾーン TTL の 2 倍」程度を確保してください。
 
-現在のリリースでは、完全な pre-publish や double-signature rollover は未実装です。`generate-keys --rotate` は新しい KSK/ZSK を即 active にするため、親ゾーンが新 DS を公開する前に scheduler、zone 更新、record 更新、on-demand re-sign が走ると DNSSEC 検証が壊れ得ます。
+現在のリリースでは、完全な pre-publish や double-signature rollover は未実装です。`generate-keys --rotate --activate-now` は新しい KSK/ZSK を即 active にするため、親ゾーンが新 DS を公開する前に scheduler、zone 更新、record 更新、on-demand re-sign が走ると DNSSEC 検証が壊れ得ます。
 
 1. **制御された maintenance window に入る**（Day 0 前）
    - DNSSEC scheduler を無効化するか、再署名可能な controller instance を停止する。
@@ -200,8 +200,8 @@ DNSSEC 鍵のローテーションは、セキュリティ上のベストプラ�
 
 2. **新しい鍵ペアを生成して active にする**（Day 0）
    ```bash
-   # --rotate は新しい active KSK/ZSK を生成します。
-   arca-dns-controller dnssec generate-keys --zone example.com. --rotate
+   # --activate-now は新しい KSK/ZSK を即 active にすることを明示的に確認します。
+   arca-dns-controller dnssec generate-keys --zone example.com. --rotate --activate-now
    ```
    これは `active.json` を更新しますが、cached signed zone artifact を置き換える処理ではありません。
 
@@ -245,13 +245,13 @@ DNSSEC 鍵のローテーションは、セキュリティ上のベストプラ�
 
 ### ZSK ローテーション（簡略）
 
-ZSK ローテーション自体は親ゾーン調整が不要ですが、現在の CLI では `--rotate` が KSK/ZSK の両方を rotate します。KSK が変わる場合は、上記の KSK 手順に従って combined rollover として扱ってください。
+ZSK ローテーション自体は親ゾーン調整が不要ですが、現在の CLI では `--rotate --activate-now` が KSK/ZSK の両方を rotate します。KSK が変わる場合は、上記の KSK 手順に従って combined rollover として扱ってください。
 
 **タイムライン**: 各ステップ間は「ゾーン最大 TTL の 2 倍」程度を確保してください。
 
 1. **新しい鍵を生成して active にする**
    ```bash
-   arca-dns-controller dnssec generate-keys --zone example.com. --rotate
+   arca-dns-controller dnssec generate-keys --zone example.com. --rotate --activate-now
    ```
 
 2. **再署名を発生させる**

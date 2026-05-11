@@ -37,6 +37,7 @@ func TestMigrationE2E_RoundTrip(t *testing.T) {
 			Name: "e2e1.example.com.",
 			SOA:  model.DefaultSOA("ns1.e2e1.example.com.", "admin.e2e1.example.com."),
 			Records: []model.Record{
+				migrateTestApexNSRecord(),
 				{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
 				{Name: "mail", Type: "A", TTL: 300, Value: "192.0.2.2"},
 			},
@@ -45,6 +46,7 @@ func TestMigrationE2E_RoundTrip(t *testing.T) {
 			Name: "e2e2.example.org.",
 			SOA:  model.DefaultSOA("ns1.e2e2.example.org.", "admin.e2e2.example.org."),
 			Records: []model.Record{
+				migrateTestApexNSRecord(),
 				{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.10"},
 				{Name: "@", Type: "MX", TTL: 300, Value: "10 mail.e2e2.example.org."},
 			},
@@ -135,6 +137,7 @@ func TestMigrationE2E_Copy(t *testing.T) {
 		Name: "copy-test.example.com.",
 		SOA:  model.DefaultSOA("ns1.copy-test.example.com.", "admin.copy-test.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.100"},
 		},
 	}
@@ -176,6 +179,7 @@ func TestMigrationE2E_DryRun(t *testing.T) {
 		Name: "dryrun.example.com.",
 		SOA:  model.DefaultSOA("ns1.dryrun.example.com.", "admin.dryrun.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.50"},
 		},
 	}

@@ -16,6 +16,9 @@ type ControllerConfig struct {
 	// API configuration
 	API APIConfig `mapstructure:"api"`
 
+	// Observability configuration
+	Observability ObservabilityConfig `mapstructure:"observability"`
+
 	// Backend configuration
 	Backend BackendConfig `mapstructure:"backend"`
 
@@ -78,7 +81,7 @@ type APIConfig struct {
 	Listen string `mapstructure:"listen"`
 
 	// ArtifactSignatureKey signs signed-zone artifact responses with HMAC-SHA256.
-	// Agents use sync.controller_public_key with the same value to verify.
+	// Agents use sync.controller_signature_key with the same shared secret to verify.
 	ArtifactSignatureKey string `mapstructure:"artifact_signature_key"`
 
 	// Authentication configuration
@@ -90,6 +93,12 @@ type APIConfig struct {
 
 	// Rate limiting
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
+}
+
+// ObservabilityConfig configures the controller's unauthenticated operational endpoints.
+type ObservabilityConfig struct {
+	// Listen address for health, readiness, status, and Prometheus metrics.
+	Listen string `mapstructure:"listen"`
 }
 
 // TLSConfig configures TLS for agent -> controller communication (typically terminated by a reverse proxy).
@@ -117,6 +126,10 @@ type AuthConfig struct {
 
 	// APIKeys is a map of API key name to hashed key
 	APIKeys map[string]string `mapstructure:"api_keys"`
+
+	// APIKeyRoles maps API key names to roles. Supported roles: admin, agent.
+	// Keys without an explicit role default to admin for backward compatibility.
+	APIKeyRoles map[string]string `mapstructure:"api_key_roles"`
 }
 
 // RateLimitConfig configures rate limiting.
@@ -133,7 +146,7 @@ type RateLimitConfig struct {
 
 // BackendConfig configures the zone storage backend.
 type BackendConfig struct {
-	// Type is the backend type (sqlite, postgres, mysql, git, etcd, memory)
+	// Type is the backend type (sqlite, postgres, mysql, git, etcd)
 	Type string `mapstructure:"type"`
 
 	// SQLite backend config (default)
@@ -141,9 +154,6 @@ type BackendConfig struct {
 
 	// PostgreSQL backend config
 	Postgres PostgresBackendConfig `mapstructure:"postgres"`
-
-	// Memory backend config (deprecated: use sqlite with :memory: DSN)
-	Memory MemoryBackendConfig `mapstructure:"memory"`
 
 	// MySQL backend config
 	MySQL MySQLBackendConfig `mapstructure:"mysql"`
@@ -176,13 +186,6 @@ type PostgresBackendConfig struct {
 
 	// ConnMaxLifetime is the maximum connection lifetime
 	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
-}
-
-// MemoryBackendConfig configures the in-memory backend.
-// Deprecated: Use SQLite with DSN ":memory:" instead.
-type MemoryBackendConfig struct {
-	// InitialCapacity is the initial capacity for the zone map
-	InitialCapacity int `mapstructure:"initial_capacity"`
 }
 
 // MySQLBackendConfig configures the MySQL backend.
@@ -607,7 +610,10 @@ type SyncConfig struct {
 	// VerifySignatures enables artifact signature verification
 	VerifySignatures bool `mapstructure:"verify_signatures"`
 
-	// ControllerPublicKey is the HMAC key used to verify controller artifact signatures.
+	// ControllerSignatureKey is the shared HMAC key used to verify controller artifact signatures.
+	ControllerSignatureKey string `mapstructure:"controller_signature_key"`
+
+	// ControllerPublicKey is a deprecated alias for ControllerSignatureKey.
 	ControllerPublicKey string `mapstructure:"controller_public_key"`
 }
 
@@ -642,6 +648,9 @@ func DefaultControllerConfig() *ControllerConfig {
 				RequestsPerSecond: 100,
 				Burst:             200,
 			},
+		},
+		Observability: ObservabilityConfig{
+			Listen: "127.0.0.1:9053",
 		},
 		Backend: BackendConfig{
 			Type: "sqlite",

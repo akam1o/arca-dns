@@ -47,12 +47,30 @@ func TestNormalizeZoneFQDN(t *testing.T) {
 		{
 			name:     "root zone",
 			input:    ".",
-			expected: ".",
-			wantErr:  false,
+			expected: "",
+			wantErr:  true,
 		},
 		{
 			name:     "empty",
 			input:    "",
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "path traversal",
+			input:    "../escape",
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "absolute path",
+			input:    "/tmp/escape",
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "embedded whitespace",
+			input:    "bad zone.example",
 			expected: "",
 			wantErr:  true,
 		},
@@ -105,6 +123,24 @@ func TestZoneNameForFile(t *testing.T) {
 		{
 			name:     "empty",
 			input:    "",
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "root zone",
+			input:    ".",
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "path traversal",
+			input:    "../escape",
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "absolute path",
+			input:    "/tmp/escape",
 			expected: "",
 			wantErr:  true,
 		},
@@ -172,6 +208,15 @@ func TestMakeKeyFilenames(t *testing.T) {
 		{
 			name:        "empty zone",
 			zone:        "",
+			alg:         13,
+			keyTag:      12345,
+			expectedPub: "",
+			expectedEnc: "",
+			wantErr:     true,
+		},
+		{
+			name:        "path traversal zone",
+			zone:        "../escape",
 			alg:         13,
 			keyTag:      12345,
 			expectedPub: "",

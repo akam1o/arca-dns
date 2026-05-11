@@ -6,8 +6,8 @@ The source of truth for the Controller API is `api/openapi.yaml` (OpenAPI 3.0). 
 
 ## Base URL
 
-- API base: `http://<controller-host>:8080/api/v1`
-- Health/metrics base (also exposed under `/api/v1/*` as aliases): `http://<controller-host>:8080`
+- API base: `http://<controller-host>:8080/api/v1`; unauthenticated health/readiness/status endpoints are on `http://<controller-host>:8080`
+- Observability base: `http://<controller-host>:9053` for Prometheus metrics and historical health/readiness/status aliases
 
 ## Authentication
 
@@ -17,7 +17,9 @@ If API auth is enabled in the controller config, include an API key header on *p
 X-API-Key: <api-key>
 ```
 
-Health endpoints (`/health`, `/ready`, `/status`, `/metrics`) do not require auth.
+API keys can be assigned roles with `api.auth.api_key_roles`. `admin` keys can access the management API; `agent` keys are limited to zone summary listing and signed artifact reads.
+
+Health/readiness/status endpoints (`/health`, `/ready`, `/status`) and observability metrics (`/metrics`) do not require auth. Health/readiness/status are served on the API listener; metrics are served on the observability listener.
 
 ## Data Model (Zone)
 
@@ -48,23 +50,25 @@ Error `code` values are defined in `pkg/model/errors.go` (e.g. `NOT_FOUND`, `ALR
 
 ## Concurrency Control (ETag / If-Match)
 
-- Successful `POST /zones`, `GET /zones/:name`, and `PUT /zones/:name` return an `ETag` header (`ETag: <zone.version>`).
-- `PUT /zones/:name` and `DELETE /zones/:name` require `If-Match: <etag>`; if the zone was updated concurrently, the API returns `409 Conflict`.
-- `GET /zones/:name/signed` supports `If-None-Match: <etag>` and returns `304 Not Modified` (with `ETag` + metadata headers) when unchanged.
-  - Note: `ETag` values are returned as quoted strings (e.g. `ETag: "<zone.version>"`). Clients should send the value back in `If-Match`/`If-None-Match` (quoted or unquoted are accepted).
+- Successful `POST /zones`, `GET /zones/:name`, and `PUT /zones/:name` return a zone resource `ETag` (`ETag: "<zone.version>"`).
+- `PUT /zones/:name` and `DELETE /zones/:name` require `If-Match` with the zone resource ETag; if the zone was updated concurrently, the API returns `409 Conflict`.
+- `GET /zones/:name` supports `If-None-Match` with the zone resource ETag and returns `304 Not Modified` when unchanged.
 
 For signed artifacts:
-- `X-Zone-Hash` is the full SHA256 (hex) of the returned zone file body.
+- `GET /zones/:name/signed` and `GET /zones/:name/signed/metadata` return a signed artifact `ETag`, not the zone resource ETag.
+- The signed artifact `ETag` is the full SHA256 (hex) of the signed zone file body, quoted as an HTTP ETag.
+- Send the signed artifact ETag in `If-None-Match` for signed artifact conditional requests.
+- `X-Zone-Hash` is the same SHA256 value without quotes.
 - `X-Zone-Hash8` is the first 8 characters of `X-Zone-Hash` (short form).
+- Quoted or unquoted ETag values are accepted in conditional request headers.
 
 ## Endpoints
 
 ### Health / Status / Metrics (no auth)
 
-- `GET /health` (and `GET /api/v1/health`): liveness (`{"status":"ok"}`)
-- `GET /ready` (and `GET /api/v1/ready`): readiness (`{"status":"ready"}` or `503 {"status":"not_ready","error":"..."}`)
-- `GET /status` (and `GET /api/v1/status`): build info (`status`, `version`, `commit`, `date`)
-- `GET /metrics` (and `GET /api/v1/metrics`): Prometheus metrics (may return `501` if metrics are disabled)
+- API listener (`:8080`): `GET /health`, `GET /ready`, and `GET /status`
+- Observability listener (`:9053`): `GET /metrics`
+- The observability listener also keeps historical `/health`, `/ready`, `/status`, and `/api/v1/*` aliases for compatibility.
 
 ### Zones (JSON mode)
 
@@ -76,7 +80,7 @@ For signed artifacts:
 
 Notes:
 - `PUT` requires the JSON body `name` to match the `:name` path parameter.
-- After create/update, the controller will attempt DNSSEC signing asynchronously (the request still succeeds even if signing fails; it is logged).
+- When DNSSEC is enabled on the controller, create/update signs the zone synchronously before the backend write. If signing fails, the request fails with `500 Failed to sign zone` and the zone is not saved.
 
 #### Record Operations (How to “hit” records)
 
@@ -110,10 +114,10 @@ The controller validates `record.value` based on `record.type` (see `pkg/model/v
 - `CNAME`, `NS`, `PTR`: domain name (example: `"target.example.com."`)
 - `MX`: `"priority domain"` (example: `"10 mail.example.com."`)
 - `SRV`: `"priority weight port target"` (example: `"10 5 443 svc.example.com."`)
-- `TXT`: any non-empty string up to 65535 chars (example: `"v=spf1 -all"`)
+- `TXT`: any string up to 65279 bytes, including an empty string (example: `"v=spf1 -all"`)
 - `CAA`: `"flags tag value"` (example: `"0 issue letsencrypt.org"`)
 
-Domain names accept a trailing dot or not (both are currently treated as valid); for clarity, prefer FQDNs with a trailing dot in `value`.
+Domain targets without a trailing dot are interpreted relative to the zone origin unless they already end with the zone origin. For external targets, use an FQDN with a trailing dot in `value`.
 
 ### Zones (Raw BIND mode)
 
@@ -131,7 +135,7 @@ Unsupported/rejected features (API returns `400`):
 ### Zone Artifacts (for agents)
 
 - `GET /zones/:name/signed`: download the signed zone file (BIND format)
-  - Response headers include `ETag`, `X-Zone-Serial`, `X-Zone-Hash`, `Content-Disposition`.
+  - Response headers include `ETag`, `X-Zone-Serial`, `X-Zone-Hash`, optional `X-Zone-Signature`, and `Content-Disposition`.
   - If signing service is unavailable, the controller falls back to an unsigned generated zone file.
 
 ### DNSSEC

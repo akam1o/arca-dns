@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,6 +42,37 @@ func TestNewStoreFromConfig_PostgresRequiresDSN(t *testing.T) {
 	}
 }
 
+func TestNewStoreFromConfig_RejectsMemory(t *testing.T) {
+	cfg := config.DefaultControllerConfig()
+	cfg.Backend.Type = "memory"
+
+	store, err := newStoreFromConfig(cfg)
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("expected error for memory backend")
+	}
+	if !strings.Contains(err.Error(), "unsupported backend type: memory") {
+		t.Fatalf("expected memory backend error, got %v", err)
+	}
+}
+
+func TestNewControllerHTTPServer_HasTimeouts(t *testing.T) {
+	server := newControllerHTTPServer("127.0.0.1:0", http.NewServeMux())
+
+	if server.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("ReadHeaderTimeout=%s, want 5s", server.ReadHeaderTimeout)
+	}
+	if server.ReadTimeout != 15*time.Second {
+		t.Fatalf("ReadTimeout=%s, want 15s", server.ReadTimeout)
+	}
+	if server.WriteTimeout != 15*time.Second {
+		t.Fatalf("WriteTimeout=%s, want 15s", server.WriteTimeout)
+	}
+	if server.IdleTimeout != 60*time.Second {
+		t.Fatalf("IdleTimeout=%s, want 60s", server.IdleTimeout)
+	}
+}
+
 func TestSignerOptionsFromConfig(t *testing.T) {
 	cfg := config.DNSSECConfig{
 		SignatureValidity:  48 * time.Hour,
@@ -75,23 +107,68 @@ func TestSignerOptionsFromConfig(t *testing.T) {
 
 func TestApplyServeFlagOverrides_OnlyOverridesExplicitListen(t *testing.T) {
 	origListenAddr := listenAddr
-	t.Cleanup(func() { listenAddr = origListenAddr })
+	origObservabilityListenAddr := observabilityListenAddr
+	t.Cleanup(func() {
+		listenAddr = origListenAddr
+		observabilityListenAddr = origObservabilityListenAddr
+	})
 
 	cfg := config.DefaultControllerConfig()
 	cfg.API.Listen = "127.0.0.1:9090"
+	cfg.Observability.Listen = "127.0.0.1:9053"
 
 	cmd := &cobra.Command{Use: "serve"}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":8080", "HTTP server listen address")
+	cmd.Flags().StringVar(&observabilityListenAddr, "observability-listen", ":9053", "HTTP observability server listen address")
 	applyServeFlagOverrides(cmd, cfg)
 	if cfg.API.Listen != "127.0.0.1:9090" {
 		t.Fatalf("listen was overridden without explicit flag: %s", cfg.API.Listen)
+	}
+	if cfg.Observability.Listen != "127.0.0.1:9053" {
+		t.Fatalf("observability listen was overridden without explicit flag: %s", cfg.Observability.Listen)
 	}
 
 	if err := cmd.Flags().Set("listen", "127.0.0.1:7070"); err != nil {
 		t.Fatalf("set listen flag: %v", err)
 	}
+	if err := cmd.Flags().Set("observability-listen", "127.0.0.1:7053"); err != nil {
+		t.Fatalf("set observability listen flag: %v", err)
+	}
 	applyServeFlagOverrides(cmd, cfg)
 	if cfg.API.Listen != "127.0.0.1:7070" {
 		t.Fatalf("listen was not overridden after explicit flag: %s", cfg.API.Listen)
+	}
+	if cfg.Observability.Listen != "127.0.0.1:7053" {
+		t.Fatalf("observability listen was not overridden after explicit flag: %s", cfg.Observability.Listen)
+	}
+}
+
+func TestApplyServeFlagOverrides_RevalidatesOverlap(t *testing.T) {
+	origListenAddr := listenAddr
+	origObservabilityListenAddr := observabilityListenAddr
+	t.Cleanup(func() {
+		listenAddr = origListenAddr
+		observabilityListenAddr = origObservabilityListenAddr
+	})
+
+	cfg := config.DefaultControllerConfig()
+	cfg.API.ArtifactSignatureKey = "test-artifact-signature-key-32-bytes"
+	cfg.API.Auth.APIKeys = map[string]string{
+		"admin": "sha256:" + strings.Repeat("a", 64),
+	}
+
+	cmd := &cobra.Command{Use: "serve"}
+	cmd.Flags().StringVar(&listenAddr, "listen", ":8080", "HTTP server listen address")
+	cmd.Flags().StringVar(&observabilityListenAddr, "observability-listen", ":9053", "HTTP observability server listen address")
+	if err := cmd.Flags().Set("listen", "0.0.0.0:9053"); err != nil {
+		t.Fatalf("set listen flag: %v", err)
+	}
+	if err := cmd.Flags().Set("observability-listen", "127.0.0.1:9053"); err != nil {
+		t.Fatalf("set observability listen flag: %v", err)
+	}
+
+	applyServeFlagOverrides(cmd, cfg)
+	if err := config.ValidateControllerConfig(cfg); err == nil || !strings.Contains(err.Error(), "observability.listen") {
+		t.Fatalf("expected overlap validation error, got %v", err)
 	}
 }

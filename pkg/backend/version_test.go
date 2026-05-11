@@ -7,12 +7,12 @@ import (
 	"github.com/akam1o/arca-dns/pkg/model"
 )
 
-func TestComputeZoneVersion(t *testing.T) {
+func TestComputeZoneHash8(t *testing.T) {
 	now := time.Now()
 
 	zone := &model.Zone{
 		Name:    "example.com.",
-		Version: "v2024122801-old12345", // Should be excluded from hash
+		Version: "v01ARZ3NDEKTSV4RRFFQ69G5FAV", // Should be excluded from hash
 		SOA: model.SOARecord{
 			MName:   "ns1.example.com.",
 			RName:   "admin.example.com.",
@@ -30,41 +30,22 @@ func TestComputeZoneVersion(t *testing.T) {
 		UpdatedAt: now, // Should be excluded from hash
 	}
 
-	version, err := ComputeZoneVersion(zone)
+	hash8, err := ComputeZoneHash8(zone)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
-	}
-	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
+		t.Fatalf("ComputeZoneHash8 failed: %v", err)
 	}
 
-	// Check format: v{serial}-{hash8}
-	// "v" (1) + "2024122801" (10) + "-" (1) + "abcd1234" (8) = 20 chars
-	if len(version) != 20 {
-		t.Errorf("Version length = %d, want 20 (got: %q)", len(version), version)
+	if len(hash8) != 8 {
+		t.Errorf("Hash length = %d, want 8 (got: %q)", len(hash8), hash8)
 	}
-
-	if version[:11] != "v2024122801" {
-		t.Errorf("Version prefix = %q, want %q", version[:11], "v2024122801")
-	}
-
-	if version[11] != '-' {
-		t.Errorf("Version separator = %q, want '-'", version[11])
-	}
-
-	// Verify hash part is 8 hex characters
-	hashPart := version[12:]
-	if len(hashPart) != 8 {
-		t.Errorf("Hash length = %d, want 8", len(hashPart))
-	}
-	for _, c := range hashPart {
+	for _, c := range hash8 {
 		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
 			t.Errorf("Hash contains non-hex character: %c", c)
 		}
 	}
 }
 
-func TestComputeZoneVersion_Deterministic(t *testing.T) {
+func TestComputeZoneHash8_Deterministic(t *testing.T) {
 	zone1 := &model.Zone{
 		Name: "example.com.",
 		SOA: model.SOARecord{
@@ -103,28 +84,22 @@ func TestComputeZoneVersion_Deterministic(t *testing.T) {
 		UpdatedAt: time.Now().Add(2 * time.Hour), // Different timestamp
 	}
 
-	v1, err := ComputeZoneVersion(zone1)
+	v1, err := ComputeZoneHash8(zone1)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
-	}
-	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
+		t.Fatalf("ComputeZoneHash8 failed: %v", err)
 	}
 
-	v2, err := ComputeZoneVersion(zone2)
+	v2, err := ComputeZoneHash8(zone2)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
-	}
-	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
+		t.Fatalf("ComputeZoneHash8 failed: %v", err)
 	}
 
 	if v1 != v2 {
-		t.Errorf("Versions differ despite identical content: %q vs %q", v1, v2)
+		t.Errorf("Hashes differ despite identical content: %q vs %q", v1, v2)
 	}
 }
 
-func TestComputeZoneVersion_OrderIndependent(t *testing.T) {
+func TestComputeZoneHash8_OrderIndependent(t *testing.T) {
 	zoneA := &model.Zone{
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
@@ -147,31 +122,25 @@ func TestComputeZoneVersion_OrderIndependent(t *testing.T) {
 	}
 	zoneB.SOA.Serial = 2024122801
 
-	vA, err := ComputeZoneVersion(zoneA)
+	vA, err := ComputeZoneHash8(zoneA)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
-	}
-	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
+		t.Fatalf("ComputeZoneHash8 failed: %v", err)
 	}
 
-	vB, err := ComputeZoneVersion(zoneB)
+	vB, err := ComputeZoneHash8(zoneB)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
-	}
-	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
+		t.Fatalf("ComputeZoneHash8 failed: %v", err)
 	}
 
 	if vA != vB {
-		t.Errorf("Versions differ despite same records in different order: %q vs %q", vA, vB)
+		t.Errorf("Hashes differ despite same records in different order: %q vs %q", vA, vB)
 	}
 }
 
-func TestComputeZoneVersion_VersionFieldExcluded(t *testing.T) {
+func TestComputeZoneHash8_VersionFieldExcluded(t *testing.T) {
 	zone1 := &model.Zone{
 		Name:    "example.com.",
-		Version: "v2024122801-oldversion",
+		Version: "v01ARZ3NDEKTSV4RRFFQ69G5FAV",
 		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
@@ -181,7 +150,7 @@ func TestComputeZoneVersion_VersionFieldExcluded(t *testing.T) {
 
 	zone2 := &model.Zone{
 		Name:    "example.com.",
-		Version: "v2024122801-differentversion",
+		Version: "v01ARZ3NDEKTSV4RRFFQ69G5FB0",
 		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
@@ -189,28 +158,22 @@ func TestComputeZoneVersion_VersionFieldExcluded(t *testing.T) {
 	}
 	zone2.SOA.Serial = 2024122801
 
-	v1, err := ComputeZoneVersion(zone1)
+	v1, err := ComputeZoneHash8(zone1)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
-	}
-	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
+		t.Fatalf("ComputeZoneHash8 failed: %v", err)
 	}
 
-	v2, err := ComputeZoneVersion(zone2)
+	v2, err := ComputeZoneHash8(zone2)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
-	}
-	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
+		t.Fatalf("ComputeZoneHash8 failed: %v", err)
 	}
 
 	if v1 != v2 {
-		t.Errorf("Versions differ despite only Version field being different: %q vs %q", v1, v2)
+		t.Errorf("Hashes differ despite only Version field being different: %q vs %q", v1, v2)
 	}
 }
 
-func TestComputeZoneVersion_CaseInsensitive(t *testing.T) {
+func TestComputeZoneHash8_CaseInsensitive(t *testing.T) {
 	zone1 := &model.Zone{
 		Name: "EXAMPLE.COM.",
 		SOA: model.SOARecord{
@@ -243,28 +206,22 @@ func TestComputeZoneVersion_CaseInsensitive(t *testing.T) {
 		},
 	}
 
-	v1, err := ComputeZoneVersion(zone1)
+	v1, err := ComputeZoneHash8(zone1)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
-	}
-	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
+		t.Fatalf("ComputeZoneHash8 failed: %v", err)
 	}
 
-	v2, err := ComputeZoneVersion(zone2)
+	v2, err := ComputeZoneHash8(zone2)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
-	}
-	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
+		t.Fatalf("ComputeZoneHash8 failed: %v", err)
 	}
 
 	if v1 != v2 {
-		t.Errorf("Versions differ despite only case differences: %q vs %q", v1, v2)
+		t.Errorf("Hashes differ despite only case differences: %q vs %q", v1, v2)
 	}
 }
 
-func TestComputeZoneVersion_RDATANormalization(t *testing.T) {
+func TestComputeZoneHash8_RDATANormalization(t *testing.T) {
 	tests := []struct {
 		name     string
 		records1 []model.Record
@@ -329,25 +286,25 @@ func TestComputeZoneVersion_RDATANormalization(t *testing.T) {
 			}
 			zone2.SOA.Serial = 2024122801
 
-			v1, err := ComputeZoneVersion(zone1)
+			v1, err := ComputeZoneHash8(zone1)
 			if err != nil {
-				t.Fatalf("ComputeZoneVersion(zone1) failed: %v", err)
+				t.Fatalf("ComputeZoneHash8(zone1) failed: %v", err)
 			}
-			v2, err := ComputeZoneVersion(zone2)
+			v2, err := ComputeZoneHash8(zone2)
 			if err != nil {
-				t.Fatalf("ComputeZoneVersion(zone2) failed: %v", err)
+				t.Fatalf("ComputeZoneHash8(zone2) failed: %v", err)
 			}
 
 			if tt.wantSame && v1 != v2 {
-				t.Errorf("Versions differ but should be same: %q vs %q", v1, v2)
+				t.Errorf("Hashes differ but should be same: %q vs %q", v1, v2)
 			} else if !tt.wantSame && v1 == v2 {
-				t.Errorf("Versions same but should differ: %q", v1)
+				t.Errorf("Hashes same but should differ: %q", v1)
 			}
 		})
 	}
 }
 
-func TestComputeZoneVersion_DNSSECIncluded(t *testing.T) {
+func TestComputeZoneHash8_DNSSECIncluded(t *testing.T) {
 	zone1 := &model.Zone{
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
@@ -371,23 +328,17 @@ func TestComputeZoneVersion_DNSSECIncluded(t *testing.T) {
 	}
 	zone2.SOA.Serial = 2024122801
 
-	v1, err := ComputeZoneVersion(zone1)
+	v1, err := ComputeZoneHash8(zone1)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
-	}
-	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
+		t.Fatalf("ComputeZoneHash8 failed: %v", err)
 	}
 
-	v2, err := ComputeZoneVersion(zone2)
+	v2, err := ComputeZoneHash8(zone2)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
-	}
-	if err != nil {
-		t.Fatalf("ComputeZoneVersion failed: %v", err)
+		t.Fatalf("ComputeZoneHash8 failed: %v", err)
 	}
 
 	if v1 == v2 {
-		t.Errorf("Versions same despite different DNSSEC config: %q", v1)
+		t.Errorf("Hashes same despite different DNSSEC config: %q", v1)
 	}
 }

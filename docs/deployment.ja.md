@@ -25,12 +25,14 @@ arca-dns は control plane と data plane を分けてデプロイします。
 | Docker Compose | ローカル検証、単一ホスト検証 | `deployments/compose/controller-mysql/` は controller + MySQL の例 |
 | Kubernetes | controller のクラスタ運用 | agent は通常クラスタ外のエッジノードで動かす |
 
+agent container image には `arca-dns-agent` のみが含まれます。`nsd.enabled`、`unbound.enabled`、または `bird.enabled` のまま container で動かす場合は、対応するホスト側 binary、socket、書き込み可能な config/data path を mount するか、agent 設定でそれらの連携を無効化してください。
+
 ## 共通の前提条件
 
 ### Controller
 
 - backend を 1 つ選ぶ: `sqlite`（既定）、`postgres`, `mysql`, `git`, `etcd`
-- `memory` backend はテスト用途のみ。永続化されないため本番では使わない
+- 使い捨てのローカル検証だけ SQLite の `:memory:` を使う
 - `storage.artifact_directory` と `storage.key_directory` が書き込み可能であること
 - DNSSEC 有効時は `dnssec.key_directory` が書き込み可能で、DNSSEC マスターキーを設定済みであること
 - API 認証を有効にする場合、少なくとも 1 つの API キーハッシュが必要
@@ -51,7 +53,8 @@ arca-dns は control plane と data plane を分けてデプロイします。
 
 | Component | Port | 内容 |
 | --- | --- | --- |
-| controller | `8080` | API、health、readiness、metrics |
+| controller | `8080` | 管理 API、health、readiness、status |
+| controller | `9053` | Prometheus metrics、過去互換の health/readiness/status alias |
 | agent | `9090` | status、health、readiness、metrics |
 | DNS | `53/tcp`, `53/udp` | エッジノードの DNS サービス |
 
@@ -60,14 +63,19 @@ arca-dns は control plane と data plane を分けてデプロイします。
 ### API キー
 
 controller の既定は `api.auth.enabled: true` です。認証が有効な場合、`api.auth.api_keys` に `sha256:<64 hex>` 形式のハッシュが 1 つ以上必要です。
+controller の observability listener は認証なしで、既定では `127.0.0.1:9053` に bind します。リモートアドレスに bind する場合は network control または認証付き proxy の背後に置いてください。
 
 ```bash
-API_KEY="$(openssl rand -hex 32)"
-API_KEY_HASH="sha256:$(printf '%s' "$API_KEY" | sha256sum | awk '{print $1}')"
+ADMIN_API_KEY="$(openssl rand -hex 32)"
+ADMIN_API_KEY_HASH="sha256:$(printf '%s' "$ADMIN_API_KEY" | sha256sum | awk '{print $1}')"
+AGENT_API_KEY="$(openssl rand -hex 32)"
+AGENT_API_KEY_HASH="sha256:$(printf '%s' "$AGENT_API_KEY" | sha256sum | awk '{print $1}')"
 SHARED_SIGNATURE_KEY="$(openssl rand -base64 32)"
 
-printf 'raw api key: %s\n' "$API_KEY"
-printf 'hash: %s\n' "$API_KEY_HASH"
+printf 'raw admin api key: %s\n' "$ADMIN_API_KEY"
+printf 'admin hash: %s\n' "$ADMIN_API_KEY_HASH"
+printf 'raw agent api key: %s\n' "$AGENT_API_KEY"
+printf 'agent hash: %s\n' "$AGENT_API_KEY_HASH"
 ```
 
 controller にはハッシュを設定します。
@@ -80,6 +88,10 @@ api:
     enabled: true
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
+    api_key_roles:
+      admin: "admin"
+      agent: "agent"
 ```
 
 agent には生の API キーを設定します。
@@ -87,18 +99,20 @@ agent には生の API キーを設定します。
 ```yaml
 controller:
   url: "https://controller.example.com"
-  api_key: "REPLACE_WITH_RAW_API_KEY"
+  api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
 
 sync:
   verify_signatures: true
-  # api.artifact_signature_key と同じ値にしてください。
-  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  # 共有 HMAC secret です。api.artifact_signature_key と同じ値にしてください。
+  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 
 環境変数だけで controller の API キーを渡す場合は、次の形式を使えます。suffix は小文字化され、principal 名になります。
 
 ```bash
-export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$ADMIN_API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEYS_AGENT="$AGENT_API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEY_ROLES_AGENT="agent"
 export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$SHARED_SIGNATURE_KEY"
 ```
 
@@ -141,11 +155,14 @@ backend:
 
 MySQL backend は controller 起動時にスキーマを自動投入しません。controller を起動する前に SQL を適用してください。
 
-schema ファイルは現状リポジトリの `migrations/` 配下にあります。DEB/RPM パッケージからデプロイする場合は、同じ release の source tree を使うか、これらの SQL ファイルをデプロイ artifact に含めてください。
+schema ファイルはリポジトリの `migrations/` 配下にあります。DEB/RPM パッケージは同じファイルを `/usr/share/arca-dns/migrations/` にインストールします。
 
 ```bash
 mysql -h mysql.example.com -u dns_user -p arca_dns \
   < migrations/mysql/000001_initial_schema.up.sql
+# パッケージインストール時:
+# mysql -h mysql.example.com -u dns_user -p arca_dns \
+#   < /usr/share/arca-dns/migrations/mysql/000001_initial_schema.up.sql
 ```
 
 設定例:
@@ -161,11 +178,14 @@ backend:
 
 PostgreSQL backend も controller 起動前に SQL の適用が必要です。
 
-schema ファイルは現状リポジトリの `migrations/` 配下にあります。DEB/RPM パッケージからデプロイする場合は、同じ release の source tree を使うか、これらの SQL ファイルをデプロイ artifact に含めてください。
+schema ファイルはリポジトリの `migrations/` 配下にあります。DEB/RPM パッケージは同じファイルを `/usr/share/arca-dns/migrations/` にインストールします。
 
 ```bash
 psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
   -f migrations/postgres/000001_initial_schema.up.sql
+# パッケージインストール時:
+# psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
+#   -f /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
 ```
 
 設定例:
@@ -266,7 +286,12 @@ sudo dnf install bird nsd unbound arca-dns
 - `nsd.enabled`, `nsd.zone_directory`, `nsd.control_path`
 - `unbound.enabled`, `unbound.control_path`
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
-- `health.nsd_server`, `health.unbound_server`, `health.test_record`
+- `health.nsd_server`, `health.unbound_server`, `health.test_zone`, `health.test_record`
+
+`health.test_record` が相対名の場合は、提供する zone を `health.test_zone`
+に設定してください。たとえば `test_zone: "example.com."` と
+`test_record: "www"` を指定します。`health.test_record` の末尾に `.` を
+付けるのは、絶対 DNS 名を直接問い合わせたい場合だけです。
 
 DNSTap を有効にする場合は、`dnstap.socket_mode` を `0660` のままにし、
 `dnstap.socket_group` には DNS daemon user（`nsd`, `unbound`、または環境に
@@ -330,7 +355,10 @@ Compose 例は `deployments/compose/controller-mysql/docker-compose.yaml` にあ
 ```bash
 export ARCA_DNS_API_KEY="$(openssl rand -hex 32)"
 export ARCA_DNS_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_API_KEY" | sha256sum | awk '{print $1}')"
+export ARCA_DNS_AGENT_API_KEY="$(openssl rand -hex 32)"
+export ARCA_DNS_AGENT_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_AGENT_API_KEY" | sha256sum | awk '{print $1}')"
 export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
+export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$(openssl rand -base64 32)"
 ```
 
 起動:
@@ -372,7 +400,7 @@ Kustomize entrypoint:
 
 ### 1. Secret を置き換える
 
-`deployments/kubernetes/controller/base/controller-secret.yaml` の `dnssec-master-key-b64` を置き換えます。
+`deployments/kubernetes/controller/base/controller-secret.yaml` の `api-key-hash`、`agent-api-key-hash`、`dnssec-master-key-b64`、`artifact-signature-key` を置き換えます。
 
 ```bash
 openssl rand -base64 32
@@ -382,13 +410,12 @@ openssl rand -base64 32
 
 `deployments/kubernetes/controller/base/controller.yaml` を編集します。
 
-- `api.auth.api_keys.admin`
 - `backend.etcd.endpoints`
 - `backend.etcd.prefix`
 - `storage.*`
 - `dnssec.*`
 
-demo overlay を使う場合は、`deployments/kubernetes/controller/overlays/demo-etcd/controller.yaml` 側も同様に API キーハッシュを置き換えます。
+Deployment は `api-key-hash` を `ARCA_DNS_API_AUTH_API_KEYS_ADMIN`、`agent-api-key-hash` を `ARCA_DNS_API_AUTH_API_KEYS_AGENT` として読み込むため、Secret の値が ConfigMap の placeholder hash を上書きします。demo overlay を使う場合も、適用前に placeholder 値を置き換えるか上書きしてください。
 
 ### 3. PVC を確認する
 
@@ -415,7 +442,7 @@ kubectl apply -k deployments/kubernetes/controller/overlays/demo-etcd
 ```bash
 kubectl get deploy,po,svc,pvc
 kubectl logs deploy/arca-dns-controller
-kubectl port-forward svc/arca-dns-controller 8080:8080
+kubectl port-forward svc/arca-dns-controller 8080:8080 9053:9053
 curl http://localhost:8080/health
 curl http://localhost:8080/ready
 ```
@@ -426,10 +453,10 @@ Ingress 例は `deployments/kubernetes/controller/examples/ingress.yaml` にあ�
 
 agent は controller から次の API を利用します。
 
-- `GET /api/v1/zones`
+- `GET /api/v1/zones?fields=summary`
 - `GET /api/v1/zones/:name/signed`
 
-controller の API 認証が有効な場合、agent は `X-API-Key` header に `controller.api_key` を付与します。
+controller の API 認証が有効な場合、agent は `X-API-Key` header に `controller.api_key` を付与します。`agent` role の API キーを使ってください。この role は zone summary 一覧と signed artifact 読み取りに制限されます。
 
 zone 同期では次を行います。
 
@@ -450,6 +477,12 @@ agent の HTTP endpoint:
 | `GET /status` | 同期状態、health、BGP announce 状態 |
 | `GET /metrics` | Prometheus metrics |
 
+controller の health/readiness/status endpoint は API address
+（提供 manifest では `0.0.0.0:8080`）で listen します。Prometheus metrics は
+分離された `observability.listen` で listen します。組み込みの既定は
+`127.0.0.1:9053` です。Kubernetes 例は Service scraping 用に
+`0.0.0.0:9053` を使うため、cluster network control で保護してください。
+
 agent の status server はデフォルトで `127.0.0.1:9090` を listen します。
 `metrics.listen` をリモートアドレスに変更する場合は、network control
 または認証付き proxy の背後に置いてください。
@@ -462,7 +495,7 @@ controller:
 curl http://controller:8080/health
 curl http://controller:8080/ready
 curl http://controller:8080/status
-curl http://controller:8080/metrics
+curl http://controller:9053/metrics
 ```
 
 agent:
@@ -504,6 +537,7 @@ birdc show route
 | controller が master key エラーで起動しない | DNSSEC 有効だが master key がない | `ARCA_DNS_DNSSEC_MASTER_KEY_B64` または `/etc/arca-dns/master.key` を設定する |
 | MySQL/PostgreSQL で table not found | SQL スキーマ未適用 | `migrations/<backend>/000001_initial_schema.up.sql` を適用してから起動する |
 | container が `/var/lib/arca-dns` に書けない | distroless nonroot image の UID と volume 権限が合っていない | volume を UID/GID `65532` で書けるようにする。Kubernetes base は `fsGroup: 65532` を設定済み |
+| agent container が NSD/Unbound/BIRD を reload できない | image にホスト DNS/BGP 制御ツールが含まれない | 必要なホスト binary/socket/config を mount するか、それらの連携を無効化する |
 | agent `/ready` が 503 | 初回同期未完了、または sync stale | controller URL/API key、zone 一覧、agent ログを確認する |
 | BGP が announce されない | health check 失敗、BIRD socket 権限、protocol 名不一致 | `curl :9090/status`, `birdc show protocols`, agent ログを確認する |
 

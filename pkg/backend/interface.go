@@ -59,10 +59,27 @@ type ZoneSummary struct {
 	Version string `json:"version"`
 }
 
+const (
+	CapabilityZoneStore              = "ZoneStore"
+	CapabilityZoneSummaryStore       = "ZoneSummaryStore"
+	CapabilityHealthStore            = "HealthStore"
+	CapabilityDNSSECMetadataStore    = "DNSSECMetadataStore"
+	CapabilityConditionalDeleteStore = "ConditionalDeleteStore"
+	CapabilityRevisionStore          = "RevisionStore"
+	CapabilityWatchableStore         = "WatchableStore"
+	CapabilityTransactionalStore     = "TransactionalStore"
+)
+
 // ZoneSummaryStore is an optional capability for backends that can list zone
 // metadata without loading full zone records.
 type ZoneSummaryStore interface {
 	ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error)
+}
+
+// HealthStore is an optional capability for backends that can perform a cheap
+// readiness check without loading zone contents.
+type HealthStore interface {
+	HealthCheck(ctx context.Context) error
 }
 
 // ListZoneSummaries returns lightweight zone metadata, using an optimized
@@ -85,6 +102,18 @@ func ListZoneSummaries(ctx context.Context, store ZoneStore, opts ListOptions) (
 		})
 	}
 	return summaries, nil
+}
+
+// CheckHealth verifies that the backend is reachable. Backends with a cheap
+// health probe should implement HealthStore; the fallback preserves existing
+// behavior for custom stores.
+func CheckHealth(ctx context.Context, store ZoneStore) error {
+	if healthStore, ok := store.(HealthStore); ok {
+		return healthStore.HealthCheck(ctx)
+	}
+
+	_, err := ListZoneSummaries(ctx, store, ListOptions{Limit: 1, Offset: 0})
+	return err
 }
 
 // DNSSECMetadataStore is an optional capability for backends that can update
@@ -200,7 +229,7 @@ const (
 
 // BackendInfo provides metadata about a backend implementation.
 type BackendInfo struct {
-	// Type is the backend type (memory, mysql, git, etcd).
+	// Type is the backend type (sqlite, postgres, mysql, git, etcd).
 	Type string
 
 	// Capabilities lists the optional interfaces this backend implements.

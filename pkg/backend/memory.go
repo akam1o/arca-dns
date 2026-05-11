@@ -14,7 +14,8 @@ import (
 )
 
 // MemoryBackend is an in-memory implementation of ZoneStore.
-// It is thread-safe and suitable for testing and development.
+// Deprecated: retained only for tests. Use SQLite with DSN ":memory:" for
+// disposable runtime storage.
 type MemoryBackend struct {
 	mu     sync.RWMutex
 	zones  map[string]*model.Zone
@@ -22,9 +23,21 @@ type MemoryBackend struct {
 }
 
 // NewMemoryBackend creates a new in-memory backend.
+// Deprecated: retained only for tests. Use NewSQLiteBackend(":memory:") for
+// disposable runtime storage.
 func NewMemoryBackend() *MemoryBackend {
 	return &MemoryBackend{
 		zones: make(map[string]*model.Zone),
+	}
+}
+
+// HealthCheck verifies that the in-memory backend can serve requests.
+func (m *MemoryBackend) HealthCheck(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
 	}
 }
 
@@ -108,47 +121,27 @@ func (m *MemoryBackend) ListZoneSummaries(ctx context.Context, opts ListOptions)
 
 // CreateZone creates a new zone.
 func (m *MemoryBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
+	writeZone, err := prepareZoneForCreate(zone, model.NormalizeZoneName)
+	if err != nil {
+		return err
+	}
+	normalized := writeZone.Name
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	normalized := model.NormalizeZoneName(zone.Name)
 	if _, exists := m.zones[normalized]; exists {
 		return model.ErrZoneAlreadyExists
 	}
 
-	// Normalize zone name in the zone object itself
-	zone.Name = normalized
-
-	// Set timestamps
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-
-	// Auto-generate serial if not set
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-
-	// Ensure version is set (normally issued by controller).
-	if zone.Version == "" {
-		version, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = version
-	}
-
-	if err := validateZoneForWrite(zone); err != nil {
-		return err
-	}
-
 	// Assign IDs to records
-	for i := range zone.Records {
+	for i := range writeZone.Records {
 		m.nextID++
-		zone.Records[i].ID = strconv.Itoa(m.nextID)
+		writeZone.Records[i].ID = strconv.Itoa(m.nextID)
 	}
 
-	m.zones[normalized] = copyZone(zone)
+	m.zones[normalized] = copyZone(writeZone)
+	copyZoneInto(zone, writeZone)
 	return nil
 }
 
@@ -261,10 +254,16 @@ func (m *MemoryBackend) Close() error {
 // Info returns metadata about this backend.
 func (m *MemoryBackend) Info() BackendInfo {
 	return BackendInfo{
-		Type:         "memory",
-		Capabilities: []string{"ZoneStore", "DNSSECMetadataStore"},
-		Consistency:  "strong",
-		Description:  "In-memory storage (non-persistent, for testing and development)",
+		Type: "memory",
+		Capabilities: []string{
+			CapabilityZoneStore,
+			CapabilityZoneSummaryStore,
+			CapabilityHealthStore,
+			CapabilityDNSSECMetadataStore,
+			CapabilityConditionalDeleteStore,
+		},
+		Consistency: "strong",
+		Description: "In-memory storage (test-only, not registered as runtime backend)",
 	}
 }
 
@@ -285,6 +284,12 @@ func copyZone(zone *model.Zone) *model.Zone {
 	}
 
 	copy(copied.Records, zone.Records)
+	for i := range copied.Records {
+		if zone.Records[i].Priority != nil {
+			priority := *zone.Records[i].Priority
+			copied.Records[i].Priority = &priority
+		}
+	}
 
 	if zone.DNSSEC != nil {
 		copied.DNSSEC = cloneDNSSECConfig(zone.DNSSEC)
@@ -325,14 +330,4 @@ func generateSerial(currentSerial uint32) uint32 {
 
 	// No larger uint32 value exists. Avoid moving backwards.
 	return currentSerial
-}
-
-// memoryBackendFactory is the factory function for memory backend.
-func memoryBackendFactory(config map[string]interface{}) (ZoneStore, error) {
-	return NewMemoryBackend(), nil
-}
-
-func init() {
-	// Register the memory backend
-	RegisterBackend("memory", memoryBackendFactory)
 }

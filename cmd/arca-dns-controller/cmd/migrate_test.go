@@ -15,15 +15,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func migrateTestApexNSRecord() model.Record {
+	return model.Record{Name: "@", Type: model.RecordTypeNS, TTL: 300, Value: "ns1.example.com."}
+}
+
+func migrateRecordByNameType(records []model.Record, name, recordType string) *model.Record {
+	for i := range records {
+		if records[i].Name == name && records[i].Type == recordType {
+			return &records[i]
+		}
+	}
+	return nil
+}
+
 type failingRecreateStore struct {
 	backend.ZoneStore
 	deleted bool
 	failed  bool
 }
 
-func (s *failingRecreateStore) DeleteZone(ctx context.Context, name string) error {
+func (s *failingRecreateStore) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	s.deleted = true
-	return s.ZoneStore.DeleteZone(ctx, name)
+	conditionalStore, ok := s.ZoneStore.(backend.ConditionalDeleteStore)
+	if !ok {
+		return errOverwriteConditionalDeleteUnsupported
+	}
+	return conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
 }
 
 func (s *failingRecreateStore) CreateZone(ctx context.Context, zone *model.Zone) error {
@@ -35,6 +52,10 @@ func (s *failingRecreateStore) CreateZone(ctx context.Context, zone *model.Zone)
 		return errors.New("injected post-create failure")
 	}
 	return s.ZoneStore.CreateZone(ctx, zone)
+}
+
+type migrateZoneStoreWithoutConditionalDelete struct {
+	backend.ZoneStore
 }
 
 // TestMigrateExportMemory tests exporting zones from memory backend to JSON files.
@@ -50,6 +71,7 @@ func TestMigrateExportMemory(t *testing.T) {
 			Name: "example.com.",
 			SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 			Records: []model.Record{
+				migrateTestApexNSRecord(),
 				{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
 			},
 		},
@@ -57,6 +79,7 @@ func TestMigrateExportMemory(t *testing.T) {
 			Name: "test.org.",
 			SOA:  model.DefaultSOA("ns1.test.org.", "admin.test.org."),
 			Records: []model.Record{
+				migrateTestApexNSRecord(),
 				{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.2"},
 			},
 		},
@@ -102,6 +125,7 @@ func TestMigrateImport(t *testing.T) {
 		Version: "v2024010101-abc12345", // Old version
 		SOA:     model.DefaultSOA("ns1.import.example.com.", "admin.import.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.10"},
 		},
 	}
@@ -142,6 +166,7 @@ func TestMigrateImportOverwritePreservesSourceSerial(t *testing.T) {
 		Version: "v2024010101-imported",
 		SOA:     sourceSOA,
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.10"},
 		},
 	}
@@ -160,6 +185,7 @@ func TestMigrateImportOverwritePreservesSourceSerial(t *testing.T) {
 		Name: "overwrite.example.com.",
 		SOA:  existingSOA,
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -172,11 +198,57 @@ func TestMigrateImportOverwritePreservesSourceSerial(t *testing.T) {
 
 	updated, err := store.GetZone(ctx, importZone.Name)
 	require.NoError(t, err)
-	require.Len(t, updated.Records, 1)
-	assert.Equal(t, "192.0.2.10", updated.Records[0].Value)
+	require.Len(t, updated.Records, 2)
+	updatedA := migrateRecordByNameType(updated.Records, "www", model.RecordTypeA)
+	require.NotNil(t, updatedA)
+	assert.Equal(t, "192.0.2.10", updatedA.Value)
 	assert.Equal(t, sourceSOA.Serial, updated.SOA.Serial)
 	assert.NotEqual(t, existingVersion, updated.Version)
 	assert.NotEmpty(t, updated.Version)
+}
+
+func TestMigrateImportOverwriteRejectsStoreWithoutConditionalDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := context.Background()
+
+	importZone := &model.Zone{
+		Name: "no-conditional.example.com.",
+		SOA:  model.DefaultSOA("ns1.no-conditional.example.com.", "admin.no-conditional.example.com."),
+		Records: []model.Record{
+			migrateTestApexNSRecord(),
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.10"},
+		},
+	}
+	data, err := json.MarshalIndent(importZone, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "no_conditional_example_com.json"), data, 0644))
+
+	memoryStore := backend.NewMemoryBackend()
+	defer memoryStore.Close()
+
+	existingZone := &model.Zone{
+		Name: importZone.Name,
+		SOA:  model.DefaultSOA("ns1.no-conditional.example.com.", "admin.no-conditional.example.com."),
+		Records: []model.Record{
+			migrateTestApexNSRecord(),
+			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, memoryStore.CreateZone(ctx, existingZone))
+	before, err := memoryStore.GetZone(ctx, existingZone.Name)
+	require.NoError(t, err)
+
+	store := &migrateZoneStoreWithoutConditionalDelete{ZoneStore: memoryStore}
+	_, err = importToStore(ctx, store, tmpDir, false, true)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errOverwriteConditionalDeleteUnsupported))
+
+	unchanged, err := memoryStore.GetZone(ctx, existingZone.Name)
+	require.NoError(t, err)
+	assert.Equal(t, before.Version, unchanged.Version)
+	unchangedA := migrateRecordByNameType(unchanged.Records, "www", model.RecordTypeA)
+	require.NotNil(t, unchangedA)
+	assert.Equal(t, "192.0.2.1", unchangedA.Value)
 }
 
 func TestMigrateImportOverwriteRestoresExistingZoneOnRecreateFailure(t *testing.T) {
@@ -188,6 +260,7 @@ func TestMigrateImportOverwriteRestoresExistingZoneOnRecreateFailure(t *testing.
 		Version: "v2024010101-imported",
 		SOA:     model.DefaultSOA("ns1.restore.example.com.", "admin.restore.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.10"},
 		},
 	}
@@ -202,6 +275,7 @@ func TestMigrateImportOverwriteRestoresExistingZoneOnRecreateFailure(t *testing.
 		Name: "restore.example.com.",
 		SOA:  model.DefaultSOA("ns1.restore.example.com.", "admin.restore.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -217,8 +291,10 @@ func TestMigrateImportOverwriteRestoresExistingZoneOnRecreateFailure(t *testing.
 
 	restored, err := memoryStore.GetZone(ctx, existingZone.Name)
 	require.NoError(t, err)
-	require.Len(t, restored.Records, 1)
-	assert.Equal(t, "192.0.2.1", restored.Records[0].Value)
+	require.Len(t, restored.Records, 2)
+	restoredA := migrateRecordByNameType(restored.Records, "www", model.RecordTypeA)
+	require.NotNil(t, restoredA)
+	assert.Equal(t, "192.0.2.1", restoredA.Value)
 	assert.Equal(t, before.Version, restored.Version)
 	assert.Equal(t, before.SOA.Serial, restored.SOA.Serial)
 }
@@ -232,6 +308,7 @@ func TestRestoreZoneAfterOverwriteFailureDoesNotDeleteConcurrentReplacement(t *t
 		Name: "conflict.example.com.",
 		SOA:  model.DefaultSOA("ns1.conflict.example.com.", "admin.conflict.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -245,6 +322,7 @@ func TestRestoreZoneAfterOverwriteFailureDoesNotDeleteConcurrentReplacement(t *t
 		Version: "v-attempted-replacement",
 		SOA:     current.SOA,
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.10"},
 		},
 	}
@@ -253,6 +331,7 @@ func TestRestoreZoneAfterOverwriteFailureDoesNotDeleteConcurrentReplacement(t *t
 		Version: "v-concurrent-replacement",
 		SOA:     current.SOA,
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.20"},
 		},
 	}
@@ -264,9 +343,11 @@ func TestRestoreZoneAfterOverwriteFailureDoesNotDeleteConcurrentReplacement(t *t
 
 	visible, err := store.GetZone(ctx, current.Name)
 	require.NoError(t, err)
-	require.Len(t, visible.Records, 1)
+	require.Len(t, visible.Records, 2)
 	assert.Equal(t, "v-concurrent-replacement", visible.Version)
-	assert.Equal(t, "192.0.2.20", visible.Records[0].Value)
+	visibleA := migrateRecordByNameType(visible.Records, "www", model.RecordTypeA)
+	require.NotNil(t, visibleA)
+	assert.Equal(t, "192.0.2.20", visibleA.Value)
 }
 
 func TestMigrateImport_RejectsInvalidZone(t *testing.T) {
@@ -276,6 +357,7 @@ func TestMigrateImport_RejectsInvalidZone(t *testing.T) {
 		Name: "invalid.example.com.",
 		SOA:  model.DefaultSOA("ns1.invalid.example.com.", "admin.invalid.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "not-an-ip"},
 		},
 	}
@@ -306,6 +388,7 @@ func TestMigrateCopy(t *testing.T) {
 			Name: "source1.com.",
 			SOA:  model.DefaultSOA("ns1.source1.com.", "admin.source1.com."),
 			Records: []model.Record{
+				migrateTestApexNSRecord(),
 				{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.20"},
 			},
 		},
@@ -313,6 +396,7 @@ func TestMigrateCopy(t *testing.T) {
 			Name: "source2.com.",
 			SOA:  model.DefaultSOA("ns1.source2.com.", "admin.source2.com."),
 			Records: []model.Record{
+				migrateTestApexNSRecord(),
 				{Name: "mail", Type: "A", TTL: 300, Value: "192.0.2.21"},
 			},
 		},
@@ -358,6 +442,7 @@ func TestCreateBackendDefaultsToSQLite(t *testing.T) {
 		Name: "sqlite-default.example.com.",
 		SOA:  model.DefaultSOA("ns1.sqlite-default.example.com.", "admin.sqlite-default.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.30"},
 		},
 	})
@@ -377,6 +462,7 @@ func TestCreateBackendForCopySupportsSQLite(t *testing.T) {
 		Name: "sqlite-copy.example.com.",
 		SOA:  model.DefaultSOA("ns1.sqlite-copy.example.com.", "admin.sqlite-copy.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.31"},
 		},
 	})
@@ -417,6 +503,7 @@ func TestMigrateRoundTrip(t *testing.T) {
 		Name: "roundtrip.example.com.",
 		SOA:  model.DefaultSOA("ns1.roundtrip.example.com.", "admin.roundtrip.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.100"},
 			{Name: "mail", Type: "A", TTL: 300, Value: "192.0.2.101"},
 			{Name: "@", Type: "MX", TTL: 300, Value: "10 mail.roundtrip.example.com."},
@@ -482,6 +569,7 @@ func TestMigrateGitBackend(t *testing.T) {
 		Name: "git-test.example.com.",
 		SOA:  model.DefaultSOA("ns1.git-test.example.com.", "admin.git-test.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.200"},
 		},
 	}
@@ -523,6 +611,7 @@ func TestMigrateDryRun(t *testing.T) {
 		Name: "dryrun.example.com.",
 		SOA:  model.DefaultSOA("ns1.dryrun.example.com.", "admin.dryrun.example.com."),
 		Records: []model.Record{
+			migrateTestApexNSRecord(),
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.50"},
 		},
 	}

@@ -21,7 +21,35 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+            - containerPort: 9053
+              name: observability
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           env:
+            - name: ARCA_DNS_API_AUTH_API_KEYS_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: arca-dns-secrets
+                  key: api-key-hash
+            - name: ARCA_DNS_API_AUTH_API_KEYS_AGENT
+              valueFrom:
+                secretKeyRef:
+                  name: arca-dns-secrets
+                  key: agent-api-key-hash
             - name: ARCA_DNS_DNSSEC_MASTER_KEY_B64
               valueFrom:
                 secretKeyRef:

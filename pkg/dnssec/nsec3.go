@@ -38,12 +38,12 @@ func NewNSEC3Params(ttl uint32, iterations uint16, saltLength int) NSEC3Params {
 // generateRandomSalt creates a random hex salt with the requested byte length.
 func generateRandomSalt(length int) string {
 	if length <= 0 {
-		return "-"
+		return ""
 	}
 
 	b := make([]byte, length)
 	if _, err := rand.Read(b); err != nil {
-		return "-" // fallback to empty salt on error
+		return "" // fallback to empty salt on error
 	}
 	return hex.EncodeToString(b)
 }
@@ -66,7 +66,7 @@ func GenerateNSECChain(zoneApex string, rrs []dns.RR, ttl uint32) ([]dns.RR, err
 		return nil, fmt.Errorf("failed to compute type bitmaps: %w", err)
 	}
 
-	sort.Strings(names)
+	sortCanonicalDNSSECNames(names)
 
 	nsecRecords := make([]dns.RR, 0, len(names))
 	for i, name := range names {
@@ -76,6 +76,7 @@ func GenerateNSECChain(zoneApex string, rrs []dns.RR, ttl uint32) ([]dns.RR, err
 			bitmap = []uint16{}
 		}
 		bitmap = appendUnique(bitmap, dns.TypeNSEC)
+		bitmap = appendUnique(bitmap, dns.TypeRRSIG)
 		sort.Slice(bitmap, func(i, j int) bool { return bitmap[i] < bitmap[j] })
 
 		nsecRecords = append(nsecRecords, &dns.NSEC{
@@ -199,6 +200,26 @@ func GenerateNSEC3Chain(zoneApex string, rrs []dns.RR, params NSEC3Params) ([]dn
 	result = append(result, nsec3Records...)
 
 	return result, nil
+}
+
+func sortCanonicalDNSSECNames(names []string) {
+	sort.Slice(names, func(i, j int) bool {
+		return canonicalDNSSECLess(names[i], names[j])
+	})
+}
+
+func canonicalDNSSECLess(a, b string) bool {
+	aLabels := dns.SplitDomainName(dns.CanonicalName(a))
+	bLabels := dns.SplitDomainName(dns.CanonicalName(b))
+
+	for ai, bi := len(aLabels)-1, len(bLabels)-1; ai >= 0 && bi >= 0; ai, bi = ai-1, bi-1 {
+		if aLabels[ai] == bLabels[bi] {
+			continue
+		}
+		return aLabels[ai] < bLabels[bi]
+	}
+
+	return len(aLabels) < len(bLabels)
 }
 
 // collectAuthoritativeNames collects all owner names from RRs and derives empty non-terminals.

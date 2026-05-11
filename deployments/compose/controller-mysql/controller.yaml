@@ -6,10 +6,18 @@ api:
     api_keys:
       # Overridden by ARCA_DNS_API_AUTH_API_KEYS_ADMIN in docker-compose.yaml.
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      # Overridden by ARCA_DNS_API_AUTH_API_KEYS_AGENT in docker-compose.yaml.
+      agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
+    api_key_roles:
+      admin: "admin"
+      agent: "agent"
   rate_limit:
     enabled: true
     requests_per_second: 100
     burst: 200
+
+observability:
+  listen: "0.0.0.0:9053"
 
 backend:
   type: "mysql"

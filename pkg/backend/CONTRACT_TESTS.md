@@ -13,16 +13,16 @@ Contract tests are organized into reusable test suites that validate specific in
 
 ## Running Contract Tests
 
-### Memory, Git, and SQLite Backends (No External Dependencies)
+### Git, SQLite, and Test-Only Memory Backends (No External Dependencies)
 
 ```bash
-# Run all contract tests (Memory + Git + SQLite)
+# Run all contract tests (Git + SQLite + test-only Memory)
 go test -v -run Contract ./pkg/backend/
 
 # Run specific backend
-go test -v -run TestMemoryBackend_Contract ./pkg/backend/
 go test -v -run TestGitBackend_Contract ./pkg/backend/
 go test -v -run TestSQLiteBackend_Contract ./pkg/backend/
+go test -v -run TestMemoryBackend_Contract ./pkg/backend/
 ```
 
 ### PostgreSQL Backend (Requires PostgreSQL)
@@ -56,7 +56,7 @@ docker run -d --name mysql-test \
   mysql:8.0
 
 # Set DSN environment variable
-export MYSQL_DSN="root:testpass@tcp(localhost:3306)/arca_dns_test?parseTime=true"
+export MYSQL_DSN="root:testpass@tcp(localhost:3306)/arca_dns_test?parseTime=true&multiStatements=true"
 
 # Run MySQL contract tests
 go test -v -tags=integration -run TestMySQLBackend_Contract ./pkg/backend/
@@ -90,7 +90,7 @@ docker rm -f etcd-test
 
 ```bash
 # Requires PostgreSQL, MySQL and etcd running
-ARCA_POSTGRES_DSN="..." MYSQL_DSN="..." go test -v -tags=integration -run Contract ./pkg/backend/
+ARCA_POSTGRES_DSN="..." MYSQL_DSN="..." ETCD_ENDPOINTS="localhost:2379" go test -v -tags=integration -run Contract ./pkg/backend/
 ```
 
 ## Contract Invariants Tested
@@ -123,8 +123,8 @@ ARCA_POSTGRES_DSN="..." MYSQL_DSN="..." go test -v -tags=integration -run Contra
 | Backend    | Status | Pass Rate | Notes |
 |------------|--------|-----------|-------|
 | SQLite     | ✅ PASS | 13/13 (100%) | Pure Go (no CGO), uses `:memory:` for tests |
-| Memory     | ✅ PASS | 13/13 (100%) | Pure Go, no external deps (deprecated) |
 | Git        | ✅ PASS | - | Uses temp directory (ZoneStoreCRUD + RevisionStore) |
+| Memory     | ✅ PASS | 13/13 (100%) | Test-only helper, not a registered runtime backend |
 | PostgreSQL | ⚠️ INTEGRATION | - | Requires PostgreSQL running (ARCA_POSTGRES_DSN) |
 | MySQL      | ⚠️ INTEGRATION | - | Requires MySQL running (ZoneStoreCRUD + TransactionalStore) |
 | etcd       | ⚠️ INTEGRATION | - | Requires etcd running (ZoneStoreCRUD + RevisionStore + WatchableStore) |
@@ -158,7 +158,7 @@ func TestNewBackend_Contract(t *testing.T) {
 
 ## Known Issues Fixed
 
-1. **Memory backend case normalization**: Fixed to normalize zone names to lowercase with trailing dot
+1. **Test-only memory helper case normalization**: Fixed to normalize zone names to lowercase with trailing dot
 2. **Timestamp comparison**: Changed to use `time.Equal()` to handle JSON marshaling stripping monotonic clock
 3. **Git backend timestamp preservation**: Fixed CreatedAt comparison in contract tests
 

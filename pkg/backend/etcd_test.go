@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,13 +18,15 @@ import (
 )
 
 // setupEtcdBackend creates a test etcd backend.
-// Requires etcd to be running on localhost:2379
+// Requires etcd to be running on localhost:2379, or endpoints provided via ETCD_ENDPOINTS.
 func setupEtcdBackend(t *testing.T) (*EtcdBackend, func()) {
 	endpoints := []string{"localhost:2379"}
 
 	// Allow override via environment variable for CI
-	if etcdEndpoint := os.Getenv("ETCD_ENDPOINT"); etcdEndpoint != "" {
-		endpoints = []string{etcdEndpoint}
+	if etcdEndpoints := os.Getenv("ETCD_ENDPOINTS"); etcdEndpoints != "" {
+		endpoints = splitEtcdEndpoints(etcdEndpoints)
+	} else if etcdEndpoint := os.Getenv("ETCD_ENDPOINT"); etcdEndpoint != "" {
+		endpoints = splitEtcdEndpoints(etcdEndpoint)
 	}
 
 	// Use a unique prefix for each test to avoid conflicts
@@ -47,6 +50,21 @@ func setupEtcdBackend(t *testing.T) (*EtcdBackend, func()) {
 	}
 
 	return backend, cleanup
+}
+
+func splitEtcdEndpoints(value string) []string {
+	parts := strings.Split(value, ",")
+	endpoints := make([]string, 0, len(parts))
+	for _, part := range parts {
+		endpoint := strings.TrimSpace(part)
+		if endpoint != "" {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	if len(endpoints) == 0 {
+		return []string{"localhost:2379"}
+	}
+	return endpoints
 }
 
 func TestEtcdBackend_CreateZone(t *testing.T) {
@@ -293,6 +311,12 @@ func TestEtcdBackend_ListZones(t *testing.T) {
 	assert.Equal(t, "a.com.", listed[0].Name)
 	assert.Equal(t, "b.com.", listed[1].Name)
 	assert.Equal(t, "c.com.", listed[2].Name)
+
+	// Negative offsets are normalized to zero.
+	negativeOffset, err := backend.ListZones(ctx, ListOptions{Offset: -1, Limit: 2})
+	require.NoError(t, err)
+	assert.Len(t, negativeOffset, 2)
+	assert.Equal(t, "a.com.", negativeOffset[0].Name)
 
 	// Test pagination - limit
 	limited, err := backend.ListZones(ctx, ListOptions{Offset: 0, Limit: 2})

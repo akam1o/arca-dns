@@ -6,6 +6,7 @@ package backend
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,7 +14,7 @@ import (
 
 // setupMySQLBackend creates a test MySQL backend.
 // Requires MySQL to be running and accessible via MYSQL_DSN environment variable.
-// Example DSN: root:testpass@tcp(localhost:3306)/arca_dns_test?parseTime=true
+// Example DSN: root:testpass@tcp(localhost:3306)/arca_dns_test?parseTime=true&multiStatements=true
 func setupMySQLBackend(t *testing.T) (*MySQLBackend, func()) {
 	dsn := os.Getenv("MYSQL_DSN")
 	if dsn == "" {
@@ -22,6 +23,9 @@ func setupMySQLBackend(t *testing.T) (*MySQLBackend, func()) {
 
 	backend, err := NewMySQLBackend(dsn)
 	require.NoError(t, err, "Failed to create MySQL backend")
+
+	err = backend.RunMigrations(filepath.Join("..", "..", "migrations", "mysql"))
+	require.NoError(t, err, "Failed to run MySQL migrations")
 
 	// Clean up any existing test data
 	ctx := context.Background()

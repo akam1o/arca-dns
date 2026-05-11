@@ -30,12 +30,16 @@ services:
     image: ghcr.io/akam1o/arca-dns-controller:latest
     ports:
       - "8080:8080"
+      # Metrics and status aliases are unauthenticated; keep host access local.
+      - "127.0.0.1:9053:9053"
     environment:
       # Set before running:
       #   export ARCA_DNS_API_KEY_HASH="sha256:<64-hex>"
+      #   export ARCA_DNS_AGENT_API_KEY_HASH="sha256:<64-hex>"
       #   export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
       #   export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$(openssl rand -base64 32)"
       ARCA_DNS_API_AUTH_API_KEYS_ADMIN: "${ARCA_DNS_API_KEY_HASH:?set ARCA_DNS_API_KEY_HASH}"
+      ARCA_DNS_API_AUTH_API_KEYS_AGENT: "${ARCA_DNS_AGENT_API_KEY_HASH:?set ARCA_DNS_AGENT_API_KEY_HASH}"
       ARCA_DNS_DNSSEC_MASTER_KEY_B64: "${ARCA_DNS_DNSSEC_MASTER_KEY_B64:?set ARCA_DNS_DNSSEC_MASTER_KEY_B64}"
       ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY: "${ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY:?set ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY}"
     volumes:

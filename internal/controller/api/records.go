@@ -397,7 +397,7 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 		return nil, "", false
 	}
 
-	if !etagMatches(ifMatch, zone.Version) {
+	if !strongETagMatches(ifMatch, zone.Version) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",
@@ -406,10 +406,28 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 		return nil, "", false
 	}
 
+	if err := model.RepairZoneDerivedFields(zone); err != nil {
+		h.logger.Warn("Zone normalization failed before record mutation", zap.String("zone", zone.Name), zap.Error(err))
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Zone validation failed",
+			map[string]interface{}{"error": err.Error()},
+		))
+		return nil, "", false
+	}
+
 	return zone, zone.Version, true
 }
 
 func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record *model.Record) bool {
+	if err := model.NormalizeRecordDerivedFields(record); err != nil {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Record validation failed",
+			map[string]interface{}{"error": err.Error()},
+		))
+		return false
+	}
 	if err := model.ValidateRecord(record); err != nil {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
@@ -466,6 +484,10 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 	}
 	defer signedWrite.Abort()
 
+	if !h.storeSignedZoneWrite(c, signedWrite, "record mutation") {
+		return nil, false
+	}
+
 	if err := h.store.UpdateZone(c.Request.Context(), zone, expectedVersion); err != nil {
 		if err == model.ErrZoneNotFound {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
@@ -492,6 +514,10 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 		return nil, false
 	}
 
+	if !h.commitSignedZoneWrite(c, signedWrite, "record mutation") {
+		return nil, false
+	}
+
 	updated, err := h.store.GetZone(c.Request.Context(), zone.Name)
 	if err != nil {
 		h.logger.Error("Failed to retrieve updated zone", zap.String("zone", zone.Name), zap.Error(err))
@@ -503,7 +529,9 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 		return nil, false
 	}
 
-	h.completeSignedZoneWrite(signedWrite)
+	if !h.completeSignedZoneWrite(c, signedWrite, "record mutation") {
+		return nil, false
+	}
 
 	c.Header("ETag", formatETag(updated.Version))
 	return updated, true

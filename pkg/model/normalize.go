@@ -43,6 +43,28 @@ func NormalizeDomainName(name string) string {
 	return NormalizeZoneName(name)
 }
 
+// NormalizeDomainTargetName expands a DNS RDATA domain target under a zone
+// origin. Targets without a trailing dot are relative to the zone unless they
+// already end with the zone origin.
+func NormalizeDomainTargetName(name, zoneOrigin string) string {
+	if name == "" || name == "@" {
+		return name
+	}
+	if strings.HasSuffix(name, ".") {
+		return NormalizeDomainName(name)
+	}
+
+	zoneName := NormalizeZoneName(zoneOrigin)
+	trimmedZone := strings.TrimSuffix(zoneName, ".")
+	nameLower := strings.ToLower(name)
+	zoneLower := strings.ToLower(trimmedZone)
+	if nameLower == zoneLower || strings.HasSuffix(nameLower, "."+zoneLower) {
+		return NormalizeDomainName(name)
+	}
+
+	return NormalizeDomainName(name + "." + trimmedZone)
+}
+
 // NormalizeRecordOwnerName expands a DNS record owner name under a zone origin.
 // Owner names may be relative to the zone, absolute FQDNs, "@", or wildcards.
 // A name without a trailing dot that already ends with the zone origin is

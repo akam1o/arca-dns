@@ -45,8 +45,12 @@ type Syncer struct {
 // NewSyncer creates a new zone syncer.
 func NewSyncer(client *Client, fileMgr *FileManager, cfg config.SyncConfig, logger *zap.Logger) *Syncer {
 	if client != nil {
+		signatureKey := cfg.ControllerSignatureKey
+		if signatureKey == "" {
+			signatureKey = cfg.ControllerPublicKey
+		}
 		client.SetVerifyChecksums(cfg.VerifyChecksums)
-		client.SetSignatureVerification(cfg.VerifySignatures, cfg.ControllerPublicKey)
+		client.SetSignatureVerification(cfg.VerifySignatures, signatureKey)
 	}
 
 	return &Syncer{
@@ -175,23 +179,10 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 				zap.Error(err))
 			errorCount++
 			zoneErrorCount++
-
-			// Update failure count
-			s.mu.Lock()
-			state := s.getOrCreateStateLocked(zone.Name)
-			state.FailCount++
-			state.LastAttempt = time.Now()
-			s.mu.Unlock()
+			s.recordZoneSyncFailure(zone.Name, time.Now())
 		} else {
 			successCount++
-
-			// Reset failure count and update state
-			s.mu.Lock()
-			state := s.getOrCreateStateLocked(zone.Name)
-			state.LastSync = time.Now()
-			state.LastAttempt = time.Now()
-			state.FailCount = 0
-			s.mu.Unlock()
+			s.recordZoneSyncSuccess(zone.Name, time.Now())
 		}
 	}
 
@@ -201,9 +192,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 
 	// Update last success time only after a fully clean reconciliation.
 	if errorCount == 0 && (successCount > 0 || len(zones) == 0) {
-		s.mu.Lock()
-		s.lastSuccess = time.Now()
-		s.mu.Unlock()
+		s.recordSyncSuccess(time.Now())
 	}
 
 	s.logger.Info("Sync cycle completed",
@@ -347,10 +336,29 @@ func (s *Syncer) rollbackDeletedZone(ctx context.Context, zoneName string) error
 }
 
 func (s *Syncer) recordDeleteFailure(zoneName string) {
+	s.recordZoneSyncFailure(zoneName, time.Now())
+}
+
+func (s *Syncer) recordZoneSyncFailure(zoneName string, now time.Time) {
 	s.mu.Lock()
 	state := s.getOrCreateStateLocked(zoneName)
 	state.FailCount++
-	state.LastAttempt = time.Now()
+	state.LastAttempt = now
+	s.mu.Unlock()
+}
+
+func (s *Syncer) recordZoneSyncSuccess(zoneName string, now time.Time) {
+	s.mu.Lock()
+	state := s.getOrCreateStateLocked(zoneName)
+	state.LastSync = now
+	state.LastAttempt = now
+	state.FailCount = 0
+	s.mu.Unlock()
+}
+
+func (s *Syncer) recordSyncSuccess(now time.Time) {
+	s.mu.Lock()
+	s.lastSuccess = now
 	s.mu.Unlock()
 }
 
@@ -359,36 +367,49 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 	// Get current state
 	s.mu.RLock()
 	currentETag := ""
+	currentBody := ""
 	if state, exists := s.zoneStates[zone.Name]; exists {
 		currentETag = state.Version
 	}
 	s.mu.RUnlock()
 
-	if currentETag != "" && !s.localZoneFileMatchesState(zone.Name, currentETag) {
-		s.logger.Warn("Local zone file missing or mismatched, forcing full fetch",
-			zap.String("zone", zone.Name),
-			zap.String("etag", currentETag))
-		currentETag = ""
+	if currentETag != "" {
+		var matches bool
+		currentBody, matches = s.localZoneFileForState(zone.Name, currentETag)
+		if !matches {
+			s.logger.Warn("Local zone file missing or mismatched, forcing full fetch",
+				zap.String("zone", zone.Name),
+				zap.String("etag", currentETag))
+			currentETag = ""
+			currentBody = ""
+		}
 	}
 
+	currentSerial, hasCurrentSerial := s.localZoneSerial(zone.Name)
+
 	// Step 3: Conditional fetch using ETag
-	zoneContent, newETag, notModified, err := s.client.FetchSignedZone(ctx, zone.Name, currentETag)
+	artifact, err := s.client.FetchSignedZoneArtifactWithCurrent(ctx, zone.Name, currentETag, currentBody)
 	if err != nil {
 		return fmt.Errorf("failed to fetch zone: %w", err)
 	}
 
 	// If zone hasn't changed, skip the rest
-	if notModified {
+	if artifact.NotModified {
 		s.logger.Debug("Zone not modified (304)",
 			zap.String("zone", zone.Name),
 			zap.String("etag", currentETag))
 		return nil
 	}
 
+	if hasCurrentSerial && zoneSerialBefore(artifact.Serial, currentSerial) {
+		return fmt.Errorf("rejected stale signed zone: serial %d is older than local serial %d", artifact.Serial, currentSerial)
+	}
+
 	s.logger.Info("Zone updated, applying changes",
 		zap.String("zone", zone.Name),
 		zap.String("old_version", currentETag),
-		zap.String("new_version", newETag))
+		zap.String("new_version", artifact.ETag),
+		zap.Uint32("serial", artifact.Serial))
 
 	// Step 4: Checksum verification is done in client.FetchSignedZone
 
@@ -401,7 +422,7 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 		}
 	}
 	hadPreviousZoneFile := s.fileMgr.ZoneExists(zone.Name)
-	rollbackZoneFile, err := s.fileMgr.WriteZoneFileValidatedWithRollback(zone.Name, zoneContent, validate)
+	rollbackZoneFile, err := s.fileMgr.WriteZoneFileValidatedWithRollback(zone.Name, artifact.Content, validate)
 	if err != nil {
 		return fmt.Errorf("failed to write zone file: %w", err)
 	}
@@ -422,12 +443,13 @@ func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
 
 	s.logger.Info("Zone synchronized successfully",
 		zap.String("zone", zone.Name),
-		zap.String("version", newETag))
+		zap.String("version", artifact.ETag),
+		zap.Uint32("serial", artifact.Serial))
 
 	// Record the effective ETag/version returned by the controller.
 	s.mu.Lock()
 	state := s.getOrCreateStateLocked(zone.Name)
-	state.Version = newETag
+	state.Version = artifact.ETag
 	s.mu.Unlock()
 
 	return nil
@@ -467,23 +489,51 @@ func (s *Syncer) rollbackAppliedZone(ctx context.Context, zoneName string, hadPr
 	return nil
 }
 
-func (s *Syncer) localZoneFileMatchesState(zoneName, currentETag string) bool {
+func (s *Syncer) localZoneFileForState(zoneName, currentETag string) (string, bool) {
 	if !s.fileMgr.ZoneExists(zoneName) {
-		return false
+		return "", false
 	}
 
 	expectedHash := etagValue(currentETag)
 	if len(expectedHash) != 64 || !isHex(expectedHash) {
-		return true
+		return "", true
 	}
 
 	content, err := s.fileMgr.ReadZoneFile(zoneName)
 	if err != nil {
-		return false
+		return "", false
 	}
 
 	sum := sha256.Sum256([]byte(content))
-	return hex.EncodeToString(sum[:]) == expectedHash
+	if hex.EncodeToString(sum[:]) != expectedHash {
+		return "", false
+	}
+
+	return content, true
+}
+
+func (s *Syncer) localZoneSerial(zoneName string) (uint32, bool) {
+	if !s.fileMgr.ZoneExists(zoneName) {
+		return 0, false
+	}
+
+	content, err := s.fileMgr.ReadZoneFile(zoneName)
+	if err != nil {
+		s.logger.Warn("Failed to read local zone file for serial check",
+			zap.String("zone", zoneName),
+			zap.Error(err))
+		return 0, false
+	}
+
+	serial, err := parseZoneSOASerial(zoneName, content)
+	if err != nil {
+		s.logger.Warn("Failed to parse local SOA serial for rollback check",
+			zap.String("zone", zoneName),
+			zap.Error(err))
+		return 0, false
+	}
+
+	return serial, true
 }
 
 func etagValue(etag string) string {
@@ -504,6 +554,7 @@ func (s *Syncer) SyncZone(ctx context.Context, zoneName string) error {
 	// Fetch zone info from controller
 	zones, err := s.client.ListZones(ctx)
 	if err != nil {
+		s.recordZoneSyncFailure(zoneName, time.Now())
 		return fmt.Errorf("failed to list zones: %w", err)
 	}
 
@@ -517,10 +568,19 @@ func (s *Syncer) SyncZone(ctx context.Context, zoneName string) error {
 	}
 
 	if targetZone == nil {
+		s.recordZoneSyncFailure(zoneName, time.Now())
 		return fmt.Errorf("zone not found: %s", zoneName)
 	}
 
-	return s.syncZone(ctx, *targetZone)
+	if err := s.syncZone(ctx, *targetZone); err != nil {
+		s.recordZoneSyncFailure(targetZone.Name, time.Now())
+		return err
+	}
+
+	now := time.Now()
+	s.recordZoneSyncSuccess(targetZone.Name, now)
+	s.recordSyncSuccess(now)
+	return nil
 }
 
 // GetZoneState returns the current sync state for a zone.

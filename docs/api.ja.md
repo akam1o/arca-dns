@@ -6,8 +6,8 @@ Controller API の source of truth は `api/openapi.yaml`（OpenAPI 3.0）です
 
 ## Base URL
 
-- API base: `http://<controller-host>:8080/api/v1`
-- Health/metrics base（`/api/v1/*` でも alias あり）: `http://<controller-host>:8080`
+- API base: `http://<controller-host>:8080/api/v1`。認証不要の health/readiness/status endpoint は `http://<controller-host>:8080`
+- Observability base: `http://<controller-host>:9053`。Prometheus metrics と過去互換の health/readiness/status alias を提供します。
 
 ## 認証
 
@@ -17,7 +17,9 @@ controller 設定で API 認証を有効にしている場合、*保護された
 X-API-Key: <api-key>
 ```
 
-ヘルスエンドポイント（`/health`, `/ready`, `/status`, `/metrics`）は認証不要です。
+API キーには `api.auth.api_key_roles` で role を割り当てられます。`admin` key は管理 API にアクセスでき、`agent` key は zone summary 一覧と signed artifact 読み取りに制限されます。
+
+Health/readiness/status endpoint（`/health`, `/ready`, `/status`）と observability metrics（`/metrics`）は認証不要です。Health/readiness/status は API listener、metrics は observability listener で提供されます。
 
 ## データモデル（Zone）
 
@@ -48,23 +50,25 @@ X-API-Key: <api-key>
 
 ## 同時更新制御（ETag / If-Match）
 
-- `POST /zones`, `GET /zones/:name`, `PUT /zones/:name` の成功レスポンスには `ETag` ヘッダ（`ETag: <zone.version>`）が含まれます。
-- `PUT /zones/:name` と `DELETE /zones/:name` は `If-Match: <etag>` が必須です。並行更新があると `409 Conflict` を返します。
-- `GET /zones/:name/signed` は `If-None-Match: <etag>` をサポートし、変更が無い場合は `304 Not Modified`（`ETag` + メタデータヘッダ付き）を返します。
-  - Note: `ETag` は引用符付き（例: `ETag: "<zone.version>"`）で返されます。クライアントは `If-Match` / `If-None-Match` に同値を返してください（引用符付き/なしどちらも受理します）。
+- `POST /zones`, `GET /zones/:name`, `PUT /zones/:name` の成功レスポンスには zone resource `ETag`（`ETag: "<zone.version>"`）が含まれます。
+- `PUT /zones/:name` と `DELETE /zones/:name` は、zone resource ETag を `If-Match` に指定する必要があります。並行更新があると `409 Conflict` を返します。
+- `GET /zones/:name` は zone resource ETag による `If-None-Match` をサポートし、変更が無い場合は `304 Not Modified` を返します。
 
 署名済みアーティファクトについて:
-- `X-Zone-Hash` は返却ボディ（ゾーンファイル）の SHA256（hex）全体
+- `GET /zones/:name/signed` と `GET /zones/:name/signed/metadata` は、zone resource ETag ではなく signed artifact `ETag` を返します。
+- signed artifact `ETag` は署名済みゾーンファイル本文の SHA256（hex）全体を HTTP ETag として引用符付きで返したものです。
+- 署名済みアーティファクトの条件付きリクエストでは、この signed artifact ETag を `If-None-Match` に指定してください。
+- `X-Zone-Hash` は同じ SHA256 値を引用符なしで返します。
 - `X-Zone-Hash8` は `X-Zone-Hash` の先頭 8 文字（短縮）
+- 条件付きリクエストヘッダでは、引用符付き/なしのどちらの ETag 値も受理します。
 
 ## エンドポイント
 
 ### Health / Status / Metrics（認証不要）
 
-- `GET /health`（および `GET /api/v1/health`）: liveness（`{"status":"ok"}`）
-- `GET /ready`（および `GET /api/v1/ready`）: readiness（`{"status":"ready"}` または `503 {"status":"not_ready","error":"..."}`）
-- `GET /status`（および `GET /api/v1/status`）: ビルド情報（`status`, `version`, `commit`, `date`）
-- `GET /metrics`（および `GET /api/v1/metrics`）: Prometheus メトリクス（メトリクス無効時は `501` になることがあります）
+- API listener（`:8080`）: `GET /health`, `GET /ready`, `GET /status`
+- Observability listener（`:9053`）: `GET /metrics`
+- Observability listener には過去互換の `/health`, `/ready`, `/status`, `/api/v1/*` alias も残しています。
 
 ### Zones（JSON モード）
 
@@ -76,7 +80,7 @@ X-API-Key: <api-key>
 
 Notes:
 - `PUT` では JSON ボディ内の `name` がパスパラメータ `:name` と一致している必要があります。
-- 作成/更新後、controller は非同期に DNSSEC 署名を試みます（署名に失敗してもリクエスト自体は成功し、ログに記録されます）。
+- DNSSEC が有効な controller では、作成/更新の backend 書き込み前に同期的に署名します。署名に失敗した場合、リクエストは `500 Failed to sign zone` で失敗し、zone は保存されません。
 
 #### レコード操作（records をどう更新するか）
 
@@ -110,10 +114,10 @@ controller は `record.type` に応じて `record.value` を検証します（`p
 - `CNAME`, `NS`, `PTR`: ドメイン名（例: `"target.example.com."`）
 - `MX`: `"priority domain"`（例: `"10 mail.example.com."`）
 - `SRV`: `"priority weight port target"`（例: `"10 5 443 svc.example.com."`）
-- `TXT`: 1〜65535 文字の任意文字列（例: `"v=spf1 -all"`）
+- `TXT`: 空文字列を含む 0〜65279 bytes の任意文字列（例: `"v=spf1 -all"`）
 - `CAA`: `"flags tag value"`（例: `"0 issue letsencrypt.org"`）
 
-ドメイン名は末尾ドットあり/なしのどちらも現在は有効として扱います。混乱を避けるため、`value` では末尾ドット付き FQDN を推奨します。
+末尾ドットのないドメインターゲットは、既に zone origin で終わっている場合を除き、zone origin からの相対名として解釈されます。外部ターゲットを指定する場合は、`value` で末尾ドット付き FQDN を使ってください。
 
 ### Zones（Raw BIND モード）
 
@@ -131,7 +135,7 @@ controller は `record.type` に応じて `record.value` を検証します（`p
 ### Zone Artifacts（agent 向け）
 
 - `GET /zones/:name/signed`: 署名済みゾーンファイル（BIND 形式）をダウンロード
-  - レスポンスヘッダに `ETag`, `X-Zone-Serial`, `X-Zone-Hash`, `Content-Disposition` を含みます。
+  - レスポンスヘッダに `ETag`, `X-Zone-Serial`, `X-Zone-Hash`, 任意の `X-Zone-Signature`, `Content-Disposition` を含みます。
   - 署名サービスが利用できない場合、controller は未署名の生成ゾーンへフォールバックします。
 
 ### DNSSEC

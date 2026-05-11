@@ -48,8 +48,28 @@ type readinessFailingStore struct {
 	*backend.MemoryBackend
 }
 
+func (s *readinessFailingStore) HealthCheck(ctx context.Context) error {
+	return errors.New("dial tcp db.internal:5432: schema path /var/lib/arca-dns")
+}
+
 func (s *readinessFailingStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
 	return nil, errors.New("dial tcp db.internal:5432: schema path /var/lib/arca-dns")
+}
+
+type readinessHealthStore struct {
+	*backend.MemoryBackend
+	healthCalls int
+	listCalls   int
+}
+
+func (s *readinessHealthStore) HealthCheck(ctx context.Context) error {
+	s.healthCalls++
+	return nil
+}
+
+func (s *readinessHealthStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	s.listCalls++
+	return nil, errors.New("ListZones should not be used for readiness")
 }
 
 type zoneStoreWithoutConditionalDelete struct {
@@ -80,6 +100,94 @@ func (s *zoneStoreWithoutConditionalDelete) Close() error {
 	return s.inner.Close()
 }
 
+type singleZoneStore struct {
+	zone *model.Zone
+}
+
+func (s *singleZoneStore) GetZone(ctx context.Context, name string) (*model.Zone, error) {
+	if s.zone == nil || model.NormalizeZoneName(s.zone.Name) != model.NormalizeZoneName(name) {
+		return nil, model.ErrZoneNotFound
+	}
+	return cloneAPITestZone(s.zone), nil
+}
+
+func (s *singleZoneStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	if s.zone == nil {
+		return []*model.Zone{}, nil
+	}
+	return []*model.Zone{cloneAPITestZone(s.zone)}, nil
+}
+
+func (s *singleZoneStore) CreateZone(ctx context.Context, zone *model.Zone) error {
+	if s.zone != nil {
+		return model.ErrZoneAlreadyExists
+	}
+	s.zone = cloneAPITestZone(zone)
+	return nil
+}
+
+func (s *singleZoneStore) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
+	if s.zone == nil || model.NormalizeZoneName(s.zone.Name) != model.NormalizeZoneName(zone.Name) {
+		return model.ErrZoneNotFound
+	}
+	if expectedVersion != "" && expectedVersion != s.zone.Version {
+		return model.ErrConflict
+	}
+	s.zone = cloneAPITestZone(zone)
+	return nil
+}
+
+func (s *singleZoneStore) DeleteZone(ctx context.Context, name string) error {
+	if s.zone == nil || model.NormalizeZoneName(s.zone.Name) != model.NormalizeZoneName(name) {
+		return model.ErrZoneNotFound
+	}
+	s.zone = nil
+	return nil
+}
+
+func (s *singleZoneStore) Close() error {
+	return nil
+}
+
+func cloneAPITestZone(zone *model.Zone) *model.Zone {
+	if zone == nil {
+		return nil
+	}
+	copied := *zone
+	copied.Records = make([]model.Record, len(zone.Records))
+	copy(copied.Records, zone.Records)
+	for i := range copied.Records {
+		if copied.Records[i].Priority != nil {
+			priority := *copied.Records[i].Priority
+			copied.Records[i].Priority = &priority
+		}
+	}
+	return &copied
+}
+
+func apiTestApexNSRecord() model.Record {
+	return model.Record{Name: "@", Type: model.RecordTypeNS, TTL: 300, Value: "ns1.example.com."}
+}
+
+func apiRecordsExceptType(records []model.Record, recordType string) []model.Record {
+	filtered := make([]model.Record, 0, len(records))
+	for _, record := range records {
+		if record.Type != recordType {
+			filtered = append(filtered, record)
+		}
+	}
+	return filtered
+}
+
+func apiRecordByNameType(records []model.Record, name, recordType string) *model.Record {
+	for i := range records {
+		if records[i].Name == name && records[i].Type == recordType {
+			return &records[i]
+		}
+	}
+	return nil
+}
+
 func TestCreateZone(t *testing.T) {
 	_, _, server := setupTest(t)
 	defer server.Close()
@@ -88,6 +196,7 @@ func TestCreateZone(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -110,6 +219,68 @@ func TestCreateZone(t *testing.T) {
 	assert.NotZero(t, created.SOA.Serial)
 }
 
+func TestCreateZone_IgnoresClientManagedFields(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	clientTime := time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)
+	body, err := json.Marshal(map[string]interface{}{
+		"name":       "managed.example.",
+		"version":    "client-version",
+		"created_at": clientTime,
+		"updated_at": clientTime,
+		"dnssec": map[string]interface{}{
+			"enabled":   true,
+			"algorithm": 13,
+		},
+		"soa": model.DefaultSOA("ns1.managed.example.", "admin.managed.example."),
+		"records": []map[string]interface{}{
+			{
+				"name":  "@",
+				"type":  "NS",
+				"ttl":   300,
+				"value": "ns1.managed.example.",
+			},
+			{
+				"id":    "client-record-id",
+				"name":  "@",
+				"type":  "A",
+				"ttl":   300,
+				"value": "192.0.2.1",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var created model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+	assert.NotEqual(t, "client-version", created.Version)
+	assert.False(t, created.CreatedAt.IsZero())
+	assert.False(t, created.UpdatedAt.IsZero())
+	assert.NotEqual(t, clientTime, created.CreatedAt)
+	assert.NotEqual(t, clientTime, created.UpdatedAt)
+	assert.Nil(t, created.DNSSEC)
+	require.Len(t, created.Records, 2)
+	createdA := apiRecordByNameType(created.Records, "@", model.RecordTypeA)
+	require.NotNil(t, createdA)
+	assert.NotEmpty(t, createdA.ID)
+	assert.NotEqual(t, "client-record-id", createdA.ID)
+
+	persisted, err := store.GetZone(context.Background(), "managed.example.")
+	require.NoError(t, err)
+	assert.Nil(t, persisted.DNSSEC)
+	require.Len(t, persisted.Records, 2)
+	persistedA := apiRecordByNameType(persisted.Records, "@", model.RecordTypeA)
+	require.NotNil(t, persistedA)
+	assert.NotEqual(t, "client-record-id", persistedA.ID)
+}
+
 func TestReadyRedactsBackendErrors(t *testing.T) {
 	logger := zap.NewNop()
 	store := &readinessFailingStore{MemoryBackend: backend.NewMemoryBackend()}
@@ -118,7 +289,7 @@ func TestReadyRedactsBackendErrors(t *testing.T) {
 	apiCfg.Auth.Enabled = true
 	apiCfg.Auth.APIKeys = nil
 	apiCfg.RateLimit.Enabled = false
-	router := SetupRouter(handler, &apiCfg, logger)
+	router := SetupObservabilityRouter(handler, &apiCfg, logger)
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	w := httptest.NewRecorder()
@@ -133,13 +304,32 @@ func TestReadyRedactsBackendErrors(t *testing.T) {
 	assert.NotContains(t, w.Body.String(), "/var/lib/arca-dns")
 }
 
+func TestReadyUsesBackendHealthCheck(t *testing.T) {
+	logger := zap.NewNop()
+	store := &readinessHealthStore{MemoryBackend: backend.NewMemoryBackend()}
+	handler := NewHandler(store, nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = false
+	apiCfg.RateLimit.Enabled = false
+	router := SetupObservabilityRouter(handler, &apiCfg, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 1, store.healthCalls)
+	assert.Equal(t, 0, store.listCalls)
+}
+
 func TestHeadZoneReturnsETagWithoutBody(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
 
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.Background(), zone))
 
@@ -173,6 +363,7 @@ func TestHeadSignedZoneReturnsArtifactHeadersWithoutBody(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -207,8 +398,9 @@ func TestCreateZone_Duplicate(t *testing.T) {
 	defer server.Close()
 
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 
 	body, err := json.Marshal(zone)
@@ -237,6 +429,7 @@ func TestCreateZone_RejectsDuplicateRecords(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
 			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
 		},
@@ -257,8 +450,9 @@ func TestGetZone(t *testing.T) {
 
 	// Create a zone first
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
@@ -295,8 +489,9 @@ func TestListZones(t *testing.T) {
 	zones := []string{"example.com.", "test.com.", "demo.org."}
 	for _, name := range zones {
 		zone := &model.Zone{
-			Name: name,
-			SOA:  model.DefaultSOA("ns1."+name, "admin."+name),
+			Name:    name,
+			SOA:     model.DefaultSOA("ns1."+name, "admin."+name),
+			Records: []model.Record{apiTestApexNSRecord()},
 		}
 		require.NoError(t, store.CreateZone(context.TODO(), zone))
 	}
@@ -330,6 +525,7 @@ func TestListZones_SummaryFields(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -362,8 +558,9 @@ func TestListZones_Pagination(t *testing.T) {
 	// Create 5 zones
 	for i := 1; i <= 5; i++ {
 		zone := &model.Zone{
-			Name: "zone" + string(rune('a'+i-1)) + ".com.",
-			SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+			Name:    "zone" + string(rune('a'+i-1)) + ".com.",
+			SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+			Records: []model.Record{apiTestApexNSRecord()},
 		}
 		require.NoError(t, store.CreateZone(context.TODO(), zone))
 	}
@@ -392,6 +589,7 @@ func TestUpdateZone(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -428,8 +626,79 @@ func TestUpdateZone(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
 	assert.NotEqual(t, originalVersion, updated.Version)
 	assert.Equal(t, uint32(7200), updated.SOA.Refresh)
-	assert.Len(t, updated.Records, 1)
-	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
+	userRecords := apiRecordsExceptType(updated.Records, model.RecordTypeNS)
+	assert.Len(t, userRecords, 1)
+	assert.Equal(t, "192.0.2.1", userRecords[0].Value)
+}
+
+func TestUpdateZone_RejectsWeakIfMatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	retrieved.SOA.Refresh = 7200
+
+	body, err := json.Marshal(retrieved)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", `W/"`+retrieved.Version+`"`)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, uint32(3600), unchanged.SOA.Refresh)
+}
+
+func TestUpdateZone_NormalizesURLAndBodyNamesBeforeComparison(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	retrieved, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	soa := retrieved.SOA
+	soa.Refresh = 7200
+
+	body, err := json.Marshal(map[string]interface{}{
+		"name": "example.com.",
+		"soa":  soa,
+	})
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/EXAMPLE.COM", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", retrieved.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	assert.Equal(t, "example.com.", updated.Name)
+	assert.Equal(t, uint32(7200), updated.SOA.Refresh)
 }
 
 func TestUpdateZone_OmittedRecordsPreservesExistingRecords(t *testing.T) {
@@ -440,6 +709,7 @@ func TestUpdateZone_OmittedRecordsPreservesExistingRecords(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"},
 		},
@@ -469,9 +739,54 @@ func TestUpdateZone_OmittedRecordsPreservesExistingRecords(t *testing.T) {
 	var updated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
 	assert.Equal(t, uint32(7200), updated.SOA.Refresh)
-	assert.Len(t, updated.Records, 2)
-	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
-	assert.Equal(t, "192.0.2.2", updated.Records[1].Value)
+	userRecords := apiRecordsExceptType(updated.Records, model.RecordTypeNS)
+	assert.Len(t, userRecords, 2)
+	assert.Equal(t, "192.0.2.1", userRecords[0].Value)
+	assert.Equal(t, "192.0.2.2", userRecords[1].Value)
+}
+
+func TestUpdateZone_RepairsStoredDerivedPriority(t *testing.T) {
+	priority := uint16(20)
+	store := &singleZoneStore{
+		zone: &model.Zone{
+			Name:    "example.com.",
+			Version: "v1",
+			SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+			Records: []model.Record{
+				apiTestApexNSRecord(),
+				{Name: "@", Type: model.RecordTypeMX, TTL: 300, Value: "10 mail.example.com.", Priority: &priority},
+			},
+		},
+	}
+	_, server := setupTestWithStore(t, store)
+
+	soa := store.zone.SOA
+	soa.Refresh = 7200
+	body, err := json.Marshal(map[string]interface{}{
+		"name": "example.com.",
+		"soa":  soa,
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", "v1")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	mxRecord := apiRecordByNameType(updated.Records, "@", model.RecordTypeMX)
+	require.NotNil(t, mxRecord)
+	require.NotNil(t, mxRecord.Priority)
+	assert.Equal(t, uint16(10), *mxRecord.Priority)
+	storedMX := apiRecordByNameType(store.zone.Records, "@", model.RecordTypeMX)
+	require.NotNil(t, storedMX)
+	require.NotNil(t, storedMX.Priority)
+	assert.Equal(t, uint16(10), *storedMX.Priority)
 }
 
 func TestUpdateZone_EmptyRecordsPreservesExistingRecords(t *testing.T) {
@@ -482,6 +797,7 @@ func TestUpdateZone_EmptyRecordsPreservesExistingRecords(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -507,8 +823,9 @@ func TestUpdateZone_EmptyRecordsPreservesExistingRecords(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var updated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
-	assert.Len(t, updated.Records, 1)
-	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
+	userRecords := apiRecordsExceptType(updated.Records, model.RecordTypeNS)
+	assert.Len(t, userRecords, 1)
+	assert.Equal(t, "192.0.2.1", userRecords[0].Value)
 }
 
 func TestListRecords(t *testing.T) {
@@ -519,6 +836,7 @@ func TestListRecords(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"},
 		},
@@ -536,7 +854,7 @@ func TestListRecords(t *testing.T) {
 		Records []model.Record `json:"records"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-	assert.Len(t, body.Records, 2)
+	assert.Len(t, body.Records, 3)
 }
 
 func TestRecordIDsDerivedWhenBackendIDMissing(t *testing.T) {
@@ -567,6 +885,7 @@ func TestCreateRecord(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -592,9 +911,84 @@ func TestCreateRecord(t *testing.T) {
 
 	var updated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
-	assert.Len(t, updated.Records, 2)
-	assert.Equal(t, "www", updated.Records[1].Name)
-	assert.Equal(t, "192.0.2.2", updated.Records[1].Value)
+	assert.Len(t, updated.Records, 3)
+	createdRecord := apiRecordByNameType(updated.Records, "www", model.RecordTypeA)
+	require.NotNil(t, createdRecord)
+	assert.Equal(t, "192.0.2.2", createdRecord.Value)
+}
+
+func TestCreateRecord_NormalizesDerivedPriority(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	record := model.Record{Name: "@", Type: "MX", TTL: 300, Value: "0 mail.example.com."}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	var updated model.Zone
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+	require.Len(t, updated.Records, 3)
+	mxRecord := apiRecordByNameType(updated.Records, "@", model.RecordTypeMX)
+	require.NotNil(t, mxRecord)
+	require.NotNil(t, mxRecord.Priority)
+	assert.Equal(t, uint16(0), *mxRecord.Priority)
+}
+
+func TestCreateRecord_RejectsPriorityMismatch(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	priority := uint16(20)
+	record := model.Record{Name: "@", Type: "MX", TTL: 300, Value: "10 mail.example.com.", Priority: &priority}
+	body, err := json.Marshal(record)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Len(t, unchanged.Records, 2)
 }
 
 func TestUpdateRecord(t *testing.T) {
@@ -605,14 +999,17 @@ func TestUpdateRecord(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 	current, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
-	require.Len(t, current.Records, 1)
-	recordID := current.Records[0].ID
+	require.Len(t, current.Records, 2)
+	currentA := apiRecordByNameType(current.Records, "@", model.RecordTypeA)
+	require.NotNil(t, currentA)
+	recordID := currentA.ID
 
 	record := model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.9"}
 	body, err := json.Marshal(record)
@@ -629,9 +1026,11 @@ func TestUpdateRecord(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	var updated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
-	require.Len(t, updated.Records, 1)
-	assert.Equal(t, recordID, updated.Records[0].ID)
-	assert.Equal(t, "192.0.2.9", updated.Records[0].Value)
+	require.Len(t, updated.Records, 2)
+	updatedA := apiRecordByNameType(updated.Records, "@", model.RecordTypeA)
+	require.NotNil(t, updatedA)
+	assert.Equal(t, recordID, updatedA.ID)
+	assert.Equal(t, "192.0.2.9", updatedA.Value)
 }
 
 func TestUpdateRecordAcceptsDerivedIDForStoredRecordID(t *testing.T) {
@@ -645,15 +1044,18 @@ func TestUpdateRecordAcceptsDerivedIDForStoredRecordID(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 	current, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
-	require.Len(t, current.Records, 1)
-	storedID := current.Records[0].ID
-	derivedID := derivedRecordID(current.Records[0])
+	require.Len(t, current.Records, 2)
+	currentA := apiRecordByNameType(current.Records, "@", model.RecordTypeA)
+	require.NotNil(t, currentA)
+	storedID := currentA.ID
+	derivedID := derivedRecordID(*currentA)
 	require.NotEmpty(t, storedID)
 	require.NotEqual(t, storedID, derivedID)
 
@@ -672,9 +1074,11 @@ func TestUpdateRecordAcceptsDerivedIDForStoredRecordID(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	var updated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
-	require.Len(t, updated.Records, 1)
-	assert.Equal(t, storedID, updated.Records[0].ID)
-	assert.Equal(t, "192.0.2.9", updated.Records[0].Value)
+	require.Len(t, updated.Records, 2)
+	updatedA := apiRecordByNameType(updated.Records, "@", model.RecordTypeA)
+	require.NotNil(t, updatedA)
+	assert.Equal(t, storedID, updatedA.ID)
+	assert.Equal(t, "192.0.2.9", updatedA.Value)
 }
 
 func TestUpdateRecordReleasesDerivedIDForContentAddressedBackends(t *testing.T) {
@@ -687,15 +1091,18 @@ func TestUpdateRecordReleasesDerivedIDForContentAddressedBackends(t *testing.T) 
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 	current, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
-	require.Len(t, current.Records, 1)
-	require.Empty(t, current.Records[0].ID)
-	originalDerivedID := derivedRecordID(current.Records[0])
+	require.Len(t, current.Records, 2)
+	currentA := apiRecordByNameType(current.Records, "@", model.RecordTypeA)
+	require.NotNil(t, currentA)
+	require.Empty(t, currentA.ID)
+	originalDerivedID := derivedRecordID(*currentA)
 
 	updateRecord := model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.9"}
 	body, err := json.Marshal(updateRecord)
@@ -712,15 +1119,19 @@ func TestUpdateRecordReleasesDerivedIDForContentAddressedBackends(t *testing.T) 
 
 	var updated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
-	require.Len(t, updated.Records, 1)
-	updatedID := updated.Records[0].ID
+	require.Len(t, updated.Records, 2)
+	updatedA := apiRecordByNameType(updated.Records, "@", model.RecordTypeA)
+	require.NotNil(t, updatedA)
+	updatedID := updatedA.ID
 	require.NotEmpty(t, updatedID)
 	require.NotEqual(t, originalDerivedID, updatedID)
 
 	persisted, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
-	require.Len(t, persisted.Records, 1)
-	require.Empty(t, persisted.Records[0].ID)
+	require.Len(t, persisted.Records, 2)
+	persistedA := apiRecordByNameType(persisted.Records, "@", model.RecordTypeA)
+	require.NotNil(t, persistedA)
+	require.Empty(t, persistedA.ID)
 
 	createRecord := model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"}
 	body, err = json.Marshal(createRecord)
@@ -737,10 +1148,17 @@ func TestUpdateRecordReleasesDerivedIDForContentAddressedBackends(t *testing.T) 
 
 	var recreated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&recreated))
-	require.Len(t, recreated.Records, 2)
-	assert.NotEqual(t, recreated.Records[0].ID, recreated.Records[1].ID)
-	assert.Contains(t, []string{recreated.Records[0].ID, recreated.Records[1].ID}, originalDerivedID)
-	assert.Contains(t, []string{recreated.Records[0].ID, recreated.Records[1].ID}, updatedID)
+	require.Len(t, recreated.Records, 3)
+	aRecords := make([]model.Record, 0, 2)
+	for _, record := range recreated.Records {
+		if record.Type == model.RecordTypeA {
+			aRecords = append(aRecords, record)
+		}
+	}
+	require.Len(t, aRecords, 2)
+	assert.NotEqual(t, aRecords[0].ID, aRecords[1].ID)
+	assert.Contains(t, []string{aRecords[0].ID, aRecords[1].ID}, originalDerivedID)
+	assert.Contains(t, []string{aRecords[0].ID, aRecords[1].ID}, updatedID)
 }
 
 func TestDeleteRecord(t *testing.T) {
@@ -751,6 +1169,7 @@ func TestDeleteRecord(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 			{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"},
 		},
@@ -758,8 +1177,10 @@ func TestDeleteRecord(t *testing.T) {
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 	current, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
-	require.Len(t, current.Records, 2)
-	recordID := current.Records[1].ID
+	require.Len(t, current.Records, 3)
+	wwwRecord := apiRecordByNameType(current.Records, "www", model.RecordTypeA)
+	require.NotNil(t, wwwRecord)
+	recordID := wwwRecord.ID
 
 	req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com./records/"+recordID, nil)
 	require.NoError(t, err)
@@ -772,8 +1193,9 @@ func TestDeleteRecord(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	var updated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
-	require.Len(t, updated.Records, 1)
-	assert.Equal(t, "192.0.2.1", updated.Records[0].Value)
+	userRecords := apiRecordsExceptType(updated.Records, model.RecordTypeNS)
+	require.Len(t, userRecords, 1)
+	assert.Equal(t, "192.0.2.1", userRecords[0].Value)
 }
 
 func TestBulkRecords_CreateUpdateDelete(t *testing.T) {
@@ -784,6 +1206,7 @@ func TestBulkRecords_CreateUpdateDelete(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 			{Name: "old", Type: "A", TTL: 300, Value: "192.0.2.2"},
 		},
@@ -791,9 +1214,13 @@ func TestBulkRecords_CreateUpdateDelete(t *testing.T) {
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 	current, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
-	require.Len(t, current.Records, 2)
-	rootID := current.Records[0].ID
-	oldID := current.Records[1].ID
+	require.Len(t, current.Records, 3)
+	rootRecord := apiRecordByNameType(current.Records, "@", model.RecordTypeA)
+	require.NotNil(t, rootRecord)
+	oldRecord := apiRecordByNameType(current.Records, "old", model.RecordTypeA)
+	require.NotNil(t, oldRecord)
+	rootID := rootRecord.ID
+	oldID := oldRecord.ID
 
 	body, err := json.Marshal(map[string]interface{}{
 		"create": []model.Record{
@@ -821,16 +1248,16 @@ func TestBulkRecords_CreateUpdateDelete(t *testing.T) {
 
 	var updated model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
-	require.Len(t, updated.Records, 2)
+	require.Len(t, updated.Records, 3)
 	assert.NotEqual(t, current.Version, updated.Version)
 
-	records := map[string]model.Record{}
-	for _, record := range updated.Records {
-		records[record.Name] = record
-	}
-	assert.Equal(t, "192.0.2.9", records["@"].Value)
-	assert.Equal(t, "2001:db8::1", records["api"].Value)
-	assert.NotContains(t, records, "old")
+	updatedRoot := apiRecordByNameType(updated.Records, "@", model.RecordTypeA)
+	require.NotNil(t, updatedRoot)
+	assert.Equal(t, "192.0.2.9", updatedRoot.Value)
+	createdAPI := apiRecordByNameType(updated.Records, "api", model.RecordTypeAAAA)
+	require.NotNil(t, createdAPI)
+	assert.Equal(t, "2001:db8::1", createdAPI.Value)
+	assert.Nil(t, apiRecordByNameType(updated.Records, "old", model.RecordTypeA))
 }
 
 func TestBulkRecords_RollsBackOnMissingRecord(t *testing.T) {
@@ -841,6 +1268,7 @@ func TestBulkRecords_RollsBackOnMissingRecord(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 			{Name: "old", Type: "A", TTL: 300, Value: "192.0.2.2"},
 		},
@@ -848,7 +1276,9 @@ func TestBulkRecords_RollsBackOnMissingRecord(t *testing.T) {
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 	current, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
-	require.Len(t, current.Records, 2)
+	require.Len(t, current.Records, 3)
+	oldRecord := apiRecordByNameType(current.Records, "old", model.RecordTypeA)
+	require.NotNil(t, oldRecord)
 
 	body, err := json.Marshal(map[string]interface{}{
 		"create": []model.Record{
@@ -858,7 +1288,7 @@ func TestBulkRecords_RollsBackOnMissingRecord(t *testing.T) {
 			{"id": "missing-record", "name": "@", "type": "A", "ttl": 300, "value": "192.0.2.9"},
 		},
 		"delete": []map[string]interface{}{
-			{"id": current.Records[1].ID},
+			{"id": oldRecord.ID},
 		},
 	})
 	require.NoError(t, err)
@@ -876,8 +1306,8 @@ func TestBulkRecords_RollsBackOnMissingRecord(t *testing.T) {
 	unchanged, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
 	assert.Equal(t, current.Version, unchanged.Version)
-	assert.Len(t, unchanged.Records, 2)
-	assert.Equal(t, "old", unchanged.Records[1].Name)
+	assert.Len(t, unchanged.Records, 3)
+	assert.NotNil(t, apiRecordByNameType(unchanged.Records, "old", model.RecordTypeA))
 }
 
 func TestBulkRecords_RejectsDuplicateResult(t *testing.T) {
@@ -888,6 +1318,7 @@ func TestBulkRecords_RejectsDuplicateResult(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -920,7 +1351,7 @@ func TestBulkRecords_RejectsEmptyOperationSet(t *testing.T) {
 	zone := &model.Zone{
 		Name:    "example.com.",
 		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
-		Records: []model.Record{},
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 	current, err := store.GetZone(context.TODO(), "example.com.")
@@ -945,7 +1376,7 @@ func TestCreateRecord_RequiresIfMatch(t *testing.T) {
 	zone := &model.Zone{
 		Name:    "example.com.",
 		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
-		Records: []model.Record{},
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
@@ -966,7 +1397,7 @@ func TestCreateRecord_RejectsWildcardIfMatch(t *testing.T) {
 	zone := &model.Zone{
 		Name:    "example.com.",
 		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
-		Records: []model.Record{},
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
@@ -986,7 +1417,9 @@ func TestCreateRecord_RejectsWildcardIfMatch(t *testing.T) {
 
 	unchanged, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
-	assert.Empty(t, unchanged.Records)
+	require.Len(t, unchanged.Records, 1)
+	assert.Equal(t, model.RecordTypeNS, unchanged.Records[0].Type)
+	assert.Equal(t, "ns1.example.com.", unchanged.Records[0].Value)
 }
 
 func TestCreateRecord_RejectsStaleIfMatch(t *testing.T) {
@@ -996,7 +1429,7 @@ func TestCreateRecord_RejectsStaleIfMatch(t *testing.T) {
 	zone := &model.Zone{
 		Name:    "example.com.",
 		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
-		Records: []model.Record{},
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
@@ -1020,8 +1453,9 @@ func TestUpdateZone_PreservesDNSSECMetadata(t *testing.T) {
 	defer server.Close()
 
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 		DNSSEC: &model.DNSSECConfig{
 			Enabled:         true,
 			Algorithm:       13,
@@ -1072,8 +1506,9 @@ func TestUpdateZone_Conflict(t *testing.T) {
 
 	// Create a zone
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
@@ -1097,8 +1532,9 @@ func TestDeleteZone(t *testing.T) {
 
 	// Create a zone first
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 	current, err := store.GetZone(context.TODO(), "example.com.")
@@ -1138,8 +1574,9 @@ func TestDeleteZone_RequiresIfMatch(t *testing.T) {
 	defer server.Close()
 
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
@@ -1159,8 +1596,9 @@ func TestDeleteZone_RejectsWildcardIfMatch(t *testing.T) {
 	defer server.Close()
 
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
@@ -1181,8 +1619,9 @@ func TestDeleteZone_RejectsStaleIfMatch(t *testing.T) {
 	defer server.Close()
 
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
@@ -1198,14 +1637,15 @@ func TestDeleteZone_RejectsStaleIfMatch(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestDeleteZone_FallsBackWithoutConditionalDeleteStore(t *testing.T) {
+func TestDeleteZone_RejectsBackendWithoutConditionalDeleteStore(t *testing.T) {
 	inner := backend.NewMemoryBackend()
 	store := &zoneStoreWithoutConditionalDelete{inner: inner}
 	_, server := setupTestWithStore(t, store)
 
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
@@ -1219,9 +1659,9 @@ func TestDeleteZone_FallsBackWithoutConditionalDeleteStore(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
 	_, err = store.GetZone(context.TODO(), "example.com.")
-	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	assert.NoError(t, err)
 }
 
 func TestGetSignedZone(t *testing.T) {
@@ -1233,6 +1673,7 @@ func TestGetSignedZone(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -1266,6 +1707,7 @@ func TestGetSignedZone_WithArtifactSignature(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -1290,6 +1732,7 @@ func TestGetSignedZone_AgentClientVerifiesArtifactSignature(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -1317,8 +1760,9 @@ func TestGetSignedZone_NotModified(t *testing.T) {
 
 	// Create a zone
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
@@ -1365,8 +1809,9 @@ func TestUpdateZone_MissingIfMatch(t *testing.T) {
 
 	// Create a zone
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
@@ -1389,8 +1834,9 @@ func TestUpdateZone_RejectsWildcardIfMatch(t *testing.T) {
 	defer server.Close()
 
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 

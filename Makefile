@@ -1,4 +1,4 @@
-.PHONY: build test lint clean install-tools
+.PHONY: build test lint vulncheck clean install-tools
 
 # Go parameters
 GOCMD=go
@@ -8,6 +8,7 @@ GOMODCACHE?=$(CURDIR)/.cache/gomod
 GOLANGCI_LINT_CACHE?=$(CURDIR)/.cache/golangci-lint
 GOLANGCI_LINT_VERSION?=v1.64.8
 GOLANGCI_LINT_MODULE?=github.com/golangci/golangci-lint/cmd/golangci-lint
+GOVULNCHECK_VERSION?=v1.3.0
 export GOCACHE
 export GOPATH
 export GOMODCACHE
@@ -20,6 +21,8 @@ TOOLS_BIN=$(GOPATH)/bin
 GOLANGCI_LINT_FLAGS?=--timeout=5m
 BINARY_CONTROLLER=bin/arca-dns-controller
 BINARY_AGENT=bin/arca-dns-agent
+CONTROLLER_RUN_CONFIG?=
+AGENT_RUN_CONFIG?=
 
 # Build flags
 LDFLAGS=-ldflags "-s -w"
@@ -56,6 +59,11 @@ lint:
 	@test -x "$(TOOLS_BIN)/golangci-lint" || { echo "golangci-lint not installed. Run: make install-tools"; exit 1; }
 	$(TOOLS_BIN)/golangci-lint run $(GOLANGCI_LINT_FLAGS) ./...
 
+vulncheck:
+	@echo "Running govulncheck..."
+	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(TOOLS_BIN)"
+	$(GOCMD) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+
 install-tools:
 	@echo "Installing development tools..."
 	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(TOOLS_BIN)"
@@ -82,12 +90,20 @@ deps:
 run-controller:
 	@echo "Running controller..."
 	$(GOBUILD) -o $(BINARY_CONTROLLER) ./cmd/arca-dns-controller
-	$(BINARY_CONTROLLER) serve
+	@test -n "$(CONTROLLER_RUN_CONFIG)" || { \
+		echo "Set CONTROLLER_RUN_CONFIG=path/to/controller.yaml before running this target"; \
+		exit 1; \
+	}
+	$(BINARY_CONTROLLER) serve --config "$(CONTROLLER_RUN_CONFIG)"
 
 run-agent:
 	@echo "Running agent..."
 	$(GOBUILD) -o $(BINARY_AGENT) ./cmd/arca-dns-agent
-	$(BINARY_AGENT) daemon
+	@test -n "$(AGENT_RUN_CONFIG)" || { \
+		echo "Set AGENT_RUN_CONFIG=path/to/agent.yaml before running this target"; \
+		exit 1; \
+	}
+	$(BINARY_AGENT) daemon --config "$(AGENT_RUN_CONFIG)"
 
 docker-build:
 	@echo "Building Docker images..."
@@ -102,6 +118,7 @@ help:
 	@echo "  test             - Run tests with race detector"
 	@echo "  test-coverage    - Generate test coverage report"
 	@echo "  lint             - Run golangci-lint"
+	@echo "  vulncheck        - Run govulncheck"
 	@echo "  clean            - Remove build artifacts"
 	@echo "  fmt              - Format code"
 	@echo "  vet              - Run go vet"

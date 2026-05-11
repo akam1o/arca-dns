@@ -7,10 +7,17 @@ api:
     enabled: true
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
+    api_key_roles:
+      admin: "admin"
+      agent: "agent"
   rate_limit:
     enabled: true
     requests_per_second: 100
     burst: 200
+
+observability:
+  listen: "0.0.0.0:9053"
 
 # Demo-only: bundled single-node etcd in this overlay.
 backend:

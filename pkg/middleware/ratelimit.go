@@ -9,6 +9,11 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const (
+	rateLimiterCleanupInterval = 5 * time.Minute
+	rateLimiterClientTTL       = 10 * time.Minute
+)
+
 // RateLimiterConfig configures rate limiting.
 type RateLimiterConfig struct {
 	// ReadRPS is requests per second for read operations (GET)
@@ -37,22 +42,19 @@ type clientLimiter struct {
 
 // RateLimiter provides per-client rate limiting with separate read/write limits.
 type RateLimiter struct {
-	config  RateLimiterConfig
-	clients map[string]*clientLimiter
-	mu      sync.RWMutex
+	config      RateLimiterConfig
+	clients     map[string]*clientLimiter
+	lastCleanup time.Time
+	mu          sync.RWMutex
 }
 
 // NewRateLimiter creates a new rate limiter with the given configuration.
 func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
-	rl := &RateLimiter{
-		config:  config,
-		clients: make(map[string]*clientLimiter),
+	return &RateLimiter{
+		config:      config,
+		clients:     make(map[string]*clientLimiter),
+		lastCleanup: time.Now(),
 	}
-
-	// Start cleanup goroutine to remove stale entries
-	go rl.cleanupStaleClients()
-
-	return rl
 }
 
 // Middleware returns a Gin middleware that enforces rate limiting.
@@ -87,21 +89,28 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 
 // getLimiter returns the appropriate rate limiter for the client.
 func (rl *RateLimiter) getLimiter(clientIP string, isWrite bool) *rate.Limiter {
+	now := time.Now()
+
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+
+	if now.Sub(rl.lastCleanup) >= rateLimiterCleanupInterval {
+		rl.cleanupStaleClientsLocked(now)
+		rl.lastCleanup = now
+	}
 
 	cl, exists := rl.clients[clientIP]
 	if !exists {
 		cl = &clientLimiter{
 			readLimiter:  rate.NewLimiter(rate.Limit(rl.config.ReadRPS), rl.config.Burst),
 			writeLimiter: rate.NewLimiter(rate.Limit(rl.config.WriteRPS), rl.config.Burst),
-			lastSeen:     time.Now(),
+			lastSeen:     now,
 		}
 		rl.clients[clientIP] = cl
 	}
 
 	// Update last seen
-	cl.lastSeen = time.Now()
+	cl.lastSeen = now
 
 	if isWrite {
 		return cl.writeLimiter
@@ -109,19 +118,11 @@ func (rl *RateLimiter) getLimiter(clientIP string, isWrite bool) *rate.Limiter {
 	return cl.readLimiter
 }
 
-// cleanupStaleClients removes clients that haven't been seen in 10 minutes.
-func (rl *RateLimiter) cleanupStaleClients() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		rl.mu.Lock()
-		now := time.Now()
-		for ip, cl := range rl.clients {
-			if now.Sub(cl.lastSeen) > 10*time.Minute {
-				delete(rl.clients, ip)
-			}
+// cleanupStaleClientsLocked removes clients that haven't been seen recently.
+func (rl *RateLimiter) cleanupStaleClientsLocked(now time.Time) {
+	for ip, cl := range rl.clients {
+		if now.Sub(cl.lastSeen) > rateLimiterClientTTL {
+			delete(rl.clients, ip)
 		}
-		rl.mu.Unlock()
 	}
 }

@@ -47,6 +47,113 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestNewClient_NormalizesTrailingSlash(t *testing.T) {
+	cfg := config.ControllerClientConfig{
+		URL:           "http://localhost:8080/",
+		Timeout:       30 * time.Second,
+		RetryAttempts: 3,
+		RetryDelay:    1 * time.Second,
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+
+	if client.baseURL != "http://localhost:8080" {
+		t.Errorf("Expected normalized baseURL http://localhost:8080, got %s", client.baseURL)
+	}
+}
+
+func TestNewClient_RejectsIncompleteClientAuthTLS(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.ControllerClientConfig
+		want string
+	}{
+		{
+			name: "client auth without tls",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					ClientAuth: true,
+					CertFile:   "/tmp/client.crt",
+					KeyFile:    "/tmp/client.key",
+				},
+			},
+			want: "client_auth requires TLS",
+		},
+		{
+			name: "ca file without tls",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					CAFile: "/tmp/controller-ca.crt",
+				},
+			},
+			want: "TLS must be enabled",
+		},
+		{
+			name: "client cert without client auth",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled:  true,
+					CertFile: "/tmp/client.crt",
+					KeyFile:  "/tmp/client.key",
+				},
+			},
+			want: "client_auth is required",
+		},
+		{
+			name: "tls enabled with http url",
+			cfg: config.ControllerClientConfig{
+				URL: "http://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled: true,
+				},
+			},
+			want: "https controller URL",
+		},
+		{
+			name: "client auth without cert",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					ClientAuth: true,
+					KeyFile:    "/tmp/client.key",
+				},
+			},
+			want: "cert_file",
+		},
+		{
+			name: "client auth without key",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					ClientAuth: true,
+					CertFile:   "/tmp/client.crt",
+				},
+			},
+			want: "key_file",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewClient(tc.cfg)
+			if err == nil {
+				t.Fatal("Expected NewClient to fail")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Expected error to contain %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestListZones(t *testing.T) {
 	requireTCPListener(t)
 	// Create mock server
@@ -194,6 +301,36 @@ func TestListZones_Paginates(t *testing.T) {
 	}
 }
 
+func TestListZones_NormalizesTrailingSlash(t *testing.T) {
+	requireTCPListener(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/zones" {
+			t.Errorf("Expected path /api/v1/zones, got %s", r.URL.Path)
+		}
+
+		writeListZonesPage(w, 0, 0)
+	}))
+	defer server.Close()
+
+	cfg := config.ControllerClientConfig{
+		URL:           server.URL + "/",
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.ListZones(context.Background()); err != nil {
+		t.Fatalf("ListZones failed: %v", err)
+	}
+}
+
 func writeListZonesPage(w http.ResponseWriter, offset, count int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -268,6 +405,45 @@ www.example.com. 300 IN A 192.0.2.1
 
 	if content != zoneContent {
 		t.Errorf("Zone content mismatch")
+	}
+}
+
+func TestFetchSignedZoneArtifact_RejectsSerialHeaderMismatch(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400
+example.com. 3600 IN NS ns1.example.com.
+`
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"`+hashHex+`"`)
+		w.Header().Set("X-Zone-Serial", "2024122701")
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Hash8", hashHex[:8])
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.FetchSignedZoneArtifact(context.Background(), "example.com.", "")
+	if err == nil {
+		t.Fatal("Expected mismatched X-Zone-Serial to fail")
+	}
+	if !strings.Contains(err.Error(), "zone serial header mismatch") {
+		t.Errorf("Unexpected error message: %v", err)
 	}
 }
 
@@ -679,6 +855,90 @@ func TestFetchSignedZone_SignatureVerificationForcesFullFetch(t *testing.T) {
 	}
 	if content != zoneContent {
 		t.Errorf("Zone content mismatch")
+	}
+}
+
+func TestFetchSignedZone_SignatureVerificationUsesConditionalFetchWithCurrentBody(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	signatureKey := "test-signature-key"
+
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+	expectedIfNoneMatch := `"` + hashHex + `"`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("If-None-Match"); got != expectedIfNoneMatch {
+			t.Errorf("If-None-Match = %q, want %q", got, expectedIfNoneMatch)
+		}
+
+		w.Header().Set("ETag", expectedIfNoneMatch)
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), signatureKey))
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetSignatureVerification(true, signatureKey)
+
+	content, etag, notModified, err := client.FetchSignedZoneWithCurrent(context.Background(), "example.com.", hashHex, zoneContent)
+	if err != nil {
+		t.Fatalf("FetchSignedZoneWithCurrent failed: %v", err)
+	}
+	if !notModified {
+		t.Fatal("Expected signed conditional fetch to return not modified")
+	}
+	if content != "" {
+		t.Errorf("Expected empty content for 304, got %q", content)
+	}
+	if etag != hashHex {
+		t.Errorf("Expected ETag %q, got %q", hashHex, etag)
+	}
+}
+
+func TestFetchSignedZone_SignatureVerificationRejectsUnsignedNotModified(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	signatureKey := "test-signature-key"
+
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"`+hashHex+`"`)
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetSignatureVerification(true, signatureKey)
+
+	_, _, _, err = client.FetchSignedZoneWithCurrent(context.Background(), "example.com.", hashHex, zoneContent)
+	if err == nil {
+		t.Fatal("Expected unsigned 304 response to fail")
+	}
+	if !strings.Contains(err.Error(), "signature header") {
+		t.Errorf("Expected signature header error, got %v", err)
 	}
 }
 

@@ -47,6 +47,14 @@ func NewPostgresBackendWithPool(dsn string, pool SQLPoolConfig) (*PostgresBacken
 	return &PostgresBackend{db: db, dsn: dsn}, nil
 }
 
+// HealthCheck verifies that PostgreSQL is reachable without loading zone data.
+func (p *PostgresBackend) HealthCheck(ctx context.Context) error {
+	if err := p.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("postgres health check failed: %w", err)
+	}
+	return nil
+}
+
 // InitSchema creates tables if they don't exist (for simple deployments).
 func (p *PostgresBackend) InitSchema() error {
 	schema := `
@@ -113,6 +121,7 @@ func (p *PostgresBackend) GetZone(ctx context.Context, name string) (*model.Zone
 
 // ListZones returns all zones, optionally paginated.
 func (p *PostgresBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT
 			name, version,
@@ -126,7 +135,10 @@ func (p *PostgresBackend) ListZones(ctx context.Context, opts ListOptions) ([]*m
 	argN := 1
 	if opts.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argN, argN+1)
-		args = append(args, opts.Limit, opts.Offset)
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
+		query += fmt.Sprintf(" OFFSET $%d", argN)
+		args = append(args, offset)
 	}
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
@@ -159,6 +171,7 @@ func (p *PostgresBackend) ListZones(ctx context.Context, opts ListOptions) ([]*m
 
 // ListZoneSummaries returns zone names and versions without loading records.
 func (p *PostgresBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT name, version
 		FROM zones ORDER BY name
@@ -166,7 +179,10 @@ func (p *PostgresBackend) ListZoneSummaries(ctx context.Context, opts ListOption
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT $1 OFFSET $2"
-		args = append(args, opts.Limit, opts.Offset)
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
+		query += " OFFSET $1"
+		args = append(args, offset)
 	}
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
@@ -191,24 +207,11 @@ func (p *PostgresBackend) ListZoneSummaries(ctx context.Context, opts ListOption
 
 // CreateZone creates a new zone.
 func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
-	zone.Name = normalizeZoneName(zone.Name)
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-	if zone.Version == "" {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate version: %w", err)
-		}
-		zone.Version = v
-	}
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-
-	if err := validateZoneForWrite(zone); err != nil {
+	writeZone, err := prepareZoneForCreate(zone, normalizeZoneName)
+	if err != nil {
 		return err
 	}
+	normalizePostgresTimestamps(writeZone)
 
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -216,20 +219,24 @@ func (p *PostgresBackend) CreateZone(ctx context.Context, zone *model.Zone) erro
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	zoneID, err := p.insertZonePGTx(ctx, tx, zone)
+	zoneID, err := p.insertZonePGTx(ctx, tx, writeZone)
 	if err != nil {
 		return err
 	}
-	if err := p.insertRecordsPGTx(ctx, tx, zoneID, zone.Records, nil); err != nil {
+	if err := p.insertRecordsPGTx(ctx, tx, zoneID, writeZone.Records, nil); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	copyZoneInto(zone, writeZone)
+	return nil
 }
 
 // UpdateZone updates an existing zone.
 func (p *PostgresBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.UpdatedAt = time.Now()
+	zone.UpdatedAt = postgresTimestamp(time.Now())
 
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -349,7 +356,7 @@ func (p *PostgresBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName str
 	result, err := p.db.ExecContext(ctx, query,
 		enabled, algorithm, kskKeyTag, zskKeyTag,
 		nsec3Enabled, nsec3Iterations, nsec3Salt, signatureExpiration,
-		time.Now(), name,
+		postgresTimestamp(time.Now()), name,
 	)
 	if err != nil {
 		return fmt.Errorf("update DNSSEC metadata: %w", err)
@@ -427,10 +434,17 @@ func (p *PostgresBackend) Close() error { return p.db.Close() }
 // Info returns backend metadata.
 func (p *PostgresBackend) Info() BackendInfo {
 	return BackendInfo{
-		Type:         "postgres",
-		Capabilities: []string{"ZoneStore", "TransactionalStore", "DNSSECMetadataStore"},
-		Consistency:  "strong",
-		Description:  "PostgreSQL storage (recommended for large-scale production)",
+		Type: "postgres",
+		Capabilities: []string{
+			CapabilityZoneStore,
+			CapabilityZoneSummaryStore,
+			CapabilityHealthStore,
+			CapabilityTransactionalStore,
+			CapabilityDNSSECMetadataStore,
+			CapabilityConditionalDeleteStore,
+		},
+		Consistency: "strong",
+		Description: "PostgreSQL storage (recommended for large-scale production)",
 	}
 }
 
@@ -449,6 +463,16 @@ type pgQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
+
+func normalizePostgresTimestamps(zone *model.Zone) {
+	zone.CreatedAt = postgresTimestamp(zone.CreatedAt)
+	zone.UpdatedAt = postgresTimestamp(zone.UpdatedAt)
+}
+
+func postgresTimestamp(t time.Time) time.Time {
+	// PostgreSQL stores timestamptz values at microsecond precision.
+	return t.Round(time.Microsecond)
 }
 
 func (p *PostgresBackend) scanZonePG(ctx context.Context, q pgQuerier, name string) (*model.Zone, error) {
@@ -641,7 +665,7 @@ func (p *PostgresBackend) insertRecordsPGTx(ctx context.Context, tx *sql.Tx, zon
 		hash := sha256.Sum256([]byte(rec.Value))
 		valueHash := hex.EncodeToString(hash[:])
 		var priority interface{}
-		if rec.Priority != nil && *rec.Priority > 0 {
+		if rec.Priority != nil {
 			priority = *rec.Priority
 		}
 
@@ -686,6 +710,7 @@ func (t *pgTx) GetZone(ctx context.Context, name string) (*model.Zone, error) {
 }
 
 func (t *pgTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT
 			name, version,
@@ -698,7 +723,10 @@ func (t *pgTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, 
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT $1 OFFSET $2"
-		args = append(args, opts.Limit, opts.Offset)
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
+		query += " OFFSET $1"
+		args = append(args, offset)
 	}
 	rows, err := t.tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -728,6 +756,7 @@ func (t *pgTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, 
 }
 
 func (t *pgTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT name, version
 		FROM zones ORDER BY name
@@ -735,7 +764,10 @@ func (t *pgTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*Zone
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT $1 OFFSET $2"
-		args = append(args, opts.Limit, opts.Offset)
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
+		query += " OFFSET $1"
+		args = append(args, offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)
@@ -759,33 +791,25 @@ func (t *pgTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*Zone
 }
 
 func (t *pgTx) CreateZone(ctx context.Context, zone *model.Zone) error {
-	zone.Name = normalizeZoneName(zone.Name)
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-	if zone.Version == "" {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate version: %w", err)
-		}
-		zone.Version = v
-	}
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-	if err := validateZoneForWrite(zone); err != nil {
-		return err
-	}
-	zoneID, err := t.backend.insertZonePGTx(ctx, t.tx, zone)
+	writeZone, err := prepareZoneForCreate(zone, normalizeZoneName)
 	if err != nil {
 		return err
 	}
-	return t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, zone.Records, nil)
+	normalizePostgresTimestamps(writeZone)
+	zoneID, err := t.backend.insertZonePGTx(ctx, t.tx, writeZone)
+	if err != nil {
+		return err
+	}
+	if err := t.backend.insertRecordsPGTx(ctx, t.tx, zoneID, writeZone.Records, nil); err != nil {
+		return err
+	}
+	copyZoneInto(zone, writeZone)
+	return nil
 }
 
 func (t *pgTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
 	zone.Name = normalizeZoneName(zone.Name)
-	zone.UpdatedAt = time.Now()
+	zone.UpdatedAt = postgresTimestamp(time.Now())
 
 	var createdAt time.Time
 	var currentVersion string

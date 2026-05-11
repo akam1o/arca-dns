@@ -2,6 +2,7 @@ package bird
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -10,11 +11,15 @@ import (
 
 type recordingClient struct {
 	responses map[string]*Response
+	errs      map[string]error
 	commands  []string
 }
 
 func (c *recordingClient) Exec(ctx context.Context, cmd string) (*Response, error) {
 	c.commands = append(c.commands, cmd)
+	if err, ok := c.errs[cmd]; ok {
+		return nil, err
+	}
 	if resp, ok := c.responses[cmd]; ok {
 		return resp, nil
 	}
@@ -50,8 +55,12 @@ func TestRouteManagerWithdrawsAllProtocolsAfterPartialReconcile(t *testing.T) {
 		t.Fatal("expected partial protocol state to be treated as not fully announced")
 	}
 
-	if err := manager.WithdrawRoutes(context.Background()); err != nil {
+	changed, err := manager.WithdrawRoutesChanged(context.Background())
+	if err != nil {
 		t.Fatalf("withdraw failed: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected partial reconcile to require a withdraw")
 	}
 
 	want := []string{
@@ -62,6 +71,186 @@ func TestRouteManagerWithdrawsAllProtocolsAfterPartialReconcile(t *testing.T) {
 	}
 	if !reflect.DeepEqual(client.commands, want) {
 		t.Fatalf("commands mismatch\nwant: %v\n got: %v", want, client.commands)
+	}
+}
+
+func TestRouteManagerAnnounceRoutesChangedSkipsNoop(t *testing.T) {
+	client := &recordingClient{}
+	manager := mustNewRouteManager(t, client, []string{"anycast_1"})
+
+	changed, err := manager.AnnounceRoutesChanged(context.Background())
+	if err != nil {
+		t.Fatalf("announce failed: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected first announce to change routes")
+	}
+
+	changed, err = manager.AnnounceRoutesChanged(context.Background())
+	if err != nil {
+		t.Fatalf("second announce failed: %v", err)
+	}
+	if changed {
+		t.Fatal("expected second announce to be a no-op")
+	}
+
+	want := []string{"enable anycast_1"}
+	if !reflect.DeepEqual(client.commands, want) {
+		t.Fatalf("commands mismatch\nwant: %v\n got: %v", want, client.commands)
+	}
+}
+
+func TestRouteManagerWithdrawRoutesChangedSkipsFullyWithdrawn(t *testing.T) {
+	client := &recordingClient{
+		responses: map[string]*Response{
+			"show protocols anycast_1": {Code: 0, RawText: "anycast_1 BGP master Disabled"},
+		},
+	}
+	manager := mustNewRouteManager(t, client, []string{"anycast_1"})
+
+	if err := manager.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	changed, err := manager.WithdrawRoutesChanged(context.Background())
+	if err != nil {
+		t.Fatalf("withdraw failed: %v", err)
+	}
+	if changed {
+		t.Fatal("expected already withdrawn route to be a no-op")
+	}
+
+	want := []string{"show protocols anycast_1"}
+	if !reflect.DeepEqual(client.commands, want) {
+		t.Fatalf("commands mismatch\nwant: %v\n got: %v", want, client.commands)
+	}
+}
+
+func TestRouteManagerForceWithdrawRoutesAlwaysDisablesProtocols(t *testing.T) {
+	client := &recordingClient{}
+	manager := mustNewRouteManager(t, client, []string{"anycast_1", "anycast_2"})
+
+	if err := manager.ForceWithdrawRoutes(context.Background()); err != nil {
+		t.Fatalf("force withdraw failed: %v", err)
+	}
+	if manager.IsAnnounced() {
+		t.Fatal("expected forced withdraw to mark routes withdrawn")
+	}
+
+	want := []string{
+		"disable anycast_1",
+		"disable anycast_2",
+	}
+	if !reflect.DeepEqual(client.commands, want) {
+		t.Fatalf("commands mismatch\nwant: %v\n got: %v", want, client.commands)
+	}
+}
+
+func TestRouteManagerForceWithdrawRoutesAttemptsAllProtocolsOnErrors(t *testing.T) {
+	client := &recordingClient{
+		errs: map[string]error{
+			"disable anycast_1": errors.New("socket closed"),
+		},
+		responses: map[string]*Response{
+			"disable anycast_2": {Code: 9001, RawText: "9001 syntax error"},
+		},
+	}
+	manager := mustNewRouteManager(t, client, []string{"anycast_1", "anycast_2", "anycast_3"})
+	manager.announced = true
+
+	err := manager.ForceWithdrawRoutes(context.Background())
+	if err == nil {
+		t.Fatal("expected force withdraw error")
+	}
+	for _, want := range []string{
+		"disable protocol anycast_1: socket closed",
+		"BIRD error disabling anycast_2",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got %v", want, err)
+		}
+	}
+	if manager.IsAnnounced() {
+		t.Fatal("expected failed forced withdraw not to leave manager fully announced")
+	}
+	if !manager.needsWithdraw {
+		t.Fatal("expected failed forced withdraw to require another withdraw")
+	}
+
+	wantCommands := []string{
+		"disable anycast_1",
+		"disable anycast_2",
+		"disable anycast_3",
+	}
+	if !reflect.DeepEqual(client.commands, wantCommands) {
+		t.Fatalf("commands mismatch\nwant: %v\n got: %v", wantCommands, client.commands)
+	}
+}
+
+func TestRouteManagerWithdrawRoutesChangedAttemptsAllProtocolsOnErrors(t *testing.T) {
+	client := &recordingClient{
+		errs: map[string]error{
+			"disable anycast_1": errors.New("socket closed"),
+		},
+		responses: map[string]*Response{
+			"disable anycast_2": {Code: 9001, RawText: "9001 syntax error"},
+		},
+	}
+	manager := mustNewRouteManager(t, client, []string{"anycast_1", "anycast_2", "anycast_3"})
+	manager.announced = true
+
+	changed, err := manager.WithdrawRoutesChanged(context.Background())
+	if err == nil {
+		t.Fatal("expected withdraw error")
+	}
+	if changed {
+		t.Fatal("expected failed withdraw not to report a completed change")
+	}
+	for _, want := range []string{
+		"disable protocol anycast_1: socket closed",
+		"BIRD error disabling anycast_2",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got %v", want, err)
+		}
+	}
+	if !manager.needsWithdraw {
+		t.Fatal("expected failed withdraw to require another withdraw")
+	}
+	if manager.IsAnnounced() {
+		t.Fatal("expected failed withdraw not to leave manager fully announced")
+	}
+
+	wantCommands := []string{
+		"disable anycast_1",
+		"disable anycast_2",
+		"disable anycast_3",
+	}
+	if !reflect.DeepEqual(client.commands, wantCommands) {
+		t.Fatalf("commands mismatch\nwant: %v\n got: %v", wantCommands, client.commands)
+	}
+
+	changed, err = manager.AnnounceRoutesChanged(context.Background())
+	if err != nil {
+		t.Fatalf("announce after failed withdraw failed: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected announce after failed withdraw to re-enable protocols")
+	}
+	if !manager.IsAnnounced() {
+		t.Fatal("expected announce after failed withdraw to mark routes announced")
+	}
+	if manager.needsWithdraw {
+		t.Fatal("expected successful announce to clear pending withdraw")
+	}
+
+	wantCommands = append(wantCommands,
+		"enable anycast_1",
+		"enable anycast_2",
+		"enable anycast_3",
+	)
+	if !reflect.DeepEqual(client.commands, wantCommands) {
+		t.Fatalf("commands mismatch after reannounce\nwant: %v\n got: %v", wantCommands, client.commands)
 	}
 }
 
@@ -80,13 +269,58 @@ func TestRouteManagerWithdrawsAfterPartialAnnounceFailure(t *testing.T) {
 		t.Fatal("expected failed announce not to mark routes as announced")
 	}
 
-	if err := manager.WithdrawRoutes(context.Background()); err != nil {
+	want := []string{
+		"enable anycast_1",
+		"enable anycast_2",
+		"disable anycast_1",
+		"disable anycast_2",
+	}
+	if !reflect.DeepEqual(client.commands, want) {
+		t.Fatalf("commands mismatch after failed announce\nwant: %v\n got: %v", want, client.commands)
+	}
+
+	changed, err := manager.WithdrawRoutesChanged(context.Background())
+	if err != nil {
 		t.Fatalf("withdraw failed: %v", err)
+	}
+	if changed {
+		t.Fatal("expected rollback to leave no pending withdraw")
+	}
+	if !reflect.DeepEqual(client.commands, want) {
+		t.Fatalf("commands mismatch after no-op withdraw\nwant: %v\n got: %v", want, client.commands)
+	}
+}
+
+func TestRouteManagerAnnounceFailureKeepsPendingWithdrawWhenRollbackFails(t *testing.T) {
+	client := &recordingClient{
+		responses: map[string]*Response{
+			"enable anycast_2":  {Code: 9001, RawText: "9001 syntax error"},
+			"disable anycast_1": {Code: 9002, RawText: "9002 disable error"},
+		},
+	}
+	manager := mustNewRouteManager(t, client, []string{"anycast_1", "anycast_2"})
+
+	err := manager.AnnounceRoutes(context.Background())
+	if err == nil {
+		t.Fatal("expected announce to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "rollback partial announce") {
+		t.Fatalf("expected rollback error, got %v", err)
+	}
+
+	changed, err := manager.WithdrawRoutesChanged(context.Background())
+	if err == nil {
+		t.Fatal("expected pending withdraw to retry and fail")
+	}
+	if changed {
+		t.Fatal("expected failed withdraw not to report a completed change")
 	}
 
 	want := []string{
 		"enable anycast_1",
 		"enable anycast_2",
+		"disable anycast_1",
+		"disable anycast_2",
 		"disable anycast_1",
 		"disable anycast_2",
 	}
@@ -102,6 +336,7 @@ func TestRouteManagerWithdrawReturnsProtocolErrors(t *testing.T) {
 		},
 	}
 	manager := mustNewRouteManager(t, client, []string{"anycast_1"})
+	manager.announced = true
 
 	err := manager.WithdrawRoutes(context.Background())
 	if err == nil {

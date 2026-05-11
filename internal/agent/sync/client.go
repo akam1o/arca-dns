@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,15 @@ type SignedZoneResponse struct {
 	} `json:"metadata"`
 }
 
+// SignedZoneArtifact is a fetched signed zone file and its verified metadata.
+type SignedZoneArtifact struct {
+	Content     string
+	ETag        string
+	Serial      uint32
+	Hash        string
+	NotModified bool
+}
+
 type listZonesResponse struct {
 	Zones      []ZoneInfo `json:"zones"`
 	Pagination struct {
@@ -83,16 +93,24 @@ func normalizeIfNoneMatch(etag string) string {
 
 // NewClient creates a new controller client with retry logic and connection pooling.
 func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
+	if err := validateTLSConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	// Create TLS configuration if enabled
 	var tlsConfig *tls.Config
 	if cfg.TLS.Enabled {
+		caFile := strings.TrimSpace(cfg.TLS.CAFile)
+		certFile := strings.TrimSpace(cfg.TLS.CertFile)
+		keyFile := strings.TrimSpace(cfg.TLS.KeyFile)
+
 		tlsConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		}
 
 		// Load CA certificate if provided
-		if cfg.TLS.CAFile != "" {
-			caCert, err := os.ReadFile(cfg.TLS.CAFile)
+		if caFile != "" {
+			caCert, err := os.ReadFile(caFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read CA certificate: %w", err)
 			}
@@ -105,8 +123,8 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 		}
 
 		// Load client certificate if mutual TLS is enabled
-		if cfg.TLS.ClientAuth && cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "" {
-			cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		if cfg.TLS.ClientAuth {
+			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to load client certificate: %w", err)
 			}
@@ -127,11 +145,51 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 
 	return &Client{
 		httpClient:      httpClient,
-		baseURL:         cfg.URL,
+		baseURL:         strings.TrimRight(cfg.URL, "/"),
 		apiKey:          cfg.APIKey,
 		config:          cfg,
 		verifyChecksums: true,
 	}, nil
+}
+
+func validateTLSConfig(cfg config.ControllerClientConfig) error {
+	caFile := strings.TrimSpace(cfg.TLS.CAFile)
+	certFile := strings.TrimSpace(cfg.TLS.CertFile)
+	keyFile := strings.TrimSpace(cfg.TLS.KeyFile)
+
+	if cfg.TLS.ClientAuth {
+		if !cfg.TLS.Enabled {
+			return fmt.Errorf("invalid TLS configuration: client_auth requires TLS to be enabled")
+		}
+		if certFile == "" {
+			return fmt.Errorf("invalid TLS configuration: cert_file is required when client_auth is enabled")
+		}
+		if keyFile == "" {
+			return fmt.Errorf("invalid TLS configuration: key_file is required when client_auth is enabled")
+		}
+	}
+	if (caFile != "" || certFile != "" || keyFile != "") && !cfg.TLS.Enabled {
+		return fmt.Errorf("invalid TLS configuration: TLS must be enabled when ca_file, cert_file, or key_file is set")
+	}
+	if certFile == "" && keyFile != "" {
+		return fmt.Errorf("invalid TLS configuration: cert_file is required when key_file is set")
+	}
+	if certFile != "" && keyFile == "" {
+		return fmt.Errorf("invalid TLS configuration: key_file is required when cert_file is set")
+	}
+	if (certFile != "" || keyFile != "") && !cfg.TLS.ClientAuth {
+		return fmt.Errorf("invalid TLS configuration: client_auth is required when cert_file or key_file is set")
+	}
+	if cfg.TLS.Enabled {
+		parsed, err := url.Parse(cfg.URL)
+		if err != nil {
+			return fmt.Errorf("invalid TLS configuration: invalid controller URL: %w", err)
+		}
+		if strings.ToLower(parsed.Scheme) != "https" {
+			return fmt.Errorf("invalid TLS configuration: TLS requires an https controller URL")
+		}
+	}
+	return nil
 }
 
 // SetVerifyChecksums controls whether signed zone downloads must include and
@@ -233,12 +291,43 @@ func (c *Client) listZonesPage(ctx context.Context, offset, limit int) (*listZon
 	return &result, nil
 }
 
-// FetchSignedZone fetches a signed zone file from the controller.
-// If currentETag is provided, it performs a conditional fetch using If-None-Match
-// unless artifact signatures are required. A 304 response has no body, so the
-// agent cannot verify a body signature for that response.
+// FetchSignedZone fetches a signed zone file from the controller. If currentETag
+// is provided, it performs a conditional fetch using If-None-Match unless
+// artifact signatures are required. Use FetchSignedZoneWithCurrent when the
+// caller can provide the locally cached body for signed 304 verification.
 // Returns (zoneContent, newETag, isNotModified, error).
 func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentETag string) (string, string, bool, error) {
+	artifact, err := c.FetchSignedZoneArtifact(ctx, zoneName, currentETag)
+	if err != nil {
+		return "", "", false, err
+	}
+	return artifact.Content, artifact.ETag, artifact.NotModified, nil
+}
+
+// FetchSignedZoneWithCurrent fetches a signed zone and may use conditional GET
+// when currentBody is the locally cached artifact for currentETag. When
+// signature verification is enabled, a 304 response is accepted only if the
+// controller signs the local body with X-Zone-Signature.
+func (c *Client) FetchSignedZoneWithCurrent(ctx context.Context, zoneName string, currentETag string, currentBody string) (string, string, bool, error) {
+	artifact, err := c.FetchSignedZoneArtifactWithCurrent(ctx, zoneName, currentETag, currentBody)
+	if err != nil {
+		return "", "", false, err
+	}
+	return artifact.Content, artifact.ETag, artifact.NotModified, nil
+}
+
+// FetchSignedZoneArtifact fetches a signed zone file with verified artifact metadata.
+func (c *Client) FetchSignedZoneArtifact(ctx context.Context, zoneName string, currentETag string) (*SignedZoneArtifact, error) {
+	return c.fetchSignedZoneArtifact(ctx, zoneName, currentETag, "")
+}
+
+// FetchSignedZoneArtifactWithCurrent fetches a signed zone file with verified
+// artifact metadata and may use conditional GET when the current body is known.
+func (c *Client) FetchSignedZoneArtifactWithCurrent(ctx context.Context, zoneName string, currentETag string, currentBody string) (*SignedZoneArtifact, error) {
+	return c.fetchSignedZoneArtifact(ctx, zoneName, currentETag, currentBody)
+}
+
+func (c *Client) fetchSignedZoneArtifact(ctx context.Context, zoneName string, currentETag string, currentBody string) (*SignedZoneArtifact, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -247,7 +336,7 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", "", false, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Add authentication header
@@ -256,63 +345,76 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 	}
 
 	// Add If-None-Match header for conditional fetch (ETag-based).
-	requestETag := ""
-	if !c.verifySignatures {
-		requestETag = normalizeIfNoneMatch(currentETag)
-	}
+	requestETag := c.conditionalRequestETag(currentETag, currentBody)
 	if requestETag != "" {
 		req.Header.Set("If-None-Match", requestETag)
 	}
 
 	resp, err := c.doWithRetry(req)
 	if err != nil {
-		return "", "", false, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	// Handle 304 Not Modified (zone hasn't changed)
 	if resp.StatusCode == http.StatusNotModified {
 		if requestETag == "" {
-			return "", "", false, fmt.Errorf("received 304 Not Modified without a conditional ETag")
+			return nil, fmt.Errorf("received 304 Not Modified without a conditional ETag")
 		}
 
 		responseETag := normalizeIfNoneMatch(resp.Header.Get("ETag"))
 		if responseETag == "" {
-			return "", "", false, fmt.Errorf("missing ETag header in 304 response")
+			return nil, fmt.Errorf("missing ETag header in 304 response")
 		}
 		if responseETag != requestETag {
-			return "", "", false, fmt.Errorf("ETag mismatch in 304 response: requested %s, got %s", requestETag, responseETag)
+			return nil, fmt.Errorf("ETag mismatch in 304 response: requested %s, got %s", requestETag, responseETag)
 		}
 
 		if c.verifyChecksums {
 			zoneHash := resp.Header.Get("X-Zone-Hash")
 			if err := validateFullChecksumHeader(zoneHash); err != nil {
-				return "", "", false, fmt.Errorf("invalid checksum header in 304 response: %w", err)
+				return nil, fmt.Errorf("invalid checksum header in 304 response: %w", err)
 			}
 			responseHash := etagValue(responseETag)
 			if !strings.EqualFold(responseHash, zoneHash) {
-				return "", "", false, fmt.Errorf("checksum header mismatch in 304 response: ETag %s, X-Zone-Hash %s", responseHash, zoneHash)
+				return nil, fmt.Errorf("checksum header mismatch in 304 response: ETag %s, X-Zone-Hash %s", responseHash, zoneHash)
+			}
+			if currentBody != "" {
+				computedHash := sha256.Sum256([]byte(currentBody))
+				computedHashHex := hex.EncodeToString(computedHash[:])
+				if !strings.EqualFold(computedHashHex, zoneHash) {
+					return nil, fmt.Errorf("local artifact checksum mismatch in 304 response: local %s, X-Zone-Hash %s", computedHashHex, zoneHash)
+				}
 			}
 		}
 
-		return "", currentETag, true, nil
+		if c.verifySignatures {
+			if err := verifyArtifactSignature([]byte(currentBody), resp.Header.Get("X-Zone-Signature"), c.signatureKey); err != nil {
+				return nil, fmt.Errorf("invalid signature header in 304 response: %w", err)
+			}
+		}
+
+		return &SignedZoneArtifact{
+			ETag:        currentETag,
+			NotModified: true,
+		}, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", "", false, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	// Read zone file content
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", "", false, fmt.Errorf("failed to read response body: %w", err)
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	// Extract ETag from response headers
 	newETag := resp.Header.Get("ETag")
 	if newETag == "" {
-		return "", "", false, fmt.Errorf("missing ETag header in response")
+		return nil, fmt.Errorf("missing ETag header in response")
 	}
 
 	// Extract integrity metadata from headers
@@ -325,27 +427,83 @@ func (c *Client) FetchSignedZone(ctx context.Context, zoneName string, currentET
 	// because the agent otherwise cannot detect truncated or altered artifacts.
 	if c.verifyChecksums {
 		if err := validateFullChecksumHeader(zoneHash); err != nil {
-			return "", "", false, err
+			return nil, err
 		}
 
 		computedHash := sha256.Sum256(body)
 		computedHashHex := hex.EncodeToString(computedHash[:])
 		if !strings.EqualFold(computedHashHex, zoneHash) {
-			return "", "", false, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash, computedHashHex)
+			return nil, fmt.Errorf("checksum verification failed: expected %s, got %s", zoneHash, computedHashHex)
 		}
 	}
 
 	if c.verifySignatures {
 		if err := verifyArtifactSignature(body, zoneSignature, c.signatureKey); err != nil {
-			return "", "", false, err
+			return nil, err
 		}
 	}
 
-	// Log integrity metadata for debugging
-	_ = zoneSerial // Available for logging if needed
-	_ = zoneHash8  // Short hash is display metadata only; verification uses X-Zone-Hash.
+	bodySerial, err := parseZoneSOASerial(zoneName, string(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse signed zone SOA serial: %w", err)
+	}
+	headerSerial, err := parseZoneSerialHeader(zoneSerial)
+	if err != nil {
+		return nil, err
+	}
+	if headerSerial != bodySerial {
+		return nil, fmt.Errorf("zone serial header mismatch: X-Zone-Serial %d, SOA serial %d", headerSerial, bodySerial)
+	}
 
-	return string(body), newETag, false, nil
+	_ = zoneHash8 // Short hash is display metadata only; verification uses X-Zone-Hash.
+
+	return &SignedZoneArtifact{
+		Content: string(body),
+		ETag:    newETag,
+		Serial:  bodySerial,
+		Hash:    zoneHash,
+	}, nil
+}
+
+func parseZoneSerialHeader(value string) (uint32, error) {
+	if strings.TrimSpace(value) == "" {
+		return 0, fmt.Errorf("missing X-Zone-Serial header in response")
+	}
+	parsed, err := strconv.ParseUint(strings.TrimSpace(value), 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid X-Zone-Serial header: %w", err)
+	}
+	return uint32(parsed), nil
+}
+
+func (c *Client) conditionalRequestETag(currentETag string, currentBody string) string {
+	requestETag := normalizeIfNoneMatch(currentETag)
+	if requestETag == "" {
+		return ""
+	}
+
+	if !c.verifySignatures {
+		return requestETag
+	}
+
+	if currentBody == "" {
+		return ""
+	}
+
+	expectedHash := etagValue(requestETag)
+	if len(expectedHash) != sha256.Size*2 {
+		return ""
+	}
+	if _, err := hex.DecodeString(expectedHash); err != nil {
+		return ""
+	}
+
+	computedHash := sha256.Sum256([]byte(currentBody))
+	if !strings.EqualFold(hex.EncodeToString(computedHash[:]), expectedHash) {
+		return ""
+	}
+
+	return requestETag
 }
 
 func validateFullChecksumHeader(zoneHash string) error {

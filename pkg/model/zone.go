@@ -76,7 +76,7 @@ type Record struct {
 	// TXT: "v=spf1 include:_spf.example.com ~all"
 	Value string `json:"value"`
 
-	// Priority is used for MX and SRV records (extracted from Value for convenience)
+	// Priority is derived from Value for MX and SRV records.
 	Priority *uint16 `json:"priority,omitempty"`
 }
 

@@ -18,7 +18,7 @@ curl http://controller:8080/health
 # Readiness check (includes backend connectivity)
 curl http://controller:8080/ready
 
-# Full status with metrics
+# Full status
 curl http://controller:8080/status
 ```
 
@@ -37,10 +37,13 @@ curl http://localhost:9090/status
 The agent status server binds to `127.0.0.1:9090` by default because `/status`
 includes zone sync and BGP state. Expose `metrics.listen` remotely only behind
 network filtering, a tunnel, or another authenticated control plane.
+Controller observability endpoints are also unauthenticated. Keep
+`observability.listen` on loopback unless the listener is behind equivalent
+network controls or an authenticated proxy.
 
 ### Prometheus Metrics
 
-**Controller metrics** (`http://controller:8080/metrics`):
+**Controller metrics** (`http://controller:9053/metrics`):
 - `api_requests_total`: API request count by method, path, status
 - `api_request_duration_seconds`: API latency histogram
 - `zones_total`: Current number of zones
@@ -207,8 +210,8 @@ Automated key rotation is not implemented in the current release. The DNSSEC sch
 **Manual rotation**:
 ```bash
 # Enter a maintenance window first: pause DNSSEC scheduling and zone/record writes.
-# generate-keys --rotate activates the new KSK/ZSK immediately.
-arca-dns-controller dnssec generate-keys --zone example.com. --rotate
+# --activate-now confirms that the new KSK/ZSK should become active immediately.
+arca-dns-controller dnssec generate-keys --zone example.com. --rotate --activate-now
 
 # Export new DS records
 arca-dns-controller dnssec export-ds --zone example.com.
@@ -364,7 +367,7 @@ systemctl status arca-dns-controller
 journalctl -u arca-dns-controller -n 100
 
 # Check port binding
-netstat -tlnp | grep 8080
+netstat -tlnp | grep -E '8080|9053'
 
 # Test backend connectivity
 # SQLite:
@@ -400,7 +403,7 @@ journalctl -u arca-dns-controller | grep "dnssec_error"
 **Issue**: Zone sync failing
 ```bash
 # Check controller connectivity
-curl -I https://controller:8080/health
+curl -I http://controller:8080/health
 
 # Check API key
 curl -H "X-API-Key: your-key" https://controller:8080/api/v1/zones
@@ -539,26 +542,61 @@ server:
 ### API Key Rotation
 
 ```bash
-# Generate new key
-NEW_KEY=$(openssl rand -hex 32)
-NEW_HASH=$(echo -n "$NEW_KEY" | sha256sum | cut -d' ' -f1)
+# Rotate an admin key
+NEW_ADMIN_KEY=$(openssl rand -hex 32)
+NEW_ADMIN_HASH=$(printf '%s' "$NEW_ADMIN_KEY" | sha256sum | cut -d' ' -f1)
 
-# Update controller config
-# Add new key while keeping old
+# Update controller config.
+# Replace <...> placeholders with the generated hash values.
+# Add the new admin key while keeping the old admin and agent keys.
+# Do not distribute admin keys to agents.
 api:
   auth:
     api_keys:
-      old_admin: "sha256:OLD_HASH"
-      new_admin: "sha256:$NEW_HASH"
+      old_admin: "sha256:<OLD_ADMIN_HASH>"
+      new_admin: "sha256:<NEW_ADMIN_HASH>"
+      agent: "sha256:<CURRENT_AGENT_HASH>"
+    api_key_roles:
+      old_admin: "admin"
+      new_admin: "admin"
+      agent: "agent"
 
-# Reload controller
-systemctl reload arca-dns-controller
+# Restart controller so the new key is loaded
+systemctl restart arca-dns-controller
 
-# Update agents with new key
-# Test new key works
-curl -H "X-API-Key: $NEW_KEY" https://controller:8080/api/v1/zones
+# Test the new admin key
+curl -H "X-API-Key: $NEW_ADMIN_KEY" https://controller:8080/api/v1/zones
 
-# Remove old key from config after migration
+# Remove old_admin from config after migration
+```
+
+```bash
+# Rotate an agent key separately
+NEW_AGENT_KEY=$(openssl rand -hex 32)
+NEW_AGENT_HASH=$(printf '%s' "$NEW_AGENT_KEY" | sha256sum | cut -d' ' -f1)
+
+# Update controller config.
+# Replace <...> placeholders with the generated hash values.
+# Keep an admin key and mark both agent keys with the agent role.
+api:
+  auth:
+    api_keys:
+      admin: "sha256:<CURRENT_ADMIN_HASH>"
+      old_agent: "sha256:<OLD_AGENT_HASH>"
+      new_agent: "sha256:<NEW_AGENT_HASH>"
+    api_key_roles:
+      admin: "admin"
+      old_agent: "agent"
+      new_agent: "agent"
+
+# Restart controller, then update agents with NEW_AGENT_KEY
+systemctl restart arca-dns-controller
+
+# Test the new agent key against the agent sync view
+curl -H "X-API-Key: $NEW_AGENT_KEY" \
+  "https://controller:8080/api/v1/zones?fields=summary"
+
+# Remove old_agent from config after all agents are updated
 ```
 
 ### Master Key Rotation
@@ -601,9 +639,9 @@ systemctl reload nginx
 # Agent auto-discovers and syncs zones
 # BGP routes announced automatically when healthy
 
-# Verify from controller
-curl -H "X-API-Key: $API_KEY" \
-  https://controller:8080/api/v1/agents
+# Verify the agent key can read the controller sync view
+curl -H "X-API-Key: $ARCA_DNS_AGENT_API_KEY" \
+  "https://controller:8080/api/v1/zones?fields=summary"
 ```
 
 ### Scaling Controller (Active-Passive)

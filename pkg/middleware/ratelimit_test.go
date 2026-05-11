@@ -187,6 +187,32 @@ func TestRateLimiter_Middleware_RecoveryAfterWait(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code, "Request should succeed after rate limit recovery")
 }
 
+func TestRateLimiter_CleansStaleClientsOnRequest(t *testing.T) {
+	config := RateLimiterConfig{
+		ReadRPS:  10,
+		WriteRPS: 10,
+		Burst:    1,
+	}
+	rl := NewRateLimiter(config)
+
+	rl.getLimiter("192.0.2.1", false)
+
+	rl.mu.Lock()
+	rl.clients["192.0.2.1"].lastSeen = time.Now().Add(-(rateLimiterClientTTL + time.Second))
+	rl.lastCleanup = time.Now().Add(-(rateLimiterCleanupInterval + time.Second))
+	rl.mu.Unlock()
+
+	rl.getLimiter("192.0.2.2", false)
+
+	rl.mu.RLock()
+	_, staleExists := rl.clients["192.0.2.1"]
+	_, currentExists := rl.clients["192.0.2.2"]
+	rl.mu.RUnlock()
+
+	assert.False(t, staleExists)
+	assert.True(t, currentExists)
+}
+
 func TestDefaultRateLimiterConfig(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	assert.Equal(t, 100, config.ReadRPS)

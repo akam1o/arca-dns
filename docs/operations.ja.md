@@ -18,7 +18,7 @@ curl http://controller:8080/health
 # Readiness check (includes backend connectivity)
 curl http://controller:8080/ready
 
-# Full status with metrics
+# Full status
 curl http://controller:8080/status
 ```
 
@@ -38,10 +38,13 @@ agent の status server はデフォルトで `127.0.0.1:9090` に bind しま�
 `/status` には zone 同期状態と BGP 状態が含まれるため、`metrics.listen`
 をリモート公開する場合は firewall、tunnel、または認証済みの control plane
 の背後に置いてください。
+controller の observability endpoint も認証なしです。`observability.listen`
+は、同等の network control または認証付き proxy の背後に置く場合を除き、
+loopback のままにしてください。
 
 ### Prometheus メトリクス
 
-**Controller metrics**（`http://controller:8080/metrics`）:
+**Controller metrics**（`http://controller:9053/metrics`）:
 - `api_requests_total`: method/path/status 別の API リクエスト数
 - `api_request_duration_seconds`: API レイテンシのヒストグラム
 - `zones_total`: 現在のゾーン数
@@ -208,8 +211,8 @@ arca-dns-controller dnssec export-ds --zone example.com. --format json
 **手動ローテーション**:
 ```bash
 # 先に maintenance window に入り、DNSSEC scheduler と zone/record 書き込みを止める。
-# generate-keys --rotate は新しい KSK/ZSK を即 active にする。
-arca-dns-controller dnssec generate-keys --zone example.com. --rotate
+# --activate-now は新しい KSK/ZSK を即 active にすることを明示的に確認する。
+arca-dns-controller dnssec generate-keys --zone example.com. --rotate --activate-now
 
 # 新しい DS を出力する
 arca-dns-controller dnssec export-ds --zone example.com.
@@ -365,7 +368,7 @@ systemctl status arca-dns-controller
 journalctl -u arca-dns-controller -n 100
 
 # Check port binding
-netstat -tlnp | grep 8080
+netstat -tlnp | grep -E '8080|9053'
 
 # Test backend connectivity
 # SQLite:
@@ -401,7 +404,7 @@ journalctl -u arca-dns-controller | grep "dnssec_error"
 **症状**: ゾーン同期が失敗する
 ```bash
 # Check controller connectivity
-curl -I https://controller:8080/health
+curl -I http://controller:8080/health
 
 # Check API key
 curl -H "X-API-Key: your-key" https://controller:8080/api/v1/zones
@@ -540,26 +543,61 @@ server:
 ### API キーのローテーション
 
 ```bash
-# Generate new key
-NEW_KEY=$(openssl rand -hex 32)
-NEW_HASH=$(echo -n "$NEW_KEY" | sha256sum | cut -d' ' -f1)
+# admin key をローテーション
+NEW_ADMIN_KEY=$(openssl rand -hex 32)
+NEW_ADMIN_HASH=$(printf '%s' "$NEW_ADMIN_KEY" | sha256sum | cut -d' ' -f1)
 
-# Update controller config
-# Add new key while keeping old
+# controller config を更新
+# <...> placeholder を生成した hash 値に置き換えてください。
+# 既存の admin key と agent key を残したまま、新しい admin key を追加します。
+# admin key を agent に配布しないでください。
 api:
   auth:
     api_keys:
-      old_admin: "sha256:OLD_HASH"
-      new_admin: "sha256:$NEW_HASH"
+      old_admin: "sha256:<OLD_ADMIN_HASH>"
+      new_admin: "sha256:<NEW_ADMIN_HASH>"
+      agent: "sha256:<CURRENT_AGENT_HASH>"
+    api_key_roles:
+      old_admin: "admin"
+      new_admin: "admin"
+      agent: "agent"
 
-# Reload controller
-systemctl reload arca-dns-controller
+# 新しい key を読み込むため controller を restart
+systemctl restart arca-dns-controller
 
-# Update agents with new key
-# Test new key works
-curl -H "X-API-Key: $NEW_KEY" https://controller:8080/api/v1/zones
+# 新しい admin key を確認
+curl -H "X-API-Key: $NEW_ADMIN_KEY" https://controller:8080/api/v1/zones
 
-# Remove old key from config after migration
+# 移行後に old_admin を config から削除
+```
+
+```bash
+# agent key は別にローテーション
+NEW_AGENT_KEY=$(openssl rand -hex 32)
+NEW_AGENT_HASH=$(printf '%s' "$NEW_AGENT_KEY" | sha256sum | cut -d' ' -f1)
+
+# controller config を更新
+# <...> placeholder を生成した hash 値に置き換えてください。
+# admin key を残し、agent key は両方 agent role にします。
+api:
+  auth:
+    api_keys:
+      admin: "sha256:<CURRENT_ADMIN_HASH>"
+      old_agent: "sha256:<OLD_AGENT_HASH>"
+      new_agent: "sha256:<NEW_AGENT_HASH>"
+    api_key_roles:
+      admin: "admin"
+      old_agent: "agent"
+      new_agent: "agent"
+
+# controller を restart してから、agent に NEW_AGENT_KEY を設定
+systemctl restart arca-dns-controller
+
+# 新しい agent key を同期用 view で確認
+curl -H "X-API-Key: $NEW_AGENT_KEY" \
+  "https://controller:8080/api/v1/zones?fields=summary"
+
+# 全 agent の更新後に old_agent を config から削除
 ```
 
 ### マスターキーのローテーション
@@ -602,9 +640,9 @@ systemctl reload nginx
 # Agent auto-discovers and syncs zones
 # BGP routes announced automatically when healthy
 
-# Verify from controller
-curl -H "X-API-Key: $API_KEY" \
-  https://controller:8080/api/v1/agents
+# agent key で controller の同期用 view を読めることを確認
+curl -H "X-API-Key: $ARCA_DNS_AGENT_API_KEY" \
+  "https://controller:8080/api/v1/zones?fields=summary"
 ```
 
 ### controller のスケール（Active-Passive）

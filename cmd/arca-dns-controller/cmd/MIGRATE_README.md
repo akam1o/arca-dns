@@ -48,7 +48,7 @@ arca-dns-controller migrate import --backend=git --path=/repo --input=./backup/
 
 # With --overwrite: Delete and recreate existing zones
 arca-dns-controller migrate import --backend=git --path=/repo --input=./backup/ --overwrite
-# Output: "Overwrote: example.com. (old version: v2024..., new version: v2024...)"
+# Output: "Overwrote: example.com. (old version: v01..., new version: v01...)"
 ```
 
 **⚠️ Critical**: Overwrite mode implications vary by backend:
@@ -212,8 +212,8 @@ arca-dns-controller migrate import --backend=sqlite --dsn=":memory:" --input=./p
 # 3. Test import to staging
 arca-dns-controller migrate import --backend=mysql --dsn="staging..." --input=./prod-data/
 
-# 4. Verify versions are recomputed correctly
-# (versions should be deterministic based on content)
+# 4. Verify destination versions were regenerated as controller-issued ULIDs
+# (versions are not deterministic content IDs)
 ```
 
 ## Error Handling

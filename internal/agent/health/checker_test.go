@@ -109,6 +109,32 @@ func TestChecker_questionNameUsesTestZoneForRelativeRecord(t *testing.T) {
 	assert.Equal(t, "www.example.com.", checker.questionName())
 }
 
+func TestChecker_questionNameUsesTestZoneForMultiLabelRelativeRecord(t *testing.T) {
+	checker := NewChecker(config.HealthConfig{
+		TestZone:   "example.com.",
+		TestRecord: "www.edge",
+	}, zap.NewNop())
+
+	assert.Equal(t, "www.edge.example.com.", checker.questionName())
+}
+
+func TestChecker_questionNameKeepsDottedRecordAbsoluteWithoutTestZone(t *testing.T) {
+	checker := NewChecker(config.HealthConfig{
+		TestRecord: "www.edge",
+	}, zap.NewNop())
+
+	assert.Equal(t, "www.edge.", checker.questionName())
+}
+
+func TestChecker_questionNameKeepsAbsoluteRecordWithTrailingDot(t *testing.T) {
+	checker := NewChecker(config.HealthConfig{
+		TestZone:   "example.com.",
+		TestRecord: "www.edge.",
+	}, zap.NewNop())
+
+	assert.Equal(t, "www.edge.", checker.questionName())
+}
+
 func TestChecker_checkLatency(t *testing.T) {
 	logger := zap.NewNop()
 

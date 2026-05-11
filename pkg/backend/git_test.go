@@ -47,7 +47,7 @@ func testGitZone(name string) *model.Zone {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords(name),
 	}
 }
 
@@ -85,7 +85,7 @@ func TestGitBackend_FreshRepoUsesConfiguredBranch(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("example.com."),
 	}
 
 	require.NoError(t, backend.CreateZone(context.Background(), zone))
@@ -127,14 +127,14 @@ func TestGitBackend_CreateZone(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{
-			{
+		Records: testZoneRecords("example.com.",
+			model.Record{
 				Name:  "example.com.",
 				Type:  "A",
 				TTL:   300,
 				Value: "192.0.2.1",
 			},
-		},
+		),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -145,7 +145,7 @@ func TestGitBackend_CreateZone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "example.com.", retrieved.Name)
 	assert.Equal(t, uint32(2024010101), retrieved.SOA.Serial)
-	assert.Len(t, retrieved.Records, 1)
+	assert.Len(t, retrieved.Records, 2)
 	assert.NotEmpty(t, retrieved.Version)
 
 	// Verify zone file exists
@@ -171,7 +171,7 @@ func TestGitBackend_CreateZone_AlreadyExists(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("example.com."),
 	}
 
 	// Create zone
@@ -211,14 +211,14 @@ func TestGitBackend_UpdateZone(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{
-			{
+		Records: testZoneRecords("example.com.",
+			model.Record{
 				Name:  "example.com.",
 				Type:  "A",
 				TTL:   300,
 				Value: "192.0.2.1",
 			},
-		},
+		),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -244,7 +244,7 @@ func TestGitBackend_UpdateZone(t *testing.T) {
 	// Verify update
 	updated, err := backend.GetZone(ctx, "example.com.")
 	require.NoError(t, err)
-	assert.Len(t, updated.Records, 2)
+	assert.Len(t, updated.Records, 3)
 	assert.NotEqual(t, originalVersion, updated.Version, "Version should change")
 }
 
@@ -266,7 +266,7 @@ func TestGitBackend_UpdateZone_Conflict(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("example.com."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -295,7 +295,7 @@ func TestGitBackend_DeleteZone(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("example.com."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -315,7 +315,7 @@ func TestGitBackend_DeleteZone(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "Zone file should not exist")
 }
 
-func TestGitBackend_CreateZone_RollsBackWhenAutoPushFails(t *testing.T) {
+func TestGitBackend_CreateZone_RetainsLocalCommitWhenAutoPushFails(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
 
@@ -325,18 +325,18 @@ func TestGitBackend_CreateZone_RollsBackWhenAutoPushFails(t *testing.T) {
 	err := backend.CreateZone(ctx, testGitZone("example.com."))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "git push failed")
+	assert.Contains(t, err.Error(), "local commit was retained")
 
-	_, err = backend.GetZone(ctx, "example.com.")
-	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	retrieved, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, "example.com.", retrieved.Name)
+	assert.FileExists(t, filepath.Join(backend.repoPath, "zones", "example.com..json"))
 
 	_, err = backend.repo.Head()
-	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
-
-	backend.autoPush = false
-	require.NoError(t, backend.CreateZone(ctx, testGitZone("example.com.")))
+	assert.NoError(t, err)
 }
 
-func TestGitBackend_UpdateZone_RollsBackWhenAutoPushFails(t *testing.T) {
+func TestGitBackend_UpdateZone_RetainsLocalCommitWhenAutoPushFails(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
 
@@ -348,23 +348,24 @@ func TestGitBackend_UpdateZone_RollsBackWhenAutoPushFails(t *testing.T) {
 	headBefore := gitHeadHash(t, backend)
 
 	updated := *created
-	updated.Records = []model.Record{
-		{Name: "www.example.com.", Type: "A", TTL: 300, Value: "192.0.2.10"},
-	}
+	updated.Records = testZoneRecords("example.com.",
+		model.Record{Name: "www.example.com.", Type: "A", TTL: 300, Value: "192.0.2.10"},
+	)
 
 	backend.autoPush = true
 	err = backend.UpdateZone(ctx, &updated, created.Version)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "git push failed")
-	assert.Equal(t, headBefore, gitHeadHash(t, backend))
+	assert.Contains(t, err.Error(), "local commit was retained")
+	assert.NotEqual(t, headBefore, gitHeadHash(t, backend))
 
 	retrieved, err := backend.GetZone(ctx, "example.com.")
 	require.NoError(t, err)
-	assert.Equal(t, created.Version, retrieved.Version)
-	assert.Empty(t, retrieved.Records)
+	assert.NotEqual(t, created.Version, retrieved.Version)
+	assert.Equal(t, updated.Records, retrieved.Records)
 }
 
-func TestGitBackend_DeleteZone_RollsBackWhenAutoPushFails(t *testing.T) {
+func TestGitBackend_DeleteZone_RetainsLocalCommitWhenAutoPushFails(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
 
@@ -376,11 +377,12 @@ func TestGitBackend_DeleteZone_RollsBackWhenAutoPushFails(t *testing.T) {
 	err := backend.DeleteZone(ctx, "example.com.")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "git push failed")
-	assert.Equal(t, headBefore, gitHeadHash(t, backend))
+	assert.Contains(t, err.Error(), "local commit was retained")
+	assert.NotEqual(t, headBefore, gitHeadHash(t, backend))
 
 	_, err = backend.GetZone(ctx, "example.com.")
-	assert.NoError(t, err)
-	assert.FileExists(t, filepath.Join(backend.repoPath, "zones", "example.com..json"))
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	assert.NoFileExists(t, filepath.Join(backend.repoPath, "zones", "example.com..json"))
 }
 
 func TestGitBackend_AutoPullUsesConfiguredBranch(t *testing.T) {
@@ -528,7 +530,7 @@ func TestGitBackend_ListZones(t *testing.T) {
 				Expire:  604800,
 				Minimum: 86400,
 			},
-			Records: []model.Record{},
+			Records: testZoneRecords(name),
 		}
 		err := backend.CreateZone(ctx, zone)
 		require.NoError(t, err)
@@ -543,6 +545,12 @@ func TestGitBackend_ListZones(t *testing.T) {
 	assert.Equal(t, "aaa.com.", result[0].Name)
 	assert.Equal(t, "bbb.com.", result[1].Name)
 	assert.Equal(t, "ccc.com.", result[2].Name)
+
+	// Negative offsets are normalized to zero.
+	negativeOffset, err := backend.ListZones(ctx, ListOptions{Offset: -1, Limit: 2})
+	require.NoError(t, err)
+	assert.Len(t, negativeOffset, 2)
+	assert.Equal(t, "aaa.com.", negativeOffset[0].Name)
 
 	// Test pagination
 	page1, err := backend.ListZones(ctx, ListOptions{Offset: 0, Limit: 2})
@@ -600,14 +608,14 @@ func TestGitBackend_GetRevision(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{
-			{
+		Records: testZoneRecords("example.com.",
+			model.Record{
 				Name:  "example.com.",
 				Type:  "A",
 				TTL:   300,
 				Value: "192.0.2.1",
 			},
-		},
+		),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -633,7 +641,7 @@ func TestGitBackend_GetRevision(t *testing.T) {
 	oldVersion, err := backend.GetRevision(ctx, "example.com.", version1)
 	require.NoError(t, err)
 	assert.Equal(t, version1, oldVersion.Version)
-	assert.Len(t, oldVersion.Records, 1, "Old version should have 1 record")
+	assert.Len(t, oldVersion.Records, 2, "Old version should have 2 records")
 }
 
 func TestGitBackend_ListRevisions(t *testing.T) {
@@ -654,7 +662,7 @@ func TestGitBackend_ListRevisions(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("example.com."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -706,7 +714,7 @@ func TestGitBackend_UpdateDNSSECMetadataDoesNotAddRevision(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("example.com."),
 	}
 
 	require.NoError(t, backend.CreateZone(ctx, zone))
@@ -752,7 +760,7 @@ func TestGitBackend_GetCurrentVersion(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("example.com."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -787,7 +795,7 @@ func TestGitBackend_ConcurrentWrites(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("example.com."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -804,9 +812,9 @@ func TestGitBackend_ConcurrentWrites(t *testing.T) {
 	// First update should succeed
 	go func() {
 		zone1 := *zone
-		zone1.Records = []model.Record{
-			{Name: "test1.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
-		}
+		zone1.Records = testZoneRecords("example.com.",
+			model.Record{Name: "test1.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		)
 		errChan <- backend.UpdateZone(ctx, &zone1, version)
 	}()
 
@@ -814,9 +822,9 @@ func TestGitBackend_ConcurrentWrites(t *testing.T) {
 	go func() {
 		time.Sleep(50 * time.Millisecond) // Slight delay to ensure first update starts
 		zone2 := *zone
-		zone2.Records = []model.Record{
-			{Name: "test2.example.com.", Type: "A", TTL: 300, Value: "192.0.2.2"},
-		}
+		zone2.Records = testZoneRecords("example.com.",
+			model.Record{Name: "test2.example.com.", Type: "A", TTL: 300, Value: "192.0.2.2"},
+		)
 		errChan <- backend.UpdateZone(ctx, &zone2, version)
 	}()
 
@@ -851,7 +859,7 @@ func TestGitBackend_ZoneNameNormalization(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("Example.COM."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -888,7 +896,7 @@ func TestGitBackend_ListZones_LimitZero(t *testing.T) {
 				Expire:  604800,
 				Minimum: 86400,
 			},
-			Records: []model.Record{},
+			Records: testZoneRecords("example.com."),
 		}
 		err := backend.CreateZone(ctx, zone)
 		require.NoError(t, err)
@@ -919,7 +927,7 @@ func TestGitBackend_SerialAutoGeneration(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("example.com."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -951,7 +959,7 @@ func TestGitBackend_TimestampHandling(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("example.com."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -969,9 +977,9 @@ func TestGitBackend_TimestampHandling(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Update zone
-	zone.Records = []model.Record{
-		{Name: "test.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
-	}
+	zone.Records = testZoneRecords("example.com.",
+		model.Record{Name: "test.example.com.", Type: "A", TTL: 300, Value: "192.0.2.1"},
+	)
 	err = backend.UpdateZone(ctx, zone, created.Version)
 	require.NoError(t, err)
 
@@ -1002,7 +1010,7 @@ func TestGitBackend_GetRevision_NotFound(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{},
+		Records: testZoneRecords("example.com."),
 	}
 
 	err := backend.CreateZone(ctx, zone)

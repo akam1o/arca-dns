@@ -225,3 +225,64 @@ func TestNormalizeRecordOwnerName(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeDomainTargetName(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetName string
+		zoneOrigin string
+		want       string
+	}{
+		{
+			name:       "relative target",
+			targetName: "mail",
+			zoneOrigin: "example.com.",
+			want:       "mail.example.com.",
+		},
+		{
+			name:       "relative dotted target",
+			targetName: "mail.sub",
+			zoneOrigin: "example.com.",
+			want:       "mail.sub.example.com.",
+		},
+		{
+			name:       "FQDN with trailing dot",
+			targetName: "mail.example.com.",
+			zoneOrigin: "example.com.",
+			want:       "mail.example.com.",
+		},
+		{
+			name:       "FQDN without trailing dot under origin",
+			targetName: "mail.example.com",
+			zoneOrigin: "example.com.",
+			want:       "mail.example.com.",
+		},
+		{
+			name:       "uppercase target under origin",
+			targetName: "MAIL.EXAMPLE.COM",
+			zoneOrigin: "example.com.",
+			want:       "mail.example.com.",
+		},
+		{
+			name:       "external target without trailing dot is relative",
+			targetName: "mail.external.net",
+			zoneOrigin: "example.com.",
+			want:       "mail.external.net.example.com.",
+		},
+		{
+			name:       "apex shorthand is preserved for validation",
+			targetName: "@",
+			zoneOrigin: "example.com.",
+			want:       "@",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NormalizeDomainTargetName(tt.targetName, tt.zoneOrigin)
+			if got != tt.want {
+				t.Errorf("NormalizeDomainTargetName(%q, %q) = %q, want %q", tt.targetName, tt.zoneOrigin, got, tt.want)
+			}
+		})
+	}
+}

@@ -472,6 +472,41 @@ func TestScheduler_BackoffAfterFailure(t *testing.T) {
 	cancel()
 }
 
+func TestScheduler_RecordFailureCapsBackoffBeforeOverflow(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	config := DefaultSchedulerConfig()
+	scheduler := NewScheduler(config, nil, nil, nil, nil, nil, zap.NewNop())
+
+	scheduler.backoff["example.com."] = &backoffState{failures: 62}
+	scheduler.recordFailure("example.com.", now)
+
+	state := scheduler.backoff["example.com."]
+	if state.failures != 63 {
+		t.Fatalf("Expected 63 failures, got %d", state.failures)
+	}
+	if got := state.nextAllowed.Sub(now); got != config.FailureBackoffMax {
+		t.Errorf("Expected capped backoff %s, got %s", config.FailureBackoffMax, got)
+	}
+}
+
+func TestScheduler_RecordFailureHandlesSmallBackoff(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	config := DefaultSchedulerConfig()
+	config.FailureBackoffMin = time.Nanosecond
+	config.FailureBackoffMax = 2 * time.Nanosecond
+	scheduler := NewScheduler(config, nil, nil, nil, nil, nil, zap.NewNop())
+
+	scheduler.recordFailure("example.com.", now)
+
+	state := scheduler.backoff["example.com."]
+	if state.failures != 1 {
+		t.Fatalf("Expected 1 failure, got %d", state.failures)
+	}
+	if got := state.nextAllowed.Sub(now); got != config.FailureBackoffMax {
+		t.Errorf("Expected capped backoff %s, got %s", config.FailureBackoffMax, got)
+	}
+}
+
 func TestScheduler_SkipsDNSSECDisabledZones(t *testing.T) {
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: now}

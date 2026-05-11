@@ -63,11 +63,79 @@ func setupSigningFailureTest(t *testing.T) (*httptest.Server, *backend.MemoryBac
 	return server, store
 }
 
+func setupArtifactStoreFailureTest(t *testing.T) (*httptest.Server, *backend.MemoryBackend) {
+	t.Helper()
+
+	logger := zap.NewNop()
+	store := backend.NewMemoryBackend()
+	tmpDir := t.TempDir()
+
+	masterKey, err := dnssec.GenerateMasterKey()
+	require.NoError(t, err)
+
+	keyManager, err := dnssec.NewKeyManager(dnssec.KeyManagerOptions{
+		KeyDirectory: filepath.Join(tmpDir, "keys"),
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	artifactPath := filepath.Join(tmpDir, "artifacts")
+	require.NoError(t, os.WriteFile(artifactPath, []byte("not a directory"), 0600))
+
+	signingService := service.NewSigningService(store, keyManager, artifactPath, nil, logger)
+	handler := NewHandler(store, signingService, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = false
+	apiCfg.RateLimit.Enabled = false
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("tcp listen not permitted in this environment: %v", err)
+	}
+	server := httptest.NewUnstartedServer(router)
+	server.Listener = ln
+	server.Start()
+
+	return server, store
+}
+
 type mutateAfterFirstGetStore struct {
 	inner   *backend.MemoryBackend
 	target  string
 	mu      sync.Mutex
 	mutated bool
+}
+
+type postCreateReadFailureStore struct {
+	*backend.MemoryBackend
+	target    string
+	mu        sync.Mutex
+	failReads bool
+}
+
+func (s *postCreateReadFailureStore) CreateZone(ctx context.Context, zone *model.Zone) error {
+	if err := s.MemoryBackend.CreateZone(ctx, zone); err != nil {
+		return err
+	}
+	if model.NormalizeZoneName(zone.Name) == s.target {
+		s.mu.Lock()
+		s.failReads = true
+		s.mu.Unlock()
+	}
+	return nil
+}
+
+func (s *postCreateReadFailureStore) GetZone(ctx context.Context, name string) (*model.Zone, error) {
+	s.mu.Lock()
+	failReads := s.failReads && model.NormalizeZoneName(name) == s.target
+	s.mu.Unlock()
+	if failReads {
+		return nil, fmt.Errorf("post-create read failed")
+	}
+	return s.MemoryBackend.GetZone(ctx, name)
 }
 
 func (s *mutateAfterFirstGetStore) GetZone(ctx context.Context, name string) (*model.Zone, error) {
@@ -134,6 +202,7 @@ func TestGetSignedZone_UsesArtifactMetadataAfterSigningRefetch(t *testing.T) {
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -198,6 +267,7 @@ func TestCreateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 		Name: "signing-fails.com.",
 		SOA:  model.DefaultSOA("ns1.signing-fails.com.", "admin.signing-fails.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -214,6 +284,90 @@ func TestCreateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 
 	_, err = store.GetZone(context.Background(), "signing-fails.com.")
 	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+}
+
+func TestCreateZone_DoesNotPersistWhenSignedArtifactStoreFails(t *testing.T) {
+	server, store := setupArtifactStoreFailureTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "artifact-store-fails.com.",
+		SOA:  model.DefaultSOA("ns1.artifact-store-fails.com.", "admin.artifact-store-fails.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+
+	body, err := json.Marshal(zone)
+	require.NoError(t, err)
+
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get("ETag"))
+
+	_, err = store.GetZone(context.Background(), "artifact-store-fails.com.")
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+}
+
+func TestCreateZone_KeepsSignedArtifactWhenPostCreateReadFails(t *testing.T) {
+	logger := zap.NewNop()
+	zoneName := "post-create-read-fails.com."
+	store := &postCreateReadFailureStore{
+		MemoryBackend: backend.NewMemoryBackend(),
+		target:        model.NormalizeZoneName(zoneName),
+	}
+	tmpDir := t.TempDir()
+
+	masterKey, err := dnssec.GenerateMasterKey()
+	require.NoError(t, err)
+	keyManager, err := dnssec.NewKeyManager(dnssec.KeyManagerOptions{
+		KeyDirectory: filepath.Join(tmpDir, "keys"),
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	artifactDir := filepath.Join(tmpDir, "artifacts")
+	signingService := service.NewSigningService(store, keyManager, artifactDir, nil, logger)
+	handler := NewHandler(store, signingService, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = false
+	apiCfg.RateLimit.Enabled = false
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("tcp listen not permitted in this environment: %v", err)
+	}
+	server := httptest.NewUnstartedServer(router)
+	server.Listener = ln
+	server.Start()
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: zoneName,
+		SOA:  model.DefaultSOA("ns1."+zoneName, "admin."+zoneName),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	body, err := json.Marshal(zone)
+	require.NoError(t, err)
+
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	matches, err := filepath.Glob(filepath.Join(artifactDir, "*", "*.zone.signed"))
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
 }
 
 func TestCreateZoneRaw_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
@@ -252,6 +406,7 @@ func TestUpdateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 		Name: "signing-fails.com.",
 		SOA:  model.DefaultSOA("ns1.signing-fails.com.", "admin.signing-fails.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
@@ -293,6 +448,7 @@ func TestCreateRecord_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 		Name: "signing-fails.com.",
 		SOA:  model.DefaultSOA("ns1.signing-fails.com.", "admin.signing-fails.com."),
 		Records: []model.Record{
+			apiTestApexNSRecord(),
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}

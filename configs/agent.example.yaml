@@ -1,8 +1,10 @@
 # Example configuration for arca-dns-agent
 
 controller:
+  # Prefer https:// when the controller is not reached over an intentionally
+  # trusted local/private transport. Using http:// with api_key logs a warning.
   url: "http://controller:8080"
-  api_key: "REPLACE_WITH_RAW_API_KEY"
+  api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
   timeout: "5s"
   retry_attempts: 3
   retry_delay: "200ms"
@@ -14,9 +16,10 @@ sync:
   backup_versions: 3
   verify_checksums: true
   verify_signatures: true
-  # Required when verify_signatures is true. Must match controller
-  # api.artifact_signature_key. Generate with: openssl rand -base64 32
-  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  # Required when verify_signatures is true. This is a shared HMAC secret and
+  # must match controller api.artifact_signature_key.
+  # Generate with: openssl rand -base64 32
+  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 health:
   check_interval: "10s"
@@ -27,7 +30,9 @@ health:
   # DNS check targets (host:port)
   nsd_server: "127.0.0.1:5353"
   unbound_server: "127.0.0.1:53"
-  test_record: "example.com"
+  # BIRD route control requires this to point at an A record served by this node.
+  test_zone: "example.com."
+  test_record: "www"
 
 nsd:
   enabled: false

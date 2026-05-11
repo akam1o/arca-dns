@@ -25,12 +25,14 @@ Recommended production topology:
 | Docker Compose | local or single-host validation | `deployments/compose/controller-mysql/` runs controller + MySQL |
 | Kubernetes | controller cluster deployment | Agents usually still run outside the cluster on edge nodes |
 
+The agent container image contains only `arca-dns-agent`. If you run an agent in a container with `nsd.enabled`, `unbound.enabled`, or `bird.enabled`, mount the matching host binaries, sockets, and writable config/data paths, or disable those integrations in the agent config.
+
 ## Common Prerequisites
 
 ### Controller
 
 - Choose one backend: `sqlite` (default), `postgres`, `mysql`, `git`, or `etcd`
-- Do not use the `memory` backend in production; it is for tests only
+- Use SQLite with `:memory:` only for disposable local validation
 - Ensure `storage.artifact_directory` and `storage.key_directory` are writable
 - If DNSSEC is enabled, ensure `dnssec.key_directory` is writable and a DNSSEC master key is configured
 - If API auth is enabled, configure at least one API key hash
@@ -51,7 +53,8 @@ Recommended production topology:
 
 | Component | Port | Purpose |
 | --- | --- | --- |
-| controller | `8080` | API, health, readiness, metrics |
+| controller | `8080` | management API, health, readiness, status |
+| controller | `9053` | Prometheus metrics, compatibility health/readiness/status aliases |
 | agent | `9090` | status, health, readiness, metrics |
 | DNS | `53/tcp`, `53/udp` | edge DNS service |
 
@@ -60,14 +63,19 @@ Recommended production topology:
 ### API Key
 
 The controller default is `api.auth.enabled: true`. When auth is enabled, `api.auth.api_keys` must contain at least one `sha256:<64 hex>` hash.
+The controller observability listener is unauthenticated and binds to `127.0.0.1:9053` by default. Bind it to a remote address only behind network controls or an authenticated proxy.
 
 ```bash
-API_KEY="$(openssl rand -hex 32)"
-API_KEY_HASH="sha256:$(printf '%s' "$API_KEY" | sha256sum | awk '{print $1}')"
+ADMIN_API_KEY="$(openssl rand -hex 32)"
+ADMIN_API_KEY_HASH="sha256:$(printf '%s' "$ADMIN_API_KEY" | sha256sum | awk '{print $1}')"
+AGENT_API_KEY="$(openssl rand -hex 32)"
+AGENT_API_KEY_HASH="sha256:$(printf '%s' "$AGENT_API_KEY" | sha256sum | awk '{print $1}')"
 SHARED_SIGNATURE_KEY="$(openssl rand -base64 32)"
 
-printf 'raw api key: %s\n' "$API_KEY"
-printf 'hash: %s\n' "$API_KEY_HASH"
+printf 'raw admin api key: %s\n' "$ADMIN_API_KEY"
+printf 'admin hash: %s\n' "$ADMIN_API_KEY_HASH"
+printf 'raw agent api key: %s\n' "$AGENT_API_KEY"
+printf 'agent hash: %s\n' "$AGENT_API_KEY_HASH"
 ```
 
 Set the hash on the controller:
@@ -80,6 +88,10 @@ api:
     enabled: true
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
+    api_key_roles:
+      admin: "admin"
+      agent: "agent"
 ```
 
 Set the raw API key on agents:
@@ -87,18 +99,20 @@ Set the raw API key on agents:
 ```yaml
 controller:
   url: "https://controller.example.com"
-  api_key: "REPLACE_WITH_RAW_API_KEY"
+  api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
 
 sync:
   verify_signatures: true
-  # Must match api.artifact_signature_key.
-  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  # Shared HMAC secret; must match api.artifact_signature_key.
+  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 
 For env-only controller deployments, API keys can be supplied as:
 
 ```bash
-export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEYS_ADMIN="$ADMIN_API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEYS_AGENT="$AGENT_API_KEY_HASH"
+export ARCA_DNS_API_AUTH_API_KEY_ROLES_AGENT="agent"
 export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$SHARED_SIGNATURE_KEY"
 ```
 
@@ -143,11 +157,14 @@ backend:
 
 The MySQL backend does not apply schema migrations during controller startup. Apply the SQL schema before starting the controller.
 
-The schema files currently live in the repository under `migrations/`. If you deploy from DEB/RPM packages, use the matching release source tree or ship these SQL files with your deployment artifact.
+The schema files live in the repository under `migrations/`. DEB/RPM packages install the same files under `/usr/share/arca-dns/migrations/`.
 
 ```bash
 mysql -h mysql.example.com -u dns_user -p arca_dns \
   < migrations/mysql/000001_initial_schema.up.sql
+# Package install path:
+# mysql -h mysql.example.com -u dns_user -p arca_dns \
+#   < /usr/share/arca-dns/migrations/mysql/000001_initial_schema.up.sql
 ```
 
 Example config:
@@ -163,11 +180,14 @@ backend:
 
 The PostgreSQL backend also requires schema creation before controller startup.
 
-The schema files currently live in the repository under `migrations/`. If you deploy from DEB/RPM packages, use the matching release source tree or ship these SQL files with your deployment artifact.
+The schema files live in the repository under `migrations/`. DEB/RPM packages install the same files under `/usr/share/arca-dns/migrations/`.
 
 ```bash
 psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
   -f migrations/postgres/000001_initial_schema.up.sql
+# Package install path:
+# psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
+#   -f /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
 ```
 
 Example config:
@@ -268,7 +288,12 @@ Set at least:
 - `nsd.enabled`, `nsd.zone_directory`, `nsd.control_path`
 - `unbound.enabled`, `unbound.control_path`
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
-- `health.nsd_server`, `health.unbound_server`, `health.test_record`
+- `health.nsd_server`, `health.unbound_server`, `health.test_zone`, `health.test_record`
+
+When `health.test_record` is relative, set `health.test_zone` to the served
+zone, for example `test_zone: "example.com."` and `test_record: "www"`.
+Use a trailing dot on `health.test_record` only when you want to query an
+absolute DNS name directly.
 
 If DNSTap is enabled, keep `dnstap.socket_mode` at `0660` and either set
 `dnstap.socket_group` to a shared group that contains the DNS daemon user
@@ -331,7 +356,10 @@ Prepare secrets first:
 ```bash
 export ARCA_DNS_API_KEY="$(openssl rand -hex 32)"
 export ARCA_DNS_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_API_KEY" | sha256sum | awk '{print $1}')"
+export ARCA_DNS_AGENT_API_KEY="$(openssl rand -hex 32)"
+export ARCA_DNS_AGENT_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_AGENT_API_KEY" | sha256sum | awk '{print $1}')"
 export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
+export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$(openssl rand -base64 32)"
 ```
 
 Start:
@@ -373,7 +401,7 @@ Kustomize entrypoints:
 
 ### 1. Replace the Secret
 
-Replace `dnssec-master-key-b64` in `deployments/kubernetes/controller/base/controller-secret.yaml`.
+Replace `api-key-hash`, `agent-api-key-hash`, `dnssec-master-key-b64`, and `artifact-signature-key` in `deployments/kubernetes/controller/base/controller-secret.yaml`.
 
 ```bash
 openssl rand -base64 32
@@ -383,13 +411,12 @@ openssl rand -base64 32
 
 Edit `deployments/kubernetes/controller/base/controller.yaml`.
 
-- `api.auth.api_keys.admin`
 - `backend.etcd.endpoints`
 - `backend.etcd.prefix`
 - `storage.*`
 - `dnssec.*`
 
-If you use the demo overlay, also replace the API key hash in `deployments/kubernetes/controller/overlays/demo-etcd/controller.yaml`.
+The Deployment reads `api-key-hash` through `ARCA_DNS_API_AUTH_API_KEYS_ADMIN` and `agent-api-key-hash` through `ARCA_DNS_API_AUTH_API_KEYS_AGENT`, so the Secret values override the placeholder hashes in the ConfigMap. If you use the demo overlay, also replace or override its placeholder values before applying.
 
 ### 3. Check the PVC
 
@@ -416,7 +443,7 @@ kubectl apply -k deployments/kubernetes/controller/overlays/demo-etcd
 ```bash
 kubectl get deploy,po,svc,pvc
 kubectl logs deploy/arca-dns-controller
-kubectl port-forward svc/arca-dns-controller 8080:8080
+kubectl port-forward svc/arca-dns-controller 8080:8080 9053:9053
 curl http://localhost:8080/health
 curl http://localhost:8080/ready
 ```
@@ -427,10 +454,10 @@ Ingress example: `deployments/kubernetes/controller/examples/ingress.yaml`. Term
 
 The agent uses these controller APIs:
 
-- `GET /api/v1/zones`
+- `GET /api/v1/zones?fields=summary`
 - `GET /api/v1/zones/:name/signed`
 
-When controller API auth is enabled, the agent sends `controller.api_key` in the `X-API-Key` header.
+When controller API auth is enabled, the agent sends `controller.api_key` in the `X-API-Key` header. Use an API key with the `agent` role; it is limited to zone summary listing and signed artifact reads.
 
 Zone sync does the following:
 
@@ -451,6 +478,12 @@ Agent HTTP endpoints:
 | `GET /status` | sync state, health, BGP announce state |
 | `GET /metrics` | Prometheus metrics |
 
+Controller health/readiness/status endpoints listen on the API address
+(`0.0.0.0:8080` in the provided deployment examples). Prometheus metrics
+listen on the separate `observability.listen` address. The built-in default is
+`127.0.0.1:9053`; the Kubernetes examples use `0.0.0.0:9053` for Service
+scraping and should be protected with cluster network controls.
+
 By default the agent status server listens on `127.0.0.1:9090`. Set
 `metrics.listen` to a remote address only when the endpoint is protected by
 network controls or an authenticated proxy.
@@ -463,7 +496,7 @@ Controller:
 curl http://controller:8080/health
 curl http://controller:8080/ready
 curl http://controller:8080/status
-curl http://controller:8080/metrics
+curl http://controller:9053/metrics
 ```
 
 Agent:
@@ -505,6 +538,7 @@ birdc show route
 | controller fails on master key | DNSSEC enabled but no master key | set `ARCA_DNS_DNSSEC_MASTER_KEY_B64` or `/etc/arca-dns/master.key` |
 | MySQL/PostgreSQL reports missing tables | SQL schema was not applied | apply `migrations/<backend>/000001_initial_schema.up.sql` before startup |
 | container cannot write `/var/lib/arca-dns` | distroless nonroot UID cannot write the volume | make the volume writable by UID/GID `65532`; Kubernetes base already sets `fsGroup: 65532` |
+| agent container cannot reload NSD/Unbound/BIRD | image does not include host DNS/BGP control tools | mount the required host binaries/sockets/configs or disable those integrations |
 | agent `/ready` returns 503 | first sync has not completed or sync is stale | check controller URL/API key, zone list, and agent logs |
 | BGP is not announced | health check failure, BIRD socket permission, or protocol name mismatch | check `curl :9090/status`, `birdc show protocols`, and agent logs |
 

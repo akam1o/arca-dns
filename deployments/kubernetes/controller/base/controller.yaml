@@ -4,13 +4,21 @@ api:
   auth:
     # Replace the placeholder before deployment. When auth is enabled, at least
     # one valid sha256:<64-hex> API key hash is required at startup.
+    # The base Deployment overrides admin from the arca-dns-secrets api-key-hash.
     enabled: true
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
+    api_key_roles:
+      admin: "admin"
+      agent: "agent"
   rate_limit:
     enabled: true
     requests_per_second: 100
     burst: 200
+
+observability:
+  listen: "0.0.0.0:9053"
 
 # Kubernetes "production-ish" default: external/HA etcd.
 # Set endpoints to your managed/HA etcd cluster.

@@ -158,10 +158,16 @@ func (d *Decoder) parseResponseMessage(data []byte, query *Query) error {
 
 // QueryTypeToString converts DNS query type to string.
 func QueryTypeToString(qtype uint16) string {
-	return dns.TypeToString[qtype]
+	if name, ok := dns.TypeToString[qtype]; ok {
+		return name
+	}
+	return fmt.Sprintf("TYPE%d", qtype)
 }
 
 // RCodeToString converts DNS response code to string.
 func RCodeToString(rcode uint16) string {
-	return dns.RcodeToString[int(rcode)]
+	if name, ok := dns.RcodeToString[int(rcode)]; ok {
+		return name
+	}
+	return fmt.Sprintf("RCODE%d", rcode)
 }

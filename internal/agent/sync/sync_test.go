@@ -93,6 +93,59 @@ func TestSyncer_SyncAll(t *testing.T) {
 	assert.Equal(t, 0, state.FailCount)
 }
 
+func TestSyncer_SyncZoneRejectsOlderSignedSerial(t *testing.T) {
+	requireTCPListener(t)
+
+	localZoneContent := "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010201 3600 1800 604800 86400\n"
+	staleZoneContent := "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n"
+	staleHash := sha256.Sum256([]byte(staleZoneContent))
+	staleHashHex := hex.EncodeToString(staleHash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/zones/example.com/signed" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("ETag", `"`+staleHashHex+`"`)
+		w.Header().Set("X-Zone-Serial", "2024010101")
+		w.Header().Set("X-Zone-Hash", staleHashHex)
+		w.Header().Set("X-Zone-Hash8", staleHashHex[:8])
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, staleZoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	zoneDir := filepath.Join(t.TempDir(), "zones")
+	fileMgr := NewFileManager(zoneDir, 3, zap.NewNop())
+	require.NoError(t, fileMgr.EnsureDirectory())
+	require.NoError(t, fileMgr.WriteZoneFile("example.com", localZoneContent))
+
+	syncer := NewSyncer(client, fileMgr, config.SyncConfig{
+		SyncInterval:    30 * time.Second,
+		Jitter:          5 * time.Second,
+		MaxStaleness:    5 * time.Minute,
+		BackupVersions:  3,
+		VerifyChecksums: true,
+	}, zap.NewNop())
+
+	err = syncer.syncZone(context.Background(), ZoneInfo{Name: "example.com", Version: `"stale"`})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "older than local serial")
+
+	content, err := fileMgr.ReadZoneFile("example.com")
+	require.NoError(t, err)
+	assert.Equal(t, localZoneContent, content)
+}
+
 func TestSyncer_DeleteRemovedZonesUsesCanonicalManagedZoneName(t *testing.T) {
 	zoneDir := filepath.Join(t.TempDir(), "zones")
 	fileMgr := NewFileManager(zoneDir, 3, zap.NewNop())
@@ -293,6 +346,78 @@ func TestSyncer_SyncAll_ConditionalFetch(t *testing.T) {
 	assert.FileExists(t, zonePath)
 }
 
+func TestSyncer_SyncAll_SignedConditionalFetch(t *testing.T) {
+	requireTCPListener(t)
+	requestIfNoneMatch := make([]string, 0, 2)
+	zoneContent := "$ORIGIN example.com.\n$TTL 3600\n@ SOA ns1 admin 2024010101 3600 1800 604800 86400\n"
+	signatureKey := "test-signature-key"
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/zones":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"zones":[{"name":"example.com","version":"v1-abc123","soa":{"mname":"ns1.example.com","rname":"admin.example.com","serial":2024010101,"refresh":3600,"retry":1800,"expire":604800,"minimum":86400},"records":[]}]}`)
+
+		case "/api/v1/zones/example.com/signed":
+			ifNoneMatch := r.Header.Get("If-None-Match")
+			requestIfNoneMatch = append(requestIfNoneMatch, ifNoneMatch)
+			w.Header().Set("ETag", `"`+hashHex+`"`)
+			w.Header().Set("X-Zone-Serial", "2024010101")
+			w.Header().Set("X-Zone-Hash", hashHex)
+			w.Header().Set("X-Zone-Hash8", hashHex[:8])
+			w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), signatureKey))
+			if ifNoneMatch == `"`+hashHex+`"` {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, zoneContent)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	zoneDir := filepath.Join(tmpDir, "zones")
+	require.NoError(t, os.MkdirAll(zoneDir, 0755))
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	logger := zap.NewNop()
+	fileMgr := NewFileManager(zoneDir, 3, logger)
+	require.NoError(t, fileMgr.EnsureDirectory())
+
+	syncer := NewSyncer(client, fileMgr, config.SyncConfig{
+		SyncInterval:        30 * time.Second,
+		Jitter:              5 * time.Second,
+		MaxStaleness:        5 * time.Minute,
+		BackupVersions:      3,
+		VerifyChecksums:     true,
+		VerifySignatures:    true,
+		ControllerPublicKey: signatureKey,
+	}, logger)
+
+	ctx := context.Background()
+	require.NoError(t, syncer.SyncAll(ctx))
+	require.NoError(t, syncer.SyncAll(ctx))
+
+	require.Len(t, requestIfNoneMatch, 2)
+	assert.Empty(t, requestIfNoneMatch[0])
+	assert.Equal(t, `"`+hashHex+`"`, requestIfNoneMatch[1])
+}
+
 func TestSyncer_SyncAll_PartialFailureKeepsSyncUnhealthy(t *testing.T) {
 	requireTCPListener(t)
 
@@ -396,6 +521,7 @@ func TestSyncer_SyncZone_RollsBackNewZoneFileWhenApplyHookFails(t *testing.T) {
 		case "/api/v1/zones/example.com/signed":
 			w.Header().Set("Content-Type", "text/plain")
 			w.Header().Set("ETag", "v1-new")
+			w.Header().Set("X-Zone-Serial", "2024010101")
 			w.Header().Set("X-Zone-Hash", hashHex)
 			w.Header().Set("X-Zone-Hash8", hashHex[:8])
 			w.WriteHeader(http.StatusOK)
@@ -443,7 +569,10 @@ func TestSyncer_SyncZone_RollsBackNewZoneFileWhenApplyHookFails(t *testing.T) {
 	assert.True(t, rollbackCalled)
 	assert.False(t, rollbackHadPrevious)
 	assert.NoFileExists(t, fileMgr.GetZonePath("example.com"))
-	assert.Nil(t, syncer.GetZoneState("example.com"))
+	state := syncer.GetZoneState("example.com")
+	require.NotNil(t, state)
+	assert.Equal(t, 1, state.FailCount)
+	assert.False(t, state.LastAttempt.IsZero())
 
 	managedZones, err := fileMgr.listManagedZones()
 	require.NoError(t, err)
@@ -497,6 +626,7 @@ func TestSyncer_SyncZone_RestoresPreviousZoneFileWhenApplyHookFails(t *testing.T
 		case "/api/v1/zones/example.com/signed":
 			w.Header().Set("Content-Type", "text/plain")
 			w.Header().Set("ETag", "v1-new")
+			w.Header().Set("X-Zone-Serial", "2024010102")
 			w.Header().Set("X-Zone-Hash", hashHex)
 			w.Header().Set("X-Zone-Hash8", hashHex[:8])
 			w.WriteHeader(http.StatusOK)
@@ -550,7 +680,10 @@ func TestSyncer_SyncZone_RestoresPreviousZoneFileWhenApplyHookFails(t *testing.T
 	content, err := fileMgr.ReadZoneFile("example.com")
 	require.NoError(t, err)
 	assert.Equal(t, oldZoneContent, content)
-	assert.Nil(t, syncer.GetZoneState("example.com"))
+	state := syncer.GetZoneState("example.com")
+	require.NotNil(t, state)
+	assert.Equal(t, 1, state.FailCount)
+	assert.False(t, state.LastAttempt.IsZero())
 
 	managedZones, err := fileMgr.listManagedZones()
 	require.NoError(t, err)
@@ -820,11 +953,21 @@ func TestSyncer_SyncZone(t *testing.T) {
 	// Verify zone file was created
 	zonePath := fileMgr.GetZonePath("example.com")
 	assert.FileExists(t, zonePath)
+	state := syncer.GetZoneState("example.com")
+	require.NotNil(t, state)
+	assert.Equal(t, 0, state.FailCount)
+	assert.False(t, state.LastSync.IsZero())
+	assert.False(t, state.LastAttempt.IsZero())
+	assert.False(t, syncer.GetLastSuccessTime().IsZero())
 
 	// Test sync non-existent zone
 	err = syncer.SyncZone(ctx, "notfound.com")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "zone not found")
+	state = syncer.GetZoneState("notfound.com")
+	require.NotNil(t, state)
+	assert.Equal(t, 1, state.FailCount)
+	assert.False(t, state.LastAttempt.IsZero())
 }
 
 func TestSyncer_IsStale(t *testing.T) {

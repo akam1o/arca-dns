@@ -328,6 +328,69 @@ func TestZoneSigner_MXValueNormalizesWhitespace(t *testing.T) {
 	}
 }
 
+func TestZoneSigner_RecordToRRNormalizesRelativeRDATATargets(t *testing.T) {
+	signer := &ZoneSigner{}
+	tests := []struct {
+		name     string
+		record   model.Record
+		expected string
+	}{
+		{
+			name:     "NS",
+			record:   model.Record{Name: "@", Type: model.RecordTypeNS, TTL: 300, Value: "ns1"},
+			expected: "ns1.example.com.",
+		},
+		{
+			name:     "CNAME",
+			record:   model.Record{Name: "alias", Type: model.RecordTypeCNAME, TTL: 300, Value: "target"},
+			expected: "target.example.com.",
+		},
+		{
+			name:     "MX",
+			record:   model.Record{Name: "@", Type: model.RecordTypeMX, TTL: 300, Value: "10 mail"},
+			expected: "mail.example.com.",
+		},
+		{
+			name:     "PTR",
+			record:   model.Record{Name: "ptr", Type: model.RecordTypePTR, TTL: 300, Value: "host"},
+			expected: "host.example.com.",
+		},
+		{
+			name:     "SRV",
+			record:   model.Record{Name: "_sip._tcp", Type: model.RecordTypeSRV, TTL: 300, Value: "10 60 5060 sip"},
+			expected: "sip.example.com.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rr, err := signer.recordToRR("example.com.", &tt.record)
+			if err != nil {
+				t.Fatalf("failed to convert %s record: %v", tt.record.Type, err)
+			}
+
+			var got string
+			switch typed := rr.(type) {
+			case *dns.NS:
+				got = typed.Ns
+			case *dns.CNAME:
+				got = typed.Target
+			case *dns.MX:
+				got = typed.Mx
+			case *dns.PTR:
+				got = typed.Ptr
+			case *dns.SRV:
+				got = typed.Target
+			default:
+				t.Fatalf("recordToRR returned %T", rr)
+			}
+			if got != tt.expected {
+				t.Fatalf("%s target = %q, want %q", tt.record.Type, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestZoneSigner_SignRRset(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
@@ -586,6 +649,45 @@ func TestZoneSigner_ClockInjection(t *testing.T) {
 	if !signedZone.DNSSEC.SignatureExpiration.Equal(expectedExpiration) {
 		t.Errorf("signature expiration mismatch: got %v, want %v",
 			signedZone.DNSSEC.SignatureExpiration, expectedExpiration)
+	}
+}
+
+func TestZoneSigner_MetadataExpirationUsesEarliestRRSIG(t *testing.T) {
+	opts := DefaultSignerOptions()
+	opts.Expiration = time.Hour
+
+	signer := newTestZoneSigner(t, opts)
+	firstSignTime := time.Date(2024, 12, 28, 12, 0, 0, 0, time.UTC)
+	calls := 0
+	signer.clock = func() time.Time {
+		now := firstSignTime.Add(time.Duration(calls) * time.Second)
+		calls++
+		return now
+	}
+
+	signedZone, signedRRs, err := signer.SignZone(testSignerZone(firstSignTime))
+	if err != nil {
+		t.Fatalf("failed to sign zone: %v", err)
+	}
+	if signedZone.DNSSEC == nil || signedZone.DNSSEC.SignatureExpiration == nil {
+		t.Fatal("missing DNSSEC signature expiration")
+	}
+
+	earliest, ok := earliestRRSIGExpiration(signedRRs)
+	if !ok {
+		t.Fatal("signed zone has no RRSIG expiration")
+	}
+	if !signedZone.DNSSEC.SignatureExpiration.Equal(earliest) {
+		t.Fatalf("metadata expiration=%s, want earliest RRSIG expiration=%s",
+			signedZone.DNSSEC.SignatureExpiration, earliest)
+	}
+
+	firstExpiration := firstSignTime.Add(opts.Expiration)
+	if !earliest.Equal(firstExpiration) {
+		t.Fatalf("earliest RRSIG expiration=%s, want first signing expiration=%s", earliest, firstExpiration)
+	}
+	if calls < 2 {
+		t.Fatalf("expected test clock to advance across signing calls, got %d calls", calls)
 	}
 }
 

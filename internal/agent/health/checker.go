@@ -44,6 +44,7 @@ type Checker struct {
 	logger *zap.Logger
 
 	testZone      string
+	testZoneSet   bool
 	testRecord    string
 	nsdServer     string
 	unboundServer string
@@ -79,6 +80,7 @@ func NewCheckerWithOptions(cfg config.HealthConfig, opts CheckerOptions, logger 
 		unboundServer = "127.0.0.1:53"
 	}
 
+	testZoneSet := strings.TrimSpace(cfg.TestZone) != ""
 	testZone := cfg.TestZone
 	if testZone == "" {
 		testZone = "localhost."
@@ -93,6 +95,7 @@ func NewCheckerWithOptions(cfg config.HealthConfig, opts CheckerOptions, logger 
 		config:             cfg,
 		logger:             logger,
 		testZone:           testZone,
+		testZoneSet:        testZoneSet,
 		testRecord:         testRecord,
 		nsdServer:          nsdServer,
 		unboundServer:      unboundServer,
@@ -297,12 +300,12 @@ func (c *Checker) questionName() string {
 	if record == "@" {
 		return dns.Fqdn(c.testZone)
 	}
-	if strings.HasSuffix(record, ".") || strings.Contains(record, ".") {
+	if strings.HasSuffix(record, ".") {
 		return dns.Fqdn(record)
 	}
 
 	zone := strings.TrimSpace(c.testZone)
-	if zone == "" {
+	if zone == "" || (!c.testZoneSet && strings.Contains(record, ".")) {
 		return dns.Fqdn(record)
 	}
 	return dns.Fqdn(record + "." + strings.TrimSuffix(zone, "."))

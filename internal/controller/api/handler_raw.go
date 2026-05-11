@@ -140,6 +140,15 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		return
 	}
 
+	if err := model.NormalizeZoneDerivedFields(modelZone); err != nil {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"zone validation failed",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
 	version, err := model.NewZoneVersion()
 	if err != nil {
 		h.logger.Error("Failed to generate zone version", zap.Error(err))
@@ -157,6 +166,10 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		return
 	}
 	defer signedWrite.Abort()
+
+	if !h.storeSignedZoneWrite(c, signedWrite, "raw zone creation") {
+		return
+	}
 
 	// Create zone in backend (same pattern as CreateZone)
 	if err := h.store.CreateZone(c.Request.Context(), modelZone); err != nil {
@@ -178,6 +191,10 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		return
 	}
 
+	if !h.commitSignedZoneWrite(c, signedWrite, "raw zone creation") {
+		return
+	}
+
 	// Retrieve created zone to get version (same pattern as CreateZone)
 	createdZone, err := h.store.GetZone(c.Request.Context(), modelZone.Name)
 	if err != nil {
@@ -190,7 +207,9 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		return
 	}
 
-	h.completeSignedZoneWrite(signedWrite)
+	if !h.completeSignedZoneWrite(c, signedWrite, "raw zone creation") {
+		return
+	}
 
 	// Set response headers
 	c.Header("ETag", formatETag(createdZone.Version))

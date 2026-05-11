@@ -13,30 +13,24 @@ import (
 func TestGetRegisteredBackends(t *testing.T) {
 	backends := GetRegisteredBackends()
 
-	// Should have all 6 backends
-	assert.Len(t, backends, 6, "Should have exactly 6 registered backends")
+	// Should have all user-selectable backends
+	assert.Len(t, backends, 5, "Should have exactly 5 registered backends")
 
 	// Should be sorted
-	assert.Equal(t, []string{"etcd", "git", "memory", "mysql", "postgres", "sqlite"}, backends,
+	assert.Equal(t, []string{"etcd", "git", "mysql", "postgres", "sqlite"}, backends,
 		"Backends should be sorted alphabetically")
 }
 
-// TestNewBackend_Memory tests memory backend factory.
-func TestNewBackend_Memory(t *testing.T) {
-	config := map[string]interface{}{
+// TestNewBackend_MemoryRemoved verifies the deprecated memory backend is no
+// longer available through the runtime factory.
+func TestNewBackend_MemoryRemoved(t *testing.T) {
+	store, err := NewBackend("memory", map[string]interface{}{
 		"initial_capacity": 100,
-	}
+	})
 
-	backend, err := NewBackend("memory", config)
-	require.NoError(t, err)
-	assert.NotNil(t, backend)
-
-	// Verify it's actually a MemoryBackend
-	_, ok := backend.(*MemoryBackend)
-	assert.True(t, ok, "Should return MemoryBackend instance")
-
-	// Cleanup
-	backend.Close()
+	assert.Error(t, err)
+	assert.Nil(t, store)
+	assert.Contains(t, err.Error(), "unknown backend type")
 }
 
 // TestNewBackend_Git tests git backend factory with config compatibility.
@@ -230,7 +224,7 @@ func TestRegisterBackend_Duplicate(t *testing.T) {
 	// This is intentional to catch configuration errors at startup.
 	//
 	// Example (would panic):
-	// RegisterBackend("memory", func(cfg map[string]interface{}) (ZoneStore, error) {
+	// RegisterBackend("sqlite", func(cfg map[string]interface{}) (ZoneStore, error) {
 	//     return nil, nil
 	// })
 
@@ -411,41 +405,4 @@ func TestFactoryDefaults(t *testing.T) {
 			assert.Contains(t, err.Error(), "failed to connect")
 		}
 	})
-}
-
-// TestMemoryBackendFactory tests memory backend with various configs.
-func TestMemoryBackendFactory(t *testing.T) {
-	testCases := []struct {
-		name   string
-		config map[string]interface{}
-	}{
-		{
-			name:   "nil config",
-			config: nil,
-		},
-		{
-			name:   "empty config",
-			config: map[string]interface{}{},
-		},
-		{
-			name: "with initial_capacity",
-			config: map[string]interface{}{
-				"initial_capacity": 100,
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			backend, err := NewBackend("memory", tc.config)
-			require.NoError(t, err)
-			assert.NotNil(t, backend)
-
-			// Memory backend should always succeed
-			_, ok := backend.(*MemoryBackend)
-			assert.True(t, ok)
-
-			backend.Close()
-		})
-	}
 }

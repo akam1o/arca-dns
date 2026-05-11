@@ -1,8 +1,8 @@
 name: test
 
 on:
-  push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,3 +28,88 @@ jobs:
         run: |
           mkdir -p "$GOCACHE"
           make test
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    env:
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+      GOPATH: ${{ github.workspace }}/.cache/gopath
+      GOMODCACHE: ${{ github.workspace }}/.cache/gomod
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: setup-go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: govulncheck
+        run: |
+          mkdir -p "$GOCACHE"
+          make vulncheck
+
+  backend-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: arca_dns_test
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d arca_dns_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: arca_dns_test
+          MYSQL_ROOT_PASSWORD: testpass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -ptestpass --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      ARCA_POSTGRES_DSN: "postgres://postgres:testpass@127.0.0.1:5432/arca_dns_test?sslmode=disable"
+      ETCD_ENDPOINTS: "127.0.0.1:2379"
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+      GOPATH: ${{ github.workspace }}/.cache/gopath
+      GOMODCACHE: ${{ github.workspace }}/.cache/gomod
+      MYSQL_DSN: "root:testpass@tcp(127.0.0.1:3306)/arca_dns_test?parseTime=true&multiStatements=true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: setup-go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Start etcd
+        run: |
+          docker run -d --name etcd-test -p 2379:2379 quay.io/coreos/etcd:v3.5.0 \
+            etcd \
+            --listen-client-urls http://0.0.0.0:2379 \
+            --advertise-client-urls http://127.0.0.1:2379
+          for i in {1..30}; do
+            if docker exec etcd-test etcdctl --endpoints=http://127.0.0.1:2379 endpoint health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs etcd-test
+          exit 1
+
+      - name: Backend integration contracts
+        run: |
+          mkdir -p "$GOCACHE"
+          go test -v -tags=integration -run 'Test(Postgres|MySQL|Etcd)Backend_Contract' ./pkg/backend/

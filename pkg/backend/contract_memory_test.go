@@ -4,9 +4,9 @@ import (
 	"testing"
 )
 
-// TestMemoryBackend_Contract runs the full contract test suite against MemoryBackend.
+// TestMemoryBackend_Contract runs the full contract test suite against the
+// test-only MemoryBackend helper.
 func TestMemoryBackend_Contract(t *testing.T) {
-	// Create a fresh memory backend for testing
 	store := NewMemoryBackend()
 	defer store.Close()
 

@@ -1,6 +1,7 @@
 package dnssec
 
 import (
+	"context"
 	"crypto"
 	"fmt"
 	"net"
@@ -79,6 +80,11 @@ func NewZoneSigner(keyManager *KeyManager, opts SignerOptions) *ZoneSigner {
 // SignZone signs a zone and returns the signed zone with DNSSEC records.
 // It returns the signed RRs (including DNSKEY and RRSIG records) and updated zone metadata.
 func (s *ZoneSigner) SignZone(zone *model.Zone) (*model.Zone, []dns.RR, error) {
+	return s.SignZoneContext(context.Background(), zone)
+}
+
+// SignZoneContext signs a zone and honors ctx while loading DNSSEC keys.
+func (s *ZoneSigner) SignZoneContext(ctx context.Context, zone *model.Zone) (*model.Zone, []dns.RR, error) {
 	if zone == nil {
 		return nil, nil, fmt.Errorf("zone is nil")
 	}
@@ -90,11 +96,32 @@ func (s *ZoneSigner) SignZone(zone *model.Zone) (*model.Zone, []dns.RR, error) {
 	}
 
 	// Ensure keys exist for this zone
-	ksk, zsk, err := s.keyManager.EnsureZoneKeys(normalizedZoneName)
+	ksk, zsk, err := s.keyManager.EnsureZoneKeysContext(ctx, normalizedZoneName)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get zone keys: %w", err)
 	}
 
+	return s.signZoneWithKeys(zone, normalizedZoneName, ksk, zsk)
+}
+
+// SignZoneWithKeys signs a zone with a caller-provided key snapshot.
+func (s *ZoneSigner) SignZoneWithKeys(zone *model.Zone, ksk, zsk *KeyPair) (*model.Zone, []dns.RR, error) {
+	if zone == nil {
+		return nil, nil, fmt.Errorf("zone is nil")
+	}
+	if ksk == nil || zsk == nil {
+		return nil, nil, fmt.Errorf("dnssec keys are required")
+	}
+
+	normalizedZoneName, err := NormalizeZoneFQDN(zone.Name)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid zone name: %w", err)
+	}
+
+	return s.signZoneWithKeys(zone, normalizedZoneName, ksk, zsk)
+}
+
+func (s *ZoneSigner) signZoneWithKeys(zone *model.Zone, normalizedZoneName string, ksk, zsk *KeyPair) (*model.Zone, []dns.RR, error) {
 	// Convert zone to RRs
 	rrs, err := s.modelToRRs(zone, normalizedZoneName)
 	if err != nil {
@@ -265,19 +292,11 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 
 	case model.RecordTypeNS:
 		hdr.Rrtype = dns.TypeNS
-		ns := record.Value
-		if !strings.HasSuffix(ns, ".") {
-			ns = ns + "."
-		}
-		return &dns.NS{Hdr: hdr, Ns: ns}, nil
+		return &dns.NS{Hdr: hdr, Ns: model.NormalizeDomainTargetName(record.Value, origin)}, nil
 
 	case model.RecordTypeCNAME:
 		hdr.Rrtype = dns.TypeCNAME
-		target := record.Value
-		if !strings.HasSuffix(target, ".") {
-			target = target + "."
-		}
-		return &dns.CNAME{Hdr: hdr, Target: target}, nil
+		return &dns.CNAME{Hdr: hdr, Target: model.NormalizeDomainTargetName(record.Value, origin)}, nil
 
 	case model.RecordTypeMX:
 		hdr.Rrtype = dns.TypeMX
@@ -290,11 +309,7 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 		if err != nil || n != 1 {
 			return nil, fmt.Errorf("invalid MX priority: %s", parts[0])
 		}
-		mx := parts[1]
-		if !strings.HasSuffix(mx, ".") {
-			mx = mx + "."
-		}
-		return &dns.MX{Hdr: hdr, Preference: prio, Mx: mx}, nil
+		return &dns.MX{Hdr: hdr, Preference: prio, Mx: model.NormalizeDomainTargetName(parts[1], origin)}, nil
 
 	case model.RecordTypeTXT:
 		hdr.Rrtype = dns.TypeTXT
@@ -302,11 +317,7 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 
 	case model.RecordTypePTR:
 		hdr.Rrtype = dns.TypePTR
-		ptr := record.Value
-		if !strings.HasSuffix(ptr, ".") {
-			ptr = ptr + "."
-		}
-		return &dns.PTR{Hdr: hdr, Ptr: ptr}, nil
+		return &dns.PTR{Hdr: hdr, Ptr: model.NormalizeDomainTargetName(record.Value, origin)}, nil
 
 	case model.RecordTypeSRV:
 		hdr.Rrtype = dns.TypeSRV
@@ -317,10 +328,7 @@ func (s *ZoneSigner) recordToRR(origin string, record *model.Record) (dns.RR, er
 		if err != nil || n != 4 {
 			return nil, fmt.Errorf("invalid SRV value: %s", record.Value)
 		}
-		if !strings.HasSuffix(target, ".") {
-			target = target + "."
-		}
-		return &dns.SRV{Hdr: hdr, Priority: priority, Weight: weight, Port: port, Target: target}, nil
+		return &dns.SRV{Hdr: hdr, Priority: priority, Weight: weight, Port: port, Target: model.NormalizeDomainTargetName(target, origin)}, nil
 
 	case model.RecordTypeCAA:
 		hdr.Rrtype = dns.TypeCAA
@@ -419,7 +427,10 @@ func (s *ZoneSigner) rrsToModel(originalZone *model.Zone, signedRRs []dns.RR, ks
 		CreatedAt: originalZone.CreatedAt,
 		UpdatedAt: now,
 	}
-	expiration := now.Add(s.options.Expiration)
+	expiration, ok := earliestRRSIGExpiration(signedRRs)
+	if !ok {
+		return nil, fmt.Errorf("signed RRs contain no RRSIG records")
+	}
 	signedZone.DNSSEC = &model.DNSSECConfig{
 		Enabled:             true,
 		Algorithm:           ksk.DNSKEY.Algorithm,
@@ -434,6 +445,23 @@ func (s *ZoneSigner) rrsToModel(originalZone *model.Zone, signedRRs []dns.RR, ks
 	signedZone.Records = originalZone.Records
 
 	return signedZone, nil
+}
+
+func earliestRRSIGExpiration(rrs []dns.RR) (time.Time, bool) {
+	var earliest uint32
+	for _, rr := range rrs {
+		rrsig, ok := rr.(*dns.RRSIG)
+		if !ok {
+			continue
+		}
+		if earliest == 0 || rrsig.Expiration < earliest {
+			earliest = rrsig.Expiration
+		}
+	}
+	if earliest == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(earliest), 0).UTC(), true
 }
 
 // groupRRsets groups RRs by (owner name, type) and validates TTL and class consistency.

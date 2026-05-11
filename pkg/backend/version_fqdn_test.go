@@ -62,8 +62,8 @@ func TestExpandOwnerName_FQDNWithoutDot(t *testing.T) {
 	}
 }
 
-// TestComputeZoneVersion_FQDNVariants tests that all FQDN variants produce the same version
-func TestComputeZoneVersion_FQDNVariants(t *testing.T) {
+// TestComputeZoneHash8_FQDNVariants tests that all FQDN variants produce the same hash
+func TestComputeZoneHash8_FQDNVariants(t *testing.T) {
 	// Zone with relative name
 	zone1 := &model.Zone{
 		Name: "example.com.",
@@ -94,30 +94,30 @@ func TestComputeZoneVersion_FQDNVariants(t *testing.T) {
 	}
 	zone3.SOA.Serial = 2024122801
 
-	v1, err := ComputeZoneVersion(zone1)
+	v1, err := ComputeZoneHash8(zone1)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion(zone1) failed: %v", err)
+		t.Fatalf("ComputeZoneHash8(zone1) failed: %v", err)
 	}
 
-	v2, err := ComputeZoneVersion(zone2)
+	v2, err := ComputeZoneHash8(zone2)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion(zone2) failed: %v", err)
+		t.Fatalf("ComputeZoneHash8(zone2) failed: %v", err)
 	}
 
-	v3, err := ComputeZoneVersion(zone3)
+	v3, err := ComputeZoneHash8(zone3)
 	if err != nil {
-		t.Fatalf("ComputeZoneVersion(zone3) failed: %v", err)
+		t.Fatalf("ComputeZoneHash8(zone3) failed: %v", err)
 	}
 
 	if v1 != v2 {
-		t.Errorf("Versions differ for relative vs FQDN without dot: %q vs %q", v1, v2)
+		t.Errorf("Hashes differ for relative vs FQDN without dot: %q vs %q", v1, v2)
 	}
 
 	if v1 != v3 {
-		t.Errorf("Versions differ for relative vs FQDN with dot: %q vs %q", v1, v3)
+		t.Errorf("Hashes differ for relative vs FQDN with dot: %q vs %q", v1, v3)
 	}
 
 	if v2 != v3 {
-		t.Errorf("Versions differ for FQDN without dot vs with dot: %q vs %q", v2, v3)
+		t.Errorf("Hashes differ for FQDN without dot vs with dot: %q vs %q", v2, v3)
 	}
 }

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -40,6 +40,12 @@ var (
 
 var execFn = syscall.Exec
 
+const (
+	bgpControlStatusActive   = "active"
+	bgpControlStatusDisabled = "disabled"
+	bgpControlStatusUnknown  = "unknown"
+)
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "arca-dns-agent",
@@ -56,7 +62,7 @@ manages NSD/Unbound, controls BGP routes via BIRD, and provides observability.`,
 
 Provide a configuration file, or provide all required settings via environment
 variables. For example, signature verification requires
-sync.controller_public_key or ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY.`,
+sync.controller_signature_key or ARCA_DNS_SYNC_CONTROLLER_SIGNATURE_KEY.`,
 		RunE: runDaemon,
 	}
 
@@ -110,6 +116,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	} else {
 		logger.Info("Using default configuration with environment overrides")
 	}
+	warnPlaintextAPIKeyTransport(cfg.Controller, logger)
 
 	// Create controller client
 	client, err := zonesync.NewClient(cfg.Controller)
@@ -222,6 +229,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	var stateMachine *bird.StateMachine
 	var healthEngine *health.Engine
 	var controlLoop *bird.ControlLoop
+	birdConfigStatus := newBIRDConfigRuntimeStatus(cfg.BIRD)
 
 	if cfg.BIRD.Enabled {
 		// Create BIRD client
@@ -231,9 +239,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			Timeout:    cfg.BIRD.CommandTimeout,
 		})
 		if clientErr != nil {
-			logger.Warn("Failed to create BIRD client, BIRD control disabled",
-				zap.Error(clientErr))
-			cfg.BIRD.Enabled = false
+			return fmt.Errorf("BIRD control enabled but failed to create BIRD client: %w", clientErr)
 		} else {
 			logger.Info("BIRD client initialized", zap.String("socket", cfg.BIRD.SocketPath))
 		}
@@ -243,38 +249,12 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 		// Optionally generate BIRD config snippet and run "configure" once at startup.
 		if cfg.BIRD.ConfigureOnStart.Enabled {
-			configText, protocolNames, err := bird.RenderAnycastConfig(cfg.BIRD)
-			if err != nil {
-				logger.Warn("Failed to render BIRD anycast config, skipping configure",
-					zap.Error(err))
-			} else {
-				if err := os.MkdirAll(filepath.Dir(cfg.BIRD.ConfigureOnStart.Path), 0o755); err != nil {
-					logger.Warn("Failed to create BIRD config directory, skipping configure",
-						zap.String("path", cfg.BIRD.ConfigureOnStart.Path),
-						zap.Error(err))
-				} else if err := os.WriteFile(cfg.BIRD.ConfigureOnStart.Path, []byte(configText), 0o644); err != nil {
-					logger.Warn("Failed to write BIRD config snippet, skipping configure",
-						zap.String("path", cfg.BIRD.ConfigureOnStart.Path),
-						zap.Error(err))
-				} else {
-					// If protocol_names not set, use the generated list so enable/disable controls all neighbors.
-					if len(cfg.BIRD.ProtocolNames) == 0 && len(protocolNames) > 0 {
-						cfg.BIRD.ProtocolNames = protocolNames
-					}
-					cfgCtx, cfgCancel := context.WithTimeout(context.Background(), cfg.BIRD.CommandTimeout)
-					if resp, err := birdClient.Exec(cfgCtx, "configure"); err != nil {
-						logger.Warn("BIRD configure failed",
-							zap.Error(err))
-					} else if resp.IsError() {
-						logger.Warn("BIRD configure returned error",
-							zap.Int("code", resp.Code),
-							zap.String("response", resp.RawText))
-					} else {
-						logger.Info("BIRD configured from generated snippet",
-							zap.String("path", cfg.BIRD.ConfigureOnStart.Path))
-					}
-					cfgCancel()
-				}
+			applyResult := applyBIRDConfigOnStart(cfg.BIRD, birdClient, logger)
+			birdConfigStatus = applyResult.Status
+			// If protocol_names not set, use the generated list so enable/disable controls all neighbors.
+			// When config application fails, this intentionally targets the last known generated runtime config.
+			if len(cfg.BIRD.ProtocolNames) == 0 && len(applyResult.ProtocolNames) > 0 {
+				cfg.BIRD.ProtocolNames = applyResult.ProtocolNames
 			}
 		}
 
@@ -292,44 +272,69 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		}
 		routeManager, err = bird.NewRouteManager(birdClient, protocolNames)
 		if err != nil {
-			return fmt.Errorf("failed to create BIRD route manager: %w", err)
+			if birdConfigStatus.usingExisting() {
+				logger.Warn("BIRD route manager initialization failed while using existing BIRD runtime config; continuing DNS service without BGP control",
+					zap.Error(err))
+				routeManager = nil
+			} else {
+				return fmt.Errorf("failed to create BIRD route manager: %w", err)
+			}
 		}
-		reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := routeManager.Reconcile(reconcileCtx); err != nil {
+		if routeManager != nil {
+			reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			reconcileErr := routeManager.Reconcile(reconcileCtx)
 			reconcileCancel()
-			logger.Warn("Failed to reconcile BIRD state, assuming routes not announced",
-				zap.Error(err))
-		} else {
-			reconcileCancel()
-			logger.Info("BIRD route manager reconciled",
-				zap.Bool("announced", routeManager.IsAnnounced()))
+			if reconcileErr != nil {
+				if birdConfigStatus.usingExisting() {
+					logger.Warn("BIRD route manager reconcile failed while using existing BIRD runtime config; continuing DNS service without BGP control",
+						zap.Error(reconcileErr))
+					routeManager = nil
+				} else {
+					withdrawTimeout := cfg.BIRD.CommandTimeout
+					if withdrawTimeout <= 0 {
+						withdrawTimeout = 10 * time.Second
+					}
+					withdrawCtx, withdrawCancel := context.WithTimeout(context.Background(), withdrawTimeout)
+					withdrawErr := routeManager.ForceWithdrawRoutes(withdrawCtx)
+					withdrawCancel()
+					if withdrawErr != nil {
+						return fmt.Errorf("failed to reconcile BIRD state and force route withdraw: reconcile: %v; withdraw: %w", reconcileErr, withdrawErr)
+					}
+					return fmt.Errorf("failed to reconcile BIRD state; forced route withdraw: %w", reconcileErr)
+				}
+			} else {
+				logger.Info("BIRD route manager reconciled",
+					zap.Bool("announced", routeManager.IsAnnounced()))
+			}
 		}
 
-		// Create state machine with validation
-		// Note: State machine does the thresholding, so engine just passes through
-		smConfig := bird.StateMachineConfig{
-			FailureThreshold:  cfg.BIRD.StateMachine.FailureThreshold,
-			RecoveryThreshold: cfg.BIRD.StateMachine.RecoveryThreshold,
-			MinStateDuration:  cfg.BIRD.StateMachine.MinStateDuration,
-		}
-		stateMachine = bird.NewStateMachine(smConfig, logger)
-		logger.Info("BIRD state machine initialized",
-			zap.Int("failure_threshold", smConfig.FailureThreshold),
-			zap.Int("recovery_threshold", smConfig.RecoveryThreshold),
-			zap.Duration("min_state_duration", smConfig.MinStateDuration))
+		if routeManager != nil {
+			// Create state machine with validation
+			// Note: State machine does the thresholding, so engine just passes through
+			smConfig := bird.StateMachineConfig{
+				FailureThreshold:  cfg.BIRD.StateMachine.FailureThreshold,
+				RecoveryThreshold: cfg.BIRD.StateMachine.RecoveryThreshold,
+				MinStateDuration:  cfg.BIRD.StateMachine.MinStateDuration,
+			}
+			stateMachine = bird.NewStateMachine(smConfig, logger)
+			logger.Info("BIRD state machine initialized",
+				zap.Int("failure_threshold", smConfig.FailureThreshold),
+				zap.Int("recovery_threshold", smConfig.RecoveryThreshold),
+				zap.Duration("min_state_duration", smConfig.MinStateDuration))
 
-		// Create health engine
-		// Engine uses threshold=1 to pass through all state changes to state machine
-		engineConfig := health.EngineConfig{
-			FailureThreshold:  1,
-			RecoveryThreshold: 1,
-		}
-		healthEngine = health.NewEngine(checker, engineConfig, logger)
-		logger.Info("Health engine initialized")
+			// Create health engine
+			// Engine uses threshold=1 to pass through all state changes to state machine
+			engineConfig := health.EngineConfig{
+				FailureThreshold:  1,
+				RecoveryThreshold: 1,
+			}
+			healthEngine = health.NewEngine(checker, engineConfig, logger)
+			logger.Info("Health engine initialized")
 
-		// Create control loop
-		controlLoop = bird.NewControlLoop(stateMachine, routeManager, logger)
-		logger.Info("BGP control loop initialized")
+			// Create control loop
+			controlLoop = bird.NewControlLoop(stateMachine, routeManager, logger)
+			logger.Info("BGP control loop initialized")
+		}
 	}
 
 	// Create DNSTap processor (M6)
@@ -514,7 +519,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if routeManager != nil {
 		routeCtrl = bird.NewAdapter(routeManager)
 	}
-	statusServer, err := startStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+	statusServer, err := startStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, birdConfigStatus, logger)
 	if err != nil {
 		cancel()
 		wg.Wait()
@@ -566,6 +571,21 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func warnPlaintextAPIKeyTransport(cfg config.ControllerClientConfig, logger *zap.Logger) {
+	if strings.TrimSpace(cfg.APIKey) == "" || logger == nil {
+		return
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(cfg.URL))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "http") {
+		return
+	}
+
+	logger.Warn("Controller API key will be sent over plaintext HTTP",
+		zap.String("url", cfg.URL),
+		zap.String("recommendation", "use HTTPS/TLS termination or an intentionally trusted transport"))
 }
 
 func applyZoneServiceReferences(ctx context.Context, zoneName string, authServer plugin.AuthoritativeServer, resolver plugin.Resolver) error {
@@ -701,8 +721,8 @@ func reexecSelf() error {
 }
 
 // startStatusServer starts an HTTP server for status and metrics.
-func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) (*http.Server, error) {
-	server := newStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, birdConfigStatus birdConfigRuntimeStatus, logger *zap.Logger) (*http.Server, error) {
+	server := newStatusServer(cfg, syncer, checker, routeCtrl, dnstapProcessor, birdConfigStatus, logger)
 
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
@@ -719,8 +739,8 @@ func startStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker
 	return server, nil
 }
 
-func newStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *http.Server {
-	router := newStatusRouter(cfg, syncer, checker, routeCtrl, dnstapProcessor, logger)
+func newStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, birdConfigStatus birdConfigRuntimeStatus, logger *zap.Logger) *http.Server {
+	router := newStatusRouter(cfg, syncer, checker, routeCtrl, dnstapProcessor, birdConfigStatus, logger)
 
 	return &http.Server{
 		Addr:              cfg.Metrics.Listen,
@@ -732,10 +752,12 @@ func newStatusServer(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 	}
 }
 
-func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, logger *zap.Logger) *gin.Engine {
+func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *health.Checker, routeCtrl plugin.RouteController, dnstapProcessor *dnstap.Processor, birdConfigStatus birdConfigRuntimeStatus, logger *zap.Logger) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
+	birdConfigStatus = birdConfigStatus.normalized()
+	bgpStatus := bgpControlStatus(cfg, routeCtrl, birdConfigStatus)
 
 	// Status endpoint
 	router.GET("/status", func(c *gin.Context) {
@@ -747,17 +769,28 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 			"version":           version,
 			"zone_count":        len(zoneStates),
 			"failed_zones":      syncer.FailedZoneCount(),
-			"zones":             zoneStates,
 			"last_sync":         syncer.GetLastSuccessTime(),
 			"is_stale":          syncer.IsStale(),
 			"health":            healthStatus.Healthy,
 			"health_checks":     len(healthStatus.Checks),
 			"last_health_check": healthStatus.LastCheck,
-			"bgp_announced": func() bool {
-				if routeCtrl == nil {
-					return false
+			"bird_config": gin.H{
+				"enabled":      birdConfigStatus.Enabled,
+				"status":       birdConfigStatus.Status,
+				"path":         birdConfigStatus.Path,
+				"error":        birdConfigStatus.Error,
+				"last_attempt": birdConfigStatus.LastAttempt,
+				"last_success": birdConfigStatus.LastSuccess,
+			},
+			"bgp_control_status": bgpStatus,
+			"bgp_announced": func() any {
+				if routeCtrl != nil {
+					return routeCtrl.IsAnnounced()
 				}
-				return routeCtrl.IsAnnounced()
+				if bgpStatus == bgpControlStatusUnknown {
+					return nil
+				}
+				return false
 			}(),
 		})
 	})
@@ -851,12 +884,18 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 			sb.WriteString(fmt.Sprintf("arca_dns_agent_health_check_status{type=%q} %d\n", checkType, boolToInt(result.Success)))
 		}
 
+		sb.WriteString("\n# HELP arca_dns_agent_bgp_control_status BGP control status (1 for the current status, 0 otherwise).\n")
+		sb.WriteString("# TYPE arca_dns_agent_bgp_control_status gauge\n")
+		for _, status := range []string{bgpControlStatusActive, bgpControlStatusDisabled, bgpControlStatusUnknown} {
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_control_status{status=%q} %d\n", status, boolToInt(bgpStatus == status)))
+		}
+
 		if routeCtrl != nil {
 			sb.WriteString("\n# HELP arca_dns_agent_bgp_enabled Whether BGP control is enabled (1/0).\n")
 			sb.WriteString("# TYPE arca_dns_agent_bgp_enabled gauge\n")
 			sb.WriteString("arca_dns_agent_bgp_enabled 1\n")
 
-			sb.WriteString("\n# HELP arca_dns_agent_bgp_routes_announced Whether routes are currently announced (1/0).\n")
+			sb.WriteString("\n# HELP arca_dns_agent_bgp_routes_announced Whether routes are currently announced (1=announced, 0=withdrawn, -1=unknown).\n")
 			sb.WriteString("# TYPE arca_dns_agent_bgp_routes_announced gauge\n")
 			sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_routes_announced %d\n", boolToInt(routeCtrl.IsAnnounced())))
 
@@ -870,9 +909,35 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 			sb.WriteString("# TYPE arca_dns_agent_bgp_enabled gauge\n")
 			sb.WriteString("arca_dns_agent_bgp_enabled 0\n")
 
-			sb.WriteString("\n# HELP arca_dns_agent_bgp_routes_announced Whether routes are currently announced (1/0).\n")
+			sb.WriteString("\n# HELP arca_dns_agent_bgp_routes_announced Whether routes are currently announced (1=announced, 0=withdrawn, -1=unknown).\n")
 			sb.WriteString("# TYPE arca_dns_agent_bgp_routes_announced gauge\n")
-			sb.WriteString("arca_dns_agent_bgp_routes_announced 0\n")
+			if bgpStatus == bgpControlStatusUnknown {
+				sb.WriteString("arca_dns_agent_bgp_routes_announced -1\n")
+			} else {
+				sb.WriteString("arca_dns_agent_bgp_routes_announced 0\n")
+			}
+		}
+
+		sb.WriteString("\n# HELP arca_dns_agent_bird_config_status BIRD generated config status (1 for the current status, 0 otherwise).\n")
+		sb.WriteString("# TYPE arca_dns_agent_bird_config_status gauge\n")
+		for _, status := range []string{birdConfigStatusDisabled, birdConfigStatusApplied, birdConfigStatusUsingExisting} {
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_bird_config_status{status=%q} %d\n", status, boolToInt(birdConfigStatus.Status == status)))
+		}
+
+		sb.WriteString("\n# HELP arca_dns_agent_bird_config_last_attempt_timestamp_seconds Unix timestamp of the last generated BIRD config apply attempt (0 if none).\n")
+		sb.WriteString("# TYPE arca_dns_agent_bird_config_last_attempt_timestamp_seconds gauge\n")
+		if birdConfigStatus.LastAttempt.IsZero() {
+			sb.WriteString("arca_dns_agent_bird_config_last_attempt_timestamp_seconds 0\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_bird_config_last_attempt_timestamp_seconds %d\n", birdConfigStatus.LastAttempt.Unix()))
+		}
+
+		sb.WriteString("\n# HELP arca_dns_agent_bird_config_last_success_timestamp_seconds Unix timestamp of the last successful generated BIRD config apply (0 if none).\n")
+		sb.WriteString("# TYPE arca_dns_agent_bird_config_last_success_timestamp_seconds gauge\n")
+		if birdConfigStatus.LastSuccess.IsZero() {
+			sb.WriteString("arca_dns_agent_bird_config_last_success_timestamp_seconds 0\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_bird_config_last_success_timestamp_seconds %d\n", birdConfigStatus.LastSuccess.Unix()))
 		}
 
 		// Append DNSTap Prometheus metrics if processor is available
@@ -894,6 +959,16 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 	})
 
 	return router
+}
+
+func bgpControlStatus(cfg *config.AgentConfig, routeCtrl plugin.RouteController, birdConfigStatus birdConfigRuntimeStatus) string {
+	if routeCtrl != nil {
+		return bgpControlStatusActive
+	}
+	if cfg.BIRD.Enabled && birdConfigStatus.usingExisting() {
+		return bgpControlStatusUnknown
+	}
+	return bgpControlStatusDisabled
 }
 
 func metricPath(path string) string {

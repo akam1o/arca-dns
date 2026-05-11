@@ -71,9 +71,13 @@ func ValidateRecordSetConstraints(zone *Zone) error {
 
 	owners := make(map[string]ownerState)
 	seenRecords := make(map[string]int)
+	hasApexNS := false
 	for i, record := range zone.Records {
 		owner := canonicalRecordOwnerName(record.Name, zoneName)
-		duplicateKey := canonicalRecordDuplicateKey(record, owner)
+		if owner == zoneName && record.Type == RecordTypeNS {
+			hasApexNS = true
+		}
+		duplicateKey := canonicalRecordDuplicateKey(record, owner, zoneName)
 		if firstIndex, ok := seenRecords[duplicateKey]; ok {
 			return fmt.Errorf("invalid record at index %d: duplicate record matches index %d", i, firstIndex)
 		}
@@ -115,30 +119,99 @@ func ValidateRecordSetConstraints(zone *Zone) error {
 		}
 	}
 
+	if !hasApexNS {
+		return fmt.Errorf("zone %s must include at least one apex NS record", zoneName)
+	}
+
 	return nil
 }
 
-func canonicalRecordDuplicateKey(record Record, owner string) string {
+// NormalizeZoneDerivedFields normalizes fields that are derived from canonical
+// record data before validation and persistence.
+func NormalizeZoneDerivedFields(zone *Zone) error {
+	if zone == nil {
+		return fmt.Errorf("zone is nil")
+	}
+
+	for i := range zone.Records {
+		if err := normalizeRecordDerivedFields(&zone.Records[i], true); err != nil {
+			return fmt.Errorf("invalid record at index %d: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+// RepairZoneDerivedFields normalizes fields derived from trusted persisted
+// record data, overwriting stale derived values instead of rejecting them.
+func RepairZoneDerivedFields(zone *Zone) error {
+	if zone == nil {
+		return fmt.Errorf("zone is nil")
+	}
+
+	for i := range zone.Records {
+		if err := normalizeRecordDerivedFields(&zone.Records[i], false); err != nil {
+			return fmt.Errorf("invalid record at index %d: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+// NormalizeRecordDerivedFields normalizes record fields that must mirror the
+// canonical RDATA representation.
+func NormalizeRecordDerivedFields(record *Record) error {
+	return normalizeRecordDerivedFields(record, true)
+}
+
+// RepairRecordDerivedFields overwrites stale derived fields in trusted
+// persisted record data.
+func RepairRecordDerivedFields(record *Record) error {
+	return normalizeRecordDerivedFields(record, false)
+}
+
+func normalizeRecordDerivedFields(record *Record, rejectMismatch bool) error {
+	if record == nil {
+		return fmt.Errorf("record is nil")
+	}
+
+	priority, hasPriority, err := recordPriorityFromValue(record.Type, record.Value)
+	if err != nil {
+		return err
+	}
+	if !hasPriority {
+		record.Priority = nil
+		return nil
+	}
+	if rejectMismatch && record.Priority != nil && *record.Priority != priority {
+		return fmt.Errorf("%s priority %d does not match value priority %d", record.Type, *record.Priority, priority)
+	}
+
+	record.Priority = uint16Ptr(priority)
+	return nil
+}
+
+func canonicalRecordDuplicateKey(record Record, owner, zoneName string) string {
 	return strings.Join([]string{
 		owner,
 		record.Type,
 		strconv.FormatUint(uint64(record.TTL), 10),
-		canonicalRecordValue(record.Type, record.Value),
+		canonicalRecordValue(record.Type, record.Value, zoneName),
 	}, "\x00")
 }
 
-func canonicalRecordValue(recordType, value string) string {
+func canonicalRecordValue(recordType, value, zoneName string) string {
 	switch recordType {
 	case RecordTypeA, RecordTypeAAAA:
 		if ip := net.ParseIP(value); ip != nil {
 			return ip.String()
 		}
 	case RecordTypeCNAME, RecordTypeNS, RecordTypePTR:
-		return NormalizeDomainName(value)
+		return NormalizeDomainTargetName(value, zoneName)
 	case RecordTypeMX:
 		parts := strings.Fields(value)
 		if len(parts) == 2 {
-			return parts[0] + " " + NormalizeDomainName(parts[1])
+			return parts[0] + " " + NormalizeDomainTargetName(parts[1], zoneName)
 		}
 	case RecordTypeSRV:
 		parts := strings.Fields(value)
@@ -147,7 +220,7 @@ func canonicalRecordValue(recordType, value string) string {
 				parts[0],
 				parts[1],
 				parts[2],
-				NormalizeDomainName(parts[3]),
+				NormalizeDomainTargetName(parts[3], zoneName),
 			}, " ")
 		}
 	}
@@ -219,6 +292,30 @@ func ValidateRecord(record *Record) error {
 	// Validate value based on type
 	if err := ValidateRecordValue(record.Type, record.Value); err != nil {
 		return err
+	}
+
+	if err := ValidateRecordPriority(record); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ValidateRecordPriority validates that derived Priority mirrors MX/SRV RDATA.
+func ValidateRecordPriority(record *Record) error {
+	if record == nil {
+		return fmt.Errorf("record is nil")
+	}
+
+	priority, hasPriority, err := recordPriorityFromValue(record.Type, record.Value)
+	if err != nil {
+		return err
+	}
+	if !hasPriority || record.Priority == nil {
+		return nil
+	}
+	if *record.Priority != priority {
+		return fmt.Errorf("%s priority %d does not match value priority %d", record.Type, *record.Priority, priority)
 	}
 
 	return nil
@@ -340,6 +437,9 @@ func ValidateDomainTarget(name string) error {
 func ValidateZoneName(name string) error {
 	if name == "@" {
 		return fmt.Errorf("zone name must not be @")
+	}
+	if name == "." {
+		return fmt.Errorf("zone name must not be root")
 	}
 	return ValidateDomainName(name)
 }
@@ -496,4 +596,45 @@ func ValidateCAAValue(value string) error {
 	}
 
 	return nil
+}
+
+func recordPriorityFromValue(recordType, value string) (uint16, bool, error) {
+	parts := strings.Fields(value)
+	switch recordType {
+	case RecordTypeMX:
+		if len(parts) != 2 {
+			return 0, false, fmt.Errorf("MX value must be 'priority domain': %s", value)
+		}
+		priority, err := parseUint16Field(parts[0])
+		if err != nil {
+			return 0, false, fmt.Errorf("invalid MX priority: %s", parts[0])
+		}
+		return priority, true, nil
+	case RecordTypeSRV:
+		if len(parts) != 4 {
+			return 0, false, fmt.Errorf("SRV value must be 'priority weight port target': %s", value)
+		}
+		priority, err := parseUint16Field(parts[0])
+		if err != nil {
+			return 0, false, fmt.Errorf("invalid SRV priority: %s", parts[0])
+		}
+		return priority, true, nil
+	default:
+		return 0, false, nil
+	}
+}
+
+func parseUint16Field(value string) (uint16, error) {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	if parsed < 0 || parsed > 65535 {
+		return 0, fmt.Errorf("value outside uint16 range: %s", value)
+	}
+	return uint16(parsed), nil
+}
+
+func uint16Ptr(value uint16) *uint16 {
+	return &value
 }

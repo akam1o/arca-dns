@@ -29,12 +29,7 @@ type SQLiteBackend struct {
 //   - "file::memory:?cache=shared" (in-memory, shared across connections)
 //   - ":memory:" (in-memory, single connection)
 func NewSQLiteBackend(dsn string) (*SQLiteBackend, error) {
-	// Append WAL mode and foreign keys pragmas if not already present
-	if !strings.Contains(dsn, "_pragma") && !strings.Contains(dsn, "?") {
-		dsn += "?_pragma=journal_mode(wal)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	} else if !strings.Contains(dsn, "journal_mode") {
-		dsn += "&_pragma=journal_mode(wal)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	}
+	dsn = sqliteDSNWithDefaultPragmas(dsn)
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -57,6 +52,54 @@ func NewSQLiteBackend(dsn string) (*SQLiteBackend, error) {
 		db:  db,
 		dsn: dsn,
 	}, nil
+}
+
+// HealthCheck verifies that SQLite is reachable without loading zone data.
+func (s *SQLiteBackend) HealthCheck(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("sqlite health check failed: %w", err)
+	}
+	return nil
+}
+
+func sqliteDSNWithDefaultPragmas(dsn string) string {
+	defaults := []struct {
+		name  string
+		value string
+	}{
+		{name: "journal_mode", value: "journal_mode(wal)"},
+		{name: "foreign_keys", value: "foreign_keys(1)"},
+		{name: "busy_timeout", value: "busy_timeout(5000)"},
+	}
+
+	for _, pragma := range defaults {
+		if sqliteDSNHasQueryOption(dsn, pragma.name) {
+			continue
+		}
+		dsn += sqliteDSNQuerySeparator(dsn) + "_pragma=" + pragma.value
+	}
+
+	return dsn
+}
+
+func sqliteDSNHasQueryOption(dsn, option string) bool {
+	queryIndex := strings.Index(dsn, "?")
+	if queryIndex == -1 {
+		return false
+	}
+
+	query := strings.ToLower(dsn[queryIndex+1:])
+	return strings.Contains(query, strings.ToLower(option))
+}
+
+func sqliteDSNQuerySeparator(dsn string) string {
+	if strings.HasSuffix(dsn, "?") || strings.HasSuffix(dsn, "&") {
+		return ""
+	}
+	if strings.Contains(dsn, "?") {
+		return "&"
+	}
+	return "?"
 }
 
 // InitSchema creates the database schema inline (for in-memory or first-run usage).
@@ -125,6 +168,7 @@ func (s *SQLiteBackend) GetZone(ctx context.Context, name string) (*model.Zone, 
 
 // ListZones returns all zones, optionally paginated.
 func (s *SQLiteBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT
 			name, version,
@@ -138,7 +182,10 @@ func (s *SQLiteBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mod
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
+		query += " LIMIT -1 OFFSET ?"
+		args = append(args, offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -172,6 +219,7 @@ func (s *SQLiteBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mod
 
 // ListZoneSummaries returns zone names and versions without loading records.
 func (s *SQLiteBackend) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT name, version
 		FROM zones
@@ -180,7 +228,10 @@ func (s *SQLiteBackend) ListZoneSummaries(ctx context.Context, opts ListOptions)
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
+		query += " LIMIT -1 OFFSET ?"
+		args = append(args, offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -206,24 +257,8 @@ func (s *SQLiteBackend) ListZoneSummaries(ctx context.Context, opts ListOptions)
 
 // CreateZone creates a new zone.
 func (s *SQLiteBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
-	zone.Name = normalizeZoneName(zone.Name)
-
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-	if zone.Version == "" {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate zone version: %w", err)
-		}
-		zone.Version = v
-	}
-
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-
-	if err := validateZoneForWrite(zone); err != nil {
+	writeZone, err := prepareZoneForCreate(zone, normalizeZoneName)
+	if err != nil {
 		return err
 	}
 
@@ -233,16 +268,20 @@ func (s *SQLiteBackend) CreateZone(ctx context.Context, zone *model.Zone) error 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	zoneID, err := s.insertZoneTx(ctx, tx, zone)
+	zoneID, err := s.insertZoneTx(ctx, tx, writeZone)
 	if err != nil {
 		return err
 	}
 
-	if err := s.insertRecordsTx(ctx, tx, zoneID, zone.Records, nil); err != nil {
+	if err := s.insertRecordsTx(ctx, tx, zoneID, writeZone.Records, nil); err != nil {
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	copyZoneInto(zone, writeZone)
+	return nil
 }
 
 // UpdateZone updates an existing zone.
@@ -426,10 +465,17 @@ func (s *SQLiteBackend) Close() error {
 // Info returns backend metadata.
 func (s *SQLiteBackend) Info() BackendInfo {
 	return BackendInfo{
-		Type:         "sqlite",
-		Capabilities: []string{"ZoneStore", "TransactionalStore", "DNSSECMetadataStore"},
-		Consistency:  "strong",
-		Description:  "SQLite storage (default, single-binary, WAL mode)",
+		Type: "sqlite",
+		Capabilities: []string{
+			CapabilityZoneStore,
+			CapabilityZoneSummaryStore,
+			CapabilityHealthStore,
+			CapabilityTransactionalStore,
+			CapabilityDNSSECMetadataStore,
+			CapabilityConditionalDeleteStore,
+		},
+		Consistency: "strong",
+		Description: "SQLite storage (default, single-binary, WAL mode)",
 	}
 }
 
@@ -657,7 +703,7 @@ func (s *SQLiteBackend) insertRecordsTx(ctx context.Context, tx *sql.Tx, zoneID 
 		hash := sha256.Sum256([]byte(rec.Value))
 		valueHash := hex.EncodeToString(hash[:])
 		var priority interface{}
-		if rec.Priority != nil && *rec.Priority > 0 {
+		if rec.Priority != nil {
 			priority = *rec.Priority
 		}
 
@@ -757,6 +803,7 @@ func (t *sqliteTx) GetZone(ctx context.Context, name string) (*model.Zone, error
 }
 
 func (t *sqliteTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT
 			name, version,
@@ -769,7 +816,10 @@ func (t *sqliteTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zo
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
+		query += " LIMIT -1 OFFSET ?"
+		args = append(args, offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)
@@ -801,6 +851,7 @@ func (t *sqliteTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zo
 }
 
 func (t *sqliteTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*ZoneSummary, error) {
+	offset := normalizeListOffset(opts.Offset)
 	query := `
 		SELECT name, version
 		FROM zones
@@ -809,7 +860,10 @@ func (t *sqliteTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*
 	args := []interface{}{}
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		args = append(args, opts.Limit, opts.Offset)
+		args = append(args, opts.Limit, offset)
+	} else if offset > 0 {
+		query += " LIMIT -1 OFFSET ?"
+		args = append(args, offset)
 	}
 
 	rows, err := t.tx.QueryContext(ctx, query, args...)
@@ -833,30 +887,20 @@ func (t *sqliteTx) ListZoneSummaries(ctx context.Context, opts ListOptions) ([]*
 }
 
 func (t *sqliteTx) CreateZone(ctx context.Context, zone *model.Zone) error {
-	zone.Name = normalizeZoneName(zone.Name)
-	if zone.SOA.Serial == 0 {
-		zone.SOA.Serial = generateSerial(0)
-	}
-	if zone.Version == "" {
-		v, err := model.NewZoneVersion()
-		if err != nil {
-			return fmt.Errorf("generate version: %w", err)
-		}
-		zone.Version = v
-	}
-	now := time.Now()
-	zone.CreatedAt = now
-	zone.UpdatedAt = now
-
-	if err := validateZoneForWrite(zone); err != nil {
-		return err
-	}
-
-	zoneID, err := t.backend.insertZoneTx(ctx, t.tx, zone)
+	writeZone, err := prepareZoneForCreate(zone, normalizeZoneName)
 	if err != nil {
 		return err
 	}
-	return t.backend.insertRecordsTx(ctx, t.tx, zoneID, zone.Records, nil)
+
+	zoneID, err := t.backend.insertZoneTx(ctx, t.tx, writeZone)
+	if err != nil {
+		return err
+	}
+	if err := t.backend.insertRecordsTx(ctx, t.tx, zoneID, writeZone.Records, nil); err != nil {
+		return err
+	}
+	copyZoneInto(zone, writeZone)
+	return nil
 }
 
 func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {

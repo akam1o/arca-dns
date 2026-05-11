@@ -1,6 +1,7 @@
 package dnssec
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/x509"
@@ -9,8 +10,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/gofrs/flock"
 	"github.com/miekg/dns"
 )
 
@@ -21,6 +25,7 @@ type KeyManager struct {
 	algorithm uint8
 	kskBits   int
 	zskBits   int
+	zoneLocks sync.Map // map[string]chan struct{}
 }
 
 type activeKeys struct {
@@ -91,16 +96,38 @@ func NewKeyManager(opts KeyManagerOptions) (*KeyManager, error) {
 
 // GenerateKSK generates a new Key Signing Key for the zone.
 func (km *KeyManager) GenerateKSK(zone string) (*KeyPair, error) {
-	return km.generateKey(zone, KeyRoleKSK, km.kskBits, dnskeyKSKFlags, true)
+	return km.GenerateKSKContext(context.Background(), zone)
+}
+
+// GenerateKSKContext generates a new Key Signing Key for the zone.
+func (km *KeyManager) GenerateKSKContext(ctx context.Context, zone string) (*KeyPair, error) {
+	var key *KeyPair
+	err := km.withZoneKeyLock(ctx, zone, true, func(zoneFQDN string) error {
+		var err error
+		key, err = km.generateKeyLocked(zoneFQDN, KeyRoleKSK, km.kskBits, dnskeyKSKFlags, true)
+		return err
+	})
+	return key, err
 }
 
 // GenerateZSK generates a new Zone Signing Key for the zone.
 func (km *KeyManager) GenerateZSK(zone string) (*KeyPair, error) {
-	return km.generateKey(zone, KeyRoleZSK, km.zskBits, dnskeyZSKFlags, true)
+	return km.GenerateZSKContext(context.Background(), zone)
 }
 
-// generateKey generates a DNSSEC key pair.
-func (km *KeyManager) generateKey(zone string, role KeyRole, bits int, flags uint16, activate bool) (*KeyPair, error) {
+// GenerateZSKContext generates a new Zone Signing Key for the zone.
+func (km *KeyManager) GenerateZSKContext(ctx context.Context, zone string) (*KeyPair, error) {
+	var key *KeyPair
+	err := km.withZoneKeyLock(ctx, zone, true, func(zoneFQDN string) error {
+		var err error
+		key, err = km.generateKeyLocked(zoneFQDN, KeyRoleZSK, km.zskBits, dnskeyZSKFlags, true)
+		return err
+	})
+	return key, err
+}
+
+// generateKeyLocked generates a DNSSEC key pair. Callers must hold the zone key lock.
+func (km *KeyManager) generateKeyLocked(zone string, role KeyRole, bits int, flags uint16, activate bool) (*KeyPair, error) {
 	// Normalize zone
 	zoneFQDN, err := NormalizeZoneFQDN(zone)
 	if err != nil {
@@ -154,12 +181,32 @@ func (km *KeyManager) generateKey(zone string, role KeyRole, bits int, flags uin
 
 // LoadKSK loads the KSK for the zone.
 func (km *KeyManager) LoadKSK(zone string) (*KeyPair, error) {
-	return km.loadKey(zone, KeyRoleKSK)
+	return km.LoadKSKContext(context.Background(), zone)
+}
+
+// LoadKSKContext loads the KSK for the zone.
+func (km *KeyManager) LoadKSKContext(ctx context.Context, zone string) (*KeyPair, error) {
+	return km.loadKeyWithLock(ctx, zone, KeyRoleKSK)
 }
 
 // LoadZSK loads the ZSK for the zone.
 func (km *KeyManager) LoadZSK(zone string) (*KeyPair, error) {
-	return km.loadKey(zone, KeyRoleZSK)
+	return km.LoadZSKContext(context.Background(), zone)
+}
+
+// LoadZSKContext loads the ZSK for the zone.
+func (km *KeyManager) LoadZSKContext(ctx context.Context, zone string) (*KeyPair, error) {
+	return km.loadKeyWithLock(ctx, zone, KeyRoleZSK)
+}
+
+func (km *KeyManager) loadKeyWithLock(ctx context.Context, zone string, role KeyRole) (*KeyPair, error) {
+	var key *KeyPair
+	err := km.withZoneKeyLock(ctx, zone, false, func(zoneFQDN string) error {
+		var err error
+		key, err = km.loadKey(zoneFQDN, role)
+		return err
+	})
+	return key, err
 }
 
 // loadKey loads a key from disk.
@@ -359,24 +406,12 @@ func (km *KeyManager) saveKeyFiles(kp *KeyPair) error {
 		return fmt.Errorf("encrypt private key: %w", err)
 	}
 
-	// Atomic write for public key
-	pubTmpPath := pubPath + ".tmp"
-	if err := os.WriteFile(pubTmpPath, []byte(pubData), 0644); err != nil {
-		return fmt.Errorf("write public key tmp: %w", err)
-	}
-	if err := os.Rename(pubTmpPath, pubPath); err != nil {
-		os.Remove(pubTmpPath)
-		return fmt.Errorf("rename public key: %w", err)
+	if err := writeFileAtomic(pubPath, []byte(pubData), 0644); err != nil {
+		return fmt.Errorf("write public key: %w", err)
 	}
 
-	// Atomic write for private key
-	privTmpPath := privPath + ".tmp"
-	if err := os.WriteFile(privTmpPath, encData, 0600); err != nil {
-		return fmt.Errorf("write private key tmp: %w", err)
-	}
-	if err := os.Rename(privTmpPath, privPath); err != nil {
-		os.Remove(privTmpPath)
-		return fmt.Errorf("rename private key: %w", err)
+	if err := writeFileAtomic(privPath, encData, 0600); err != nil {
+		return fmt.Errorf("write private key: %w", err)
 	}
 
 	return nil
@@ -436,19 +471,83 @@ func (km *KeyManager) writeActiveKeys(zone string, active activeKeys) error {
 		return fmt.Errorf("marshal active.json: %w", err)
 	}
 
-	// Atomic write: write to .tmp, fsync, rename
-	tmpFile := activeFile + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-		return fmt.Errorf("write active.json.tmp: %w", err)
-	}
-
-	// Rename atomically
-	if err := os.Rename(tmpFile, activeFile); err != nil {
-		os.Remove(tmpFile) // Clean up on failure
-		return fmt.Errorf("rename active.json: %w", err)
+	if err := writeFileAtomic(activeFile, data, 0644); err != nil {
+		return fmt.Errorf("write active.json: %w", err)
 	}
 
 	return nil
+}
+
+func (km *KeyManager) withZoneKeyLock(ctx context.Context, zone string, createDir bool, fn func(zoneFQDN string) error) (err error) {
+	zoneFQDN, err := NormalizeZoneFQDN(zone)
+	if err != nil {
+		return err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	zoneDir, err := km.getZoneDir(zoneFQDN)
+	if err != nil {
+		return err
+	}
+
+	releaseZone, err := km.acquireZoneMutex(ctx, zoneFQDN)
+	if err != nil {
+		return err
+	}
+	defer releaseZone()
+
+	existed := true
+	if _, statErr := os.Stat(zoneDir); statErr != nil {
+		if !os.IsNotExist(statErr) {
+			return fmt.Errorf("stat zone key directory: %w", statErr)
+		}
+		if !createDir {
+			return model.ErrZoneNotFound
+		}
+		existed = false
+	}
+	if createDir {
+		if err := os.MkdirAll(zoneDir, 0700); err != nil {
+			return fmt.Errorf("create zone directory: %w", err)
+		}
+		if !existed {
+			if err := syncDir(filepath.Dir(zoneDir)); err != nil {
+				return fmt.Errorf("sync key directory parent: %w", err)
+			}
+		}
+	}
+
+	fileLock := flock.New(filepath.Join(zoneDir, ".lock"))
+	locked, err := fileLock.TryLockContext(ctx, 50*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("lock zone key directory: %w", err)
+	}
+	if !locked {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("lock zone key directory: %w", err)
+		}
+		return fmt.Errorf("lock zone key directory: lock not acquired")
+	}
+	defer func() {
+		if unlockErr := fileLock.Unlock(); unlockErr != nil && err == nil {
+			err = fmt.Errorf("unlock zone key directory: %w", unlockErr)
+		}
+	}()
+
+	return fn(zoneFQDN)
+}
+
+func (km *KeyManager) acquireZoneMutex(ctx context.Context, zone string) (func(), error) {
+	actual, _ := km.zoneLocks.LoadOrStore(zone, make(chan struct{}, 1))
+	ch := actual.(chan struct{})
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // getZoneDir returns the directory path for a zone's keys.
@@ -460,30 +559,89 @@ func (km *KeyManager) getZoneDir(zone string) (string, error) {
 	return filepath.Join(km.keyDir, zoneName), nil
 }
 
+func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+
+	tmpPath := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(perm); err != nil {
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename temp file: %w", err)
+	}
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("sync directory: %w", err)
+	}
+	return nil
+}
+
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
 // EnsureZoneKeys ensures that both KSK and ZSK exist for a zone.
 // If they don't exist, they are generated. Returns the key pair.
 func (km *KeyManager) EnsureZoneKeys(zone string) (ksk *KeyPair, zsk *KeyPair, err error) {
+	return km.EnsureZoneKeysContext(context.Background(), zone)
+}
+
+// EnsureZoneKeysContext ensures that both KSK and ZSK exist for a zone.
+func (km *KeyManager) EnsureZoneKeysContext(ctx context.Context, zone string) (ksk *KeyPair, zsk *KeyPair, err error) {
+	err = km.withZoneKeyLock(ctx, zone, true, func(zoneFQDN string) error {
+		var err error
+		ksk, zsk, err = km.ensureZoneKeysLocked(zoneFQDN)
+		return err
+	})
+	return ksk, zsk, err
+}
+
+func (km *KeyManager) ensureZoneKeysLocked(zoneFQDN string) (ksk *KeyPair, zsk *KeyPair, err error) {
 	// Try to load existing keys
-	ksk, err = km.LoadKSK(zone)
+	ksk, err = km.loadKey(zoneFQDN, KeyRoleKSK)
 	if err != nil && !errors.Is(err, model.ErrZoneNotFound) {
 		return nil, nil, fmt.Errorf("load ksk: %w", err)
 	}
 
-	zsk, err = km.LoadZSK(zone)
+	zsk, err = km.loadKey(zoneFQDN, KeyRoleZSK)
 	if err != nil && !errors.Is(err, model.ErrZoneNotFound) {
 		return nil, nil, fmt.Errorf("load zsk: %w", err)
 	}
 
 	// Generate missing keys
 	if ksk == nil {
-		ksk, err = km.GenerateKSK(zone)
+		ksk, err = km.generateKeyLocked(zoneFQDN, KeyRoleKSK, km.kskBits, dnskeyKSKFlags, true)
 		if err != nil {
 			return nil, nil, fmt.Errorf("generate ksk: %w", err)
 		}
 	}
 
 	if zsk == nil {
-		zsk, err = km.GenerateZSK(zone)
+		zsk, err = km.generateKeyLocked(zoneFQDN, KeyRoleZSK, km.zskBits, dnskeyZSKFlags, true)
 		if err != nil {
 			return nil, nil, fmt.Errorf("generate zsk: %w", err)
 		}
@@ -494,17 +652,23 @@ func (km *KeyManager) EnsureZoneKeys(zone string) (ksk *KeyPair, zsk *KeyPair, e
 
 // ExportDS exports the DS record for a zone's KSK.
 func (km *KeyManager) ExportDS(zone string, digestType uint8) (*dns.DS, error) {
-	// Load KSK
-	ksk, err := km.LoadKSK(zone)
-	if err != nil {
-		return nil, fmt.Errorf("load ksk: %w", err)
-	}
+	return km.ExportDSContext(context.Background(), zone, digestType)
+}
 
-	// Generate DS record
-	ds := ksk.DNSKEY.ToDS(digestType)
-	if ds == nil {
-		return nil, fmt.Errorf("failed to generate ds record")
-	}
+// ExportDSContext exports the DS record for a zone's KSK.
+func (km *KeyManager) ExportDSContext(ctx context.Context, zone string, digestType uint8) (*dns.DS, error) {
+	var ds *dns.DS
+	err := km.withZoneKeyLock(ctx, zone, false, func(zoneFQDN string) error {
+		ksk, err := km.loadKey(zoneFQDN, KeyRoleKSK)
+		if err != nil {
+			return fmt.Errorf("load ksk: %w", err)
+		}
 
-	return ds, nil
+		ds = ksk.DNSKEY.ToDS(digestType)
+		if ds == nil {
+			return fmt.Errorf("failed to generate ds record")
+		}
+		return nil
+	})
+	return ds, err
 }

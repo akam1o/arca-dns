@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -39,6 +40,14 @@ type BuildInfo struct {
 	Date    string `json:"date"`
 }
 
+var errConditionalDeleteUnsupported = errors.New("backend does not support conditional delete")
+
+type createZoneRequest struct {
+	Name    string          `json:"name"`
+	SOA     model.SOARecord `json:"soa"`
+	Records []model.Record  `json:"records"`
+}
+
 type updateZoneRequest struct {
 	Name string          `json:"name"`
 	SOA  model.SOARecord `json:"soa"`
@@ -60,19 +69,18 @@ func (h *Handler) SetArtifactSignatureKey(key string) {
 	h.artifactSignatureKey = strings.TrimSpace(key)
 }
 
-// Health handles GET /health (and /api/v1/health).
+// Health handles GET /health on the controller listeners.
 func (h *Handler) Health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// Ready handles GET /ready (and /api/v1/ready).
+// Ready handles GET /ready on the controller listeners.
 // Readiness includes backend connectivity (best-effort) to match docs.
 func (h *Handler) Ready(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 	defer cancel()
 
-	_, err := h.store.ListZones(ctx, backend.ListOptions{Limit: 1, Offset: 0})
-	if err != nil {
+	if err := backend.CheckHealth(ctx, h.store); err != nil {
 		h.logger.Warn("Readiness check failed", zap.Error(err))
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status": "not_ready",
@@ -84,7 +92,7 @@ func (h *Handler) Ready(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ready"})
 }
 
-// Status handles GET /status (and /api/v1/status).
+// Status handles GET /status on the controller listeners.
 func (h *Handler) Status(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "operational",
@@ -94,7 +102,7 @@ func (h *Handler) Status(c *gin.Context) {
 	})
 }
 
-// Metrics handles GET /metrics.
+// Metrics handles GET /metrics on the observability listener.
 func (h *Handler) Metrics(c *gin.Context) {
 	if h.metrics == nil {
 		c.String(http.StatusNotImplemented, "# metrics disabled\n")
@@ -116,12 +124,31 @@ func (h *Handler) Metrics(c *gin.Context) {
 
 // CreateZone handles POST /api/v1/zones
 func (h *Handler) CreateZone(c *gin.Context) {
-	var zone model.Zone
-	if err := c.ShouldBindJSON(&zone); err != nil {
+	var req createZoneRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Invalid request body", zap.Error(err))
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Invalid request body",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
+	zone := model.Zone{
+		Name:    req.Name,
+		SOA:     req.SOA,
+		Records: append([]model.Record(nil), req.Records...),
+	}
+	for i := range zone.Records {
+		zone.Records[i].ID = ""
+	}
+
+	if err := model.NormalizeZoneDerivedFields(&zone); err != nil {
+		h.logger.Warn("Zone normalization failed", zap.String("zone", zone.Name), zap.Error(err))
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Zone validation failed",
 			map[string]interface{}{"error": "internal error"},
 		))
 		return
@@ -157,6 +184,10 @@ func (h *Handler) CreateZone(c *gin.Context) {
 	}
 	defer signedWrite.Abort()
 
+	if !h.storeSignedZoneWrite(c, signedWrite, "zone creation") {
+		return
+	}
+
 	// Create zone in backend
 	if err := h.store.CreateZone(c.Request.Context(), &zone); err != nil {
 		if err == model.ErrZoneAlreadyExists {
@@ -176,6 +207,10 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		return
 	}
 
+	if !h.commitSignedZoneWrite(c, signedWrite, "zone creation") {
+		return
+	}
+
 	// Retrieve created zone to get version
 	created, err := h.store.GetZone(c.Request.Context(), zone.Name)
 	if err != nil {
@@ -188,7 +223,9 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		return
 	}
 
-	h.completeSignedZoneWrite(signedWrite)
+	if !h.completeSignedZoneWrite(c, signedWrite, "zone creation") {
+		return
+	}
 
 	// Set ETag header
 	c.Header("ETag", formatETag(created.Version))
@@ -264,10 +301,24 @@ func etagMatches(ifNoneMatch, current string) bool {
 		return true
 	}
 
-	// If-None-Match can be a comma-separated list. We accept exact match with optional quotes.
+	// If-None-Match can be a comma-separated list and uses weak comparison.
 	for _, part := range strings.Split(ifNoneMatch, ",") {
 		tag := strings.TrimSpace(part)
 		tag = strings.TrimPrefix(tag, "W/")
+		tag = strings.Trim(tag, "\"")
+		if tag == current {
+			return true
+		}
+	}
+	return false
+}
+
+func strongETagMatches(ifMatch, current string) bool {
+	for _, part := range strings.Split(ifMatch, ",") {
+		tag := strings.TrimSpace(part)
+		if strings.HasPrefix(tag, "W/") {
+			continue
+		}
 		tag = strings.Trim(tag, "\"")
 		if tag == current {
 			return true
@@ -520,7 +571,7 @@ func (h *Handler) GetZoneRevision(c *gin.Context) {
 
 // UpdateZone handles PUT /api/v1/zones/:name
 func (h *Handler) UpdateZone(c *gin.Context) {
-	name := c.Param("name")
+	name := model.NormalizeZoneName(c.Param("name"))
 
 	var req updateZoneRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -534,7 +585,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	}
 
 	zone := model.Zone{
-		Name: req.Name,
+		Name: model.NormalizeZoneName(req.Name),
 		SOA:  req.SOA,
 	}
 
@@ -562,7 +613,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
-	// Resolve If-Match into a concrete expected version (accepts quoted/unquoted, W/, and lists).
+	// Resolve If-Match into a concrete expected version (accepts quoted/unquoted strong tags and lists).
 	expectedVersion := ""
 	var current *model.Zone
 	current, err := h.store.GetZone(c.Request.Context(), zone.Name)
@@ -584,7 +635,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
-	if !etagMatches(ifMatch, current.Version) {
+	if !strongETagMatches(ifMatch, current.Version) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",
@@ -596,6 +647,16 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 
 	zone.Records = current.Records
 	zone.DNSSEC = current.DNSSEC
+
+	if err := model.RepairZoneDerivedFields(&zone); err != nil {
+		h.logger.Warn("Zone normalization failed", zap.String("zone", zone.Name), zap.Error(err))
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Zone validation failed",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
 
 	// Validate zone after defaulting omitted fields.
 	if err := model.ValidateZone(&zone); err != nil {
@@ -633,6 +694,10 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	}
 	defer signedWrite.Abort()
 
+	if !h.storeSignedZoneWrite(c, signedWrite, "zone update") {
+		return
+	}
+
 	// Update zone in backend
 	if err := h.store.UpdateZone(c.Request.Context(), &zone, expectedVersion); err != nil {
 		if err == model.ErrZoneNotFound {
@@ -660,6 +725,10 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
+	if !h.commitSignedZoneWrite(c, signedWrite, "zone update") {
+		return
+	}
+
 	// Retrieve updated zone to get new version
 	updated, err := h.store.GetZone(c.Request.Context(), zone.Name)
 	if err != nil {
@@ -672,7 +741,9 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		return
 	}
 
-	h.completeSignedZoneWrite(signedWrite)
+	if !h.completeSignedZoneWrite(c, signedWrite, "zone update") {
+		return
+	}
 
 	// Set ETag header
 	c.Header("ETag", formatETag(updated.Version))
@@ -717,7 +788,7 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 		return
 	}
 
-	if !etagMatches(ifMatch, current.Version) {
+	if !strongETagMatches(ifMatch, current.Version) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",
@@ -733,6 +804,14 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 				model.ErrorCodeNotFound,
 				"Zone not found",
 				map[string]interface{}{"zone": name},
+			))
+			return
+		}
+		if errors.Is(err, errConditionalDeleteUnsupported) {
+			c.JSON(http.StatusNotImplemented, model.NewAPIErrorWithDetails(
+				model.ErrorCodeUnavailable,
+				"Backend does not support atomic conditional delete",
+				map[string]interface{}{"capability": "ConditionalDeleteStore"},
 			))
 			return
 		}
@@ -763,10 +842,7 @@ func (h *Handler) deleteZoneWithVersion(ctx context.Context, name string, expect
 		return conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
 	}
 
-	// Custom backends may only implement the core ZoneStore contract. The
-	// handler has already verified If-Match against the current version; without
-	// ConditionalDeleteStore this fallback is best-effort rather than atomic.
-	return h.store.DeleteZone(ctx, name)
+	return errConditionalDeleteUnsupported
 }
 
 // GetSignedZone handles GET /api/v1/zones/:name/signed
@@ -1028,11 +1104,58 @@ func (h *Handler) prepareSignedZoneWrite(c *gin.Context, zone *model.Zone, opera
 	return signedWrite, true
 }
 
-func (h *Handler) completeSignedZoneWrite(signedWrite *service.SignedZoneWrite) {
+func (h *Handler) storeSignedZoneWrite(c *gin.Context, signedWrite *service.SignedZoneWrite, operation string) bool {
 	if h.signingService == nil || signedWrite == nil {
-		return
+		return true
 	}
-	signedWrite.Complete()
+	if err := signedWrite.Store(); err != nil {
+		h.logger.Error("Failed to store signed zone artifact",
+			zap.String("operation", operation),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to sign zone",
+			map[string]interface{}{"error": "signing failed"},
+		))
+		return false
+	}
+	return true
+}
+
+func (h *Handler) commitSignedZoneWrite(c *gin.Context, signedWrite *service.SignedZoneWrite, operation string) bool {
+	if h.signingService == nil || signedWrite == nil {
+		return true
+	}
+	if err := signedWrite.Commit(); err != nil {
+		h.logger.Error("Failed to commit signed zone write",
+			zap.String("operation", operation),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to sign zone",
+			map[string]interface{}{"error": "signing failed"},
+		))
+		return false
+	}
+	return true
+}
+
+func (h *Handler) completeSignedZoneWrite(c *gin.Context, signedWrite *service.SignedZoneWrite, operation string) bool {
+	if h.signingService == nil || signedWrite == nil {
+		return true
+	}
+	if err := signedWrite.Complete(); err != nil {
+		h.logger.Error("Failed to complete signed zone write",
+			zap.String("operation", operation),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to sign zone",
+			map[string]interface{}{"error": "signing failed"},
+		))
+		return false
+	}
+	return true
 }
 
 // GetDSRecords handles GET /api/v1/zones/:name/ds

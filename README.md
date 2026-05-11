@@ -62,7 +62,10 @@ The controller is a standard HTTP API service; TLS is typically terminated by an
   ```bash
   export ARCA_DNS_API_KEY="$(openssl rand -hex 32)"
   export ARCA_DNS_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_API_KEY" | sha256sum | awk '{print $1}')"
+  export ARCA_DNS_AGENT_API_KEY="$(openssl rand -hex 32)"
+  export ARCA_DNS_AGENT_API_KEY_HASH="sha256:$(printf '%s' "$ARCA_DNS_AGENT_API_KEY" | sha256sum | awk '{print $1}')"
   export ARCA_DNS_DNSSEC_MASTER_KEY_B64="$(openssl rand -base64 32)"
+  export ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY="$(openssl rand -base64 32)"
 
   docker compose -f deployments/compose/controller-mysql/docker-compose.yaml --project-directory . up -d
   ```
@@ -103,8 +106,8 @@ make test-coverage # Generate coverage.html
 make lint          # Run linters
 make fmt           # Format code
 make vet           # Run go vet
-make run-controller# Build + run controller (serve)
-make run-agent     # Build + run agent (daemon)
+make run-controller CONTROLLER_RUN_CONFIG=/path/to/controller.yaml # Build + run controller
+make run-agent AGENT_RUN_CONFIG=/path/to/agent.yaml                # Build + run agent
 make docker-build  # Build Docker images
 make clean         # Remove build artifacts
 ```
@@ -147,9 +150,18 @@ api:
     enabled: true
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
+      agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
+    api_key_roles:
+      admin: "admin"
+      agent: "agent"
+
+observability:
+  # Prometheus /metrics endpoint. /health, /ready, and /status are on the API listener.
+  # Bind to 0.0.0.0 only behind network controls or an authenticated proxy.
+  listen: "127.0.0.1:9053"
 
 backend:
-  type: "sqlite"  # Options: sqlite, postgres, mysql, git, etcd, memory
+  type: "sqlite"  # Options: sqlite, postgres, mysql, git, etcd
 
 dnssec:
   enabled: true
@@ -161,14 +173,16 @@ dnssec:
 
 ```yaml
 controller:
+  # Prefer https:// unless this is an intentionally trusted local/private transport.
+  # Using http:// with api_key logs a warning.
   url: "http://localhost:8080"
-  api_key: "REPLACE_WITH_RAW_API_KEY"
+  api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
 
 sync:
   sync_interval: "30s"
   verify_signatures: true
-  # Must match api.artifact_signature_key.
-  controller_public_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  # Shared HMAC secret; must match api.artifact_signature_key.
+  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 nsd:
   enabled: true
@@ -201,6 +215,8 @@ health:
   recovery_threshold: 5
   nsd_server: "127.0.0.1:5353"
   unbound_server: "127.0.0.1:53"
+  test_zone: "example.com."
+  test_record: "www"
 ```
 
 ### Local Build / Run (dev)

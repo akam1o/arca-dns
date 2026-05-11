@@ -67,6 +67,12 @@ func (s *InstrumentedZoneStore) ListZoneSummaries(ctx context.Context, opts back
 	return summaries, err
 }
 
+func (s *InstrumentedZoneStore) HealthCheck(ctx context.Context) error {
+	err := backend.CheckHealth(ctx, s.inner)
+	s.metrics.IncBackendOperation("health_check", statusLabel(err))
+	return err
+}
+
 func (s *InstrumentedZoneStore) CreateZone(ctx context.Context, zone *model.Zone) error {
 	err := s.inner.CreateZone(ctx, zone)
 	s.metrics.IncBackendOperation("create_zone", statusLabel(err))

@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/hex"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +14,8 @@ import (
 )
 
 const minArtifactSignatureKeyBytes = 32
+const apiKeyRoleAdmin = "admin"
+const apiKeyRoleAgent = "agent"
 
 // LoadControllerConfig loads the controller configuration from the specified file.
 // Priority: defaults < YAML file < environment variables
@@ -144,12 +148,25 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	if cfg.API.Listen == "" {
 		return fmt.Errorf("invalid api.listen: empty")
 	}
+	if strings.TrimSpace(cfg.Observability.Listen) == "" {
+		return fmt.Errorf("invalid observability.listen: empty")
+	}
+	cfg.Observability.Listen = strings.TrimSpace(cfg.Observability.Listen)
+	if listenEndpointsOverlap(cfg.API.Listen, cfg.Observability.Listen) {
+		return fmt.Errorf("invalid observability.listen: must not overlap api.listen")
+	}
 
-	if err := validateArtifactSignatureKey("api.artifact_signature_key", cfg.API.ArtifactSignatureKey, false); err != nil {
+	trustedProxies, err := normalizeTrustedProxies(cfg.API.TrustedProxies)
+	if err != nil {
+		return err
+	}
+	cfg.API.TrustedProxies = trustedProxies
+
+	if err := validateControllerAuthConfig(&cfg.API.Auth); err != nil {
 		return err
 	}
 
-	if err := validateControllerAuthConfig(cfg.API.Auth); err != nil {
+	if err := validateArtifactSignatureKey("api.artifact_signature_key", cfg.API.ArtifactSignatureKey, true); err != nil {
 		return err
 	}
 
@@ -167,7 +184,6 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	}
 
 	validBackendTypes := map[string]bool{
-		"memory":   true,
 		"mysql":    true,
 		"git":      true,
 		"etcd":     true,
@@ -175,7 +191,7 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		"postgres": true,
 	}
 	if !validBackendTypes[cfg.Backend.Type] {
-		return fmt.Errorf("invalid backend.type: %s (must be one of: memory, mysql, git, etcd, sqlite, postgres)", cfg.Backend.Type)
+		return fmt.Errorf("invalid backend.type: %s (must be one of: sqlite, postgres, mysql, git, etcd)", cfg.Backend.Type)
 	}
 
 	if cfg.DNSSEC.Enabled {
@@ -244,7 +260,52 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	return nil
 }
 
-func validateControllerAuthConfig(auth AuthConfig) error {
+func normalizeTrustedProxies(trustedProxies []string) ([]string, error) {
+	if len(trustedProxies) == 0 {
+		return trustedProxies, nil
+	}
+
+	normalized := make([]string, len(trustedProxies))
+	for i, proxy := range trustedProxies {
+		value := strings.TrimSpace(proxy)
+		if value == "" {
+			return nil, fmt.Errorf("invalid api.trusted_proxies[%d]: empty", i)
+		}
+		if strings.Contains(value, "/") {
+			if _, _, err := net.ParseCIDR(value); err != nil {
+				return nil, fmt.Errorf("invalid api.trusted_proxies[%d]: %q is not a valid CIDR: %w", i, proxy, err)
+			}
+			normalized[i] = value
+			continue
+		}
+		if net.ParseIP(value) == nil {
+			return nil, fmt.Errorf("invalid api.trusted_proxies[%d]: %q is not a valid IP address or CIDR", i, proxy)
+		}
+		normalized[i] = value
+	}
+	return normalized, nil
+}
+
+func listenEndpointsOverlap(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	aHost, aPort, aErr := net.SplitHostPort(a)
+	bHost, bPort, bErr := net.SplitHostPort(b)
+	if aErr != nil || bErr != nil {
+		return a == b
+	}
+	if aPort != bPort {
+		return false
+	}
+	return isWildcardListenHost(aHost) || isWildcardListenHost(bHost) || strings.EqualFold(aHost, bHost)
+}
+
+func isWildcardListenHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	return host == "" || host == "0.0.0.0" || host == "::"
+}
+
+func validateControllerAuthConfig(auth *AuthConfig) error {
 	if !auth.Enabled {
 		return nil
 	}
@@ -253,6 +314,7 @@ func validateControllerAuthConfig(auth AuthConfig) error {
 		return fmt.Errorf("invalid api.auth.api_keys: at least one API key is required when api.auth.enabled is true; add api.auth.api_keys.<name>: sha256:<64-hex-sha256> (generate with: echo -n '<api-key>' | sha256sum), or set api.auth.enabled: false only for intentionally unauthenticated local development")
 	}
 
+	seenHashes := make(map[string]string, len(auth.APIKeys))
 	for name, hash := range auth.APIKeys {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("invalid api.auth.api_keys: key name must not be empty")
@@ -261,8 +323,46 @@ func validateControllerAuthConfig(auth AuthConfig) error {
 		if !ok {
 			return fmt.Errorf("invalid api.auth.api_keys.%s: expected sha256:<64 hex characters>; generate with: echo -n '<api-key>' | sha256sum", name)
 		}
+		if existingName, exists := seenHashes[normalizedHash]; exists {
+			return fmt.Errorf("invalid api.auth.api_keys.%s: duplicate hash also used by api.auth.api_keys.%s", name, existingName)
+		}
+		seenHashes[normalizedHash] = name
 		auth.APIKeys[name] = normalizedHash
 	}
+
+	normalizedRoles := make(map[string]string, len(auth.APIKeys))
+	for name := range auth.APIKeys {
+		normalizedRoles[name] = apiKeyRoleAdmin
+	}
+	for name, role := range auth.APIKeyRoles {
+		keyName := strings.TrimSpace(name)
+		if keyName == "" {
+			return fmt.Errorf("invalid api.auth.api_key_roles: key name must not be empty")
+		}
+		if _, ok := auth.APIKeys[keyName]; !ok {
+			return fmt.Errorf("invalid api.auth.api_key_roles.%s: role specified for unknown api.auth.api_keys entry", keyName)
+		}
+
+		normalizedRole := strings.ToLower(strings.TrimSpace(role))
+		switch normalizedRole {
+		case apiKeyRoleAdmin, apiKeyRoleAgent:
+			normalizedRoles[keyName] = normalizedRole
+		default:
+			return fmt.Errorf("invalid api.auth.api_key_roles.%s: must be one of: admin, agent", keyName)
+		}
+	}
+
+	hasAdmin := false
+	for _, role := range normalizedRoles {
+		if role == apiKeyRoleAdmin {
+			hasAdmin = true
+			break
+		}
+	}
+	if !hasAdmin {
+		return fmt.Errorf("invalid api.auth.api_key_roles: at least one admin API key is required when api.auth.enabled is true")
+	}
+	auth.APIKeyRoles = normalizedRoles
 
 	return nil
 }
@@ -291,7 +391,7 @@ func validateArtifactSignatureKey(field string, key string, required bool) error
 	value := strings.TrimSpace(key)
 	if value == "" {
 		if required {
-			return fmt.Errorf("invalid %s: required when sync.verify_signatures is true; generate a shared secret with: openssl rand -base64 32", field)
+			return fmt.Errorf("invalid %s: required for artifact signature verification; generate a shared secret with: openssl rand -base64 32", field)
 		}
 		return nil
 	}
@@ -317,9 +417,15 @@ func isPlaceholderSecret(value string) bool {
 
 // ValidateAgentConfig validates the agent configuration.
 func ValidateAgentConfig(cfg *AgentConfig) error {
-	if cfg.Controller.URL == "" {
-		return fmt.Errorf("invalid controller.url: empty")
+	if err := applyAgentSignatureKeyAliases(cfg); err != nil {
+		return err
 	}
+
+	controllerURL, err := normalizeControllerURL(cfg.Controller.URL)
+	if err != nil {
+		return err
+	}
+	cfg.Controller.URL = controllerURL
 	if cfg.Controller.Timeout <= 0 {
 		return fmt.Errorf("invalid controller.timeout: must be greater than 0")
 	}
@@ -332,6 +438,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	if cfg.Controller.RetryAttempts > 0 && cfg.Controller.RetryDelay == 0 {
 		return fmt.Errorf("invalid controller.retry_delay: must be greater than 0 when controller.retry_attempts is greater than 0")
 	}
+	if err := validateAgentControllerTLSConfig(cfg.Controller); err != nil {
+		return err
+	}
 
 	cfg.Authoritative = strings.ToLower(strings.TrimSpace(cfg.Authoritative))
 	if cfg.Authoritative == "" {
@@ -341,15 +450,15 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid authoritative: %s (supported: nsd)", cfg.Authoritative)
 	}
 
+	if cfg.NSD.ZoneDirectory == "" {
+		return fmt.Errorf("invalid nsd.zone_directory: empty; required for zone sync storage")
+	}
 	if cfg.NSD.Enabled {
 		if cfg.NSD.ConfigPath == "" {
 			return fmt.Errorf("invalid nsd.config_path: empty when NSD is enabled")
 		}
 		if cfg.NSD.ControlPath == "" {
 			return fmt.Errorf("invalid nsd.control_path: empty when NSD is enabled")
-		}
-		if cfg.NSD.ZoneDirectory == "" {
-			return fmt.Errorf("invalid nsd.zone_directory: empty when NSD is enabled")
 		}
 	}
 
@@ -438,7 +547,7 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	if cfg.Sync.VerifySignatures {
-		if err := validateArtifactSignatureKey("sync.controller_public_key", cfg.Sync.ControllerPublicKey, true); err != nil {
+		if err := validateArtifactSignatureKey("sync.controller_signature_key", cfg.Sync.ControllerPublicKey, true); err != nil {
 			return err
 		}
 	}
@@ -489,6 +598,18 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid health.recovery_threshold: must be positive")
 	}
 
+	if cfg.BIRD.Enabled {
+		if !cfg.NSD.Enabled && !cfg.Unbound.Enabled {
+			return fmt.Errorf("invalid bird.enabled: requires nsd.enabled or unbound.enabled for DNS health checks")
+		}
+		if strings.TrimSpace(cfg.Health.TestRecord) == "" {
+			return fmt.Errorf("invalid health.test_record: required when BIRD is enabled")
+		}
+		if healthTestRecordNeedsZone(cfg.Health.TestRecord) && strings.TrimSpace(cfg.Health.TestZone) == "" {
+			return fmt.Errorf("invalid health.test_zone: required when health.test_record is relative and BIRD is enabled")
+		}
+	}
+
 	validLogLevels := map[string]bool{
 		"debug": true,
 		"info":  true,
@@ -499,6 +620,100 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
 	}
 
+	return nil
+}
+
+func normalizeControllerURL(rawURL string) (string, error) {
+	value := strings.TrimSpace(rawURL)
+	if value == "" {
+		return "", fmt.Errorf("invalid controller.url: empty")
+	}
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("invalid controller.url: %w", err)
+	}
+	if parsed.Scheme == "" {
+		return "", fmt.Errorf("invalid controller.url: missing scheme (use http or https)")
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("invalid controller.url: missing host")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("invalid controller.url: userinfo is not supported")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("invalid controller.url: unsupported scheme %q (must be http or https)", parsed.Scheme)
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("invalid controller.url: query strings and fragments are not supported")
+	}
+
+	return strings.TrimRight(value, "/"), nil
+}
+
+func validateAgentControllerTLSConfig(controller ControllerClientConfig) error {
+	caFile := strings.TrimSpace(controller.TLS.CAFile)
+	certFile := strings.TrimSpace(controller.TLS.CertFile)
+	keyFile := strings.TrimSpace(controller.TLS.KeyFile)
+
+	if controller.TLS.ClientAuth && !controller.TLS.Enabled {
+		return fmt.Errorf("invalid controller.tls.client_auth: requires controller.tls.enabled")
+	}
+	if (caFile != "" || certFile != "" || keyFile != "") && !controller.TLS.Enabled {
+		return fmt.Errorf("invalid controller.tls.enabled: required when controller.tls.ca_file, cert_file, or key_file is set")
+	}
+
+	if controller.TLS.Enabled {
+		parsed, err := url.Parse(controller.URL)
+		if err != nil {
+			return fmt.Errorf("invalid controller.url: %w", err)
+		}
+		if strings.ToLower(parsed.Scheme) != "https" {
+			return fmt.Errorf("invalid controller.tls.enabled: requires controller.url to use https")
+		}
+	}
+
+	if certFile == "" && keyFile != "" {
+		return fmt.Errorf("invalid controller.tls.cert_file: empty when controller.tls.key_file is set")
+	}
+	if certFile != "" && keyFile == "" {
+		return fmt.Errorf("invalid controller.tls.key_file: empty when controller.tls.cert_file is set")
+	}
+	if (certFile != "" || keyFile != "") && !controller.TLS.ClientAuth {
+		return fmt.Errorf("invalid controller.tls.client_auth: required when controller.tls.cert_file or key_file is set")
+	}
+
+	if !controller.TLS.ClientAuth {
+		return nil
+	}
+	if certFile == "" {
+		return fmt.Errorf("invalid controller.tls.cert_file: empty when controller.tls.client_auth is true")
+	}
+	if keyFile == "" {
+		return fmt.Errorf("invalid controller.tls.key_file: empty when controller.tls.client_auth is true")
+	}
+	return nil
+}
+
+func healthTestRecordNeedsZone(record string) bool {
+	record = strings.TrimSpace(record)
+	return record != "" && !strings.HasSuffix(record, ".")
+}
+
+func applyAgentSignatureKeyAliases(cfg *AgentConfig) error {
+	signatureKey := strings.TrimSpace(cfg.Sync.ControllerSignatureKey)
+	legacyPublicKey := strings.TrimSpace(cfg.Sync.ControllerPublicKey)
+
+	if signatureKey != "" {
+		cfg.Sync.ControllerPublicKey = signatureKey
+		return nil
+	}
+	if legacyPublicKey != "" {
+		cfg.Sync.ControllerSignatureKey = legacyPublicKey
+	}
 	return nil
 }
 
@@ -530,26 +745,41 @@ func bindControllerEnvVars(v *viper.Viper) {
 }
 
 func bindControllerAPIKeyEnvVars(v *viper.Viper) {
-	const prefix = "ARCA_DNS_API_AUTH_API_KEYS_"
+	const keyPrefix = "ARCA_DNS_API_AUTH_API_KEYS_"
+	const rolePrefix = "ARCA_DNS_API_AUTH_API_KEY_ROLES_"
 
 	apiKeys := make(map[string]string)
 	for name, hash := range v.GetStringMapString("api.auth.api_keys") {
 		apiKeys[name] = hash
 	}
+	apiKeyRoles := make(map[string]string)
+	for name, role := range v.GetStringMapString("api.auth.api_key_roles") {
+		apiKeyRoles[name] = role
+	}
 
 	for _, env := range os.Environ() {
 		name, value, ok := strings.Cut(env, "=")
-		if !ok || !strings.HasPrefix(name, prefix) {
+		if !ok {
 			continue
 		}
 
-		keyName := strings.TrimPrefix(name, prefix)
-		keyName = strings.ToLower(keyName)
-		apiKeys[keyName] = value
+		switch {
+		case strings.HasPrefix(name, keyPrefix):
+			keyName := strings.TrimPrefix(name, keyPrefix)
+			keyName = strings.ToLower(keyName)
+			apiKeys[keyName] = value
+		case strings.HasPrefix(name, rolePrefix):
+			keyName := strings.TrimPrefix(name, rolePrefix)
+			keyName = strings.ToLower(keyName)
+			apiKeyRoles[keyName] = value
+		}
 	}
 
 	if len(apiKeys) > 0 {
 		v.Set("api.auth.api_keys", apiKeys)
+	}
+	if len(apiKeyRoles) > 0 {
+		v.Set("api.auth.api_key_roles", apiKeyRoles)
 	}
 }
 

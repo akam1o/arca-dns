@@ -25,9 +25,9 @@ func TestMemoryBackend_CreateZone(t *testing.T) {
 			Expire:  604800,
 			Minimum: 86400,
 		},
-		Records: []model.Record{
-			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
-		},
+		Records: testZoneRecords("example.com.",
+			model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -48,8 +48,9 @@ func TestMemoryBackend_CreateZone_AlreadyExists(t *testing.T) {
 	ctx := context.Background()
 
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: testZoneRecords("example.com."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -68,6 +69,31 @@ func TestMemoryBackend_GetZone_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrZoneNotFound)
 }
 
+func TestMemoryBackend_GetZoneCopiesRecordPriority(t *testing.T) {
+	backend := NewMemoryBackend()
+	ctx := context.Background()
+	priority := uint16(10)
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: testZoneRecords("example.com.",
+			model.Record{Name: "@", Type: "MX", TTL: 300, Value: "10 mail.example.com.", Priority: &priority},
+		),
+	}
+	require.NoError(t, backend.CreateZone(ctx, zone))
+
+	retrieved, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	require.NotNil(t, retrieved.Records[1].Priority)
+	*retrieved.Records[1].Priority = 20
+
+	retrievedAgain, err := backend.GetZone(ctx, "example.com.")
+	require.NoError(t, err)
+	require.NotNil(t, retrievedAgain.Records[1].Priority)
+	assert.Equal(t, uint16(10), *retrievedAgain.Records[1].Priority)
+}
+
 func TestMemoryBackend_UpdateZone(t *testing.T) {
 	backend := NewMemoryBackend()
 	ctx := context.Background()
@@ -76,9 +102,9 @@ func TestMemoryBackend_UpdateZone(t *testing.T) {
 	zone := &model.Zone{
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
-		Records: []model.Record{
-			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
-		},
+		Records: testZoneRecords("example.com.",
+			model.Record{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -103,7 +129,7 @@ func TestMemoryBackend_UpdateZone(t *testing.T) {
 	// Verify update
 	updated, err := backend.GetZone(ctx, "example.com.")
 	require.NoError(t, err)
-	assert.Len(t, updated.Records, 2)
+	assert.Len(t, updated.Records, 3)
 	assert.NotEqual(t, originalVersion, updated.Version)
 	assert.NotEqual(t, originalSerial, updated.SOA.Serial)
 	assert.True(t, updated.SOA.Serial > originalSerial, "Serial should be incremented")
@@ -115,8 +141,9 @@ func TestMemoryBackend_UpdateZone_OptimisticLocking(t *testing.T) {
 
 	// Create zone
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: testZoneRecords("example.com."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -141,8 +168,9 @@ func TestMemoryBackend_DeleteZone(t *testing.T) {
 
 	// Create zone
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: testZoneRecords("example.com."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -173,8 +201,9 @@ func TestMemoryBackend_ListZones(t *testing.T) {
 	zones := []string{"example.com.", "test.com.", "demo.org."}
 	for _, name := range zones {
 		zone := &model.Zone{
-			Name: name,
-			SOA:  model.DefaultSOA("ns1."+name, "admin."+name),
+			Name:    name,
+			SOA:     model.DefaultSOA("ns1."+name, "admin."+name),
+			Records: testZoneRecords(name),
 		}
 		err := backend.CreateZone(ctx, zone)
 		require.NoError(t, err)
@@ -215,8 +244,9 @@ func TestMemoryBackend_CaseInsensitivity(t *testing.T) {
 	ctx := context.Background()
 
 	zone := &model.Zone{
-		Name: "Example.COM.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "Example.COM.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: testZoneRecords("Example.COM."),
 	}
 
 	err := backend.CreateZone(ctx, zone)
@@ -243,8 +273,9 @@ func TestMemoryBackend_Concurrency(t *testing.T) {
 
 	// Create initial zone
 	zone := &model.Zone{
-		Name: "example.com.",
-		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: testZoneRecords("example.com."),
 	}
 	err := backend.CreateZone(ctx, zone)
 	require.NoError(t, err)
@@ -333,18 +364,12 @@ func TestGenerateSerial(t *testing.T) {
 	}
 }
 
-func TestBackendRegistration(t *testing.T) {
-	// Verify memory backend is registered
+func TestMemoryBackendNotRegistered(t *testing.T) {
 	backends := GetRegisteredBackends()
-	assert.Contains(t, backends, "memory")
+	assert.NotContains(t, backends, "memory")
 
-	// Create backend via factory
 	store, err := NewBackend("memory", nil)
-	require.NoError(t, err)
-	assert.NotNil(t, store)
-
-	// Verify it implements Backend interface
-	backend, ok := store.(Backend)
-	assert.True(t, ok)
-	assert.NotNil(t, backend)
+	assert.Error(t, err)
+	assert.Nil(t, store)
+	assert.Contains(t, err.Error(), "unknown backend type")
 }

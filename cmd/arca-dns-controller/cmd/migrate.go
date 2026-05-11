@@ -37,6 +37,8 @@ const (
 	supportedMigrateBackends = "sqlite, postgres, mysql, git, etcd"
 )
 
+var errOverwriteConditionalDeleteUnsupported = errors.New("backend does not support atomic conditional delete")
+
 // NewMigrateCmd creates the migrate command with subcommands.
 func NewMigrateCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -539,7 +541,7 @@ func deleteZoneForOverwrite(ctx context.Context, store backend.ZoneStore, name s
 	if conditionalStore, ok := store.(backend.ConditionalDeleteStore); ok {
 		return conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
 	}
-	return store.DeleteZone(ctx, name)
+	return errOverwriteConditionalDeleteUnsupported
 }
 
 // createBackendForCopy creates a backend with explicit DSN/path parameters.
