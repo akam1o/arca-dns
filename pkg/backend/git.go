@@ -116,16 +116,20 @@ type GitBackend struct {
 	zoneMutex sync.Map // map[string]*sync.Mutex (per-zone locking)
 }
 
-type gitRollbackPoint struct {
+type gitRollbackFile struct {
 	relPath      string
 	absPath      string
 	fileData     []byte
 	fileMode     os.FileMode
 	fileExists   bool
 	indexTracked bool
-	headHash     plumbing.Hash
-	headRef      *plumbing.Reference
-	hasHead      bool
+}
+
+type gitRollbackPoint struct {
+	files    []gitRollbackFile
+	headHash plumbing.Hash
+	headRef  *plumbing.Reference
+	hasHead  bool
 }
 
 // NewGitBackend creates a new Git backend
@@ -506,31 +510,68 @@ func (g *GitBackend) snapshotZoneFile(zoneName string) (*gitRollbackPoint, error
 		return nil, fmt.Errorf("invalid zone path: %w", err)
 	}
 
-	point := &gitRollbackPoint{
-		relPath: relPath,
-		absPath: filepath.Join(g.repoPath, relPath),
+	return g.snapshotZoneFilePaths([]string{relPath})
+}
+
+func (g *GitBackend) snapshotExistingZoneFiles(zoneName string) (*gitRollbackPoint, error) {
+	paths, err := g.zoneFilePathCandidates(zoneName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid zone path: %w", err)
 	}
 
-	info, err := os.Stat(point.absPath)
-	if err == nil {
-		point.fileExists = true
-		point.fileMode = info.Mode()
-		point.fileData, err = os.ReadFile(point.absPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to snapshot zone file: %w", err)
+	existingPaths := make([]string, 0, len(paths))
+	for _, relPath := range paths {
+		_, err := os.Stat(filepath.Join(g.repoPath, relPath))
+		if err == nil {
+			existingPaths = append(existingPaths, relPath)
+			continue
 		}
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to stat zone file: %w", err)
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to stat zone file: %w", err)
+		}
+	}
+	if len(existingPaths) == 0 {
+		return nil, model.ErrZoneNotFound
+	}
+
+	return g.snapshotZoneFilePaths(existingPaths)
+}
+
+func (g *GitBackend) snapshotZoneFilePaths(relPaths []string) (*gitRollbackPoint, error) {
+	point := &gitRollbackPoint{
+		files: make([]gitRollbackFile, 0, len(relPaths)),
 	}
 
 	idx, err := g.repo.Storer.Index()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read git index: %w", err)
 	}
-	if _, err := idx.Entry(relPath); err == nil {
-		point.indexTracked = true
-	} else if err != index.ErrEntryNotFound {
-		return nil, fmt.Errorf("failed to inspect git index: %w", err)
+
+	for _, relPath := range relPaths {
+		file := gitRollbackFile{
+			relPath: relPath,
+			absPath: filepath.Join(g.repoPath, relPath),
+		}
+
+		info, err := os.Stat(file.absPath)
+		if err == nil {
+			file.fileExists = true
+			file.fileMode = info.Mode()
+			file.fileData, err = os.ReadFile(file.absPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to snapshot zone file: %w", err)
+			}
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to stat zone file: %w", err)
+		}
+
+		if _, err := idx.Entry(relPath); err == nil {
+			file.indexTracked = true
+		} else if err != index.ErrEntryNotFound {
+			return nil, fmt.Errorf("failed to inspect git index: %w", err)
+		}
+
+		point.files = append(point.files, file)
 	}
 
 	head, err := g.repo.Head()
@@ -552,18 +593,20 @@ func (g *GitBackend) snapshotZoneFile(zoneName string) (*gitRollbackPoint, error
 }
 
 func (g *GitBackend) restoreZoneFile(point *gitRollbackPoint) error {
-	if point.fileExists {
-		if err := os.MkdirAll(filepath.Dir(point.absPath), 0755); err != nil {
-			return fmt.Errorf("failed to recreate zone directory: %w", err)
+	for _, file := range point.files {
+		if file.fileExists {
+			if err := os.MkdirAll(filepath.Dir(file.absPath), 0755); err != nil {
+				return fmt.Errorf("failed to recreate zone directory: %w", err)
+			}
+			if err := os.WriteFile(file.absPath, file.fileData, file.fileMode.Perm()); err != nil {
+				return fmt.Errorf("failed to restore zone file: %w", err)
+			}
+			continue
 		}
-		if err := os.WriteFile(point.absPath, point.fileData, point.fileMode.Perm()); err != nil {
-			return fmt.Errorf("failed to restore zone file: %w", err)
-		}
-		return nil
-	}
 
-	if err := os.Remove(point.absPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove rolled back zone file: %w", err)
+		if err := os.Remove(file.absPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove rolled back zone file: %w", err)
+		}
 	}
 	return nil
 }
@@ -598,13 +641,19 @@ func (g *GitBackend) restoreHead(point *gitRollbackPoint) error {
 }
 
 func (g *GitBackend) restoreIndex(point *gitRollbackPoint) error {
-	if !point.indexTracked || !point.fileExists {
-		return g.removeFromIndex(point.relPath)
+	for _, file := range point.files {
+		if !file.indexTracked || !file.fileExists {
+			if err := g.removeFromIndex(file.relPath); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if _, err := g.worktree.Add(file.relPath); err != nil {
+			return fmt.Errorf("failed to restore zone in git index: %w", err)
+		}
 	}
 
-	if _, err := g.worktree.Add(point.relPath); err != nil {
-		return fmt.Errorf("failed to restore zone in git index: %w", err)
-	}
 	return nil
 }
 
@@ -692,16 +741,22 @@ func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, messag
 
 // removeAndCommit removes a zone file and commits the deletion
 func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary string) error {
-	rollback, err := g.snapshotZoneFile(zoneName)
+	rollback, err := g.snapshotExistingZoneFiles(zoneName)
 	if err != nil {
 		return err
 	}
-	filePath := rollback.relPath
 
-	// Remove file from git
-	_, err = g.worktree.Remove(filePath)
-	if err != nil {
-		return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove file from git: %w", err))
+	for _, file := range rollback.files {
+		if file.indexTracked {
+			if _, err := g.worktree.Remove(file.relPath); err != nil {
+				return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove file from git: %w", err))
+			}
+			continue
+		}
+
+		if err := os.Remove(file.absPath); err != nil && !os.IsNotExist(err) {
+			return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove untracked zone file: %w", err))
+		}
 	}
 
 	// Create commit message

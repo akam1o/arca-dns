@@ -240,6 +240,27 @@ func TestGitBackend_ReadsAndUpdatesLegacyZoneFilename(t *testing.T) {
 	assert.NoFileExists(t, gitZonePath(t, backend, zone.Name))
 }
 
+func TestGitBackend_DeleteZone_RemovesSafeAndLegacyZoneFiles(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zone := testGitZone("example.com.")
+	require.NoError(t, backend.CreateZone(ctx, zone))
+
+	data, err := json.Marshal(zone)
+	require.NoError(t, err)
+	legacyPath := gitLegacyZonePath(t, backend, zone.Name)
+	require.NoError(t, os.WriteFile(legacyPath, data, 0644))
+
+	require.NoError(t, backend.DeleteZone(ctx, zone.Name))
+
+	_, err = backend.GetZone(ctx, zone.Name)
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	assert.NoFileExists(t, gitZonePath(t, backend, zone.Name))
+	assert.NoFileExists(t, legacyPath)
+}
+
 func TestGitBackend_CreateZone_AlreadyExists(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
