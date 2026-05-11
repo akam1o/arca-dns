@@ -2,10 +2,12 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,6 +59,22 @@ func gitHeadHash(t *testing.T, backend *GitBackend) plumbing.Hash {
 	head, err := backend.repo.Head()
 	require.NoError(t, err)
 	return head.Hash()
+}
+
+func gitZonePath(t *testing.T, backend *GitBackend, zoneName string) string {
+	t.Helper()
+
+	relPath, err := backend.zoneFilePath(zoneName)
+	require.NoError(t, err)
+	return filepath.Join(backend.repoPath, relPath)
+}
+
+func gitLegacyZonePath(t *testing.T, backend *GitBackend, zoneName string) string {
+	t.Helper()
+
+	relPath, err := backend.legacyZoneFilePath(zoneName)
+	require.NoError(t, err)
+	return filepath.Join(backend.repoPath, relPath)
 }
 
 func TestGitBackend_FreshRepoUsesConfiguredBranch(t *testing.T) {
@@ -149,9 +167,77 @@ func TestGitBackend_CreateZone(t *testing.T) {
 	assert.NotEmpty(t, retrieved.Version)
 
 	// Verify zone file exists
-	zonePath := filepath.Join(backend.repoPath, "zones", "example.com..json")
+	zonePath := gitZonePath(t, backend, "example.com.")
+	assert.Equal(t, filepath.Join(backend.repoPath, "zones", "example.com.json"), zonePath)
 	_, err = os.Stat(zonePath)
 	assert.NoError(t, err, "Zone file should exist")
+}
+
+func TestGitBackend_CreateZone_UsesSafeFilenameForLongZoneName(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	longZone := strings.Join([]string{
+		strings.Repeat("a", 63),
+		strings.Repeat("b", 63),
+		strings.Repeat("c", 63),
+		strings.Repeat("d", 60),
+	}, ".") + "."
+	require.Len(t, longZone, 253)
+
+	zone := &model.Zone{
+		Name: longZone,
+		SOA: model.SOARecord{
+			MName:   "ns1.example.net.",
+			RName:   "admin.example.net.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{
+			{Name: "@", Type: model.RecordTypeNS, TTL: 300, Value: "ns1.example.net."},
+		},
+	}
+
+	require.NoError(t, backend.CreateZone(ctx, zone))
+
+	relPath, err := backend.zoneFilePath(longZone)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(filepath.Base(relPath)), 205)
+	assert.FileExists(t, filepath.Join(backend.repoPath, relPath))
+
+	retrieved, err := backend.GetZone(ctx, longZone)
+	require.NoError(t, err)
+	assert.Equal(t, longZone, retrieved.Name)
+}
+
+func TestGitBackend_ReadsAndUpdatesLegacyZoneFilename(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zone := testGitZone("legacy.example.com.")
+	data, err := json.Marshal(zone)
+	require.NoError(t, err)
+
+	legacyPath := gitLegacyZonePath(t, backend, zone.Name)
+	require.NoError(t, os.MkdirAll(filepath.Dir(legacyPath), 0755))
+	require.NoError(t, os.WriteFile(legacyPath, data, 0644))
+
+	retrieved, err := backend.GetZone(ctx, zone.Name)
+	require.NoError(t, err)
+	assert.Equal(t, zone.Name, retrieved.Name)
+
+	retrieved.Records = testZoneRecords(zone.Name,
+		model.Record{Name: "www.legacy.example.com.", Type: "A", TTL: 300, Value: "192.0.2.10"},
+	)
+	require.NoError(t, backend.UpdateZone(ctx, retrieved, ""))
+
+	assert.FileExists(t, legacyPath)
+	assert.NoFileExists(t, gitZonePath(t, backend, zone.Name))
 }
 
 func TestGitBackend_CreateZone_AlreadyExists(t *testing.T) {
@@ -310,7 +396,7 @@ func TestGitBackend_DeleteZone(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrZoneNotFound)
 
 	// Verify file was removed
-	zonePath := filepath.Join(backend.repoPath, "zones", "example.com..json")
+	zonePath := gitZonePath(t, backend, "example.com.")
 	_, err = os.Stat(zonePath)
 	assert.True(t, os.IsNotExist(err), "Zone file should not exist")
 }
@@ -330,7 +416,7 @@ func TestGitBackend_CreateZone_RetainsLocalCommitWhenAutoPushFails(t *testing.T)
 	retrieved, err := backend.GetZone(ctx, "example.com.")
 	require.NoError(t, err)
 	assert.Equal(t, "example.com.", retrieved.Name)
-	assert.FileExists(t, filepath.Join(backend.repoPath, "zones", "example.com..json"))
+	assert.FileExists(t, gitZonePath(t, backend, "example.com."))
 
 	_, err = backend.repo.Head()
 	assert.NoError(t, err)
@@ -382,7 +468,7 @@ func TestGitBackend_DeleteZone_RetainsLocalCommitWhenAutoPushFails(t *testing.T)
 
 	_, err = backend.GetZone(ctx, "example.com.")
 	assert.ErrorIs(t, err, model.ErrZoneNotFound)
-	assert.NoFileExists(t, filepath.Join(backend.repoPath, "zones", "example.com..json"))
+	assert.NoFileExists(t, gitZonePath(t, backend, "example.com."))
 }
 
 func TestGitBackend_AutoPullUsesConfiguredBranch(t *testing.T) {
