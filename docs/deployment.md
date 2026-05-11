@@ -445,7 +445,7 @@ kubectl apply -k deployments/kubernetes/controller/overlays/demo-etcd
 ```bash
 kubectl get deploy,po,svc,pvc
 kubectl logs deploy/arca-dns-controller
-kubectl port-forward svc/arca-dns-controller 8080:8080 9053:9053
+kubectl port-forward svc/arca-dns-controller 8080:8080
 curl http://localhost:8080/health
 curl http://localhost:8080/ready
 ```
