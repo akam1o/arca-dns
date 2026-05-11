@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -915,6 +916,67 @@ func TestCreateRecord(t *testing.T) {
 	createdRecord := apiRecordByNameType(updated.Records, "www", model.RecordTypeA)
 	require.NotNil(t, createdRecord)
 	assert.Equal(t, "192.0.2.2", createdRecord.Value)
+}
+
+func TestCreateRecord_RejectsExpandedRelativeNamesTooLong(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	longZone := strings.Join([]string{
+		strings.Repeat("a", 63),
+		strings.Repeat("b", 63),
+		strings.Repeat("c", 63),
+		strings.Repeat("d", 57),
+	}, ".") + "."
+	require.NoError(t, model.ValidateZoneName(longZone))
+
+	zone := &model.Zone{
+		Name: longZone,
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), longZone)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name       string
+		record     model.Record
+		errContain string
+	}{
+		{
+			name:       "relative owner",
+			record:     model.Record{Name: "host", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.2"},
+			errContain: "expanded record name",
+		},
+		{
+			name:       "relative target",
+			record:     model.Record{Name: "@", Type: model.RecordTypeCNAME, TTL: 300, Value: "target"},
+			errContain: "expanded domain target",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(tt.record)
+			require.NoError(t, err)
+			req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/"+longZone+"/records", bytes.NewReader(body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("If-Match", current.Version)
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			responseBody, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(responseBody), tt.errContain)
+		})
+	}
 }
 
 func TestCreateRecord_NormalizesDerivedPriority(t *testing.T) {
