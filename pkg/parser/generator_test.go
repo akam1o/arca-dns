@@ -171,6 +171,29 @@ func TestGenerateBINDZoneFile_NormalizesSOATargets(t *testing.T) {
 	assert.NotContains(t, zoneFile, "\tSOA\tns1.example.com admin.example.com")
 }
 
+func TestGenerateBINDZoneFile_RelativeSOATargets(t *testing.T) {
+	zone := &model.Zone{
+		Name:    "example.com.",
+		Version: "v1",
+		SOA: model.SOARecord{
+			MName:   "ns1",
+			RName:   "admin",
+			Serial:  2024122801,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: []model.Record{},
+	}
+
+	zoneFile, err := GenerateBINDZoneFile(zone)
+	require.NoError(t, err)
+
+	assert.Contains(t, zoneFile, "\tSOA\tns1.example.com. admin.example.com.")
+	assert.NotContains(t, zoneFile, "\tSOA\tns1. admin.")
+}
+
 func TestGenerateBINDZoneFile_AtSymbol(t *testing.T) {
 	zone := &model.Zone{
 		Name:    "example.com.",

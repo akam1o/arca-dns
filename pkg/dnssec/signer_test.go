@@ -284,8 +284,8 @@ func TestZoneSigner_RecordToRRFQDNWithoutTrailingDot(t *testing.T) {
 func TestZoneSigner_ModelToRRsNormalizesSOA(t *testing.T) {
 	signer := &ZoneSigner{}
 	zone := testSignerZone(time.Now())
-	zone.SOA.MName = "ns1.example.com"
-	zone.SOA.RName = "admin.example.com"
+	zone.SOA.MName = "ns1"
+	zone.SOA.RName = "admin"
 
 	rrs, err := signer.modelToRRs(zone, "example.com.")
 	if err != nil {

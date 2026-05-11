@@ -34,7 +34,7 @@ func ValidateZone(zone *Zone) error {
 	}
 
 	// Validate SOA
-	if err := ValidateSOA(&zone.SOA); err != nil {
+	if err := ValidateSOAInZone(&zone.SOA, zone.Name); err != nil {
 		return fmt.Errorf("invalid SOA: %w", err)
 	}
 
@@ -263,6 +263,24 @@ func ValidateSOA(soa *SOARecord) error {
 
 	if soa.Minimum == 0 {
 		return fmt.Errorf("minimum must be non-zero")
+	}
+
+	return nil
+}
+
+// ValidateSOAInZone validates an SOA record and checks that relative MName/RName
+// targets remain valid after expansion under the zone origin.
+func ValidateSOAInZone(soa *SOARecord, zoneName string) error {
+	if err := ValidateSOA(soa); err != nil {
+		return err
+	}
+
+	if err := ValidateDomainTargetInZone(soa.MName, zoneName); err != nil {
+		return fmt.Errorf("invalid MName: %w", err)
+	}
+
+	if err := ValidateDomainTargetInZone(soa.RName, zoneName); err != nil {
+		return fmt.Errorf("invalid RName: %w", err)
 	}
 
 	return nil

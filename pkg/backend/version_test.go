@@ -221,6 +221,39 @@ func TestComputeZoneHash8_CaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestComputeZoneHash8_SOARelativeTargetsNormalized(t *testing.T) {
+	zone1 := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1", "admin"),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	zone1.SOA.Serial = 2024122801
+
+	zone2 := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	zone2.SOA.Serial = 2024122801
+
+	v1, err := ComputeZoneHash8(zone1)
+	if err != nil {
+		t.Fatalf("ComputeZoneHash8(zone1) failed: %v", err)
+	}
+	v2, err := ComputeZoneHash8(zone2)
+	if err != nil {
+		t.Fatalf("ComputeZoneHash8(zone2) failed: %v", err)
+	}
+
+	if v1 != v2 {
+		t.Errorf("Hashes differ despite equivalent SOA targets: %q vs %q", v1, v2)
+	}
+}
+
 func TestComputeZoneHash8_RDATANormalization(t *testing.T) {
 	tests := []struct {
 		name     string

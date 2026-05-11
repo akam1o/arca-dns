@@ -605,6 +605,65 @@ func TestValidateZone_RejectsExpandedRelativeNamesTooLong(t *testing.T) {
 	}
 }
 
+func TestValidateZone_RejectsExpandedRelativeSOATargetsTooLong(t *testing.T) {
+	longZone := strings.Join([]string{
+		strings.Repeat("a", 63),
+		strings.Repeat("b", 63),
+		strings.Repeat("c", 63),
+		strings.Repeat("d", 57),
+	}, ".") + "."
+	require.NoError(t, ValidateZoneName(longZone))
+
+	tests := []struct {
+		name       string
+		soa        SOARecord
+		errContain string
+	}{
+		{
+			name: "mname",
+			soa: SOARecord{
+				MName:   "ns1",
+				RName:   "admin.example.com.",
+				Serial:  2024010101,
+				Refresh: 3600,
+				Retry:   1800,
+				Expire:  604800,
+				Minimum: 86400,
+			},
+			errContain: "invalid MName: expanded domain target",
+		},
+		{
+			name: "rname",
+			soa: SOARecord{
+				MName:   "ns1.example.com.",
+				RName:   "admin",
+				Serial:  2024010101,
+				Refresh: 3600,
+				Retry:   1800,
+				Expire:  604800,
+				Minimum: 86400,
+			},
+			errContain: "invalid RName: expanded domain target",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			zone := &Zone{
+				Name: longZone,
+				SOA:  tt.soa,
+				Records: []Record{
+					{Name: "@", Type: RecordTypeNS, TTL: 300, Value: "ns1.example.com."},
+				},
+			}
+
+			err := ValidateZone(zone)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errContain)
+		})
+	}
+}
+
 func TestValidateZone_RejectsInconsistentRRsetTTL(t *testing.T) {
 	zone := &Zone{
 		Name: "example.com.",
