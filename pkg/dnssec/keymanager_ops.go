@@ -3,6 +3,7 @@ package dnssec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -130,6 +131,33 @@ func (km *KeyManager) RemoveOldKeysContext(ctx context.Context, zone string) (re
 		return syncDir(zoneDir)
 	})
 	return removedFiles, err
+}
+
+// RemoveZoneKeys deletes all key material for a zone.
+// The operation is idempotent so it can be safely retried after a zone delete.
+func (km *KeyManager) RemoveZoneKeys(zone string) error {
+	return km.RemoveZoneKeysContext(context.Background(), zone)
+}
+
+// RemoveZoneKeysContext deletes all key material for a zone.
+func (km *KeyManager) RemoveZoneKeysContext(ctx context.Context, zone string) error {
+	err := km.withZoneKeyLock(ctx, zone, false, func(zoneFQDN string) error {
+		zoneDir, err := km.getZoneDir(zoneFQDN)
+		if err != nil {
+			return err
+		}
+		if err := os.RemoveAll(zoneDir); err != nil {
+			return fmt.Errorf("remove zone key directory: %w", err)
+		}
+		if err := syncDir(filepath.Dir(zoneDir)); err != nil {
+			return fmt.Errorf("sync key directory parent: %w", err)
+		}
+		return nil
+	})
+	if errors.Is(err, model.ErrZoneNotFound) {
+		return nil
+	}
+	return err
 }
 
 func parseKeyTagFromFilename(prefix string, filename string) (uint16, bool) {

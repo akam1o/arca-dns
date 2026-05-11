@@ -139,6 +139,44 @@ func TestSigningService_PruneArtifactsKeepsNewestVersions(t *testing.T) {
 	}
 }
 
+func TestSigningService_CleanupZoneRemovesArtifactsAndKeys(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zone := createTestZone()
+	artifact, err := service.SignZone(ctx, zone)
+	if err != nil {
+		t.Fatalf("SignZone failed: %v", err)
+	}
+	if err := service.storeSignedZoneArtifact(artifact); err != nil {
+		t.Fatalf("storeSignedZoneArtifact failed: %v", err)
+	}
+
+	artifactPath := service.artifactPath(zone.Name, artifact.Version)
+	if _, err := os.Stat(artifactPath); err != nil {
+		t.Fatalf("expected signed artifact to exist: %v", err)
+	}
+	if _, err := service.keyManager.LoadKSKContext(ctx, zone.Name); err != nil {
+		t.Fatalf("expected KSK to exist: %v", err)
+	}
+
+	if err := service.CleanupZone(ctx, zone.Name); err != nil {
+		t.Fatalf("CleanupZone failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Dir(artifactPath)); !os.IsNotExist(err) {
+		t.Fatalf("expected artifact directory to be removed, got err=%v", err)
+	}
+	if _, err := service.keyManager.LoadKSKContext(ctx, zone.Name); !errors.Is(err, model.ErrZoneNotFound) {
+		t.Fatalf("expected zone keys to be removed, got err=%v", err)
+	}
+
+	if err := service.CleanupZone(ctx, zone.Name); err != nil {
+		t.Fatalf("CleanupZone should be idempotent, got: %v", err)
+	}
+}
+
 func TestSigningService_SignZone(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
