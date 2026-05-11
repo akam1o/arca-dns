@@ -34,7 +34,7 @@ func ValidateZone(zone *Zone) error {
 	}
 
 	// Validate SOA
-	if err := ValidateSOA(&zone.SOA); err != nil {
+	if err := ValidateSOAInZone(&zone.SOA, zone.Name); err != nil {
 		return fmt.Errorf("invalid SOA: %w", err)
 	}
 
@@ -44,6 +44,9 @@ func ValidateZone(zone *Zone) error {
 			return fmt.Errorf("invalid record at index %d: %w", i, err)
 		}
 		if err := ValidateRecordNameInZone(record.Name, zone.Name); err != nil {
+			return fmt.Errorf("invalid record at index %d: %w", i, err)
+		}
+		if err := ValidateRecordValueInZone(record.Type, record.Value, zone.Name); err != nil {
 			return fmt.Errorf("invalid record at index %d: %w", i, err)
 		}
 	}
@@ -265,6 +268,24 @@ func ValidateSOA(soa *SOARecord) error {
 	return nil
 }
 
+// ValidateSOAInZone validates an SOA record and checks that relative MName/RName
+// targets remain valid after expansion under the zone origin.
+func ValidateSOAInZone(soa *SOARecord, zoneName string) error {
+	if err := ValidateSOA(soa); err != nil {
+		return err
+	}
+
+	if err := ValidateDomainTargetInZone(soa.MName, zoneName); err != nil {
+		return fmt.Errorf("invalid MName: %w", err)
+	}
+
+	if err := ValidateDomainTargetInZone(soa.RName, zoneName); err != nil {
+		return fmt.Errorf("invalid RName: %w", err)
+	}
+
+	return nil
+}
+
 // ValidateRecord validates a DNS record.
 func ValidateRecord(record *Record) error {
 	if record == nil {
@@ -376,23 +397,65 @@ func ValidateRecordName(name string) error {
 	return nil
 }
 
-// ValidateRecordNameInZone ensures absolute record owner names are within the
-// zone. Relative names are accepted because they are interpreted under the zone.
+// ValidateRecordNameInZone ensures record owner names remain valid after
+// relative-name expansion and absolute owner names stay within the zone.
 func ValidateRecordNameInZone(recordName, zoneName string) error {
 	if err := ValidateRecordName(recordName); err != nil {
 		return err
 	}
-	if recordName == "@" || !strings.HasSuffix(recordName, ".") {
+	if recordName == "@" {
 		return nil
 	}
 
-	owner := NormalizeZoneName(recordName)
+	owner := NormalizeRecordOwnerName(recordName, zoneName)
+	if err := ValidateRecordName(owner); err != nil {
+		return fmt.Errorf("expanded record name %s is invalid: %w", owner, err)
+	}
+
 	zone := NormalizeZoneName(zoneName)
 	if owner == zone || strings.HasSuffix(owner, "."+zone) {
 		return nil
 	}
 
 	return fmt.Errorf("record name %s is outside zone %s", recordName, zoneName)
+}
+
+// ValidateRecordValueInZone validates DNS RDATA fields that can contain
+// relative domain targets after expanding them under the zone origin.
+func ValidateRecordValueInZone(recordType, value, zoneName string) error {
+	switch recordType {
+	case RecordTypeCNAME, RecordTypeNS, RecordTypePTR:
+		return ValidateDomainTargetInZone(value, zoneName)
+	case RecordTypeMX:
+		parts := strings.Fields(value)
+		if len(parts) != 2 {
+			return fmt.Errorf("MX value must be 'priority domain': %s", value)
+		}
+		return ValidateDomainTargetInZone(parts[1], zoneName)
+	case RecordTypeSRV:
+		parts := strings.Fields(value)
+		if len(parts) != 4 {
+			return fmt.Errorf("SRV value must be 'priority weight port target': %s", value)
+		}
+		return ValidateDomainTargetInZone(parts[3], zoneName)
+	default:
+		return nil
+	}
+}
+
+// ValidateDomainTargetInZone validates a domain target both as supplied and
+// after relative-target expansion under the zone origin.
+func ValidateDomainTargetInZone(name, zoneName string) error {
+	if err := ValidateDomainTarget(name); err != nil {
+		return err
+	}
+
+	target := NormalizeDomainTargetName(name, zoneName)
+	if err := ValidateDomainTarget(target); err != nil {
+		return fmt.Errorf("expanded domain target %s is invalid: %w", target, err)
+	}
+
+	return nil
 }
 
 // ValidateRecordValue validates a record value based on its type.

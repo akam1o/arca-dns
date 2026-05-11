@@ -12,6 +12,7 @@ import (
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/akam1o/arca-dns/pkg/util"
 	"github.com/spf13/cobra"
 )
 
@@ -139,15 +140,9 @@ func runExport(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
 	// Load configuration if provided
-	var cfg *config.ControllerConfig
-	if migrateConfigFile != "" {
-		var err error
-		cfg, err = config.LoadControllerConfig(migrateConfigFile)
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
-		}
-	} else {
-		cfg = config.DefaultControllerConfig()
+	cfg, err := loadMigrationConfig(migrateConfigFile)
+	if err != nil {
+		return err
 	}
 
 	// Create backend
@@ -166,15 +161,9 @@ func runImport(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
 	// Load configuration if provided
-	var cfg *config.ControllerConfig
-	if migrateConfigFile != "" {
-		var err error
-		cfg, err = config.LoadControllerConfig(migrateConfigFile)
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
-		}
-	} else {
-		cfg = config.DefaultControllerConfig()
+	cfg, err := loadMigrationConfig(migrateConfigFile)
+	if err != nil {
+		return err
 	}
 
 	// Create backend
@@ -193,15 +182,9 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
 	// Load configuration if provided
-	var cfg *config.ControllerConfig
-	if migrateConfigFile != "" {
-		var err error
-		cfg, err = config.LoadControllerConfig(migrateConfigFile)
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
-		}
-	} else {
-		cfg = config.DefaultControllerConfig()
+	cfg, err := loadMigrationConfig(migrateConfigFile)
+	if err != nil {
+		return err
 	}
 
 	// Create source backend with from-* flags
@@ -272,6 +255,17 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\nCopy complete: %d zones copied from %s to %s\n", copied, migrateFromBackend, migrateToBackend)
 	}
 	return nil
+}
+
+func loadMigrationConfig(path string) (*config.ControllerConfig, error) {
+	if path == "" {
+		return config.DefaultControllerConfig(), nil
+	}
+	cfg, err := config.LoadControllerBackendConfig(path)
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	return cfg, nil
 }
 
 func exportFromStore(ctx context.Context, store backend.ZoneStore, outputDir string, dryRun bool) (int, error) {
@@ -786,9 +780,7 @@ func effectiveMigrateBackendType(backendType string, cfg *config.ControllerConfi
 
 // sanitizeFilename converts a zone name to a safe filename.
 func sanitizeFilename(zoneName string) string {
-	// Remove trailing dot
-	name := strings.TrimSuffix(zoneName, ".")
-	// Replace any remaining dots with underscores
+	name := util.SafeZoneFilename(zoneName)
 	name = strings.ReplaceAll(name, ".", "_")
 	return name
 }

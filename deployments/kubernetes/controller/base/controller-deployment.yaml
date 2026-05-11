@@ -21,8 +21,6 @@ spec:
           ports:
             - containerPort: 8080
               name: http
-            - containerPort: 9053
-              name: observability
           livenessProbe:
             httpGet:
               path: /health

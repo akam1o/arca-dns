@@ -37,8 +37,8 @@ func GenerateBINDZoneFile(zone *model.Zone) (string, error) {
 			Class:  dns.ClassINET,
 			Ttl:    zone.SOA.Minimum, // SOA TTL typically uses the minimum value
 		},
-		Ns:      model.NormalizeDomainName(zone.SOA.MName),
-		Mbox:    model.NormalizeDomainName(zone.SOA.RName),
+		Ns:      model.NormalizeDomainTargetName(zone.SOA.MName, origin),
+		Mbox:    model.NormalizeDomainTargetName(zone.SOA.RName, origin),
 		Serial:  zone.SOA.Serial,
 		Refresh: zone.SOA.Refresh,
 		Retry:   zone.SOA.Retry,

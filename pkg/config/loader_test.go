@@ -713,6 +713,7 @@ func TestLoadAgentConfig_Defaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "http://localhost:8080", cfg.Controller.URL)
+	assert.Equal(t, DefaultControllerClientMaxResponseBytes, cfg.Controller.MaxResponseBytes)
 	assert.Equal(t, "nsd", cfg.Authoritative)
 	assert.True(t, cfg.NSD.Enabled)
 	assert.True(t, cfg.Unbound.Enabled)
@@ -733,6 +734,7 @@ func TestLoadAgentConfig_FromYAML(t *testing.T) {
 controller:
   url: "https://controller.example.com"
   api_key: "test-key"
+  max_response_bytes: 1048576
 nsd:
   enabled: true
   zone_directory: "/tmp/nsd-zones"
@@ -754,6 +756,7 @@ logging:
 
 	assert.Equal(t, "https://controller.example.com", cfg.Controller.URL)
 	assert.Equal(t, "test-key", cfg.Controller.APIKey)
+	assert.Equal(t, int64(1048576), cfg.Controller.MaxResponseBytes)
 	assert.Equal(t, "/tmp/nsd-zones", cfg.NSD.ZoneDirectory)
 	assert.False(t, cfg.Unbound.Enabled)
 	assert.Equal(t, "0600", cfg.DNSTap.SocketMode)
@@ -769,6 +772,7 @@ func TestLoadAgentConfig_EnvOverrideWithYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_CONTROLLER_API_KEY", "env-api-key")
 	t.Setenv("ARCA_DNS_CONTROLLER_TLS_ENABLED", "true")
 	t.Setenv("ARCA_DNS_CONTROLLER_TLS_CA_FILE", "/env/controller-ca.crt")
+	t.Setenv("ARCA_DNS_CONTROLLER_MAX_RESPONSE_BYTES", "2097152")
 	t.Setenv("ARCA_DNS_NSD_ENABLED", "false")
 	t.Setenv("ARCA_DNS_UNBOUND_STUB_ZONE_NSD_PORT", "5533")
 	t.Setenv("ARCA_DNS_SYNC_VERIFY_CHECKSUMS", "false")
@@ -816,6 +820,7 @@ logging:
 	assert.Equal(t, "env-api-key", cfg.Controller.APIKey)
 	assert.True(t, cfg.Controller.TLS.Enabled)
 	assert.Equal(t, "/env/controller-ca.crt", cfg.Controller.TLS.CAFile)
+	assert.Equal(t, int64(2097152), cfg.Controller.MaxResponseBytes)
 	assert.False(t, cfg.NSD.Enabled)
 	assert.Equal(t, 5533, cfg.Unbound.StubZoneConfig.NSDPort)
 	assert.False(t, cfg.Sync.VerifyChecksums)
@@ -947,6 +952,13 @@ func TestValidateAgentConfig_InvalidControllerClientSettings(t *testing.T) {
 				cfg.Controller.RetryDelay = 0
 			},
 			want: "controller.retry_delay",
+		},
+		{
+			name: "zero max response bytes",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.MaxResponseBytes = 0
+			},
+			want: "controller.max_response_bytes",
 		},
 		{
 			name: "tls enabled with http url",

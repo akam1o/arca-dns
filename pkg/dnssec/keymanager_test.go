@@ -555,6 +555,33 @@ func TestEncryptedPrivateKey_Metadata(t *testing.T) {
 	assert.Contains(t, string(encData), "role")
 }
 
+func TestKeyManager_RemoveZoneKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	_, _, err = km.GenerateZoneKeys("example.com.", false)
+	require.NoError(t, err)
+
+	zoneName, err := ZoneNameForFile("example.com.")
+	require.NoError(t, err)
+	zoneDir := filepath.Join(tmpDir, zoneName)
+	require.DirExists(t, zoneDir)
+
+	require.NoError(t, km.RemoveZoneKeys("example.com."))
+	_, err = os.Stat(zoneDir)
+	require.True(t, os.IsNotExist(err), "expected zone key directory to be removed, got %v", err)
+
+	require.NoError(t, km.RemoveZoneKeys("example.com."))
+}
+
 func readTestActiveKeys(t *testing.T, keyDir, zone string) activeKeys {
 	t.Helper()
 

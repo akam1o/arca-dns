@@ -92,6 +92,10 @@ nfpms:
         dst: /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
       - src: ./migrations/postgres/000001_initial_schema.down.sql
         dst: /usr/share/arca-dns/migrations/postgres/000001_initial_schema.down.sql
+      - src: ./migrations/postgres/000002_widen_soa_intervals.up.sql
+        dst: /usr/share/arca-dns/migrations/postgres/000002_widen_soa_intervals.up.sql
+      - src: ./migrations/postgres/000002_widen_soa_intervals.down.sql
+        dst: /usr/share/arca-dns/migrations/postgres/000002_widen_soa_intervals.down.sql
       - src: ./migrations/sqlite/000001_initial_schema.up.sql
         dst: /usr/share/arca-dns/migrations/sqlite/000001_initial_schema.up.sql
       - src: ./migrations/sqlite/000001_initial_schema.down.sql

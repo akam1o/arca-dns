@@ -54,7 +54,7 @@ func ComputeZoneHash8(zone *model.Zone) (string, error) {
 // NormalizeZoneForHashing produces a deterministic byte representation of zone content.
 // Normalization rules:
 // 1. Lowercase all domain names (owner names + RDATA: NS, CNAME, MX, SRV, SOA.MName/RName)
-// 2. Expand relative owner names to FQDN (using zone origin)
+// 2. Expand relative owner names and domain targets to FQDN (using zone origin)
 // 3. Add trailing dots to FQDNs
 // 4. Sort records deterministically (name → type → ttl → value)
 // 5. Exclude Zone.Version, CreatedAt, UpdatedAt, Record.ID, Record.Priority, SignatureExpiration from serialization
@@ -96,8 +96,8 @@ func NormalizeZoneForHashing(zone *model.Zone) ([]byte, error) {
 	}{
 		Name: zoneName,
 		SOA: model.SOARecord{
-			MName:   model.NormalizeDomainName(zone.SOA.MName),
-			RName:   model.NormalizeDomainName(zone.SOA.RName),
+			MName:   model.NormalizeDomainTargetName(zone.SOA.MName, zoneName),
+			RName:   model.NormalizeDomainTargetName(zone.SOA.RName, zoneName),
 			Serial:  zone.SOA.Serial,
 			Refresh: zone.SOA.Refresh,
 			Retry:   zone.SOA.Retry,

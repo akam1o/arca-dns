@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/akam1o/arca-dns/pkg/util"
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
@@ -22,6 +23,8 @@ import (
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/gofrs/flock"
 )
+
+const maxLegacyZoneFilenameLength = 255
 
 func init() {
 	RegisterBackend("git", func(cfg map[string]interface{}) (ZoneStore, error) {
@@ -113,16 +116,20 @@ type GitBackend struct {
 	zoneMutex sync.Map // map[string]*sync.Mutex (per-zone locking)
 }
 
-type gitRollbackPoint struct {
+type gitRollbackFile struct {
 	relPath      string
 	absPath      string
 	fileData     []byte
 	fileMode     os.FileMode
 	fileExists   bool
 	indexTracked bool
-	headHash     plumbing.Hash
-	headRef      *plumbing.Reference
-	hasHead      bool
+}
+
+type gitRollbackPoint struct {
+	files    []gitRollbackFile
+	headHash plumbing.Hash
+	headRef  *plumbing.Reference
+	hasHead  bool
 }
 
 // NewGitBackend creates a new Git backend
@@ -382,6 +389,60 @@ func (g *GitBackend) releaseLock(zoneMu *sync.Mutex) {
 // zoneFilePath returns the path to the zone JSON file
 // Returns error if the zone name would escape the zones directory
 func (g *GitBackend) zoneFilePath(zoneName string) (string, error) {
+	normalized, err := normalizeZoneNameForPath(zoneName)
+	if err != nil {
+		return "", err
+	}
+
+	return g.zoneRelPath(util.SafeZoneFilename(normalized) + ".json")
+}
+
+func (g *GitBackend) legacyZoneFilePath(zoneName string) (string, error) {
+	normalized, err := normalizeZoneNameForPath(zoneName)
+	if err != nil {
+		return "", err
+	}
+
+	return g.zoneRelPath(normalized + ".json")
+}
+
+func (g *GitBackend) zoneFilePathCandidates(zoneName string) ([]string, error) {
+	safePath, err := g.zoneFilePath(zoneName)
+	if err != nil {
+		return nil, err
+	}
+
+	legacyPath, err := g.legacyZoneFilePath(zoneName)
+	if err != nil {
+		return nil, err
+	}
+	if len(filepath.Base(legacyPath)) > maxLegacyZoneFilenameLength {
+		return []string{safePath}, nil
+	}
+	if legacyPath == safePath {
+		return []string{safePath}, nil
+	}
+	return []string{safePath, legacyPath}, nil
+}
+
+func (g *GitBackend) existingZoneFilePath(zoneName string) (string, error) {
+	paths, err := g.zoneFilePathCandidates(zoneName)
+	if err != nil {
+		return "", err
+	}
+
+	for _, relPath := range paths {
+		if _, err := os.Stat(filepath.Join(g.repoPath, relPath)); err == nil {
+			return relPath, nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("failed to stat zone file: %w", err)
+		}
+	}
+
+	return paths[0], nil
+}
+
+func normalizeZoneNameForPath(zoneName string) (string, error) {
 	normalized := model.NormalizeZoneName(zoneName)
 
 	// Additional security: prevent path traversal
@@ -392,11 +453,15 @@ func (g *GitBackend) zoneFilePath(zoneName string) (string, error) {
 	if strings.Contains(normalized, "..") {
 		return "", fmt.Errorf("zone name cannot contain '..'")
 	}
-	if strings.ContainsAny(normalized, string(filepath.Separator)) {
+	if strings.ContainsAny(normalized, `/\`) {
 		return "", fmt.Errorf("zone name cannot contain path separators")
 	}
 
-	relPath := filepath.Join("zones", normalized+".json")
+	return normalized, nil
+}
+
+func (g *GitBackend) zoneRelPath(filename string) (string, error) {
+	relPath := filepath.Join("zones", filename)
 
 	// Verify the resolved path is within zones directory
 	absPath := filepath.Join(g.repoPath, relPath)
@@ -440,36 +505,73 @@ func (g *GitBackend) pullIfNeeded(ctx context.Context) error {
 }
 
 func (g *GitBackend) snapshotZoneFile(zoneName string) (*gitRollbackPoint, error) {
-	relPath, err := g.zoneFilePath(zoneName)
+	relPath, err := g.existingZoneFilePath(zoneName)
 	if err != nil {
 		return nil, fmt.Errorf("invalid zone path: %w", err)
 	}
 
-	point := &gitRollbackPoint{
-		relPath: relPath,
-		absPath: filepath.Join(g.repoPath, relPath),
+	return g.snapshotZoneFilePaths([]string{relPath})
+}
+
+func (g *GitBackend) snapshotExistingZoneFiles(zoneName string) (*gitRollbackPoint, error) {
+	paths, err := g.zoneFilePathCandidates(zoneName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid zone path: %w", err)
 	}
 
-	info, err := os.Stat(point.absPath)
-	if err == nil {
-		point.fileExists = true
-		point.fileMode = info.Mode()
-		point.fileData, err = os.ReadFile(point.absPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to snapshot zone file: %w", err)
+	existingPaths := make([]string, 0, len(paths))
+	for _, relPath := range paths {
+		_, err := os.Stat(filepath.Join(g.repoPath, relPath))
+		if err == nil {
+			existingPaths = append(existingPaths, relPath)
+			continue
 		}
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to stat zone file: %w", err)
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to stat zone file: %w", err)
+		}
+	}
+	if len(existingPaths) == 0 {
+		return nil, model.ErrZoneNotFound
+	}
+
+	return g.snapshotZoneFilePaths(existingPaths)
+}
+
+func (g *GitBackend) snapshotZoneFilePaths(relPaths []string) (*gitRollbackPoint, error) {
+	point := &gitRollbackPoint{
+		files: make([]gitRollbackFile, 0, len(relPaths)),
 	}
 
 	idx, err := g.repo.Storer.Index()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read git index: %w", err)
 	}
-	if _, err := idx.Entry(relPath); err == nil {
-		point.indexTracked = true
-	} else if err != index.ErrEntryNotFound {
-		return nil, fmt.Errorf("failed to inspect git index: %w", err)
+
+	for _, relPath := range relPaths {
+		file := gitRollbackFile{
+			relPath: relPath,
+			absPath: filepath.Join(g.repoPath, relPath),
+		}
+
+		info, err := os.Stat(file.absPath)
+		if err == nil {
+			file.fileExists = true
+			file.fileMode = info.Mode()
+			file.fileData, err = os.ReadFile(file.absPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to snapshot zone file: %w", err)
+			}
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to stat zone file: %w", err)
+		}
+
+		if _, err := idx.Entry(relPath); err == nil {
+			file.indexTracked = true
+		} else if err != index.ErrEntryNotFound {
+			return nil, fmt.Errorf("failed to inspect git index: %w", err)
+		}
+
+		point.files = append(point.files, file)
 	}
 
 	head, err := g.repo.Head()
@@ -491,18 +593,20 @@ func (g *GitBackend) snapshotZoneFile(zoneName string) (*gitRollbackPoint, error
 }
 
 func (g *GitBackend) restoreZoneFile(point *gitRollbackPoint) error {
-	if point.fileExists {
-		if err := os.MkdirAll(filepath.Dir(point.absPath), 0755); err != nil {
-			return fmt.Errorf("failed to recreate zone directory: %w", err)
+	for _, file := range point.files {
+		if file.fileExists {
+			if err := os.MkdirAll(filepath.Dir(file.absPath), 0755); err != nil {
+				return fmt.Errorf("failed to recreate zone directory: %w", err)
+			}
+			if err := os.WriteFile(file.absPath, file.fileData, file.fileMode.Perm()); err != nil {
+				return fmt.Errorf("failed to restore zone file: %w", err)
+			}
+			continue
 		}
-		if err := os.WriteFile(point.absPath, point.fileData, point.fileMode.Perm()); err != nil {
-			return fmt.Errorf("failed to restore zone file: %w", err)
-		}
-		return nil
-	}
 
-	if err := os.Remove(point.absPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove rolled back zone file: %w", err)
+		if err := os.Remove(file.absPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove rolled back zone file: %w", err)
+		}
 	}
 	return nil
 }
@@ -537,13 +641,19 @@ func (g *GitBackend) restoreHead(point *gitRollbackPoint) error {
 }
 
 func (g *GitBackend) restoreIndex(point *gitRollbackPoint) error {
-	if !point.indexTracked || !point.fileExists {
-		return g.removeFromIndex(point.relPath)
+	for _, file := range point.files {
+		if !file.indexTracked || !file.fileExists {
+			if err := g.removeFromIndex(file.relPath); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if _, err := g.worktree.Add(file.relPath); err != nil {
+			return fmt.Errorf("failed to restore zone in git index: %w", err)
+		}
 	}
 
-	if _, err := g.worktree.Add(point.relPath); err != nil {
-		return fmt.Errorf("failed to restore zone in git index: %w", err)
-	}
 	return nil
 }
 
@@ -593,7 +703,7 @@ func (g *GitBackend) commitZoneMetadata(ctx context.Context, zoneName, operation
 }
 
 func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, message string, rollback *gitRollbackPoint) error {
-	filePath, err := g.zoneFilePath(zoneName)
+	filePath, err := g.existingZoneFilePath(zoneName)
 	if err != nil {
 		return fmt.Errorf("invalid zone path: %w", err)
 	}
@@ -631,20 +741,28 @@ func (g *GitBackend) commitZoneWithMessage(ctx context.Context, zoneName, messag
 
 // removeAndCommit removes a zone file and commits the deletion
 func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary string) error {
-	rollback, err := g.snapshotZoneFile(zoneName)
+	rollback, err := g.snapshotExistingZoneFiles(zoneName)
 	if err != nil {
 		return err
 	}
 
-	filePath, err := g.zoneFilePath(zoneName)
-	if err != nil {
-		return fmt.Errorf("invalid zone path: %w", err)
+	trackedRemovals := 0
+	for _, file := range rollback.files {
+		if file.indexTracked {
+			if _, err := g.worktree.Remove(file.relPath); err != nil {
+				return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove file from git: %w", err))
+			}
+			trackedRemovals++
+			continue
+		}
+
+		if err := os.Remove(file.absPath); err != nil && !os.IsNotExist(err) {
+			return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove untracked zone file: %w", err))
+		}
 	}
 
-	// Remove file from git
-	_, err = g.worktree.Remove(filePath)
-	if err != nil {
-		return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove file from git: %w", err))
+	if trackedRemovals == 0 {
+		return nil
 	}
 
 	// Create commit message
@@ -677,11 +795,26 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 
 // readZone reads and parses a zone JSON file
 func (g *GitBackend) readZone(zoneName string) (*model.Zone, error) {
-	relPath, err := g.zoneFilePath(zoneName)
+	paths, err := g.zoneFilePathCandidates(zoneName)
 	if err != nil {
 		return nil, fmt.Errorf("invalid zone path: %w", err)
 	}
 
+	for _, relPath := range paths {
+		zone, err := g.readZoneFile(relPath)
+		if err == nil {
+			return zone, nil
+		}
+		if err == model.ErrZoneNotFound {
+			continue
+		}
+		return nil, err
+	}
+
+	return nil, model.ErrZoneNotFound
+}
+
+func (g *GitBackend) readZoneFile(relPath string) (*model.Zone, error) {
 	filePath := filepath.Join(g.repoPath, relPath)
 
 	data, err := os.ReadFile(filePath)
@@ -702,7 +835,7 @@ func (g *GitBackend) readZone(zoneName string) (*model.Zone, error) {
 
 // writeZone writes a zone to JSON file atomically
 func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
-	relPath, err := g.zoneFilePath(zoneName)
+	relPath, err := g.existingZoneFilePath(zoneName)
 	if err != nil {
 		return fmt.Errorf("invalid zone path: %w", err)
 	}
@@ -787,18 +920,35 @@ func (g *GitBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.
 		return nil, fmt.Errorf("failed to read zones directory: %w", err)
 	}
 
-	zones := make([]*model.Zone, 0)
+	zonesByName := make(map[string]*model.Zone)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 
 		zoneName := strings.TrimSuffix(entry.Name(), ".json")
-		zone, err := g.readZone(zoneName)
+		relPath := filepath.Join("zones", entry.Name())
+		zone, err := g.readZoneFile(relPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read zone %q from git backend: %w", zoneName, err)
 		}
 
+		key := zone.Name
+		if key == "" {
+			key = zoneName
+		}
+		if _, exists := zonesByName[key]; exists {
+			safePath, err := g.zoneFilePath(zone.Name)
+			if err == nil && relPath == safePath {
+				zonesByName[key] = zone
+			}
+			continue
+		}
+		zonesByName[key] = zone
+	}
+
+	zones := make([]*model.Zone, 0, len(zonesByName))
+	for _, zone := range zonesByName {
 		zones = append(zones, zone)
 	}
 
@@ -1080,12 +1230,26 @@ func (g *GitBackend) GetRevision(ctx context.Context, zoneName, version string) 
 		return nil, err
 	}
 
-	// Get commit history for the zone file
-	filePath, err := g.zoneFilePath(normalized)
+	filePaths, err := g.zoneFilePathCandidates(normalized)
 	if err != nil {
 		return nil, fmt.Errorf("invalid zone path: %w", err)
 	}
 
+	for _, filePath := range filePaths {
+		zone, err := g.getRevisionFromPath(filePath, version)
+		if err == nil {
+			return zone, nil
+		}
+		if err == model.ErrVersionNotFound {
+			continue
+		}
+		return nil, err
+	}
+
+	return nil, model.ErrVersionNotFound
+}
+
+func (g *GitBackend) getRevisionFromPath(filePath, version string) (*model.Zone, error) {
 	commits, err := g.repo.Log(&git.LogOptions{
 		FileName: &filePath,
 	})
@@ -1151,12 +1315,57 @@ func (g *GitBackend) ListRevisions(ctx context.Context, zoneName string, opts Li
 		return nil, err
 	}
 
-	// Get commit history for the zone file
-	filePath, err := g.zoneFilePath(normalized)
+	filePaths, err := g.zoneFilePathCandidates(normalized)
 	if err != nil {
 		return nil, fmt.Errorf("invalid zone path: %w", err)
 	}
 
+	versions := make([]*model.ZoneVersion, 0)
+	seenVersions := make(map[string]struct{})
+	for _, filePath := range filePaths {
+		pathVersions, err := g.listRevisionsForPath(filePath)
+		if err != nil {
+			return nil, err
+		}
+		for _, version := range pathVersions {
+			if _, exists := seenVersions[version.Version]; exists {
+				continue
+			}
+			seenVersions[version.Version] = struct{}{}
+			versions = append(versions, version)
+		}
+	}
+
+	sort.Slice(versions, func(i, j int) bool {
+		if versions[i].Timestamp.Equal(versions[j].Timestamp) {
+			return versions[i].Version > versions[j].Version
+		}
+		return versions[i].Timestamp.After(versions[j].Timestamp)
+	})
+
+	// Apply pagination
+	start := opts.Offset
+	if start < 0 {
+		start = 0
+	}
+	if start > len(versions) {
+		return make([]*model.ZoneVersion, 0), nil
+	}
+
+	// Limit==0 means return all (no limit)
+	if opts.Limit <= 0 {
+		return versions[start:], nil
+	}
+
+	end := start + opts.Limit
+	if end > len(versions) {
+		end = len(versions)
+	}
+
+	return versions[start:end], nil
+}
+
+func (g *GitBackend) listRevisionsForPath(filePath string) ([]*model.ZoneVersion, error) {
 	commits, err := g.repo.Log(&git.LogOptions{
 		FileName: &filePath,
 	})
@@ -1216,26 +1425,7 @@ func (g *GitBackend) ListRevisions(ctx context.Context, zoneName string, opts Li
 		return nil, err
 	}
 
-	// Apply pagination
-	start := opts.Offset
-	if start < 0 {
-		start = 0
-	}
-	if start > len(versions) {
-		return make([]*model.ZoneVersion, 0), nil
-	}
-
-	// Limit==0 means return all (no limit)
-	if opts.Limit <= 0 {
-		return versions[start:], nil
-	}
-
-	end := start + opts.Limit
-	if end > len(versions) {
-		end = len(versions)
-	}
-
-	return versions[start:end], nil
+	return versions, nil
 }
 
 func extractVersionTrailer(message string) string {

@@ -21,7 +21,10 @@ import (
 	"github.com/akam1o/arca-dns/pkg/config"
 )
 
-const listZonesPageLimit = 1000
+const (
+	listZonesPageLimit       = 1000
+	maxErrorResponseBodySize = 4 * 1024
+)
 
 // Client is an HTTP client for communicating with the arca-dns controller.
 type Client struct {
@@ -29,6 +32,7 @@ type Client struct {
 	baseURL          string
 	apiKey           string
 	config           config.ControllerClientConfig
+	maxResponseBytes int64
 	verifyChecksums  bool
 	verifySignatures bool
 	signatureKey     string
@@ -143,12 +147,18 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 		},
 	}
 
+	maxResponseBytes := cfg.MaxResponseBytes
+	if maxResponseBytes <= 0 {
+		maxResponseBytes = config.DefaultControllerClientMaxResponseBytes
+	}
+
 	return &Client{
-		httpClient:      httpClient,
-		baseURL:         strings.TrimRight(cfg.URL, "/"),
-		apiKey:          cfg.APIKey,
-		config:          cfg,
-		verifyChecksums: true,
+		httpClient:       httpClient,
+		baseURL:          strings.TrimRight(cfg.URL, "/"),
+		apiKey:           cfg.APIKey,
+		config:           cfg,
+		maxResponseBytes: maxResponseBytes,
+		verifyChecksums:  true,
 	}, nil
 }
 
@@ -203,6 +213,41 @@ func (c *Client) SetVerifyChecksums(enabled bool) {
 func (c *Client) SetSignatureVerification(enabled bool, key string) {
 	c.verifySignatures = enabled
 	c.signatureKey = key
+}
+
+func (c *Client) readResponseBody(body io.Reader) ([]byte, error) {
+	limit := c.maxResponseBytes
+	if limit <= 0 {
+		limit = config.DefaultControllerClientMaxResponseBytes
+	}
+
+	data, err := readLimitedBody(body, limit)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func readLimitedBody(body io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("response body exceeds limit of %d bytes", limit)
+	}
+	return data, nil
+}
+
+func readErrorResponseBody(body io.Reader) string {
+	data, err := io.ReadAll(io.LimitReader(body, maxErrorResponseBodySize+1))
+	if err != nil {
+		return fmt.Sprintf("<failed to read body: %v>", err)
+	}
+	if len(data) > maxErrorResponseBodySize {
+		return string(data[:maxErrorResponseBodySize]) + "...(truncated)"
+	}
+	return string(data)
 }
 
 // ListZones retrieves the list of zones from the controller.
@@ -279,12 +324,15 @@ func (c *Client) listZonesPage(ctx context.Context, offset, limit int) (*listZon
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, readErrorResponseBody(resp.Body))
 	}
 
 	var result listZonesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	body, err := c.readResponseBody(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -401,12 +449,11 @@ func (c *Client) fetchSignedZoneArtifact(ctx context.Context, zoneName string, c
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, readErrorResponseBody(resp.Body))
 	}
 
 	// Read zone file content
-	body, err := io.ReadAll(resp.Body)
+	body, err := c.readResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}

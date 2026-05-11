@@ -574,6 +574,39 @@ func (s *SigningService) removeSignedZoneArtifact(artifact *SignedZoneArtifact) 
 	return err
 }
 
+// CleanupZone removes signed artifacts and DNSSEC keys for a deleted zone.
+func (s *SigningService) CleanupZone(ctx context.Context, zoneName string) error {
+	if s == nil {
+		return nil
+	}
+	lock, err := s.acquireZoneLock(ctx, model.NormalizeZoneName(zoneName))
+	if err != nil {
+		return fmt.Errorf("lock zone cleanup: %w", err)
+	}
+	defer lock.Unlock()
+
+	if err := s.removeZoneArtifacts(zoneName); err != nil {
+		return fmt.Errorf("remove signed artifacts: %w", err)
+	}
+	if s.keyManager != nil {
+		if err := s.keyManager.RemoveZoneKeysContext(ctx, zoneName); err != nil {
+			return fmt.Errorf("remove DNSSEC keys: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *SigningService) removeZoneArtifacts(zoneName string) error {
+	if s.artifactDir == "" {
+		return nil
+	}
+	zoneDir := filepath.Join(s.artifactDir, util.SafeZoneFilename(zoneName))
+	if err := os.RemoveAll(zoneDir); err != nil {
+		return fmt.Errorf("remove artifact directory: %w", err)
+	}
+	return nil
+}
+
 func (s *SigningService) pruneSignedZoneArtifacts(zoneName string) {
 	if s.artifactDir == "" {
 		return

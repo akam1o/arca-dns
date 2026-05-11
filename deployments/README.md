@@ -18,7 +18,8 @@ See the full deployment guide:
 - The controller serves HTTP by default. Terminate TLS at an ingress, load balancer, or reverse proxy.
 - The controller API listens on 8080 by default, including unauthenticated health/readiness/status endpoints; Prometheus metrics listen separately on 9053 and should stay on loopback or behind network controls.
 - Controller and agent container images are based on distroless `nonroot`; mounted data directories must be writable by UID/GID `65532`.
-- The agent controls host NSD/Unbound/BIRD and is typically deployed on edge nodes or VMs rather than as a generic Kubernetes workload.
+- The agent container image defaults to sync-only mode: NSD/Unbound/BIRD/DNSTap integrations are disabled and zones are written under `/var/lib/arca-dns/zones`.
+- Enable agent host integrations in containers only when mounting the required host binaries, sockets, configs, and writable data paths. For production edge nodes, DEB/RPM + systemd is usually the better fit.
 - MySQL and PostgreSQL backends require schema creation before controller startup. SQLite creates its schema automatically.
 - SQL schema files live in the repository under `migrations/`; DEB/RPM packages install them under `/usr/share/arca-dns/migrations/`.
 

@@ -9,10 +9,10 @@ CREATE TABLE zones (
     soa_mname VARCHAR(255) NOT NULL,
     soa_rname VARCHAR(255) NOT NULL,
     soa_serial BIGINT NOT NULL,
-    soa_refresh INTEGER NOT NULL,
-    soa_retry INTEGER NOT NULL,
-    soa_expire INTEGER NOT NULL,
-    soa_minimum INTEGER NOT NULL,
+    soa_refresh BIGINT NOT NULL,
+    soa_retry BIGINT NOT NULL,
+    soa_expire BIGINT NOT NULL,
+    soa_minimum BIGINT NOT NULL,
 
     -- DNSSEC fields
     dnssec_enabled BOOLEAN DEFAULT FALSE,

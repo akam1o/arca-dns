@@ -444,6 +444,14 @@ func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record 
 		))
 		return false
 	}
+	if err := model.ValidateRecordValueInZone(record.Type, record.Value, zoneName); err != nil {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Record validation failed",
+			map[string]interface{}{"error": err.Error()},
+		))
+		return false
+	}
 	return true
 }
 

@@ -755,6 +755,15 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 // DeleteZone handles DELETE /api/v1/zones/:name
 func (h *Handler) DeleteZone(c *gin.Context) {
 	name := c.Param("name")
+	normalizedName := model.NormalizeZoneName(name)
+	if err := model.ValidateZoneName(normalizedName); err != nil {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Invalid zone name",
+			map[string]interface{}{"zone": name},
+		))
+		return
+	}
 
 	ifMatch := c.GetHeader("If-Match")
 	if ifMatch == "" {
@@ -772,6 +781,15 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 	current, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
 		if err == model.ErrZoneNotFound {
+			if cleanupErr := h.cleanupDeletedZone(c.Request.Context(), name); cleanupErr != nil {
+				h.logger.Error("Failed to clean up DNSSEC state for missing zone", zap.String("zone", name), zap.Error(cleanupErr))
+				c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+					model.ErrorCodeInternal,
+					"Failed to delete zone",
+					map[string]interface{}{"error": "internal error"},
+				))
+				return
+			}
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -832,6 +850,16 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 		return
 	}
 
+	if cleanupErr := h.cleanupDeletedZone(c.Request.Context(), name); cleanupErr != nil {
+		h.logger.Error("Failed to clean up DNSSEC state for deleted zone", zap.String("zone", name), zap.Error(cleanupErr))
+		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInternal,
+			"Failed to delete zone",
+			map[string]interface{}{"error": "internal error"},
+		))
+		return
+	}
+
 	h.logger.Info("Zone deleted", zap.String("zone", name))
 	c.Status(http.StatusNoContent)
 }
@@ -843,6 +871,13 @@ func (h *Handler) deleteZoneWithVersion(ctx context.Context, name string, expect
 	}
 
 	return errConditionalDeleteUnsupported
+}
+
+func (h *Handler) cleanupDeletedZone(ctx context.Context, name string) error {
+	if h.signingService == nil {
+		return nil
+	}
+	return h.signingService.CleanupZone(ctx, name)
 }
 
 // GetSignedZone handles GET /api/v1/zones/:name/signed

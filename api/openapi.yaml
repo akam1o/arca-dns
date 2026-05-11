@@ -402,6 +402,12 @@ paths:
       summary: Get a specific zone
       description: Returns detailed information about a zone. Requires an admin API key.
       operationId: getZone
+      parameters:
+        - name: If-None-Match
+          in: header
+          description: Zone version ETag - returns 304 if the zone matches
+          schema:
+            type: string
       responses:
         '200':
           description: Successful response
@@ -493,6 +499,8 @@ paths:
       responses:
         '204':
           description: Zone deleted successfully
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

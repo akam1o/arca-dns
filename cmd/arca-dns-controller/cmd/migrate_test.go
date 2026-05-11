@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
@@ -113,6 +114,35 @@ func TestMigrateExportMemory(t *testing.T) {
 		assert.Equal(t, zone.Name, exported.Name)
 		assert.NotEmpty(t, exported.Version)
 	}
+}
+
+func TestMigrateExport_LongZoneNameUsesSafeFilename(t *testing.T) {
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	longZoneName := strings.Join([]string{
+		strings.Repeat("a", 63),
+		strings.Repeat("b", 63),
+		strings.Repeat("c", 63),
+		strings.Repeat("d", 60),
+	}, ".") + "."
+	require.NoError(t, model.ValidateZoneName(longZoneName))
+
+	ctx := context.Background()
+	zone := &model.Zone{
+		Name:    longZoneName,
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{migrateTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(ctx, zone))
+
+	tmpDir := t.TempDir()
+	_, err := exportFromStore(ctx, store, tmpDir, false)
+	require.NoError(t, err)
+
+	filename := filepath.Join(tmpDir, sanitizeFilename(longZoneName)+".json")
+	require.LessOrEqual(t, len(filepath.Base(filename)), 255)
+	require.FileExists(t, filename)
 }
 
 // TestMigrateImport tests importing zones from JSON files to memory backend.
@@ -639,6 +669,29 @@ func TestMigrateDryRun(t *testing.T) {
 	defer importStore.Close()
 	_, err = importToStore(ctx, importStore, tmpDir, true, false)
 	require.NoError(t, err)
+}
+
+func TestLoadMigrationConfig_DoesNotRequireControllerSecrets(t *testing.T) {
+	tmpDir := t.TempDir()
+	dsn := "file:" + filepath.Join(tmpDir, "migration.db")
+	configPath := filepath.Join(tmpDir, "controller.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+backend:
+  type: sqlite
+  sqlite:
+    dsn: "`+dsn+`"
+storage:
+  key_directory: "/tmp/migration-storage-keys"
+dnssec:
+  key_directory: "/tmp/migration-dnssec-keys"
+`), 0644))
+
+	cfg, err := loadMigrationConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, "sqlite", cfg.Backend.Type)
+	require.Equal(t, dsn, cfg.Backend.SQLite.DSN)
+	require.True(t, cfg.API.Auth.Enabled, "migration config loading should not require API auth secrets")
+	require.Empty(t, cfg.API.ArtifactSignatureKey)
 }
 
 // TestSanitizeFilename tests the filename sanitization function.

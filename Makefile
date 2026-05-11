@@ -9,6 +9,9 @@ GOLANGCI_LINT_CACHE?=$(CURDIR)/.cache/golangci-lint
 GOLANGCI_LINT_VERSION?=v1.64.8
 GOLANGCI_LINT_MODULE?=github.com/golangci/golangci-lint/cmd/golangci-lint
 GOVULNCHECK_VERSION?=v1.3.0
+DOCKER?=docker
+DOCKER_BUILDX?=$(DOCKER) buildx
+DOCKER_BUILD_FLAGS?=--load
 export GOCACHE
 export GOPATH
 export GOMODCACHE
@@ -107,8 +110,8 @@ run-agent:
 
 docker-build:
 	@echo "Building Docker images..."
-	docker build -t arca-dns-controller:latest -f deployments/docker/Dockerfile.controller .
-	docker build -t arca-dns-agent:latest -f deployments/docker/Dockerfile.agent .
+	$(DOCKER_BUILDX) build $(DOCKER_BUILD_FLAGS) -t arca-dns-controller:latest -f deployments/docker/Dockerfile.controller .
+	$(DOCKER_BUILDX) build $(DOCKER_BUILD_FLAGS) -t arca-dns-agent:latest -f deployments/docker/Dockerfile.agent .
 
 help:
 	@echo "Available targets:"
@@ -126,4 +129,4 @@ help:
 	@echo "  install-tools    - Install development tools"
 	@echo "  run-controller   - Build and run controller"
 	@echo "  run-agent        - Build and run agent"
-	@echo "  docker-build     - Build Docker images"
+	@echo "  docker-build     - Build Docker images with buildx"

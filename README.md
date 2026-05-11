@@ -177,6 +177,7 @@ controller:
   # Using http:// with api_key logs a warning.
   url: "http://localhost:8080"
   api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
+  max_response_bytes: 67108864
 
 sync:
   sync_interval: "30s"

@@ -25,7 +25,7 @@ arca-dns は control plane と data plane を分けてデプロイします。
 | Docker Compose | ローカル検証、単一ホスト検証 | `deployments/compose/controller-mysql/` は controller + MySQL の例 |
 | Kubernetes | controller のクラスタ運用 | agent は通常クラスタ外のエッジノードで動かす |
 
-agent container image には `arca-dns-agent` のみが含まれます。`nsd.enabled`、`unbound.enabled`、または `bird.enabled` のまま container で動かす場合は、対応するホスト側 binary、socket、書き込み可能な config/data path を mount するか、agent 設定でそれらの連携を無効化してください。
+agent container image には `arca-dns-agent` のみが含まれ、既定では同期専用 mode で動きます。NSD/Unbound/BIRD/DNSTap 連携は無効化され、zone は `/var/lib/arca-dns/zones` に書き込まれ、status listener は `0.0.0.0:9090` に bind します。container でホスト連携を有効化する場合は、対応するホスト側 binary、socket、config、書き込み可能な data path を mount してください。本番の edge node では通常、DEB/RPM + systemd の方が適しています。
 
 ## 共通の前提条件
 
@@ -176,16 +176,18 @@ backend:
 
 ### PostgreSQL
 
-PostgreSQL backend も controller 起動前に SQL の適用が必要です。
+PostgreSQL backend も controller 起動前に SQL の適用が必要です。PostgreSQL の schema ファイルは番号順に適用してください。既存環境で `000001_initial_schema.up.sql` を適用済みの場合は、未適用の新しい `*.up.sql` だけを適用してください。
 
 schema ファイルはリポジトリの `migrations/` 配下にあります。DEB/RPM パッケージは同じファイルを `/usr/share/arca-dns/migrations/` にインストールします。
 
 ```bash
-psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
-  -f migrations/postgres/000001_initial_schema.up.sql
+export ARCA_POSTGRES_DSN="postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require"
+psql "$ARCA_POSTGRES_DSN" -f migrations/postgres/000001_initial_schema.up.sql
+psql "$ARCA_POSTGRES_DSN" -f migrations/postgres/000002_widen_soa_intervals.up.sql
+
 # パッケージインストール時:
-# psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
-#   -f /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
+# psql "$ARCA_POSTGRES_DSN" -f /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
+# psql "$ARCA_POSTGRES_DSN" -f /usr/share/arca-dns/migrations/postgres/000002_widen_soa_intervals.up.sql
 ```
 
 設定例:
@@ -442,7 +444,7 @@ kubectl apply -k deployments/kubernetes/controller/overlays/demo-etcd
 ```bash
 kubectl get deploy,po,svc,pvc
 kubectl logs deploy/arca-dns-controller
-kubectl port-forward svc/arca-dns-controller 8080:8080 9053:9053
+kubectl port-forward svc/arca-dns-controller 8080:8080
 curl http://localhost:8080/health
 curl http://localhost:8080/ready
 ```
@@ -480,8 +482,9 @@ agent の HTTP endpoint:
 controller の health/readiness/status endpoint は API address
 （提供 manifest では `0.0.0.0:8080`）で listen します。Prometheus metrics は
 分離された `observability.listen` で listen します。組み込みの既定は
-`127.0.0.1:9053` です。Kubernetes 例は Service scraping 用に
-`0.0.0.0:9053` を使うため、cluster network control で保護してください。
+`127.0.0.1:9053` です。Kubernetes 例も loopback 限定のままにし、
+base Service では observability port を公開しません。Service scraping 用に
+公開する場合は、cluster network control で保護してください。
 
 agent の status server はデフォルトで `127.0.0.1:9090` を listen します。
 `metrics.listen` をリモートアドレスに変更する場合は、network control
@@ -495,7 +498,6 @@ controller:
 curl http://controller:8080/health
 curl http://controller:8080/ready
 curl http://controller:8080/status
-curl http://controller:9053/metrics
 ```
 
 agent:
@@ -535,7 +537,7 @@ birdc show route
 | --- | --- | --- |
 | controller が `api.auth.api_keys` で起動しない | placeholder のまま、または API キー未設定 | `sha256:<64 hex>` を設定する |
 | controller が master key エラーで起動しない | DNSSEC 有効だが master key がない | `ARCA_DNS_DNSSEC_MASTER_KEY_B64` または `/etc/arca-dns/master.key` を設定する |
-| MySQL/PostgreSQL で table not found | SQL スキーマ未適用 | `migrations/<backend>/000001_initial_schema.up.sql` を適用してから起動する |
+| MySQL/PostgreSQL で table not found | SQL スキーマ未適用 | `migrations/<backend>/` 配下の backend schema を、必要な `*.up.sql` も含めて番号順に適用してから起動する |
 | container が `/var/lib/arca-dns` に書けない | distroless nonroot image の UID と volume 権限が合っていない | volume を UID/GID `65532` で書けるようにする。Kubernetes base は `fsGroup: 65532` を設定済み |
 | agent container が NSD/Unbound/BIRD を reload できない | image にホスト DNS/BGP 制御ツールが含まれない | 必要なホスト binary/socket/config を mount するか、それらの連携を無効化する |
 | agent `/ready` が 503 | 初回同期未完了、または sync stale | controller URL/API key、zone 一覧、agent ログを確認する |

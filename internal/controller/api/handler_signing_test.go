@@ -102,6 +102,96 @@ func setupArtifactStoreFailureTest(t *testing.T) (*httptest.Server, *backend.Mem
 	return server, store
 }
 
+func TestDeleteZone_CleansDNSSECArtifactsAndKeys(t *testing.T) {
+	logger := zap.NewNop()
+	store := backend.NewMemoryBackend()
+	tmpDir := t.TempDir()
+	keyDir := filepath.Join(tmpDir, "keys")
+	artifactDir := filepath.Join(tmpDir, "artifacts")
+
+	masterKey, err := dnssec.GenerateMasterKey()
+	require.NoError(t, err)
+	keyManager, err := dnssec.NewKeyManager(dnssec.KeyManagerOptions{
+		KeyDirectory: keyDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	signingService := service.NewSigningService(store, keyManager, artifactDir, nil, logger)
+	handler := NewHandler(store, signingService, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = false
+	apiCfg.RateLimit.Enabled = false
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("tcp listen not permitted in this environment: %v", err)
+	}
+	server := httptest.NewUnstartedServer(router)
+	server.Listener = ln
+	server.Start()
+	defer server.Close()
+
+	zoneName := "cleanup-delete.example.com."
+	zone := &model.Zone{
+		Name: zoneName,
+		SOA:  model.DefaultSOA("ns1."+zoneName, "admin."+zoneName),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	body, err := json.Marshal(zone)
+	require.NoError(t, err)
+
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	current, err := store.GetZone(context.Background(), zoneName)
+	require.NoError(t, err)
+	artifactMatches, err := filepath.Glob(filepath.Join(artifactDir, "*", "*.zone.signed"))
+	require.NoError(t, err)
+	require.Len(t, artifactMatches, 1)
+	artifactZoneDir := filepath.Dir(artifactMatches[0])
+	zoneKeyName, err := dnssec.ZoneNameForFile(zoneName)
+	require.NoError(t, err)
+	zoneKeyDir := filepath.Join(keyDir, zoneKeyName)
+	require.DirExists(t, zoneKeyDir)
+
+	req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/"+zoneName, nil)
+	require.NoError(t, err)
+	req.Header.Set("If-Match", current.Version)
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	_, err = os.Stat(artifactZoneDir)
+	require.True(t, os.IsNotExist(err), "expected artifact directory to be removed, got %v", err)
+	_, err = os.Stat(zoneKeyDir)
+	require.True(t, os.IsNotExist(err), "expected key directory to be removed, got %v", err)
+}
+
+func TestDeleteZone_InvalidZoneNameReturnsBadRequestBeforeDNSSECCleanup(t *testing.T) {
+	server, _ := setupSigningFailureTest(t)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/bad_zone.", nil)
+	require.NoError(t, err)
+	req.Header.Set("If-Match", "missing-version")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 type mutateAfterFirstGetStore struct {
 	inner   *backend.MemoryBackend
 	target  string
