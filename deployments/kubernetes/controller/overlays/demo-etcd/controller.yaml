@@ -17,7 +17,7 @@ api:
     burst: 200
 
 observability:
-  listen: "0.0.0.0:9053"
+  listen: "127.0.0.1:9053"
 
 # Demo-only: bundled single-node etcd in this overlay.
 backend:

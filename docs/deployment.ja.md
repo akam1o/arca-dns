@@ -482,8 +482,9 @@ agent の HTTP endpoint:
 controller の health/readiness/status endpoint は API address
 （提供 manifest では `0.0.0.0:8080`）で listen します。Prometheus metrics は
 分離された `observability.listen` で listen します。組み込みの既定は
-`127.0.0.1:9053` です。Kubernetes 例は Service scraping 用に
-`0.0.0.0:9053` を使うため、cluster network control で保護してください。
+`127.0.0.1:9053` です。Kubernetes 例も loopback 限定のままにし、
+base Service では observability port を公開しません。Service scraping 用に
+公開する場合は、cluster network control で保護してください。
 
 agent の status server はデフォルトで `127.0.0.1:9090` を listen します。
 `metrics.listen` をリモートアドレスに変更する場合は、network control
@@ -497,7 +498,6 @@ controller:
 curl http://controller:8080/health
 curl http://controller:8080/ready
 curl http://controller:8080/status
-curl http://controller:9053/metrics
 ```
 
 agent:

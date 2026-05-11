@@ -9,6 +9,3 @@ spec:
     - name: http
       port: 8080
       targetPort: 8080
-    - name: observability
-      port: 9053
-      targetPort: 9053

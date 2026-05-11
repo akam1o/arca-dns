@@ -483,8 +483,9 @@ Agent HTTP endpoints:
 Controller health/readiness/status endpoints listen on the API address
 (`0.0.0.0:8080` in the provided deployment examples). Prometheus metrics
 listen on the separate `observability.listen` address. The built-in default is
-`127.0.0.1:9053`; the Kubernetes examples use `0.0.0.0:9053` for Service
-scraping and should be protected with cluster network controls.
+`127.0.0.1:9053`; the Kubernetes examples keep this loopback-only and do not
+publish the observability port through the base Service. If you expose it for
+Service scraping, protect it with cluster network controls.
 
 By default the agent status server listens on `127.0.0.1:9090`. Set
 `metrics.listen` to a remote address only when the endpoint is protected by
@@ -498,7 +499,6 @@ Controller:
 curl http://controller:8080/health
 curl http://controller:8080/ready
 curl http://controller:8080/status
-curl http://controller:9053/metrics
 ```
 
 Agent:

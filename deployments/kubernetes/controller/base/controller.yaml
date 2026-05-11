@@ -18,7 +18,7 @@ api:
     burst: 200
 
 observability:
-  listen: "0.0.0.0:9053"
+  listen: "127.0.0.1:9053"
 
 # Kubernetes "production-ish" default: external/HA etcd.
 # Set endpoints to your managed/HA etcd cluster.
