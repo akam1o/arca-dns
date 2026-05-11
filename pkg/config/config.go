@@ -10,6 +10,7 @@ import (
 
 const DefaultDNSTapSocketMode = os.FileMode(0o660)
 const DefaultDNSTapSocketModeString = "0660"
+const DefaultControllerClientMaxResponseBytes int64 = 64 * 1024 * 1024
 
 // ControllerConfig is the configuration for the arca-dns-controller.
 type ControllerConfig struct {
@@ -339,6 +340,9 @@ type ControllerClientConfig struct {
 
 	// RetryDelay is the delay between retries
 	RetryDelay time.Duration `mapstructure:"retry_delay"`
+
+	// MaxResponseBytes is the maximum controller response body size
+	MaxResponseBytes int64 `mapstructure:"max_response_bytes"`
 }
 
 // NSDConfig configures NSD integration.
@@ -730,10 +734,11 @@ func ParseDNSTapSocketMode(value string) (os.FileMode, error) {
 func DefaultAgentConfig() *AgentConfig {
 	return &AgentConfig{
 		Controller: ControllerClientConfig{
-			URL:           "http://localhost:8080",
-			Timeout:       30 * time.Second,
-			RetryAttempts: 3,
-			RetryDelay:    5 * time.Second,
+			URL:              "http://localhost:8080",
+			Timeout:          30 * time.Second,
+			RetryAttempts:    3,
+			RetryDelay:       5 * time.Second,
+			MaxResponseBytes: DefaultControllerClientMaxResponseBytes,
 		},
 		Authoritative: "nsd",
 		NSD: NSDConfig{

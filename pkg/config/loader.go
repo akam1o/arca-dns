@@ -438,6 +438,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	if cfg.Controller.RetryAttempts > 0 && cfg.Controller.RetryDelay == 0 {
 		return fmt.Errorf("invalid controller.retry_delay: must be greater than 0 when controller.retry_attempts is greater than 0")
 	}
+	if cfg.Controller.MaxResponseBytes <= 0 {
+		return fmt.Errorf("invalid controller.max_response_bytes: must be positive")
+	}
 	if err := validateAgentControllerTLSConfig(cfg.Controller); err != nil {
 		return err
 	}

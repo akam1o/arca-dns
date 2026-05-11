@@ -8,6 +8,8 @@ controller:
   timeout: "5s"
   retry_attempts: 3
   retry_delay: "200ms"
+  # Maximum controller response body size. Raise only for intentionally large zones.
+  max_response_bytes: 67108864
 
 sync:
   sync_interval: "30s"

@@ -175,6 +175,7 @@ controller:
   # api_key と http:// を併用すると警告ログを出します。
   url: "http://localhost:8080"
   api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
+  max_response_bytes: 67108864
 
 sync:
   sync_interval: "30s"

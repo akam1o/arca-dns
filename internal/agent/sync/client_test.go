@@ -45,6 +45,9 @@ func TestNewClient(t *testing.T) {
 	if client.baseURL != cfg.URL {
 		t.Errorf("Expected baseURL %s, got %s", cfg.URL, client.baseURL)
 	}
+	if client.maxResponseBytes != config.DefaultControllerClientMaxResponseBytes {
+		t.Errorf("Expected maxResponseBytes %d, got %d", config.DefaultControllerClientMaxResponseBytes, client.maxResponseBytes)
+	}
 }
 
 func TestNewClient_NormalizesTrailingSlash(t *testing.T) {
@@ -405,6 +408,36 @@ www.example.com. 300 IN A 192.0.2.1
 
 	if content != zoneContent {
 		t.Errorf("Zone content mismatch")
+	}
+}
+
+func TestFetchSignedZone_RejectsResponseBodyOverLimit(t *testing.T) {
+	requireTCPListener(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "0123456789")
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:              server.URL,
+		Timeout:          5 * time.Second,
+		RetryAttempts:    1,
+		RetryDelay:       100 * time.Millisecond,
+		MaxResponseBytes: 8,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "")
+	if err == nil {
+		t.Fatal("Expected oversized response body to fail")
+	}
+	if !strings.Contains(err.Error(), "response body exceeds limit of 8 bytes") {
+		t.Fatalf("Unexpected error message: %v", err)
 	}
 }
 
