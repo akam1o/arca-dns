@@ -176,16 +176,18 @@ backend:
 
 ### PostgreSQL
 
-PostgreSQL backend も controller 起動前に SQL の適用が必要です。
+PostgreSQL backend も controller 起動前に SQL の適用が必要です。PostgreSQL の schema ファイルは番号順に適用してください。既存環境で `000001_initial_schema.up.sql` を適用済みの場合は、未適用の新しい `*.up.sql` だけを適用してください。
 
 schema ファイルはリポジトリの `migrations/` 配下にあります。DEB/RPM パッケージは同じファイルを `/usr/share/arca-dns/migrations/` にインストールします。
 
 ```bash
-psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
-  -f migrations/postgres/000001_initial_schema.up.sql
+export ARCA_POSTGRES_DSN="postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require"
+psql "$ARCA_POSTGRES_DSN" -f migrations/postgres/000001_initial_schema.up.sql
+psql "$ARCA_POSTGRES_DSN" -f migrations/postgres/000002_widen_soa_intervals.up.sql
+
 # パッケージインストール時:
-# psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
-#   -f /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
+# psql "$ARCA_POSTGRES_DSN" -f /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
+# psql "$ARCA_POSTGRES_DSN" -f /usr/share/arca-dns/migrations/postgres/000002_widen_soa_intervals.up.sql
 ```
 
 設定例:
@@ -535,7 +537,7 @@ birdc show route
 | --- | --- | --- |
 | controller が `api.auth.api_keys` で起動しない | placeholder のまま、または API キー未設定 | `sha256:<64 hex>` を設定する |
 | controller が master key エラーで起動しない | DNSSEC 有効だが master key がない | `ARCA_DNS_DNSSEC_MASTER_KEY_B64` または `/etc/arca-dns/master.key` を設定する |
-| MySQL/PostgreSQL で table not found | SQL スキーマ未適用 | `migrations/<backend>/000001_initial_schema.up.sql` を適用してから起動する |
+| MySQL/PostgreSQL で table not found | SQL スキーマ未適用 | `migrations/<backend>/` 配下の backend schema を、必要な `*.up.sql` も含めて番号順に適用してから起動する |
 | container が `/var/lib/arca-dns` に書けない | distroless nonroot image の UID と volume 権限が合っていない | volume を UID/GID `65532` で書けるようにする。Kubernetes base は `fsGroup: 65532` を設定済み |
 | agent container が NSD/Unbound/BIRD を reload できない | image にホスト DNS/BGP 制御ツールが含まれない | 必要なホスト binary/socket/config を mount するか、それらの連携を無効化する |
 | agent `/ready` が 503 | 初回同期未完了、または sync stale | controller URL/API key、zone 一覧、agent ログを確認する |

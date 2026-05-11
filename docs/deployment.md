@@ -178,16 +178,18 @@ backend:
 
 ### PostgreSQL
 
-The PostgreSQL backend also requires schema creation before controller startup.
+The PostgreSQL backend also requires schema creation before controller startup. Apply PostgreSQL schema files in numeric order. Existing installations that already applied `000001_initial_schema.up.sql` should apply only newer `*.up.sql` files.
 
 The schema files live in the repository under `migrations/`. DEB/RPM packages install the same files under `/usr/share/arca-dns/migrations/`.
 
 ```bash
-psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
-  -f migrations/postgres/000001_initial_schema.up.sql
+export ARCA_POSTGRES_DSN="postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require"
+psql "$ARCA_POSTGRES_DSN" -f migrations/postgres/000001_initial_schema.up.sql
+psql "$ARCA_POSTGRES_DSN" -f migrations/postgres/000002_widen_soa_intervals.up.sql
+
 # Package install path:
-# psql "postgres://user:pass@postgres.example.com:5432/arca_dns?sslmode=require" \
-#   -f /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
+# psql "$ARCA_POSTGRES_DSN" -f /usr/share/arca-dns/migrations/postgres/000001_initial_schema.up.sql
+# psql "$ARCA_POSTGRES_DSN" -f /usr/share/arca-dns/migrations/postgres/000002_widen_soa_intervals.up.sql
 ```
 
 Example config:
@@ -536,7 +538,7 @@ birdc show route
 | --- | --- | --- |
 | controller fails on `api.auth.api_keys` | placeholder hash or no API key configured | set a real `sha256:<64 hex>` value |
 | controller fails on master key | DNSSEC enabled but no master key | set `ARCA_DNS_DNSSEC_MASTER_KEY_B64` or `/etc/arca-dns/master.key` |
-| MySQL/PostgreSQL reports missing tables | SQL schema was not applied | apply `migrations/<backend>/000001_initial_schema.up.sql` before startup |
+| MySQL/PostgreSQL reports missing tables | SQL schema was not applied | apply the backend schema under `migrations/<backend>/`, including required `*.up.sql` files in numeric order |
 | container cannot write `/var/lib/arca-dns` | distroless nonroot UID cannot write the volume | make the volume writable by UID/GID `65532`; Kubernetes base already sets `fsGroup: 65532` |
 | agent container cannot reload NSD/Unbound/BIRD | image does not include host DNS/BGP control tools | mount the required host binaries/sockets/configs or disable those integrations |
 | agent `/ready` returns 503 | first sync has not completed or sync is stale | check controller URL/API key, zone list, and agent logs |
