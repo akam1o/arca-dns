@@ -187,6 +187,38 @@ func TestGitBackend_WriteZoneCleansTempFileWhenRenameFails(t *testing.T) {
 
 	_, statErr := os.Stat(zonePath + ".tmp")
 	assert.True(t, os.IsNotExist(statErr), "temporary zone file should be removed after rename failure")
+	matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(zonePath), "."+filepath.Base(zonePath)+".*.tmp"))
+	require.NoError(t, globErr)
+	assert.Empty(t, matches, "temporary zone files should be removed after rename failure")
+}
+
+func TestGitBackend_WriteZoneDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	zonePath := gitZonePath(t, backend, zone.Name)
+	sentinelPath := filepath.Join(filepath.Dir(zonePath), "sentinel")
+	sentinel := []byte("keep")
+	require.NoError(t, os.WriteFile(sentinelPath, sentinel, 0600))
+	if err := os.Symlink(sentinelPath, zonePath+".tmp"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := backend.writeZone(zone.Name, zone)
+	require.NoError(t, err)
+
+	got, err := os.ReadFile(sentinelPath)
+	require.NoError(t, err)
+	assert.Equal(t, sentinel, got)
+
+	linkInfo, err := os.Lstat(zonePath + ".tmp")
+	require.NoError(t, err)
+	assert.NotZero(t, linkInfo.Mode()&os.ModeSymlink, "predictable temp path should remain a symlink")
+
+	written, err := os.ReadFile(zonePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(written), `"name": "example.com."`)
 }
 
 func TestGitBackend_CreateZone_UsesSafeFilenameForLongZoneName(t *testing.T) {

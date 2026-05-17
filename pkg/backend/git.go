@@ -865,16 +865,41 @@ func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 		return fmt.Errorf("failed to marshal zone to JSON: %w", err)
 	}
 
-	// Atomic write: write to .tmp, fsync, rename
-	tmpPath := filePath + ".tmp"
-	if err := writeFileSynced(tmpPath, data, 0644); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("failed to write temp file: %w", err)
+	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(filePath)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
 	}
+	tmpPath := tmp.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(0644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to chmod temp file: %w", err)
+	}
+	if n, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to write temp file: %w", err)
+	} else if n != len(data) {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to write temp file: %w", io.ErrShortWrite)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
 	if err := os.Rename(tmpPath, filePath); err != nil {
-		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
+	cleanupTmp = false
 	if err := syncDir(dirPath); err != nil {
 		return fmt.Errorf("failed to sync zone directory: %w", err)
 	}
