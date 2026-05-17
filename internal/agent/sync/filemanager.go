@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -77,7 +78,6 @@ func (fm *FileManager) WriteZoneFileValidated(zoneName string, content string, v
 // after the filesystem commit has already succeeded.
 func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, content string, validate func(zonePath string) error) (func() error, error) {
 	targetPath := fm.GetZonePath(zoneName) // Use safe path with GetZonePath
-	tmpPath := targetPath + ".tmp"
 
 	// Check disk space (require at least 100MB free)
 	if err := fm.checkDiskSpace(100 * 1024 * 1024); err != nil {
@@ -90,14 +90,19 @@ func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, conte
 	}
 
 	// Write to temporary file and sync it before publishing.
-	if err := fm.writeFileSync(tmpPath, []byte(content), 0644); err != nil {
-		_ = os.Remove(tmpPath)
+	tmpPath, err := writeTempFileSync(filepath.Dir(targetPath), "."+filepath.Base(targetPath)+".*.tmp", []byte(content), 0644)
+	if err != nil {
 		return nil, fmt.Errorf("failed to write temporary file: %w", err)
 	}
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	if validate != nil {
 		if err := validate(tmpPath); err != nil {
-			os.Remove(tmpPath)
 			return nil, fmt.Errorf("zone validation failed: %w", err)
 		}
 	}
@@ -107,16 +112,15 @@ func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, conte
 	if _, err := os.Stat(targetPath); err == nil {
 		backupPath, err = fm.backupFile(targetPath)
 		if err != nil {
-			os.Remove(tmpPath)
 			return nil, fmt.Errorf("failed to backup old version: %w", err)
 		}
 	}
 
 	// Atomic rename (this is the commit point)
 	if err := os.Rename(tmpPath, targetPath); err != nil {
-		_ = os.Remove(tmpPath)
 		return nil, fmt.Errorf("failed to rename temporary file: %w", err)
 	}
+	cleanupTmp = false
 	if err := fm.fsyncDir(filepath.Dir(targetPath)); err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("fsync zone directory: %w", err),
@@ -340,23 +344,9 @@ func restoreZoneFileSnapshot(path string, snapshot zoneFileSnapshot) error {
 		return fmt.Errorf("create zone directory for rollback: %w", err)
 	}
 
-	tmpPath := path + ".rollback"
-	if err := os.WriteFile(tmpPath, snapshot.data, snapshot.mode); err != nil {
-		return fmt.Errorf("write rollback zone file: %w", err)
-	}
-	file, err := os.OpenFile(tmpPath, os.O_RDWR, 0)
+	tmpPath, err := writeTempFileSync(filepath.Dir(path), "."+filepath.Base(path)+".*.rollback", snapshot.data, snapshot.mode)
 	if err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("open rollback zone file: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("fsync rollback zone file: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close rollback zone file: %w", err)
+		return fmt.Errorf("write rollback zone file: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
@@ -497,9 +487,8 @@ func (fm *FileManager) writeManagedZones(zones map[string]string) error {
 	}
 
 	path := fm.managedZonesIndexPath()
-	tmpPath := path + ".tmp"
-	if err := fm.writeFileSync(tmpPath, data, 0644); err != nil {
-		_ = os.Remove(tmpPath)
+	tmpPath, err := writeTempFileSync(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp", data, 0644)
+	if err != nil {
 		return fmt.Errorf("write managed zone index tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
@@ -591,6 +580,43 @@ func (fm *FileManager) writeFileSync(path string, data []byte, perm os.FileMode)
 		return err
 	}
 	return fm.fsyncFile(path)
+}
+
+func writeTempFileSync(dir string, pattern string, data []byte, perm os.FileMode) (string, error) {
+	tmp, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return "", err
+	}
+
+	tmpPath := tmp.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if n, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return "", err
+	} else if n != len(data) {
+		_ = tmp.Close()
+		return "", io.ErrShortWrite
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+
+	cleanupTmp = false
+	return tmpPath, nil
 }
 
 // fsyncFile performs fsync on a file to ensure it's written to disk.

@@ -57,6 +57,52 @@ func TestFileManager_WriteZoneFile(t *testing.T) {
 	}
 }
 
+func TestFileManager_WriteZoneFileDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	targetPath := fm.GetZonePath(zoneName)
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath+".tmp"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	content := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	if err := fm.WriteZoneFile(zoneName, content); err != nil {
+		t.Fatalf("WriteZoneFile failed: %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(targetPath + ".tmp")
+	if err != nil {
+		t.Fatalf("predictable temp symlink should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+}
+
 func TestFileManager_WriteZoneFileManagedIndexFailureDoesNotPublish(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
 	if err != nil {
@@ -85,6 +131,126 @@ func TestFileManager_WriteZoneFileManagedIndexFailureDoesNotPublish(t *testing.T
 	}
 	if _, err := os.Stat(fm.GetZonePath(zoneName) + ".tmp"); !os.IsNotExist(err) {
 		t.Fatalf("temporary zone file should be removed, stat err=%v", err)
+	}
+	tempPattern := filepath.Join(tmpDir, "."+filepath.Base(fm.GetZonePath(zoneName))+".*.tmp")
+	matches, globErr := filepath.Glob(tempPattern)
+	if globErr != nil {
+		t.Fatalf("temporary zone glob failed: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary zone files should be removed, got %v", matches)
+	}
+}
+
+func TestFileManager_WriteZoneFileDoesNotFollowManagedIndexTempSymlink(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	indexPath := fm.managedZonesIndexPath()
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, indexPath+".tmp"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	zoneName := "example.com."
+	content := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	if err := fm.WriteZoneFile(zoneName, content); err != nil {
+		t.Fatalf("WriteZoneFile failed: %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(indexPath + ".tmp")
+	if err != nil {
+		t.Fatalf("predictable managed index temp symlink should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable managed index temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+}
+
+func TestFileManager_WriteZoneFileRollbackDoesNotFollowPredictableSymlink(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	original := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	replacement := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122802 3600 1800 604800 86400`
+	if err := fm.WriteZoneFile(zoneName, original); err != nil {
+		t.Fatalf("WriteZoneFile failed: %v", err)
+	}
+
+	targetPath := fm.GetZonePath(zoneName)
+	sentinelPath := filepath.Join(tmpDir, "rollback-sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath+".rollback"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := os.Remove(fm.managedZonesIndexPath()); err != nil {
+		t.Fatalf("failed to remove managed index: %v", err)
+	}
+	if err := os.Mkdir(fm.managedZonesIndexPath(), 0755); err != nil {
+		t.Fatalf("failed to block managed index path: %v", err)
+	}
+
+	if err := fm.WriteZoneFile(zoneName, replacement); err == nil {
+		t.Fatal("WriteZoneFile should fail when managed index read is blocked")
+	}
+
+	current, err := fm.ReadZoneFile(zoneName)
+	if err != nil {
+		t.Fatalf("ReadZoneFile failed: %v", err)
+	}
+	if current != original {
+		t.Fatalf("current zone file changed after rollback failure path")
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(targetPath + ".rollback")
+	if err != nil {
+		t.Fatalf("predictable rollback symlink should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable rollback path to remain a symlink, mode=%v", linkInfo.Mode())
 	}
 }
 
