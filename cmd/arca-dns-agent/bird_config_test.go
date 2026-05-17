@@ -99,6 +99,72 @@ func TestApplyBIRDConfigOnStartMarksAppliedOnConfigureSuccess(t *testing.T) {
 	}
 }
 
+func TestWriteFileAtomicCreatesConfigDirectoryAndCleansTemp(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "missing", "nested", "arca-dns.conf")
+
+	if err := writeFileAtomic(path, []byte("bird config\n"), 0o640); err != nil {
+		t.Fatalf("writeFileAtomic failed: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(got) != "bird config\n" {
+		t.Fatalf("config content = %q", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("mode=%v, want 0640", info.Mode().Perm())
+	}
+
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected temp files to be removed, got %v", matches)
+	}
+}
+
+func TestWriteFileAtomicDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "arca-dns.conf")
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	predictableTemp := filepath.Join(tmpDir, "."+filepath.Base(path)+".tmp-predictable")
+	if err := os.Symlink(sentinelPath, predictableTemp); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := writeFileAtomic(path, []byte("bird config\n"), 0o644); err != nil {
+		t.Fatalf("writeFileAtomic failed: %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(predictableTemp)
+	if err != nil {
+		t.Fatalf("predictable temp symlink should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+}
+
 type fakeBIRDClient struct {
 	responses map[string][]*bird.Response
 	errs      map[string][]error

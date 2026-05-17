@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/akam1o/arca-dns/internal/agent/bird"
@@ -139,7 +141,11 @@ func restoreBIRDConfig(path string, previousConfig []byte, hadPreviousConfig boo
 	if hadPreviousConfig {
 		return writeFileAtomic(path, previousConfig, 0o644)
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(path); err == nil {
+		if err := syncDir(filepath.Dir(path)); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
@@ -147,6 +153,10 @@ func restoreBIRDConfig(path string, previousConfig []byte, hadPreviousConfig boo
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
@@ -159,11 +169,18 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		}
 	}()
 
-	if _, err := tmp.Write(data); err != nil {
+	if n, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	} else if n != len(data) {
+		_ = tmp.Close()
+		return io.ErrShortWrite
+	}
+	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(perm); err != nil {
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -174,7 +191,28 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	removeTemp = false
+	if err := syncDir(dir); err != nil {
+		return err
+	}
 	return nil
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
+			syncErr = nil
+		}
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 func configureBIRD(client bird.Client, timeout time.Duration) error {
