@@ -213,7 +213,7 @@ func SaveMasterKey(path string, key []byte) error {
 	if err := tmp.Chmod(0600); err != nil {
 		return fmt.Errorf("chmod master key temp file: %w", err)
 	}
-	if _, err := tmp.Write([]byte(encoded)); err != nil {
+	if err := writeAll(tmp, []byte(encoded)); err != nil {
 		return fmt.Errorf("write master key file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {

@@ -594,9 +594,21 @@ func (shortWriter) Write(p []byte) (int, error) {
 }
 
 func TestWriteAllRejectsShortWrite(t *testing.T) {
-	err := writeAll(shortWriter{}, []byte("dnssec-key-material"))
-	require.Error(t, err)
-	require.True(t, errors.Is(err, io.ErrShortWrite), "expected ErrShortWrite, got %v", err)
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "zone key material", data: []byte("dnssec-key-material")},
+		{name: "master key material", data: []byte("base64-encoded-master-key")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := writeAll(shortWriter{}, tt.data)
+			require.Error(t, err)
+			require.True(t, errors.Is(err, io.ErrShortWrite), "expected ErrShortWrite, got %v", err)
+		})
+	}
 }
 
 func readTestActiveKeys(t *testing.T, keyDir, zone string) activeKeys {
