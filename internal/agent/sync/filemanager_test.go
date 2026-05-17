@@ -598,3 +598,43 @@ func TestFileManager_EnsureDirectory(t *testing.T) {
 		t.Errorf("Directory should be writable: %v", err)
 	}
 }
+
+func TestFileManager_EnsureDirectoryDoesNotFollowWriteTestSymlink(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	if err := os.WriteFile(sentinelPath, []byte("unchanged"), 0600); err != nil {
+		t.Fatalf("Failed to write sentinel: %v", err)
+	}
+
+	writeTestPath := filepath.Join(tmpDir, ".write_test")
+	if err := os.Symlink(sentinelPath, writeTestPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	sentinelData, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("Failed to read sentinel: %v", err)
+	}
+	if string(sentinelData) != "unchanged" {
+		t.Fatalf("sentinel was modified: %q", string(sentinelData))
+	}
+
+	info, err := os.Lstat(writeTestPath)
+	if err != nil {
+		t.Fatalf("write test symlink should remain: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("write test path should remain a symlink")
+	}
+}

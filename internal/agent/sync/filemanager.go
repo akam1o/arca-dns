@@ -651,12 +651,17 @@ func (fm *FileManager) EnsureDirectory() error {
 		return fmt.Errorf("failed to create zone directory: %w", err)
 	}
 
-	// Check write permissions
-	testFile := filepath.Join(fm.zoneDir, ".write_test")
-	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+	// Check write permissions with an unpredictable temp file to avoid following symlinks.
+	testFile, err := writeTempFileSync(fm.zoneDir, ".write_test-*", []byte("test"), 0644)
+	if err != nil {
 		return fmt.Errorf("zone directory is not writable: %w", err)
 	}
-	os.Remove(testFile)
+	if err := os.Remove(testFile); err != nil {
+		return fmt.Errorf("failed to remove zone directory write test file: %w", err)
+	}
+	if err := fm.fsyncDir(fm.zoneDir); err != nil {
+		return fmt.Errorf("fsync zone directory after write test cleanup: %w", err)
+	}
 
 	return nil
 }
