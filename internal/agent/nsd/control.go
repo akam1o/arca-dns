@@ -3,12 +3,15 @@ package nsd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/config"
@@ -382,17 +385,71 @@ func renderManagedZoneConfig(configPath, zoneDir string, zones map[string]struct
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	dirPath := filepath.Dir(path)
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, perm); err != nil {
+	if err := writeFileSynced(tmpPath, data, perm); err != nil {
+		_ = os.Remove(tmpPath)
 		return err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
+	}
+	if err := syncDir(dirPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeFileSynced(path string, data []byte, perm os.FileMode) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+
+	var writeErr error
+	if n, err := file.Write(data); err != nil {
+		writeErr = err
+	} else if n != len(data) {
+		writeErr = io.ErrShortWrite
+	}
+
+	var syncErr error
+	if writeErr == nil {
+		syncErr = file.Sync()
+	}
+	closeErr := file.Close()
+
+	if writeErr != nil {
+		return writeErr
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
+			syncErr = nil
+		}
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	if closeErr != nil {
+		return closeErr
 	}
 	return nil
 }

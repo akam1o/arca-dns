@@ -173,6 +173,56 @@ func TestController_DeleteStubZoneConfig(t *testing.T) {
 	}
 }
 
+func TestController_UpdateStubZoneConfigCreatesConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "missing", "unbound.conf")
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: configPath,
+		StubZoneConfig: config.StubZoneConfig{
+			NSDAddress: "127.0.0.1",
+			NSDPort:    5353,
+		},
+	}, zap.NewNop())
+
+	if err := ctrl.UpdateStubZoneConfig("example.com."); err != nil {
+		t.Fatalf("UpdateStubZoneConfig failed: %v", err)
+	}
+
+	stubPath := filepath.Join(filepath.Dir(configPath), "stub-zone-example.com.conf")
+	if _, err := os.Stat(stubPath); err != nil {
+		t.Fatalf("expected stub-zone file to exist: %v", err)
+	}
+	if _, err := os.Stat(stubPath + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("expected temp stub-zone file to be absent, got err=%v", err)
+	}
+}
+
+func TestController_UpdateStubZoneConfigCleansTempFileWhenRenameFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: filepath.Join(tmpDir, "unbound.conf"),
+		StubZoneConfig: config.StubZoneConfig{
+			NSDAddress: "127.0.0.1",
+			NSDPort:    5353,
+		},
+	}, zap.NewNop())
+
+	stubPath := filepath.Join(tmpDir, "stub-zone-example.com.conf")
+	if err := os.Mkdir(stubPath, 0755); err != nil {
+		t.Fatalf("failed to create rename-blocking directory: %v", err)
+	}
+
+	err := ctrl.UpdateStubZoneConfig("example.com.")
+	if err == nil {
+		t.Fatal("UpdateStubZoneConfig should fail when target path is a directory")
+	}
+	if _, statErr := os.Stat(stubPath + ".tmp"); !os.IsNotExist(statErr) {
+		t.Fatalf("expected temp stub-zone file to be removed, got err=%v", statErr)
+	}
+}
+
 func TestController_EnsureEDNSBufferSize_Correct(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cfg := config.UnboundConfig{

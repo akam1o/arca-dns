@@ -168,6 +168,23 @@ func TestController_RejectsInvalidManagedZoneName(t *testing.T) {
 	}
 }
 
+func TestWriteFileAtomicCleansTempFileWhenRenameFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "managed.conf")
+	if err := os.Mkdir(targetPath, 0755); err != nil {
+		t.Fatalf("Failed to create rename-blocking directory: %v", err)
+	}
+
+	err := writeFileAtomic(targetPath, []byte("zone config"), 0644)
+	if err == nil {
+		t.Fatal("writeFileAtomic should fail when target path is a directory")
+	}
+
+	if _, statErr := os.Stat(targetPath + ".tmp"); !os.IsNotExist(statErr) {
+		t.Fatalf("expected temp config file to be removed, got err=%v", statErr)
+	}
+}
+
 func TestController_CheckZone_ValidZone(t *testing.T) {
 	// Skip if nsd-checkzone is not available
 	if _, err := os.Stat("/usr/sbin/nsd-checkzone"); os.IsNotExist(err) {
