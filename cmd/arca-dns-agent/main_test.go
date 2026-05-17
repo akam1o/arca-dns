@@ -173,6 +173,55 @@ func TestStatusRouter_MetricsRequiresAuthTokenWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestStatusAuthTokenMatches(t *testing.T) {
+	const token = "status-token-32-byte-test-secret"
+	tests := map[string]struct {
+		header string
+		want   bool
+	}{
+		"valid bearer token": {
+			header: "Bearer " + token,
+			want:   true,
+		},
+		"case insensitive bearer prefix": {
+			header: "bearer " + token,
+			want:   true,
+		},
+		"trims surrounding whitespace": {
+			header: "  Bearer " + token + "  ",
+			want:   true,
+		},
+		"missing bearer prefix": {
+			header: token,
+			want:   false,
+		},
+		"empty bearer token": {
+			header: "Bearer ",
+			want:   false,
+		},
+		"wrong same length token": {
+			header: "Bearer status-token-32-byte-test-wrong!",
+			want:   false,
+		},
+		"wrong shorter token": {
+			header: "Bearer short",
+			want:   false,
+		},
+		"wrong longer token": {
+			header: "Bearer " + token + "-suffix",
+			want:   false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := statusAuthTokenMatches(tt.header, token); got != tt.want {
+				t.Fatalf("statusAuthTokenMatches(%q)=%t, want %t", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStatusRouter_DoesNotExposeZoneDetails(t *testing.T) {
 	router := newTestStatusRouter(config.MetricsConfig{
 		Enabled: true,

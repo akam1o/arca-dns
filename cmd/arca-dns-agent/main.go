@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -992,7 +993,9 @@ func statusAuthTokenMatches(authHeader string, expected string) bool {
 	if provided == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+	providedHash := sha256.Sum256([]byte(provided))
+	expectedHash := sha256.Sum256([]byte(expected))
+	return subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1
 }
 
 func bgpControlStatus(cfg *config.AgentConfig, routeCtrl plugin.RouteController, birdConfigStatus birdConfigRuntimeStatus) string {
