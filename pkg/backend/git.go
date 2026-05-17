@@ -3,12 +3,15 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -598,13 +601,20 @@ func (g *GitBackend) restoreZoneFile(point *gitRollbackPoint) error {
 			if err := os.MkdirAll(filepath.Dir(file.absPath), 0755); err != nil {
 				return fmt.Errorf("failed to recreate zone directory: %w", err)
 			}
-			if err := os.WriteFile(file.absPath, file.fileData, file.fileMode.Perm()); err != nil {
+			if err := writeFileSynced(file.absPath, file.fileData, file.fileMode.Perm()); err != nil {
 				return fmt.Errorf("failed to restore zone file: %w", err)
+			}
+			if err := syncDir(filepath.Dir(file.absPath)); err != nil {
+				return fmt.Errorf("failed to sync restored zone directory: %w", err)
 			}
 			continue
 		}
 
-		if err := os.Remove(file.absPath); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(file.absPath); err == nil {
+			if err := syncDir(filepath.Dir(file.absPath)); err != nil {
+				return fmt.Errorf("failed to sync rolled back zone directory: %w", err)
+			}
+		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("failed to remove rolled back zone file: %w", err)
 		}
 	}
@@ -842,8 +852,10 @@ func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 
 	filePath := filepath.Join(g.repoPath, relPath)
 
+	dirPath := filepath.Dir(filePath)
+
 	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -855,31 +867,67 @@ func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 
 	// Atomic write: write to .tmp, fsync, rename
 	tmpPath := filePath + ".tmp"
-	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
-	}
-
-	_, err = f.Write(data)
-	if err != nil {
-		f.Close()
-		os.Remove(tmpPath)
+	if err := writeFileSynced(tmpPath, data, 0644); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
-
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("failed to sync temp file: %w", err)
-	}
-
-	f.Close()
-
 	if err := os.Rename(tmpPath, filePath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
+	if err := syncDir(dirPath); err != nil {
+		return fmt.Errorf("failed to sync zone directory: %w", err)
+	}
 
+	return nil
+}
+
+func writeFileSynced(path string, data []byte, perm os.FileMode) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+
+	var writeErr error
+	if n, err := file.Write(data); err != nil {
+		writeErr = err
+	} else if n != len(data) {
+		writeErr = io.ErrShortWrite
+	}
+
+	var syncErr error
+	if writeErr == nil {
+		syncErr = file.Sync()
+	}
+	closeErr := file.Close()
+
+	if writeErr != nil {
+		return writeErr
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
+			syncErr = nil
+		}
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
 	return nil
 }
 

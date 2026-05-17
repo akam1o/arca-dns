@@ -173,6 +173,22 @@ func TestGitBackend_CreateZone(t *testing.T) {
 	assert.NoError(t, err, "Zone file should exist")
 }
 
+func TestGitBackend_WriteZoneCleansTempFileWhenRenameFails(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	zonePath := gitZonePath(t, backend, zone.Name)
+	require.NoError(t, os.MkdirAll(zonePath, 0755))
+
+	err := backend.writeZone(zone.Name, zone)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to rename temp file")
+
+	_, statErr := os.Stat(zonePath + ".tmp")
+	assert.True(t, os.IsNotExist(statErr), "temporary zone file should be removed after rename failure")
+}
+
 func TestGitBackend_CreateZone_UsesSafeFilenameForLongZoneName(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
