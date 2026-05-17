@@ -334,6 +334,84 @@ func TestListZones_NormalizesTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestListZones_FollowsSameOriginRedirectWithAPIKey(t *testing.T) {
+	requireTCPListener(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/zones":
+			http.Redirect(w, r, "/redirected-zones", http.StatusFound)
+		case "/redirected-zones":
+			if got := r.Header.Get("X-API-Key"); got != "secret-api-key" {
+				t.Fatalf("X-API-Key=%q, want secret-api-key", got)
+			}
+			writeListZonesPage(w, 0, 0)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		APIKey:        "secret-api-key",
+		Timeout:       5 * time.Second,
+		RetryAttempts: 0,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.ListZones(context.Background()); err != nil {
+		t.Fatalf("ListZones failed: %v", err)
+	}
+}
+
+func TestListZones_DoesNotFollowCrossOriginRedirectWithAPIKey(t *testing.T) {
+	requireTCPListener(t)
+
+	redirectTargetCalled := false
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectTargetCalled = true
+		if got := r.Header.Get("X-API-Key"); got != "" {
+			t.Fatalf("X-API-Key leaked to redirect target: %q", got)
+		}
+		writeListZonesPage(w, 0, 0)
+	}))
+	defer redirectTarget.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/zones" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		http.Redirect(w, r, redirectTarget.URL+"/leak", http.StatusFound)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		APIKey:        "secret-api-key",
+		Timeout:       5 * time.Second,
+		RetryAttempts: 0,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.ListZones(context.Background())
+	if err == nil {
+		t.Fatal("expected ListZones to fail on cross-origin redirect")
+	}
+	if !strings.Contains(err.Error(), "unexpected status code: 302") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if redirectTargetCalled {
+		t.Fatal("cross-origin redirect target was called")
+	}
+}
+
 func writeListZonesPage(w http.ResponseWriter, offset, count int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

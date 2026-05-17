@@ -139,6 +139,12 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 	// Create HTTP client with connection pooling and timeout
 	httpClient := &http.Client{
 		Timeout: cfg.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) == 0 || sameOrigin(req.URL, via[0].URL) {
+				return nil
+			}
+			return http.ErrUseLastResponse
+		},
 		Transport: &http.Transport{
 			TLSClientConfig:     tlsConfig,
 			MaxIdleConns:        10,
@@ -160,6 +166,13 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 		maxResponseBytes: maxResponseBytes,
 		verifyChecksums:  true,
 	}, nil
+}
+
+func sameOrigin(a *url.URL, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
 }
 
 func validateTLSConfig(cfg config.ControllerClientConfig) error {
