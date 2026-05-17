@@ -163,6 +163,55 @@ func TestSigningService_StoreArtifactCleansTempFileWhenRenameFails(t *testing.T)
 	}
 }
 
+func TestSigningService_StoreArtifactSanitizesVersionFilename(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zoneName := "example.com."
+	version := "../../outside"
+	if err := service.storeArtifact(zoneName, version, []byte("signed zone")); err != nil {
+		t.Fatalf("storeArtifact failed: %v", err)
+	}
+
+	storedPath := service.artifactPath(zoneName, version)
+	zoneDir := filepath.Dir(storedPath)
+	rel, err := filepath.Rel(zoneDir, storedPath)
+	if err != nil {
+		t.Fatalf("failed to compute relative artifact path: %v", err)
+	}
+	if filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") {
+		t.Fatalf("artifact path escaped zone directory: %s", storedPath)
+	}
+	if strings.Contains(filepath.Base(storedPath), "..") {
+		t.Fatalf("artifact filename still contains path traversal pattern: %s", storedPath)
+	}
+	if _, err := os.Stat(storedPath); err != nil {
+		t.Fatalf("expected sanitized artifact to exist: %v", err)
+	}
+
+	escapedPath := filepath.Clean(filepath.Join(zoneDir, version+".zone.signed"))
+	if escapedPath == storedPath {
+		t.Fatalf("test setup did not produce a distinct escaped path")
+	}
+	if _, err := os.Stat(escapedPath); !os.IsNotExist(err) {
+		t.Fatalf("unexpected artifact written outside zone directory: %v", err)
+	}
+}
+
+func TestSafeArtifactVersionFilenamePreservesValidVersions(t *testing.T) {
+	tests := []string{
+		"v01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		"v2024010101-abc12345",
+		"v1-test",
+	}
+
+	for _, version := range tests {
+		if got := safeArtifactVersionFilename(version); got != version {
+			t.Fatalf("safeArtifactVersionFilename(%q) = %q", version, got)
+		}
+	}
+}
+
 func TestSigningService_CleanupZoneRemovesArtifactsAndKeys(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()

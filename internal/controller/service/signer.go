@@ -32,6 +32,8 @@ var (
 	ErrSignedArtifactExpired = errors.New("signed zone artifact expired")
 )
 
+const maxArtifactVersionFilenameLength = 200
+
 // SigningService handles DNSSEC signing operations and signed zone storage.
 type SigningService struct {
 	store        backend.ZoneStore
@@ -954,7 +956,41 @@ func (s *SigningService) getZoneLock(zoneName string) *zoneSigningLock {
 
 func (s *SigningService) artifactPath(zoneName, version string) string {
 	zoneDir := filepath.Join(s.artifactDir, util.SafeZoneFilename(zoneName))
-	return filepath.Join(zoneDir, fmt.Sprintf("%s.zone.signed", version))
+	return filepath.Join(zoneDir, fmt.Sprintf("%s.zone.signed", safeArtifactVersionFilename(version)))
+}
+
+func safeArtifactVersionFilename(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return "unknown"
+	}
+
+	var b strings.Builder
+	b.Grow(len(version))
+	for _, r := range version {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+
+	safe := strings.ReplaceAll(b.String(), "..", "_")
+	safe = strings.Trim(safe, ".")
+	if safe == "" {
+		safe = "unknown"
+	}
+	if len(safe) > maxArtifactVersionFilenameLength {
+		safe = safe[:maxArtifactVersionFilenameLength]
+	}
+	return safe
 }
 
 func (s *SigningService) storeArtifact(zoneName, version string, contents []byte) error {
