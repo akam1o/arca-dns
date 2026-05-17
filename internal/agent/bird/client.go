@@ -3,6 +3,7 @@ package bird
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -119,7 +120,7 @@ func (c *client) Exec(ctx context.Context, cmd string) (*Response, error) {
 
 	// Send command (must end with newline)
 	cmdLine := cmd + "\n"
-	if _, err := c.conn.Write([]byte(cmdLine)); err != nil {
+	if err := writeFull(c.conn, []byte(cmdLine)); err != nil {
 		c.connected = false
 		return nil, fmt.Errorf("write command: %w", err)
 	}
@@ -148,6 +149,20 @@ func (c *client) Close() error {
 	if c.conn != nil {
 		c.connected = false
 		return c.conn.Close()
+	}
+	return nil
+}
+
+func writeFull(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
 	}
 	return nil
 }
