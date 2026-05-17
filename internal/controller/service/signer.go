@@ -1004,47 +1004,45 @@ func (s *SigningService) storeArtifact(zoneName, version string, contents []byte
 		return fmt.Errorf("mkdir artifact dir: %w", err)
 	}
 
-	tmp := path + ".tmp"
-	if err := writeFileSynced(tmp, contents, 0o644); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("write temp artifact: %w", err)
+	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp artifact: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	tmpPath := tmp.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp artifact: %w", err)
+	}
+	if n, err := tmp.Write(contents); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp artifact: %w", err)
+	} else if n != len(contents) {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp artifact: %w", io.ErrShortWrite)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp artifact: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp artifact: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("rename artifact: %w", err)
 	}
+	cleanupTmp = false
 	if err := syncDir(dirPath); err != nil {
 		return fmt.Errorf("sync artifact dir: %w", err)
 	}
 	return nil
-}
-
-func writeFileSynced(path string, contents []byte, mode os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-
-	var writeErr error
-	if n, err := file.Write(contents); err != nil {
-		writeErr = err
-	} else if n != len(contents) {
-		writeErr = io.ErrShortWrite
-	}
-
-	var syncErr error
-	if writeErr == nil {
-		syncErr = file.Sync()
-	}
-	closeErr := file.Close()
-
-	if writeErr != nil {
-		return writeErr
-	}
-	if syncErr != nil {
-		return syncErr
-	}
-	return closeErr
 }
 
 func syncDir(path string) error {

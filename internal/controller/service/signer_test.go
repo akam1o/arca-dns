@@ -161,6 +161,63 @@ func TestSigningService_StoreArtifactCleansTempFileWhenRenameFails(t *testing.T)
 	if _, statErr := os.Stat(targetPath + ".tmp"); !os.IsNotExist(statErr) {
 		t.Fatalf("expected temp artifact to be removed, got err=%v", statErr)
 	}
+	tempPattern := filepath.Join(filepath.Dir(targetPath), "."+filepath.Base(targetPath)+".*.tmp")
+	matches, globErr := filepath.Glob(tempPattern)
+	if globErr != nil {
+		t.Fatalf("temp artifact glob failed: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected temp artifacts to be removed, got %v", matches)
+	}
+}
+
+func TestSigningService_StoreArtifactDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zoneName := "example.com."
+	version := "symlink"
+	targetPath := service.artifactPath(zoneName, version)
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		t.Fatalf("failed to create target directory: %v", err)
+	}
+
+	sentinelPath := filepath.Join(filepath.Dir(targetPath), "sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath+".tmp"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := service.storeArtifact(zoneName, version, []byte("signed zone")); err != nil {
+		t.Fatalf("storeArtifact failed: %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(targetPath + ".tmp")
+	if err != nil {
+		t.Fatalf("expected predictable temp symlink to remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+
+	artifact, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("failed to read artifact: %v", err)
+	}
+	if string(artifact) != "signed zone" {
+		t.Fatalf("artifact = %q, want signed zone", artifact)
+	}
 }
 
 func TestSigningService_StoreArtifactSanitizesVersionFilename(t *testing.T) {
