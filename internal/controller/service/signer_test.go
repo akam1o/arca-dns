@@ -139,6 +139,30 @@ func TestSigningService_PruneArtifactsKeepsNewestVersions(t *testing.T) {
 	}
 }
 
+func TestSigningService_StoreArtifactCleansTempFileWhenRenameFails(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zoneName := "example.com."
+	version := "rename-fails"
+	targetPath := service.artifactPath(zoneName, version)
+	if err := os.MkdirAll(targetPath, 0755); err != nil {
+		t.Fatalf("failed to create target directory: %v", err)
+	}
+
+	err := service.storeArtifact(zoneName, version, []byte("signed zone"))
+	if err == nil {
+		t.Fatal("storeArtifact succeeded despite rename target being a directory")
+	}
+	if !strings.Contains(err.Error(), "rename artifact") {
+		t.Fatalf("storeArtifact error = %v, want rename artifact error", err)
+	}
+
+	if _, statErr := os.Stat(targetPath + ".tmp"); !os.IsNotExist(statErr) {
+		t.Fatalf("expected temp artifact to be removed, got err=%v", statErr)
+	}
+}
+
 func TestSigningService_CleanupZoneRemovesArtifactsAndKeys(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	ctrlmetrics "github.com/akam1o/arca-dns/internal/controller/metrics"
@@ -961,19 +963,70 @@ func (s *SigningService) storeArtifact(zoneName, version string, contents []byte
 	}
 
 	path := s.artifactPath(zoneName, version)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dirPath := filepath.Dir(path)
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
 		return fmt.Errorf("mkdir artifact dir: %w", err)
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, contents, 0o644); err != nil {
+	if err := writeFileSynced(tmp, contents, 0o644); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write temp artifact: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename artifact: %w", err)
 	}
+	if err := syncDir(dirPath); err != nil {
+		return fmt.Errorf("sync artifact dir: %w", err)
+	}
 	return nil
+}
+
+func writeFileSynced(path string, contents []byte, mode os.FileMode) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+
+	var writeErr error
+	if n, err := file.Write(contents); err != nil {
+		writeErr = err
+	} else if n != len(contents) {
+		writeErr = io.ErrShortWrite
+	}
+
+	var syncErr error
+	if writeErr == nil {
+		syncErr = file.Sync()
+	}
+	closeErr := file.Close()
+
+	if writeErr != nil {
+		return writeErr
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
+			syncErr = nil
+		}
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 func (s *SigningService) pruneArtifacts(zoneName string) error {
