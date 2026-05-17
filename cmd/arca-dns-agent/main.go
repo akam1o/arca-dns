@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net"
@@ -756,11 +757,12 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
+	statusAuth := statusAuthMiddleware(cfg.Metrics.AuthToken)
 	birdConfigStatus = birdConfigStatus.normalized()
 	bgpStatus := bgpControlStatus(cfg, routeCtrl, birdConfigStatus)
 
 	// Status endpoint
-	router.GET("/status", func(c *gin.Context) {
+	router.GET("/status", statusAuth, func(c *gin.Context) {
 		zoneStates := syncer.GetAllZoneStates()
 		healthStatus := checker.CheckHealth(c.Request.Context())
 
@@ -842,7 +844,7 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 	}
 
 	// Metrics endpoint (Prometheus format)
-	router.GET(metricPath(cfg.Metrics.Path), func(c *gin.Context) {
+	router.GET(metricPath(cfg.Metrics.Path), statusAuth, func(c *gin.Context) {
 		var sb strings.Builder
 
 		sb.WriteString("# arca-dns agent metrics\n")
@@ -959,6 +961,38 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 	})
 
 	return router
+}
+
+func statusAuthMiddleware(token string) gin.HandlerFunc {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return func(c *gin.Context) {
+			c.Next()
+		}
+	}
+
+	return func(c *gin.Context) {
+		if statusAuthTokenMatches(c.GetHeader("Authorization"), token) {
+			c.Next()
+			return
+		}
+
+		c.Header("WWW-Authenticate", `Bearer realm="arca-dns-agent-status"`)
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	}
+}
+
+func statusAuthTokenMatches(authHeader string, expected string) bool {
+	const bearerPrefix = "bearer "
+	value := strings.TrimSpace(authHeader)
+	if len(value) < len(bearerPrefix) || !strings.EqualFold(value[:len(bearerPrefix)], bearerPrefix) {
+		return false
+	}
+	provided := strings.TrimSpace(value[len(bearerPrefix):])
+	if provided == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
 }
 
 func bgpControlStatus(cfg *config.AgentConfig, routeCtrl plugin.RouteController, birdConfigStatus birdConfigRuntimeStatus) string {

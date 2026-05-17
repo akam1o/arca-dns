@@ -107,6 +107,72 @@ func TestStatusRouter_MetricsEnabledUsesConfiguredPath(t *testing.T) {
 	}
 }
 
+func TestStatusRouter_StatusRequiresAuthTokenWhenConfigured(t *testing.T) {
+	const token = "status-token-32-byte-test-secret"
+	router := newTestStatusRouter(config.MetricsConfig{
+		Enabled:   true,
+		Path:      "/metrics",
+		AuthToken: token,
+	})
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /health status=%d, want %d", resp.Code, http.StatusOK)
+	}
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/status", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /status without token status=%d, want %d", resp.Code, http.StatusUnauthorized)
+	}
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/status", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /status with wrong token status=%d, want %d", resp.Code, http.StatusUnauthorized)
+	}
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/status", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /status with token status=%d, want %d", resp.Code, http.StatusOK)
+	}
+}
+
+func TestStatusRouter_MetricsRequiresAuthTokenWhenConfigured(t *testing.T) {
+	const token = "status-token-32-byte-test-secret"
+	router := newTestStatusRouter(config.MetricsConfig{
+		Enabled:   true,
+		Path:      "/metrics",
+		AuthToken: token,
+	})
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /metrics without token status=%d, want %d", resp.Code, http.StatusUnauthorized)
+	}
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /metrics with token status=%d, want %d", resp.Code, http.StatusOK)
+	}
+	if !strings.Contains(resp.Body.String(), "arca_dns_agent_sync_has_success") {
+		t.Fatalf("GET /metrics response did not contain agent metrics")
+	}
+}
+
 func TestStatusRouter_DoesNotExposeZoneDetails(t *testing.T) {
 	router := newTestStatusRouter(config.MetricsConfig{
 		Enabled: true,

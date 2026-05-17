@@ -125,8 +125,12 @@ dnstap:
 metrics:
   enabled: true
   # /status includes zone and BGP state, so expose it remotely only behind
-  # firewalling, a tunnel, or another authenticated control plane.
+  # firewalling, a tunnel, or another authenticated control plane. If listen is
+  # not loopback, metrics.auth_token is required.
   listen: "127.0.0.1:9090"
+  # Optional bearer token for /status and /metrics.
+  # Generate with: openssl rand -base64 32
+  auth_token: ""
 
 logging:
   level: "info"

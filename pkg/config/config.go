@@ -557,6 +557,9 @@ type MetricsConfig struct {
 
 	// Path is the HTTP path for metrics (default: /metrics)
 	Path string `mapstructure:"path"`
+
+	// AuthToken protects /status and the metrics endpoint when set.
+	AuthToken string `mapstructure:"auth_token"`
 }
 
 // HealthConfig configures health checking.

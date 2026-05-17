@@ -14,6 +14,7 @@ import (
 )
 
 const minArtifactSignatureKeyBytes = 32
+const minStatusAuthTokenBytes = 16
 const apiKeyRoleAdmin = "admin"
 const apiKeyRoleAgent = "agent"
 
@@ -606,18 +607,8 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		}
 	}
 
-	if strings.TrimSpace(cfg.Metrics.Listen) == "" {
-		return fmt.Errorf("invalid metrics.listen: empty")
-	}
-
-	if cfg.Metrics.Enabled {
-		path := normalizeHTTPPath(cfg.Metrics.Path, "/metrics")
-		if strings.ContainsAny(path, ":*") {
-			return fmt.Errorf("invalid metrics.path: must be a static HTTP path without ':' or '*'")
-		}
-		if isReservedAgentStatusPath(path) {
-			return fmt.Errorf("invalid metrics.path: conflicts with reserved status endpoint %q", path)
-		}
+	if err := validateAgentMetricsConfig(&cfg.Metrics); err != nil {
+		return err
 	}
 
 	if cfg.Health.CheckInterval <= 0 {
@@ -768,6 +759,51 @@ func normalizeHTTPPath(path string, defaultPath string) string {
 		return "/" + path
 	}
 	return path
+}
+
+func validateAgentMetricsConfig(metrics *MetricsConfig) error {
+	metrics.Listen = strings.TrimSpace(metrics.Listen)
+	if metrics.Listen == "" {
+		return fmt.Errorf("invalid metrics.listen: empty")
+	}
+
+	metrics.AuthToken = strings.TrimSpace(metrics.AuthToken)
+	if metrics.AuthToken != "" {
+		if isPlaceholderSecret(metrics.AuthToken) {
+			return fmt.Errorf("invalid metrics.auth_token: replace placeholder value with a generated status token")
+		}
+		if len([]byte(metrics.AuthToken)) < minStatusAuthTokenBytes {
+			return fmt.Errorf("invalid metrics.auth_token: must be at least %d bytes", minStatusAuthTokenBytes)
+		}
+	}
+	if !isLoopbackListenEndpoint(metrics.Listen) && metrics.AuthToken == "" {
+		return fmt.Errorf("invalid metrics.auth_token: required when metrics.listen is not loopback; bind metrics.listen to 127.0.0.1 or set metrics.auth_token")
+	}
+
+	if metrics.Enabled {
+		path := normalizeHTTPPath(metrics.Path, "/metrics")
+		if strings.ContainsAny(path, ":*") {
+			return fmt.Errorf("invalid metrics.path: must be a static HTTP path without ':' or '*'")
+		}
+		if isReservedAgentStatusPath(path) {
+			return fmt.Errorf("invalid metrics.path: conflicts with reserved status endpoint %q", path)
+		}
+		metrics.Path = path
+	}
+	return nil
+}
+
+func isLoopbackListenEndpoint(listen string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(listen))
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func isReservedAgentStatusPath(path string) bool {
