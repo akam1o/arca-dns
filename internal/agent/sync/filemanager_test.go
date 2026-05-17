@@ -304,6 +304,69 @@ func TestFileManager_Backup(t *testing.T) {
 	}
 }
 
+func TestFileManager_BackupDoesNotFollowPredictableSymlink(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	content := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	if err := fm.WriteZoneFile(zoneName, content); err != nil {
+		t.Fatalf("WriteZoneFile failed: %v", err)
+	}
+
+	zonePath := fm.GetZonePath(zoneName)
+	sentinelPath := filepath.Join(tmpDir, "backup-sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	predictableBackupPath := zonePath + ".backup.123456789"
+	if err := os.Symlink(sentinelPath, predictableBackupPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	backupPath, err := fm.backupFile(zonePath)
+	if err != nil {
+		t.Fatalf("backupFile failed: %v", err)
+	}
+	if backupPath == predictableBackupPath {
+		t.Fatalf("backup path used predictable symlink path")
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(predictableBackupPath)
+	if err != nil {
+		t.Fatalf("predictable backup symlink should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable backup path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+
+	backupContent, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("failed to read backup: %v", err)
+	}
+	if string(backupContent) != content {
+		t.Fatalf("backup content changed")
+	}
+}
+
 func TestFileManager_BackupCleanup(t *testing.T) {
 	// Create temporary directory
 	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")

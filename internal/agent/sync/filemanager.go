@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/akam1o/arca-dns/pkg/model"
 	"go.uber.org/zap"
@@ -279,19 +278,16 @@ func (fm *FileManager) deleteZoneFiles(zoneName string) error {
 }
 
 // backupFile creates a backup of the given file.
-// Backups are named: {filename}.backup.{nanoseconds}
+// Backups are named: {filename}.backup.{random}
 func (fm *FileManager) backupFile(path string) (string, error) {
-	// Use nanoseconds for unique timestamp
-	backupPath := fmt.Sprintf("%s.backup.%d", path, time.Now().UnixNano())
-
 	// Copy file
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file for backup: %w", err)
 	}
 
-	if err := fm.writeFileSync(backupPath, content, 0644); err != nil {
-		_ = os.Remove(backupPath)
+	backupPath, err := writeTempFileSync(filepath.Dir(path), filepath.Base(path)+".backup.*", content, 0644)
+	if err != nil {
 		return "", fmt.Errorf("failed to write backup file: %w", err)
 	}
 	if err := fm.fsyncDir(filepath.Dir(backupPath)); err != nil {
@@ -575,13 +571,6 @@ func (fm *FileManager) listManagedZoneFiles() ([]string, error) {
 	return zoneNames, nil
 }
 
-func (fm *FileManager) writeFileSync(path string, data []byte, perm os.FileMode) error {
-	if err := os.WriteFile(path, data, perm); err != nil {
-		return err
-	}
-	return fm.fsyncFile(path)
-}
-
 func writeTempFileSync(dir string, pattern string, data []byte, perm os.FileMode) (string, error) {
 	tmp, err := os.CreateTemp(dir, pattern)
 	if err != nil {
@@ -617,21 +606,6 @@ func writeTempFileSync(dir string, pattern string, data []byte, perm os.FileMode
 
 	cleanupTmp = false
 	return tmpPath, nil
-}
-
-// fsyncFile performs fsync on a file to ensure it's written to disk.
-func (fm *FileManager) fsyncFile(path string) error {
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	if err := file.Sync(); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func (fm *FileManager) fsyncDir(path string) error {
