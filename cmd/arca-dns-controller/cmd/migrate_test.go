@@ -145,6 +145,44 @@ func TestMigrateExport_LongZoneNameUsesSafeFilename(t *testing.T) {
 	require.FileExists(t, filename)
 }
 
+func TestMigrateExportDoesNotFollowOutputSymlink(t *testing.T) {
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	ctx := context.Background()
+	zone := &model.Zone{
+		Name:    "symlink.example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{migrateTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(ctx, zone))
+
+	tmpDir := t.TempDir()
+	filename := filepath.Join(tmpDir, sanitizeFilename(zone.Name)+".json")
+	sentinel := filepath.Join(tmpDir, "sentinel")
+	require.NoError(t, os.WriteFile(sentinel, []byte("unchanged"), 0644))
+	if err := os.Symlink(sentinel, filename); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := exportFromStore(ctx, store, tmpDir, false)
+	require.NoError(t, err)
+
+	sentinelData, err := os.ReadFile(sentinel)
+	require.NoError(t, err)
+	assert.Equal(t, "unchanged", string(sentinelData))
+
+	info, err := os.Lstat(filename)
+	require.NoError(t, err)
+	assert.False(t, info.Mode()&os.ModeSymlink != 0)
+
+	data, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	var exported model.Zone
+	require.NoError(t, json.Unmarshal(data, &exported))
+	assert.Equal(t, zone.Name, exported.Name)
+}
+
 // TestMigrateImport tests importing zones from JSON files to memory backend.
 func TestMigrateImport(t *testing.T) {
 	// Create temporary input directory with test zone files

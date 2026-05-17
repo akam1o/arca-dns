@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
@@ -300,7 +302,7 @@ func exportFromStore(ctx context.Context, store backend.ZoneStore, outputDir str
 			return 0, fmt.Errorf("marshal zone %s: %w", zone.Name, err)
 		}
 
-		if err := os.WriteFile(filename, data, 0644); err != nil {
+		if err := writeMigrationFileAtomicSynced(filename, data, 0644); err != nil {
 			return 0, fmt.Errorf("write zone %s: %w", zone.Name, err)
 		}
 
@@ -310,6 +312,70 @@ func exportFromStore(ctx context.Context, store backend.ZoneStore, outputDir str
 
 	fmt.Printf("\nExport complete: %d zones exported to %s\n", exported, outputDir)
 	return exported, nil
+}
+
+func writeMigrationFileAtomicSynced(path string, data []byte, perm os.FileMode) error {
+	dirPath := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+
+	tmpPath := tmp.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if n, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	} else if n != len(data) {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", io.ErrShortWrite)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename temp file: %w", err)
+	}
+	cleanupTmp = false
+
+	if err := syncMigrationDir(dirPath); err != nil {
+		return fmt.Errorf("sync output directory: %w", err)
+	}
+
+	return nil
+}
+
+func syncMigrationDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
+			syncErr = nil
+		}
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string, dryRun bool, overwrite bool) (int, error) {
