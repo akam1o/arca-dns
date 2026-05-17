@@ -1,12 +1,34 @@
 package middleware
 
 import (
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
+
+const (
+	maxAuditLogFieldLength = 1024
+	auditLogRedactedValue  = "REDACTED"
+	auditLogTruncatedMark  = "...(truncated)"
+)
+
+var sensitiveAuditQueryKeys = map[string]struct{}{
+	"access_token":             {},
+	"api-key":                  {},
+	"api_key":                  {},
+	"apikey":                   {},
+	"auth_token":               {},
+	"controller_signature_key": {},
+	"password":                 {},
+	"passwd":                   {},
+	"secret":                   {},
+	"signature":                {},
+	"token":                    {},
+}
 
 // AuditLogger provides audit logging middleware for API requests.
 type AuditLogger struct {
@@ -57,14 +79,50 @@ func (al *AuditLogger) Middleware() gin.HandlerFunc {
 			zap.String("request_id", requestID),
 			zap.String("method", c.Request.Method),
 			zap.String("path", c.Request.URL.Path),
-			zap.String("query", c.Request.URL.RawQuery),
+			zap.String("query", sanitizeAuditQuery(c.Request.URL.RawQuery)),
 			zap.Int("status", c.Writer.Status()),
 			zap.Duration("latency", latency),
 			zap.String("client_ip", c.ClientIP()),
-			zap.String("user_agent", c.Request.UserAgent()),
+			zap.String("user_agent", truncateAuditLogField(c.Request.UserAgent())),
 			zap.String("auth_principal", authPrincipal),
 			zap.String("auth_role", authRole),
 			zap.Int("response_size", c.Writer.Size()),
 		)
 	}
+}
+
+func sanitizeAuditQuery(rawQuery string) string {
+	if rawQuery == "" {
+		return ""
+	}
+
+	parts := strings.Split(rawQuery, "&")
+	for i, part := range parts {
+		key, _, _ := strings.Cut(part, "=")
+		if !isSensitiveAuditQueryKey(key) {
+			continue
+		}
+
+		parts[i] = key + "=" + auditLogRedactedValue
+	}
+
+	return truncateAuditLogField(strings.Join(parts, "&"))
+}
+
+func isSensitiveAuditQueryKey(key string) bool {
+	decodedKey, err := url.QueryUnescape(key)
+	if err != nil {
+		decodedKey = key
+	}
+
+	_, ok := sensitiveAuditQueryKeys[strings.ToLower(strings.TrimSpace(decodedKey))]
+	return ok
+}
+
+func truncateAuditLogField(value string) string {
+	if len(value) <= maxAuditLogFieldLength {
+		return value
+	}
+
+	return value[:maxAuditLogFieldLength] + auditLogTruncatedMark
 }

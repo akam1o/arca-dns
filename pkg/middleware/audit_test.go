@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -48,4 +49,73 @@ func TestAuditLogger_Middleware_LogsAuthenticatedPrincipal(t *testing.T) {
 	assert.Equal(t, "api_request", entries[0].Message)
 	assert.Equal(t, "test_admin", entries[0].ContextMap()["auth_principal"])
 	assert.Equal(t, AuthRoleAdmin, entries[0].ContextMap()["auth_role"])
+}
+
+func TestAuditLogger_Middleware_RedactsSensitiveQueryValues(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	core, logs := observer.New(zapcore.InfoLevel)
+	logger := zap.New(core)
+
+	router := gin.New()
+	router.Use(NewAuditLogger(logger).Middleware())
+	router.GET("/test", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/test?origin=example.com.&api_key=secret-api-key&TOKEN=secret-token&password=secret-password&foo=bar",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	entries := logs.All()
+	require.Len(t, entries, 1)
+
+	query, ok := entries[0].ContextMap()["query"].(string)
+	require.True(t, ok)
+	assert.Contains(t, query, "origin=example.com.")
+	assert.Contains(t, query, "foo=bar")
+	assert.Contains(t, query, "api_key=REDACTED")
+	assert.Contains(t, query, "TOKEN=REDACTED")
+	assert.Contains(t, query, "password=REDACTED")
+	assert.NotContains(t, query, "secret-api-key")
+	assert.NotContains(t, query, "secret-token")
+	assert.NotContains(t, query, "secret-password")
+}
+
+func TestAuditLogger_Middleware_TruncatesLongFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	core, logs := observer.New(zapcore.InfoLevel)
+	logger := zap.New(core)
+
+	router := gin.New()
+	router.Use(NewAuditLogger(logger).Middleware())
+	router.GET("/test", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	longValue := strings.Repeat("a", maxAuditLogFieldLength+100)
+	req := httptest.NewRequest(http.MethodGet, "/test?q="+longValue, nil)
+	req.Header.Set("User-Agent", longValue)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	entries := logs.All()
+	require.Len(t, entries, 1)
+
+	query, ok := entries[0].ContextMap()["query"].(string)
+	require.True(t, ok)
+	assert.True(t, strings.HasSuffix(query, auditLogTruncatedMark))
+	assert.LessOrEqual(t, len(query), maxAuditLogFieldLength+len(auditLogTruncatedMark))
+
+	userAgent, ok := entries[0].ContextMap()["user_agent"].(string)
+	require.True(t, ok)
+	assert.True(t, strings.HasSuffix(userAgent, auditLogTruncatedMark))
+	assert.LessOrEqual(t, len(userAgent), maxAuditLogFieldLength+len(auditLogTruncatedMark))
 }
