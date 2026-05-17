@@ -198,6 +198,25 @@ func TestRemoveStaleSocket_RefusesRegularFile(t *testing.T) {
 	require.Equal(t, []byte("keep"), contents)
 }
 
+func TestReceiver_CleanupRefusesRegularFileAtSocketPath(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	socketPath := filepath.Join(tmpDir, "not-a-socket")
+	require.NoError(t, os.WriteFile(socketPath, []byte("keep"), 0600))
+
+	receiver := NewReceiver(ReceiverConfig{
+		SocketPath: socketPath,
+		BufferSize: 1,
+	}, zap.NewNop())
+
+	receiver.cleanup()
+
+	contents, readErr := os.ReadFile(socketPath)
+	require.NoError(t, readErr)
+	require.Equal(t, []byte("keep"), contents)
+}
+
 func TestRemoveStaleSocket_RefusesEmptyPath(t *testing.T) {
 	err := removeStaleSocket(" ")
 	require.Error(t, err)

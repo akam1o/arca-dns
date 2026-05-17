@@ -169,6 +169,10 @@ func (r *Receiver) Run(ctx context.Context, frameChan chan<- Frame) error {
 }
 
 func removeStaleSocket(socketPath string) error {
+	return removeDNSTapSocketFile(socketPath, "stale")
+}
+
+func removeDNSTapSocketFile(socketPath string, description string) error {
 	if strings.TrimSpace(socketPath) == "" {
 		return fmt.Errorf("dnstap socket path is empty")
 	}
@@ -186,7 +190,7 @@ func removeStaleSocket(socketPath string) error {
 	}
 
 	if err := os.Remove(socketPath); err != nil {
-		return fmt.Errorf("failed to remove stale dnstap socket: %w", err)
+		return fmt.Errorf("failed to remove %s dnstap socket: %w", description, err)
 	}
 	return nil
 }
@@ -373,8 +377,9 @@ func (r *Receiver) cleanup() {
 		delete(r.conns, conn)
 	}
 
-	// Explicitly remove socket file on shutdown
-	if err := os.Remove(r.socketPath); err != nil && !os.IsNotExist(err) {
+	// Explicitly remove the socket file on shutdown, but do not unlink an
+	// attacker-replaced regular file at the same path.
+	if err := removeDNSTapSocketFile(r.socketPath, "shutdown"); err != nil {
 		r.logger.Warn("Failed to remove socket file", zap.Error(err))
 	}
 
