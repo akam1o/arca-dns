@@ -307,6 +307,32 @@ func TestSigningService_CleanupZoneRemovesArtifactsAndKeys(t *testing.T) {
 	}
 }
 
+func TestSigningService_CleanupZoneRejectsInvalidZoneWithoutDeletingArtifacts(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	artifactDir := filepath.Join(service.artifactDir, "unnamed")
+	if err := os.MkdirAll(artifactDir, 0755); err != nil {
+		t.Fatalf("failed to create artifact dir: %v", err)
+	}
+	artifactPath := filepath.Join(artifactDir, "keep.zone.signed")
+	if err := os.WriteFile(artifactPath, []byte("keep"), 0600); err != nil {
+		t.Fatalf("failed to write artifact: %v", err)
+	}
+
+	err := service.CleanupZone(context.Background(), "")
+	if err == nil {
+		t.Fatal("CleanupZone should reject an empty zone name")
+	}
+	if !strings.Contains(err.Error(), "invalid zone name") {
+		t.Fatalf("CleanupZone returned unexpected error: %v", err)
+	}
+
+	if _, statErr := os.Stat(artifactPath); statErr != nil {
+		t.Fatalf("invalid cleanup should not remove artifact path: %v", statErr)
+	}
+}
+
 func TestSigningService_SignZone(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
