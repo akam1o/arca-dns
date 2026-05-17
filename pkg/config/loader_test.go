@@ -1328,6 +1328,94 @@ func TestValidateAgentConfig_InvalidDNSTapSampleRate(t *testing.T) {
 	assert.Contains(t, err.Error(), "dnstap.sample_rate")
 }
 
+func TestValidateAgentConfig_InvalidUnboundStubZoneConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+		want   string
+	}{
+		{
+			name: "empty nsd address",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.StubZoneConfig.NSDAddress = ""
+			},
+			want: "unbound.stub_zone.nsd_address",
+		},
+		{
+			name: "address with surrounding whitespace",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.StubZoneConfig.NSDAddress = " 127.0.0.1 "
+			},
+			want: "unbound.stub_zone.nsd_address",
+		},
+		{
+			name: "address with newline",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.StubZoneConfig.NSDAddress = "127.0.0.1\nserver:"
+			},
+			want: "unbound.stub_zone.nsd_address",
+		},
+		{
+			name: "address with embedded port",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.StubZoneConfig.NSDAddress = "127.0.0.1@5353"
+			},
+			want: "unbound.stub_zone.nsd_address",
+		},
+		{
+			name: "malformed address",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.StubZoneConfig.NSDAddress = "server:"
+			},
+			want: "unbound.stub_zone.nsd_address",
+		},
+		{
+			name: "zero port",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.StubZoneConfig.NSDPort = 0
+			},
+			want: "unbound.stub_zone.nsd_port",
+		},
+		{
+			name: "port too high",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.StubZoneConfig.NSDPort = 65536
+			},
+			want: "unbound.stub_zone.nsd_port",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.Unbound.Enabled = true
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateAgentConfig_AcceptsUnboundStubZoneAddressForms(t *testing.T) {
+	tests := []string{
+		"127.0.0.1",
+		"::1",
+		"localhost",
+		"nsd.local.",
+	}
+
+	for _, address := range tests {
+		t.Run(address, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.Unbound.Enabled = true
+			cfg.Unbound.StubZoneConfig.NSDAddress = address
+			err := ValidateAgentConfig(cfg)
+			assert.NoError(t, err)
+		})
+	}
+}
+
 func TestValidateAgentConfig_InvalidDNSTapSocketSettings(t *testing.T) {
 	tests := []struct {
 		name   string

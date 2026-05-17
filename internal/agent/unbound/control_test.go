@@ -139,6 +139,65 @@ func TestController_RejectsInvalidStubZoneName(t *testing.T) {
 	}
 }
 
+func TestController_RejectsUnsafeStubZoneTarget(t *testing.T) {
+	tests := []struct {
+		name       string
+		nsdAddress string
+		nsdPort    int
+	}{
+		{
+			name:       "empty address",
+			nsdAddress: "",
+			nsdPort:    5353,
+		},
+		{
+			name:       "newline address",
+			nsdAddress: "127.0.0.1\nserver:",
+			nsdPort:    5353,
+		},
+		{
+			name:       "address with embedded port",
+			nsdAddress: "127.0.0.1@5353",
+			nsdPort:    5353,
+		},
+		{
+			name:       "malformed address",
+			nsdAddress: "server:",
+			nsdPort:    5353,
+		},
+		{
+			name:       "zero port",
+			nsdAddress: "127.0.0.1",
+			nsdPort:    0,
+		},
+		{
+			name:       "port too high",
+			nsdAddress: "127.0.0.1",
+			nsdPort:    65536,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := NewController(config.UnboundConfig{
+				Enabled: true,
+				StubZoneConfig: config.StubZoneConfig{
+					NSDAddress: tt.nsdAddress,
+					NSDPort:    tt.nsdPort,
+				},
+			}, zap.NewNop())
+
+			_, err := ctrl.GenerateStubZoneConfig("example.com.")
+			if err == nil {
+				t.Fatal("GenerateStubZoneConfig should reject unsafe stub-zone targets")
+			}
+			if !strings.Contains(err.Error(), "unbound.stub_zone") {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestController_DeleteStubZoneConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger, _ := zap.NewDevelopment()

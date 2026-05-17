@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -401,6 +402,66 @@ type StubZoneConfig struct {
 
 	// NSDPort is the port of the local NSD instance
 	NSDPort int `mapstructure:"nsd_port"`
+}
+
+// Validate validates the Unbound stub-zone target rendered into generated
+// configuration snippets.
+func (c StubZoneConfig) Validate() error {
+	address := strings.TrimSpace(c.NSDAddress)
+	if address == "" {
+		return fmt.Errorf("invalid unbound.stub_zone.nsd_address: empty")
+	}
+	if address != c.NSDAddress {
+		return fmt.Errorf("invalid unbound.stub_zone.nsd_address: must not contain surrounding whitespace")
+	}
+	if strings.ContainsFunc(address, unsafeStubZoneAddressChar) {
+		return fmt.Errorf("invalid unbound.stub_zone.nsd_address: contains unsafe characters")
+	}
+	if !isValidStubZoneAddress(address) {
+		return fmt.Errorf("invalid unbound.stub_zone.nsd_address: must be an IP address or DNS hostname")
+	}
+	if c.NSDPort <= 0 || c.NSDPort > 65535 {
+		return fmt.Errorf("invalid unbound.stub_zone.nsd_port: must be between 1 and 65535")
+	}
+	return nil
+}
+
+func unsafeStubZoneAddressChar(r rune) bool {
+	switch r {
+	case '"', '\'', '`', '\\', '#', ';', '@':
+		return true
+	default:
+		return r <= ' ' || r == 0x7f
+	}
+}
+
+func isValidStubZoneAddress(address string) bool {
+	if net.ParseIP(address) != nil {
+		return true
+	}
+	if strings.Contains(address, ":") || len(address) > 253 {
+		return false
+	}
+	labels := strings.Split(strings.TrimSuffix(address, "."), ".")
+	for _, label := range labels {
+		if !isValidStubZoneAddressLabel(label) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidStubZoneAddressLabel(label string) bool {
+	if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+		return false
+	}
+	for _, r := range label {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // BIRDConfig configures BIRD BGP integration.
