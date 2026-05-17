@@ -3,6 +3,8 @@ package dnssec
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -580,6 +582,21 @@ func TestKeyManager_RemoveZoneKeys(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "expected zone key directory to be removed, got %v", err)
 
 	require.NoError(t, km.RemoveZoneKeys("example.com."))
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	return len(p) - 1, nil
+}
+
+func TestWriteAllRejectsShortWrite(t *testing.T) {
+	err := writeAll(shortWriter{}, []byte("dnssec-key-material"))
+	require.Error(t, err)
+	require.True(t, errors.Is(err, io.ErrShortWrite), "expected ErrShortWrite, got %v", err)
 }
 
 func readTestActiveKeys(t *testing.T, keyDir, zone string) activeKeys {

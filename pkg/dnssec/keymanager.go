@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -577,7 +578,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	if err := tmp.Chmod(perm); err != nil {
 		return fmt.Errorf("chmod temp file: %w", err)
 	}
-	if _, err := tmp.Write(data); err != nil {
+	if err := writeAll(tmp, data); err != nil {
 		return fmt.Errorf("write temp file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
@@ -591,6 +592,17 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	}
 	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("sync directory: %w", err)
+	}
+	return nil
+}
+
+func writeAll(w io.Writer, data []byte) error {
+	n, err := w.Write(data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
 	}
 	return nil
 }
