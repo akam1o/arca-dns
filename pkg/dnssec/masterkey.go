@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -193,18 +194,63 @@ func SaveMasterKey(path string, key []byte) error {
 	// Encode to base64
 	encoded := base64.StdEncoding.EncodeToString(key)
 
-	// Write atomically (tmp + rename)
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(encoded), 0600); err != nil {
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create master key temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	closed := false
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			if !closed {
+				_ = tmp.Close()
+			}
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(0600); err != nil {
+		return fmt.Errorf("chmod master key temp file: %w", err)
+	}
+	if _, err := tmp.Write([]byte(encoded)); err != nil {
 		return fmt.Errorf("write master key file: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync master key file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		closed = true
+		return fmt.Errorf("close master key file: %w", err)
+	}
+	closed = true
 
 	// Rename atomically
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath) // Clean up on failure
 		return fmt.Errorf("rename master key file: %w", err)
 	}
+	removeTemp = false
 
+	if err := syncMasterKeyDir(dir); err != nil {
+		return fmt.Errorf("sync master key directory: %w", err)
+	}
+
+	return nil
+}
+
+func syncMasterKeyDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := f.Sync(); err != nil {
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 

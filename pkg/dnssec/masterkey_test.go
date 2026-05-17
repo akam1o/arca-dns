@@ -106,6 +106,29 @@ func TestSaveMasterKey_CreatesDirectory(t *testing.T) {
 	assert.DirExists(t, filepath.Dir(keyPath))
 }
 
+func TestSaveMasterKey_DoesNotFollowPredictableTempSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "_masterkey")
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	require.NoError(t, os.WriteFile(sentinelPath, sentinel, 0600))
+	require.NoError(t, os.Symlink(sentinelPath, keyPath+".tmp"))
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	err = SaveMasterKey(keyPath, key)
+	require.NoError(t, err)
+
+	contents, err := os.ReadFile(sentinelPath)
+	require.NoError(t, err)
+	assert.Equal(t, sentinel, contents)
+
+	linkInfo, err := os.Lstat(keyPath + ".tmp")
+	require.NoError(t, err)
+	assert.NotZero(t, linkInfo.Mode()&os.ModeSymlink)
+}
+
 func TestLoadMasterKey_FromEnv(t *testing.T) {
 	tmpDir := t.TempDir()
 
