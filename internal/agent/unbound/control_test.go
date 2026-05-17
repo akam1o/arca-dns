@@ -198,6 +198,48 @@ func TestController_UpdateStubZoneConfigCreatesConfigDirectory(t *testing.T) {
 	}
 }
 
+func TestController_UpdateStubZoneConfigDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: filepath.Join(tmpDir, "unbound.conf"),
+		StubZoneConfig: config.StubZoneConfig{
+			NSDAddress: "127.0.0.1",
+			NSDPort:    5353,
+		},
+	}, zap.NewNop())
+
+	stubPath := filepath.Join(tmpDir, "stub-zone-example.com.conf")
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, stubPath+".tmp"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := ctrl.UpdateStubZoneConfig("example.com."); err != nil {
+		t.Fatalf("UpdateStubZoneConfig failed: %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(stubPath + ".tmp")
+	if err != nil {
+		t.Fatalf("expected predictable temp symlink to remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+}
+
 func TestController_UpdateStubZoneConfigCleansTempFileWhenRenameFails(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctrl := NewController(config.UnboundConfig{
@@ -220,6 +262,14 @@ func TestController_UpdateStubZoneConfigCleansTempFileWhenRenameFails(t *testing
 	}
 	if _, statErr := os.Stat(stubPath + ".tmp"); !os.IsNotExist(statErr) {
 		t.Fatalf("expected temp stub-zone file to be removed, got err=%v", statErr)
+	}
+	tempPattern := filepath.Join(tmpDir, "."+filepath.Base(stubPath)+".*.tmp")
+	matches, globErr := filepath.Glob(tempPattern)
+	if globErr != nil {
+		t.Fatalf("temp stub-zone glob failed: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected temp stub-zone files to be removed, got %v", matches)
 	}
 }
 

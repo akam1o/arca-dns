@@ -183,6 +183,55 @@ func TestWriteFileAtomicCleansTempFileWhenRenameFails(t *testing.T) {
 	if _, statErr := os.Stat(targetPath + ".tmp"); !os.IsNotExist(statErr) {
 		t.Fatalf("expected temp config file to be removed, got err=%v", statErr)
 	}
+	tempPattern := filepath.Join(tmpDir, "."+filepath.Base(targetPath)+".*.tmp")
+	matches, globErr := filepath.Glob(tempPattern)
+	if globErr != nil {
+		t.Fatalf("temp config glob failed: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected temp config files to be removed, got %v", matches)
+	}
+}
+
+func TestWriteFileAtomicDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "managed.conf")
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath+".tmp"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := writeFileAtomic(targetPath, []byte("zone config"), 0644); err != nil {
+		t.Fatalf("writeFileAtomic failed: %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(targetPath + ".tmp")
+	if err != nil {
+		t.Fatalf("expected predictable temp symlink to remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+
+	written, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("failed to read target config: %v", err)
+	}
+	if string(written) != "zone config" {
+		t.Fatalf("target config = %q, want zone config", written)
+	}
 }
 
 func TestController_CheckZone_ValidZone(t *testing.T) {

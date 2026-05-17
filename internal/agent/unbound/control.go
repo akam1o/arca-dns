@@ -317,47 +317,45 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
-	tmpPath := path + ".tmp"
-	if err := writeFileSynced(tmpPath, data, perm); err != nil {
-		_ = os.Remove(tmpPath)
+	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
+	tmpPath := tmp.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if n, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	} else if n != len(data) {
+		_ = tmp.Close()
+		return io.ErrShortWrite
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
 	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
 		return err
 	}
+	cleanupTmp = false
 	if err := syncDir(dirPath); err != nil {
 		return err
 	}
 	return nil
-}
-
-func writeFileSynced(path string, data []byte, perm os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
-
-	var writeErr error
-	if n, err := file.Write(data); err != nil {
-		writeErr = err
-	} else if n != len(data) {
-		writeErr = io.ErrShortWrite
-	}
-
-	var syncErr error
-	if writeErr == nil {
-		syncErr = file.Sync()
-	}
-	closeErr := file.Close()
-
-	if writeErr != nil {
-		return writeErr
-	}
-	if syncErr != nil {
-		return syncErr
-	}
-	return closeErr
 }
 
 func syncDir(path string) error {
