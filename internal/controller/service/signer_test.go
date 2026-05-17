@@ -618,6 +618,79 @@ func TestSigningService_GetSignedZone(t *testing.T) {
 	t.Logf("Retrieved signed zone: %s (version %s)", artifact.ZoneName, artifact.Version)
 }
 
+func TestSigningService_GetPublishedSignedZoneServesCacheWithoutMutation(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+	if err := service.SignAndStoreZone(ctx, zone); err != nil {
+		t.Fatalf("SignAndStoreZone failed: %v", err)
+	}
+
+	before, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone before read: %v", err)
+	}
+
+	artifact, err := service.GetPublishedSignedZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("GetPublishedSignedZone failed: %v", err)
+	}
+	if artifact.Version != before.Version {
+		t.Fatalf("artifact version = %s, want %s", artifact.Version, before.Version)
+	}
+	if artifact.Serial != before.SOA.Serial {
+		t.Fatalf("artifact serial = %d, want %d", artifact.Serial, before.SOA.Serial)
+	}
+
+	after, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone after read: %v", err)
+	}
+	if after.Version != before.Version {
+		t.Fatalf("published read mutated zone version: got %s, want %s", after.Version, before.Version)
+	}
+	if after.SOA.Serial != before.SOA.Serial {
+		t.Fatalf("published read mutated SOA serial: got %d, want %d", after.SOA.Serial, before.SOA.Serial)
+	}
+}
+
+func TestSigningService_GetPublishedSignedZoneMissingArtifactDoesNotSign(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	originalVersion := zone.Version
+	originalSerial := zone.SOA.Serial
+	ctx := context.Background()
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	_, err := service.GetPublishedSignedZone(ctx, zone.Name)
+	if !errors.Is(err, ErrSignedArtifactUnavailable) {
+		t.Fatalf("GetPublishedSignedZone error = %v, want ErrSignedArtifactUnavailable", err)
+	}
+
+	persisted, err := service.store.GetZone(ctx, zone.Name)
+	if err != nil {
+		t.Fatalf("failed to get persisted zone: %v", err)
+	}
+	if persisted.Version != originalVersion {
+		t.Fatalf("missing artifact read mutated zone version: got %s, want %s", persisted.Version, originalVersion)
+	}
+	if persisted.SOA.Serial != originalSerial {
+		t.Fatalf("missing artifact read mutated SOA serial: got %d, want %d", persisted.SOA.Serial, originalSerial)
+	}
+	if persisted.DNSSEC != nil && persisted.DNSSEC.Enabled {
+		t.Fatal("missing artifact read persisted DNSSEC metadata")
+	}
+}
+
 func TestSigningService_GetSignedZone_CacheHitRestoresSignedRRs(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()

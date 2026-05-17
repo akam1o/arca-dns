@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,15 @@ import (
 	"github.com/akam1o/arca-dns/pkg/util"
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
+)
+
+var (
+	// ErrSignedArtifactUnavailable indicates that a signed artifact has not
+	// been published for the current zone version.
+	ErrSignedArtifactUnavailable = errors.New("signed zone artifact unavailable")
+	// ErrSignedArtifactExpired indicates that the published signed artifact can
+	// no longer be served safely because its earliest RRSIG has expired.
+	ErrSignedArtifactExpired = errors.New("signed zone artifact expired")
 )
 
 // SigningService handles DNSSEC signing operations and signed zone storage.
@@ -416,6 +426,14 @@ func (s *SigningService) cachedArtifactFresh(artifact *SignedZoneArtifact) bool 
 	return expiration.After(time.Now().Add(threshold))
 }
 
+func (s *SigningService) cachedArtifactUsable(artifact *SignedZoneArtifact) bool {
+	if artifact == nil || artifact.Metadata.Expiration == 0 {
+		return false
+	}
+	expiration := time.Unix(int64(artifact.Metadata.Expiration), 0)
+	return expiration.After(time.Now())
+}
+
 func signingMetadataFromRRs(rrs []dns.RR, dnssecConfig *model.DNSSECConfig) SigningMetadata {
 	var metadata SigningMetadata
 
@@ -775,6 +793,46 @@ func (s *SigningService) GetSignedZone(ctx context.Context, zoneName string) (*S
 	}
 
 	return s.getSignedZoneLocked(ctx, zone)
+}
+
+// GetPublishedSignedZone retrieves the already-published signed artifact for a
+// zone without signing or mutating backend state. It is intended for safe HTTP
+// read paths; refreshes should be performed by explicit write paths or the
+// DNSSEC scheduler.
+func (s *SigningService) GetPublishedSignedZone(ctx context.Context, zoneName string) (*SignedZoneArtifact, error) {
+	zone, err := s.store.GetZone(ctx, zoneName)
+	if err != nil {
+		return nil, err
+	}
+
+	lock, err := s.acquireZoneLock(ctx, zone.Name)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Unlock()
+
+	// Re-read under the zone signing lock so GET/HEAD waits for an in-flight
+	// write path and uses the same zone version as the published artifact.
+	zone, err = s.store.GetZone(ctx, zoneName)
+	if err != nil {
+		return nil, err
+	}
+
+	artifact, err := s.loadCachedSignedZoneArtifact(zone)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSignedArtifactUnavailable, err)
+	}
+	if !s.cachedArtifactUsable(artifact) {
+		return nil, fmt.Errorf("%w: zone=%s version=%s expiration=%d", ErrSignedArtifactExpired, artifact.ZoneName, artifact.Version, artifact.Metadata.Expiration)
+	}
+	if !s.cachedArtifactFresh(artifact) {
+		s.logger.Warn("Serving signed artifact that is due for re-signing",
+			zap.String("zone", artifact.ZoneName),
+			zap.String("version", artifact.Version),
+			zap.Uint32("expiration", artifact.Metadata.Expiration))
+	}
+
+	return artifact, nil
 }
 
 func (s *SigningService) getSignedZoneLocked(ctx context.Context, zone *model.Zone) (*SignedZoneArtifact, error) {

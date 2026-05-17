@@ -782,13 +782,7 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 	if err != nil {
 		if err == model.ErrZoneNotFound {
 			if cleanupErr := h.cleanupDeletedZone(c.Request.Context(), name); cleanupErr != nil {
-				h.logger.Error("Failed to clean up DNSSEC state for missing zone", zap.String("zone", name), zap.Error(cleanupErr))
-				c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-					model.ErrorCodeInternal,
-					"Failed to delete zone",
-					map[string]interface{}{"error": "internal error"},
-				))
-				return
+				h.logger.Warn("Failed to clean up DNSSEC state for missing zone", zap.String("zone", name), zap.Error(cleanupErr))
 			}
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
@@ -851,13 +845,7 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 	}
 
 	if cleanupErr := h.cleanupDeletedZone(c.Request.Context(), name); cleanupErr != nil {
-		h.logger.Error("Failed to clean up DNSSEC state for deleted zone", zap.String("zone", name), zap.Error(cleanupErr))
-		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInternal,
-			"Failed to delete zone",
-			map[string]interface{}{"error": "internal error"},
-		))
-		return
+		h.logger.Warn("Failed to clean up DNSSEC state for deleted zone", zap.String("zone", name), zap.Error(cleanupErr))
 	}
 
 	h.logger.Info("Zone deleted", zap.String("zone", name))
@@ -906,12 +894,7 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 
 	signedZone, err := h.signedZoneFile(c.Request.Context(), name, zone)
 	if err != nil {
-		h.logger.Error("Failed to get signed zone", zap.String("zone", name), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInternal,
-			"Failed to retrieve signed zone",
-			map[string]interface{}{"error": "signing failed"},
-		))
+		h.writeSignedZoneError(c, name, "Failed to retrieve signed zone", err)
 		return
 	}
 
@@ -956,7 +939,7 @@ func (h *Handler) HeadSignedZone(c *gin.Context) {
 	signedZone, err := h.signedZoneFile(c.Request.Context(), name, zone)
 	if err != nil {
 		h.logger.Error("Failed to get signed zone", zap.String("zone", name), zap.Error(err))
-		c.Status(http.StatusInternalServerError)
+		c.Status(signedZoneErrorStatus(err))
 		return
 	}
 
@@ -1007,12 +990,7 @@ func (h *Handler) GetSignedZoneMetadata(c *gin.Context) {
 
 	signedZone, err := h.signedZoneFile(c.Request.Context(), name, zone)
 	if err != nil {
-		h.logger.Error("Failed to get signed zone for metadata", zap.String("zone", name), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInternal,
-			"Failed to retrieve signed zone metadata",
-			map[string]interface{}{"error": "signing failed"},
-		))
+		h.writeSignedZoneError(c, name, "Failed to retrieve signed zone metadata", err)
 		return
 	}
 
@@ -1047,7 +1025,7 @@ type signedZoneResult struct {
 
 func (h *Handler) signedZoneFile(ctx context.Context, name string, zone *model.Zone) (*signedZoneResult, error) {
 	if h.signingService != nil {
-		artifact, err := h.signingService.GetSignedZone(ctx, name)
+		artifact, err := h.signingService.GetPublishedSignedZone(ctx, name)
 		if err != nil {
 			return nil, err
 		}
@@ -1071,6 +1049,40 @@ func (h *Handler) signedZoneFile(ctx context.Context, name string, zone *model.Z
 		zoneFile:     zoneFile,
 		dnssecConfig: zone.DNSSEC,
 	}, nil
+}
+
+func (h *Handler) writeSignedZoneError(c *gin.Context, name string, message string, err error) {
+	status := signedZoneErrorStatus(err)
+	if status == http.StatusServiceUnavailable {
+		h.logger.Warn("Signed zone artifact is unavailable", zap.String("zone", name), zap.Error(err))
+		c.JSON(status, model.NewAPIErrorWithDetails(
+			model.ErrorCodeUnavailable,
+			message,
+			map[string]interface{}{"error": signedZoneErrorDetail(err)},
+		))
+		return
+	}
+
+	h.logger.Error(message, zap.String("zone", name), zap.Error(err))
+	c.JSON(status, model.NewAPIErrorWithDetails(
+		model.ErrorCodeInternal,
+		message,
+		map[string]interface{}{"error": "signing failed"},
+	))
+}
+
+func signedZoneErrorStatus(err error) int {
+	if errors.Is(err, service.ErrSignedArtifactUnavailable) || errors.Is(err, service.ErrSignedArtifactExpired) {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusInternalServerError
+}
+
+func signedZoneErrorDetail(err error) string {
+	if errors.Is(err, service.ErrSignedArtifactExpired) {
+		return "signed artifact expired"
+	}
+	return "signed artifact unavailable"
 }
 
 func (h *Handler) prepareSignedZoneCreate(c *gin.Context, zone *model.Zone, operation string) (*service.SignedZoneWrite, bool) {
