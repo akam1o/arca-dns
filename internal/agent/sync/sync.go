@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/config"
+	"github.com/akam1o/arca-dns/pkg/model"
 	"go.uber.org/zap"
 )
 
@@ -155,6 +156,9 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	zones, err := s.client.ListZones(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list zones: %w", err)
+	}
+	if err := validateControllerZoneList(zones); err != nil {
+		return err
 	}
 
 	s.logger.Debug("Fetched zone list",
@@ -364,6 +368,10 @@ func (s *Syncer) recordSyncSuccess(now time.Time) {
 
 // syncZone synchronizes a single zone.
 func (s *Syncer) syncZone(ctx context.Context, zone ZoneInfo) error {
+	if _, err := validateControllerZoneName(zone.Name); err != nil {
+		return fmt.Errorf("invalid zone name from controller: %w", err)
+	}
+
 	// Get current state
 	s.mu.RLock()
 	currentETag := ""
@@ -551,11 +559,19 @@ func isHex(s string) bool {
 // SyncZone synchronizes a specific zone by name.
 // Useful for on-demand sync or testing.
 func (s *Syncer) SyncZone(ctx context.Context, zoneName string) error {
+	if _, err := validateControllerZoneName(zoneName); err != nil {
+		return fmt.Errorf("invalid requested zone name: %w", err)
+	}
+
 	// Fetch zone info from controller
 	zones, err := s.client.ListZones(ctx)
 	if err != nil {
 		s.recordZoneSyncFailure(zoneName, time.Now())
 		return fmt.Errorf("failed to list zones: %w", err)
+	}
+	if err := validateControllerZoneList(zones); err != nil {
+		s.recordZoneSyncFailure(zoneName, time.Now())
+		return err
 	}
 
 	// Find the target zone
@@ -581,6 +597,29 @@ func (s *Syncer) SyncZone(ctx context.Context, zoneName string) error {
 	s.recordZoneSyncSuccess(targetZone.Name, now)
 	s.recordSyncSuccess(now)
 	return nil
+}
+
+func validateControllerZoneList(zones []ZoneInfo) error {
+	seen := make(map[string]int, len(zones))
+	for i, zone := range zones {
+		normalized, err := validateControllerZoneName(zone.Name)
+		if err != nil {
+			return fmt.Errorf("invalid zone name from controller at index %d: %w", i, err)
+		}
+		if previous, exists := seen[normalized]; exists {
+			return fmt.Errorf("duplicate zone name from controller at index %d: %q duplicates index %d", i, zone.Name, previous)
+		}
+		seen[normalized] = i
+	}
+	return nil
+}
+
+func validateControllerZoneName(zoneName string) (string, error) {
+	normalized := model.NormalizeZoneName(zoneName)
+	if err := model.ValidateZoneName(normalized); err != nil {
+		return "", fmt.Errorf("%q: %w", zoneName, err)
+	}
+	return normalized, nil
 }
 
 // GetZoneState returns the current sync state for a zone.

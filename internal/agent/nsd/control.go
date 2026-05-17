@@ -38,7 +38,10 @@ func (c *Controller) EnsureZone(zoneName string) error {
 		return nil
 	}
 
-	normalized := model.NormalizeZoneName(zoneName)
+	normalized, err := normalizeZoneName(zoneName)
+	if err != nil {
+		return err
+	}
 	changed, err := c.updateManagedZoneConfig(func(zones map[string]struct{}) {
 		zones[normalized] = struct{}{}
 	})
@@ -62,7 +65,10 @@ func (c *Controller) DeleteZone(zoneName string) error {
 		return nil
 	}
 
-	normalized := model.NormalizeZoneName(zoneName)
+	normalized, err := normalizeZoneName(zoneName)
+	if err != nil {
+		return err
+	}
 	changed, err := c.updateManagedZoneConfig(func(zones map[string]struct{}) {
 		delete(zones, normalized)
 	})
@@ -90,10 +96,15 @@ func (c *Controller) ReloadZone(zoneName string) error {
 	c.logger.Info("Reloading zone in NSD",
 		zap.String("zone", zoneName))
 
+	normalized, err := normalizeZoneName(zoneName)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.ReloadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "reload", zoneName)
+	cmd := exec.CommandContext(ctx, c.config.ControlPath, "reload", normalized)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -104,7 +115,7 @@ func (c *Controller) ReloadZone(zoneName string) error {
 	}
 
 	c.logger.Info("Zone reloaded successfully in NSD",
-		zap.String("zone", zoneName),
+		zap.String("zone", normalized),
 		zap.String("output", stdout.String()))
 
 	return nil
@@ -148,10 +159,15 @@ func (c *Controller) NotifyZone(zoneName string) error {
 	c.logger.Info("Sending NOTIFY for zone",
 		zap.String("zone", zoneName))
 
+	normalized, err := normalizeZoneName(zoneName)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.ReloadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "notify", zoneName)
+	cmd := exec.CommandContext(ctx, c.config.ControlPath, "notify", normalized)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -162,7 +178,7 @@ func (c *Controller) NotifyZone(zoneName string) error {
 	}
 
 	c.logger.Info("NOTIFY sent successfully",
-		zap.String("zone", zoneName),
+		zap.String("zone", normalized),
 		zap.String("output", stdout.String()))
 
 	return nil
@@ -208,10 +224,15 @@ func (c *Controller) CheckZone(zoneName string, zoneFile string) error {
 		zap.String("zone", zoneName),
 		zap.String("file", zoneFile))
 
+	normalized, err := normalizeZoneName(zoneName)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.CheckzonePath, zoneName, zoneFile)
+	cmd := exec.CommandContext(ctx, c.config.CheckzonePath, normalized, zoneFile)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -223,7 +244,7 @@ func (c *Controller) CheckZone(zoneName string, zoneFile string) error {
 	}
 
 	c.logger.Debug("Zone file is valid",
-		zap.String("zone", zoneName),
+		zap.String("zone", normalized),
 		zap.String("output", stdout.String()))
 
 	return nil
@@ -319,10 +340,22 @@ func readManagedZoneConfig(path string) (string, map[string]struct{}, error) {
 		if zoneName == "" {
 			continue
 		}
-		zones[model.NormalizeZoneName(zoneName)] = struct{}{}
+		normalized, err := normalizeZoneName(zoneName)
+		if err != nil {
+			return "", nil, fmt.Errorf("invalid NSD managed zone marker: %w", err)
+		}
+		zones[normalized] = struct{}{}
 	}
 
 	return existing, zones, nil
+}
+
+func normalizeZoneName(zoneName string) (string, error) {
+	normalized := model.NormalizeZoneName(zoneName)
+	if err := model.ValidateZoneName(normalized); err != nil {
+		return "", fmt.Errorf("invalid zone name %q: %w", zoneName, err)
+	}
+	return normalized, nil
 }
 
 func renderManagedZoneConfig(configPath, zoneDir string, zones map[string]struct{}) string {

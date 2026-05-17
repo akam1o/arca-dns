@@ -380,9 +380,9 @@ func (c *Client) fetchSignedZoneArtifact(ctx context.Context, zoneName string, c
 		ctx = context.Background()
 	}
 
-	url := fmt.Sprintf("%s/api/v1/zones/%s/signed", c.baseURL, zoneName)
+	endpoint := fmt.Sprintf("%s/api/v1/zones/%s/signed", c.baseURL, url.PathEscape(zoneName))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

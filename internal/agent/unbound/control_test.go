@@ -3,6 +3,7 @@ package unbound
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +111,31 @@ func TestController_GenerateStubZoneConfig(t *testing.T) {
 		if !contains(stubConfig, expected) {
 			t.Errorf("Expected stub config to contain '%s', got: %s", expected, stubConfig)
 		}
+	}
+}
+
+func TestController_RejectsInvalidStubZoneName(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: filepath.Join(tmpDir, "unbound.conf"),
+		StubZoneConfig: config.StubZoneConfig{
+			NSDAddress: "127.0.0.1",
+			NSDPort:    5353,
+		},
+	}, zap.NewNop())
+
+	invalidZoneName := "bad.com\"\ninclude: \"/tmp/pwn\""
+	if _, err := ctrl.GenerateStubZoneConfig(invalidZoneName); err == nil {
+		t.Fatal("GenerateStubZoneConfig should reject invalid zone names")
+	} else if !strings.Contains(err.Error(), "invalid zone name") {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if err := ctrl.UpdateStubZoneConfig(invalidZoneName); err == nil {
+		t.Fatal("UpdateStubZoneConfig should reject invalid zone names")
+	} else if !strings.Contains(err.Error(), "invalid zone name") {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 }
 

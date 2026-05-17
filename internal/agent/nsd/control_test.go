@@ -143,6 +143,31 @@ func TestController_EnsureZoneConfig(t *testing.T) {
 	}
 }
 
+func TestController_RejectsInvalidManagedZoneName(t *testing.T) {
+	tmpDir := t.TempDir()
+	zoneConfigPath := filepath.Join(tmpDir, "arca-dns-zones.conf")
+
+	ctrl := NewController(config.NSDConfig{
+		Enabled:        true,
+		ConfigPath:     filepath.Join(tmpDir, "nsd.conf"),
+		ZoneConfigPath: zoneConfigPath,
+		ControlPath:    filepath.Join(tmpDir, "nsd-control"),
+		ZoneDirectory:  filepath.Join(tmpDir, "zones"),
+		ReloadTimeout:  2 * time.Second,
+	}, zap.NewNop())
+
+	err := ctrl.EnsureZone("bad.com\"\ninclude: \"/tmp/pwn\"")
+	if err == nil {
+		t.Fatal("EnsureZone should reject invalid zone names")
+	}
+	if !strings.Contains(err.Error(), "invalid zone name") {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(zoneConfigPath); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid zone name should not create config file, got err=%v", statErr)
+	}
+}
+
 func TestController_CheckZone_ValidZone(t *testing.T) {
 	// Skip if nsd-checkzone is not available
 	if _, err := os.Stat("/usr/sbin/nsd-checkzone"); os.IsNotExist(err) {

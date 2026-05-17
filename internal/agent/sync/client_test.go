@@ -411,6 +411,41 @@ www.example.com. 300 IN A 192.0.2.1
 	}
 }
 
+func TestFetchSignedZone_EscapesZoneNamePathSegment(t *testing.T) {
+	requireTCPListener(t)
+
+	var requestURI string
+	var rawQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestURI = r.RequestURI
+		rawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 0,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com?admin=true", "")
+	if err == nil {
+		t.Fatal("Expected fetch to fail with mock error status")
+	}
+	if rawQuery != "" {
+		t.Fatalf("Expected zone name query delimiter to be escaped, raw query = %q", rawQuery)
+	}
+	if !strings.Contains(requestURI, "/api/v1/zones/example.com%3Fadmin=true/signed") {
+		t.Fatalf("RequestURI = %q, want escaped zone name path segment", requestURI)
+	}
+}
+
 func TestFetchSignedZone_RejectsResponseBodyOverLimit(t *testing.T) {
 	requireTCPListener(t)
 
