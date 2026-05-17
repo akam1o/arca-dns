@@ -601,11 +601,8 @@ func (g *GitBackend) restoreZoneFile(point *gitRollbackPoint) error {
 			if err := os.MkdirAll(filepath.Dir(file.absPath), 0755); err != nil {
 				return fmt.Errorf("failed to recreate zone directory: %w", err)
 			}
-			if err := writeFileSynced(file.absPath, file.fileData, file.fileMode.Perm()); err != nil {
+			if err := writeFileAtomicSynced(file.absPath, file.fileData, file.fileMode.Perm()); err != nil {
 				return fmt.Errorf("failed to restore zone file: %w", err)
-			}
-			if err := syncDir(filepath.Dir(file.absPath)); err != nil {
-				return fmt.Errorf("failed to sync restored zone directory: %w", err)
 			}
 			continue
 		}
@@ -865,7 +862,16 @@ func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 		return fmt.Errorf("failed to marshal zone to JSON: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(filePath)+".*.tmp")
+	if err := writeFileAtomicSynced(filePath, data, 0644); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeFileAtomicSynced(path string, data []byte, perm os.FileMode) error {
+	dirPath := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
@@ -877,7 +883,7 @@ func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 		}
 	}()
 
-	if err := tmp.Chmod(0644); err != nil {
+	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("failed to chmod temp file: %w", err)
 	}
@@ -896,43 +902,15 @@ func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
 
-	if err := os.Rename(tmpPath, filePath); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 	cleanupTmp = false
 	if err := syncDir(dirPath); err != nil {
-		return fmt.Errorf("failed to sync zone directory: %w", err)
+		return fmt.Errorf("failed to sync file directory: %w", err)
 	}
 
 	return nil
-}
-
-func writeFileSynced(path string, data []byte, perm os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
-
-	var writeErr error
-	if n, err := file.Write(data); err != nil {
-		writeErr = err
-	} else if n != len(data) {
-		writeErr = io.ErrShortWrite
-	}
-
-	var syncErr error
-	if writeErr == nil {
-		syncErr = file.Sync()
-	}
-	closeErr := file.Close()
-
-	if writeErr != nil {
-		return writeErr
-	}
-	if syncErr != nil {
-		return syncErr
-	}
-	return closeErr
 }
 
 func syncDir(path string) error {

@@ -221,6 +221,51 @@ func TestGitBackend_WriteZoneDoesNotFollowPredictableTempSymlink(t *testing.T) {
 	assert.Contains(t, string(written), `"name": "example.com."`)
 }
 
+func TestGitBackend_RestoreZoneFileDoesNotFollowSymlink(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	relPath, err := backend.zoneFilePath("example.com.")
+	require.NoError(t, err)
+	zonePath := filepath.Join(backend.repoPath, relPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(zonePath), 0755))
+
+	sentinelPath := filepath.Join(backend.repoPath, "sentinel")
+	sentinel := []byte("keep")
+	require.NoError(t, os.WriteFile(sentinelPath, sentinel, 0600))
+	if err := os.Symlink(sentinelPath, zonePath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	restored := []byte(`{"name":"example.com."}`)
+	point := &gitRollbackPoint{
+		files: []gitRollbackFile{
+			{
+				relPath:    relPath,
+				absPath:    zonePath,
+				fileExists: true,
+				fileMode:   0600,
+				fileData:   restored,
+			},
+		},
+	}
+
+	require.NoError(t, backend.restoreZoneFile(point))
+
+	got, err := os.ReadFile(sentinelPath)
+	require.NoError(t, err)
+	assert.Equal(t, sentinel, got)
+
+	info, err := os.Lstat(zonePath)
+	require.NoError(t, err)
+	assert.Zero(t, info.Mode()&os.ModeSymlink, "restored zone path should not remain a symlink")
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
+
+	written, err := os.ReadFile(zonePath)
+	require.NoError(t, err)
+	assert.Equal(t, restored, written)
+}
+
 func TestGitBackend_CreateZone_UsesSafeFilenameForLongZoneName(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
