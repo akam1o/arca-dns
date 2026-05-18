@@ -173,7 +173,7 @@ func TestGitBackend_CreateZone(t *testing.T) {
 	assert.NoError(t, err, "Zone file should exist")
 }
 
-func TestGitBackend_WriteZoneCleansTempFileWhenRenameFails(t *testing.T) {
+func TestGitBackend_WriteZoneRejectsNonRegularZonePath(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
 
@@ -183,13 +183,13 @@ func TestGitBackend_WriteZoneCleansTempFileWhenRenameFails(t *testing.T) {
 
 	err := backend.writeZone(zone.Name, zone)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to rename temp file")
+	assert.Contains(t, err.Error(), "regular file")
 
 	_, statErr := os.Stat(zonePath + ".tmp")
-	assert.True(t, os.IsNotExist(statErr), "temporary zone file should be removed after rename failure")
+	assert.True(t, os.IsNotExist(statErr), "temporary zone file should not be created for non-regular target")
 	matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(zonePath), "."+filepath.Base(zonePath)+".*.tmp"))
 	require.NoError(t, globErr)
-	assert.Empty(t, matches, "temporary zone files should be removed after rename failure")
+	assert.Empty(t, matches, "temporary zone files should not be created for non-regular target")
 }
 
 func TestGitBackend_WriteZoneDoesNotFollowPredictableTempSymlink(t *testing.T) {
@@ -264,6 +264,29 @@ func TestGitBackend_RestoreZoneFileDoesNotFollowSymlink(t *testing.T) {
 	written, err := os.ReadFile(zonePath)
 	require.NoError(t, err)
 	assert.Equal(t, restored, written)
+}
+
+func TestGitBackend_ReadZoneRejectsSymlink(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	relPath, err := backend.zoneFilePath(zone.Name)
+	require.NoError(t, err)
+	zonePath := filepath.Join(backend.repoPath, relPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(zonePath), 0755))
+
+	outsidePath := filepath.Join(backend.repoPath, "outside-zone.json")
+	outsideData, err := json.Marshal(zone)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(outsidePath, outsideData, 0600))
+	if err := os.Symlink(outsidePath, zonePath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err = backend.GetZone(context.Background(), zone.Name)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
 }
 
 func TestGitBackend_CreateZone_UsesSafeFilenameForLongZoneName(t *testing.T) {

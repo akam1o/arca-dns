@@ -435,7 +435,7 @@ func (g *GitBackend) existingZoneFilePath(zoneName string) (string, error) {
 	}
 
 	for _, relPath := range paths {
-		if _, err := os.Stat(filepath.Join(g.repoPath, relPath)); err == nil {
+		if _, err := statRegularZoneFile(filepath.Join(g.repoPath, relPath)); err == nil {
 			return relPath, nil
 		} else if !os.IsNotExist(err) {
 			return "", fmt.Errorf("failed to stat zone file: %w", err)
@@ -524,7 +524,7 @@ func (g *GitBackend) snapshotExistingZoneFiles(zoneName string) (*gitRollbackPoi
 
 	existingPaths := make([]string, 0, len(paths))
 	for _, relPath := range paths {
-		_, err := os.Stat(filepath.Join(g.repoPath, relPath))
+		_, err := statRegularZoneFile(filepath.Join(g.repoPath, relPath))
 		if err == nil {
 			existingPaths = append(existingPaths, relPath)
 			continue
@@ -556,16 +556,13 @@ func (g *GitBackend) snapshotZoneFilePaths(relPaths []string) (*gitRollbackPoint
 			absPath: filepath.Join(g.repoPath, relPath),
 		}
 
-		info, err := os.Stat(file.absPath)
+		data, mode, err := readRegularZoneFile(file.absPath)
 		if err == nil {
 			file.fileExists = true
-			file.fileMode = info.Mode()
-			file.fileData, err = os.ReadFile(file.absPath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to snapshot zone file: %w", err)
-			}
+			file.fileMode = mode
+			file.fileData = data
 		} else if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("failed to stat zone file: %w", err)
+			return nil, fmt.Errorf("failed to snapshot zone file: %w", err)
 		}
 
 		if _, err := idx.Entry(relPath); err == nil {
@@ -824,7 +821,7 @@ func (g *GitBackend) readZone(zoneName string) (*model.Zone, error) {
 func (g *GitBackend) readZoneFile(relPath string) (*model.Zone, error) {
 	filePath := filepath.Join(g.repoPath, relPath)
 
-	data, err := os.ReadFile(filePath)
+	data, _, err := readRegularZoneFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, model.ErrZoneNotFound
@@ -838,6 +835,50 @@ func (g *GitBackend) readZoneFile(relPath string) (*model.Zone, error) {
 	}
 
 	return &zone, nil
+}
+
+func statRegularZoneFile(path string) (os.FileInfo, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("zone file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("zone file must be a regular file: %s", path)
+	}
+	return info, nil
+}
+
+func readRegularZoneFile(path string) ([]byte, os.FileMode, error) {
+	info, err := statRegularZoneFile(path)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, 0, fmt.Errorf("zone file changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("zone file must be a regular file: %s", path)
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, openedInfo.Mode(), nil
 }
 
 // writeZone writes a zone to JSON file atomically
