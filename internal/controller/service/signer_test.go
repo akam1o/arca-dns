@@ -220,6 +220,34 @@ func TestSigningService_StoreArtifactDoesNotFollowPredictableTempSymlink(t *test
 	}
 }
 
+func TestSigningService_LoadArtifactRejectsSymlink(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zoneName := "example.com."
+	version := "symlink"
+	targetPath := service.artifactPath(zoneName, version)
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		t.Fatalf("failed to create artifact directory: %v", err)
+	}
+
+	sentinelPath := filepath.Join(t.TempDir(), "sentinel.zone.signed")
+	if err := os.WriteFile(sentinelPath, []byte("leaked artifact"), 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	data, err := service.loadArtifact(zoneName, version)
+	if err == nil {
+		t.Fatalf("loadArtifact followed symlink and returned %q", data)
+	}
+	if !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("loadArtifact error = %v, want symlink rejection", err)
+	}
+}
+
 func TestSigningService_StoreArtifactSanitizesVersionFilename(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()

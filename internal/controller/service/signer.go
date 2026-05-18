@@ -1133,9 +1133,41 @@ func (s *SigningService) loadArtifact(zoneName, version string) ([]byte, error) 
 		return nil, fmt.Errorf("artifact cache disabled")
 	}
 	path := s.artifactPath(zoneName, version)
-	data, err := os.ReadFile(path)
+	data, err := readRegularArtifactFile(path)
 	if err != nil {
 		return nil, err
 	}
 	return data, nil
+}
+
+func readRegularArtifactFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("artifact file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("artifact file must be a regular file: %s", path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("artifact file changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("artifact file must be a regular file: %s", path)
+	}
+
+	return io.ReadAll(file)
 }
