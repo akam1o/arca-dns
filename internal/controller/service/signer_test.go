@@ -220,6 +220,62 @@ func TestSigningService_StoreArtifactDoesNotFollowPredictableTempSymlink(t *test
 	}
 }
 
+func TestSigningService_StoreArtifactRejectsSymlinkedArtifactCacheDirectory(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	artifactDir := filepath.Join(tmpDir, "artifacts")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, artifactDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	service.artifactDir = artifactDir
+
+	zoneName := "example.com."
+	err := service.storeArtifact(zoneName, "v1", []byte("signed zone"))
+	if err == nil {
+		t.Fatal("storeArtifact should reject symlinked artifact cache directory")
+	}
+	if !strings.Contains(err.Error(), "artifact cache directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("storeArtifact error = %v, want symlinked artifact cache directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, filepath.Base(service.artifactZoneDir(zoneName)), "v1.zone.signed")); !os.IsNotExist(statErr) {
+		t.Fatalf("artifact should not be written through symlink, stat err=%v", statErr)
+	}
+}
+
+func TestSigningService_StoreArtifactRejectsSymlinkedArtifactZoneDirectory(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zoneName := "example.com."
+	targetDir := filepath.Join(t.TempDir(), "target")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.MkdirAll(service.artifactDir, 0755); err != nil {
+		t.Fatalf("failed to create artifact cache dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, service.artifactZoneDir(zoneName)); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := service.storeArtifact(zoneName, "v1", []byte("signed zone"))
+	if err == nil {
+		t.Fatal("storeArtifact should reject symlinked artifact zone directory")
+	}
+	if !strings.Contains(err.Error(), "artifact zone directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("storeArtifact error = %v, want symlinked artifact zone directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "v1.zone.signed")); !os.IsNotExist(statErr) {
+		t.Fatalf("artifact should not be written through symlink, stat err=%v", statErr)
+	}
+}
+
 func TestSigningService_LoadArtifactRejectsSymlink(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
@@ -245,6 +301,35 @@ func TestSigningService_LoadArtifactRejectsSymlink(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "must not be a symlink") {
 		t.Fatalf("loadArtifact error = %v, want symlink rejection", err)
+	}
+}
+
+func TestSigningService_LoadArtifactRejectsSymlinkedArtifactZoneDirectory(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zoneName := "example.com."
+	version := "v1"
+	targetDir := filepath.Join(t.TempDir(), "target")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, version+".zone.signed"), []byte("leaked artifact"), 0600); err != nil {
+		t.Fatalf("failed to write target artifact: %v", err)
+	}
+	if err := os.MkdirAll(service.artifactDir, 0755); err != nil {
+		t.Fatalf("failed to create artifact cache dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, service.artifactZoneDir(zoneName)); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	data, err := service.loadArtifact(zoneName, version)
+	if err == nil {
+		t.Fatalf("loadArtifact followed symlinked artifact zone directory and returned %q", data)
+	}
+	if !strings.Contains(err.Error(), "artifact zone directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("loadArtifact error = %v, want symlinked artifact zone directory error", err)
 	}
 }
 
@@ -283,6 +368,39 @@ func TestSigningService_StoreArtifactSanitizesVersionFilename(t *testing.T) {
 	}
 }
 
+func TestSigningService_RemoveSignedZoneArtifactRejectsSymlinkedArtifactZoneDirectory(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zoneName := "example.com."
+	version := "v1"
+	targetDir := filepath.Join(t.TempDir(), "target")
+	targetArtifact := filepath.Join(targetDir, version+".zone.signed")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.WriteFile(targetArtifact, []byte("keep"), 0600); err != nil {
+		t.Fatalf("failed to write target artifact: %v", err)
+	}
+	if err := os.MkdirAll(service.artifactDir, 0755); err != nil {
+		t.Fatalf("failed to create artifact cache dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, service.artifactZoneDir(zoneName)); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := service.removeSignedZoneArtifact(&SignedZoneArtifact{ZoneName: zoneName, Version: version})
+	if err == nil {
+		t.Fatal("removeSignedZoneArtifact should reject symlinked artifact zone directory")
+	}
+	if !strings.Contains(err.Error(), "artifact zone directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("removeSignedZoneArtifact error = %v, want symlinked artifact zone directory error", err)
+	}
+	if _, statErr := os.Stat(targetArtifact); statErr != nil {
+		t.Fatalf("artifact should not be removed through symlink, stat err=%v", statErr)
+	}
+}
+
 func TestSafeArtifactVersionFilenamePreservesValidVersions(t *testing.T) {
 	tests := []string{
 		"v01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -293,6 +411,77 @@ func TestSafeArtifactVersionFilenamePreservesValidVersions(t *testing.T) {
 	for _, version := range tests {
 		if got := safeArtifactVersionFilename(version); got != version {
 			t.Fatalf("safeArtifactVersionFilename(%q) = %q", version, got)
+		}
+	}
+}
+
+func TestSigningService_RemoveZoneArtifactsRejectsSymlinkedArtifactZoneDirectory(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zoneName := "example.com."
+	targetDir := filepath.Join(t.TempDir(), "target")
+	targetArtifact := filepath.Join(targetDir, "v1.zone.signed")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.WriteFile(targetArtifact, []byte("keep"), 0600); err != nil {
+		t.Fatalf("failed to write target artifact: %v", err)
+	}
+	if err := os.MkdirAll(service.artifactDir, 0755); err != nil {
+		t.Fatalf("failed to create artifact cache dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, service.artifactZoneDir(zoneName)); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := service.removeZoneArtifacts(zoneName)
+	if err == nil {
+		t.Fatal("removeZoneArtifacts should reject symlinked artifact zone directory")
+	}
+	if !strings.Contains(err.Error(), "artifact zone directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("removeZoneArtifacts error = %v, want symlinked artifact zone directory error", err)
+	}
+	if _, statErr := os.Stat(targetArtifact); statErr != nil {
+		t.Fatalf("artifact should not be removed through symlink, stat err=%v", statErr)
+	}
+}
+
+func TestSigningService_PruneArtifactsRejectsSymlinkedArtifactZoneDirectory(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	service.SetMaxArtifactsPerZone(1)
+	zoneName := "example.com."
+	targetDir := filepath.Join(t.TempDir(), "target")
+	oldArtifact := filepath.Join(targetDir, "v1.zone.signed")
+	newArtifact := filepath.Join(targetDir, "v2.zone.signed")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.WriteFile(oldArtifact, []byte("old"), 0600); err != nil {
+		t.Fatalf("failed to write old artifact: %v", err)
+	}
+	if err := os.WriteFile(newArtifact, []byte("new"), 0600); err != nil {
+		t.Fatalf("failed to write new artifact: %v", err)
+	}
+	if err := os.MkdirAll(service.artifactDir, 0755); err != nil {
+		t.Fatalf("failed to create artifact cache dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, service.artifactZoneDir(zoneName)); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := service.pruneArtifacts(zoneName)
+	if err == nil {
+		t.Fatal("pruneArtifacts should reject symlinked artifact zone directory")
+	}
+	if !strings.Contains(err.Error(), "artifact zone directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("pruneArtifacts error = %v, want symlinked artifact zone directory error", err)
+	}
+	for _, path := range []string{oldArtifact, newArtifact} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("artifact should not be pruned through symlink, path=%s stat err=%v", path, statErr)
 		}
 	}
 }

@@ -589,6 +589,9 @@ func (s *SigningService) removeSignedZoneArtifact(artifact *SignedZoneArtifact) 
 	if artifact == nil || s.artifactDir == "" {
 		return nil
 	}
+	if _, err := s.validateArtifactZoneDirectoryIfExists(artifact.ZoneName); err != nil {
+		return err
+	}
 	err := os.Remove(s.artifactPath(artifact.ZoneName, artifact.Version))
 	if err == nil || os.IsNotExist(err) {
 		return nil
@@ -631,7 +634,10 @@ func (s *SigningService) removeZoneArtifacts(zoneName string) error {
 	if err := model.ValidateZoneName(normalizedZoneName); err != nil {
 		return fmt.Errorf("invalid zone name: %w", err)
 	}
-	zoneDir := filepath.Join(s.artifactDir, util.SafeZoneFilename(normalizedZoneName))
+	zoneDir, err := s.validateArtifactZoneDirectoryIfExists(normalizedZoneName)
+	if err != nil {
+		return err
+	}
 	if err := os.RemoveAll(zoneDir); err != nil {
 		return fmt.Errorf("remove artifact directory: %w", err)
 	}
@@ -964,8 +970,12 @@ func (s *SigningService) getZoneLock(zoneName string) *zoneSigningLock {
 }
 
 func (s *SigningService) artifactPath(zoneName, version string) string {
-	zoneDir := filepath.Join(s.artifactDir, util.SafeZoneFilename(zoneName))
+	zoneDir := s.artifactZoneDir(zoneName)
 	return filepath.Join(zoneDir, fmt.Sprintf("%s.zone.signed", safeArtifactVersionFilename(version)))
+}
+
+func (s *SigningService) artifactZoneDir(zoneName string) string {
+	return filepath.Join(s.artifactDir, util.SafeZoneFilename(zoneName))
 }
 
 func safeArtifactVersionFilename(version string) string {
@@ -1008,9 +1018,9 @@ func (s *SigningService) storeArtifact(zoneName, version string, contents []byte
 	}
 
 	path := s.artifactPath(zoneName, version)
-	dirPath := filepath.Dir(path)
-	if err := os.MkdirAll(dirPath, 0o755); err != nil {
-		return fmt.Errorf("mkdir artifact dir: %w", err)
+	dirPath, err := s.ensureArtifactZoneDirectory(zoneName)
+	if err != nil {
+		return err
 	}
 
 	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
@@ -1054,6 +1064,72 @@ func (s *SigningService) storeArtifact(zoneName, version string, contents []byte
 	return nil
 }
 
+func (s *SigningService) ensureArtifactZoneDirectory(zoneName string) (string, error) {
+	zoneDir := s.artifactZoneDir(zoneName)
+	if err := ensureArtifactDirectory(s.artifactDir, "artifact cache directory"); err != nil {
+		return "", err
+	}
+	if err := ensureArtifactDirectory(zoneDir, "artifact zone directory"); err != nil {
+		return "", err
+	}
+	return zoneDir, nil
+}
+
+func ensureArtifactDirectory(path, label string) error {
+	existed := true
+	if err := validateExistingArtifactDirectory(path, label); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %s: %w", label, err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", label, err)
+	}
+	if err := validateExistingArtifactDirectory(path, label); err != nil {
+		return fmt.Errorf("stat %s: %w", label, err)
+	}
+	if !existed {
+		if err := syncDir(filepath.Dir(path)); err != nil {
+			return fmt.Errorf("sync %s parent: %w", label, err)
+		}
+	}
+
+	return nil
+}
+
+func (s *SigningService) validateArtifactZoneDirectoryIfExists(zoneName string) (string, error) {
+	zoneDir := s.artifactZoneDir(zoneName)
+	if err := validateExistingArtifactDirectory(s.artifactDir, "artifact cache directory"); err != nil {
+		if os.IsNotExist(err) {
+			return zoneDir, nil
+		}
+		return "", fmt.Errorf("stat artifact cache directory: %w", err)
+	}
+	if err := validateExistingArtifactDirectory(zoneDir, "artifact zone directory"); err != nil {
+		if os.IsNotExist(err) {
+			return zoneDir, nil
+		}
+		return "", fmt.Errorf("stat artifact zone directory: %w", err)
+	}
+	return zoneDir, nil
+}
+
+func validateExistingArtifactDirectory(path, label string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s must be a directory: %s", label, path)
+	}
+	return nil
+}
+
 func syncDir(path string) error {
 	dir, err := os.Open(path)
 	if err != nil {
@@ -1077,7 +1153,10 @@ func (s *SigningService) pruneArtifacts(zoneName string) error {
 		return nil
 	}
 
-	zoneDir := filepath.Join(s.artifactDir, util.SafeZoneFilename(zoneName))
+	zoneDir, err := s.validateArtifactZoneDirectoryIfExists(zoneName)
+	if err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(zoneDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1133,6 +1212,9 @@ func (s *SigningService) loadArtifact(zoneName, version string) ([]byte, error) 
 		return nil, fmt.Errorf("artifact cache disabled")
 	}
 	path := s.artifactPath(zoneName, version)
+	if _, err := s.validateArtifactZoneDirectoryIfExists(zoneName); err != nil {
+		return nil, err
+	}
 	data, err := readRegularArtifactFile(path)
 	if err != nil {
 		return nil, err
