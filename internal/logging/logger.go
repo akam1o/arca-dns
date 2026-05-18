@@ -69,12 +69,56 @@ func ensureOutputPath(output string) error {
 		return nil
 	}
 
-	dir := filepath.Dir(output)
+	if err := ensureLogFilePath(output, "logging output file"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureLogFilePath(path string, label string) error {
+	dir := filepath.Dir(path)
 	if dir == "." || dir == "" {
-		return nil
+		return validateLogFilePathIfExists(path, label)
+	}
+	if err := validateExistingLogDirectory(dir, "logging output directory"); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat logging output directory: %w", err)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create logging output directory: %w", err)
+	}
+	if err := validateExistingLogDirectory(dir, "logging output directory"); err != nil {
+		return fmt.Errorf("stat logging output directory: %w", err)
+	}
+	return validateLogFilePathIfExists(path, label)
+}
+
+func validateLogFilePathIfExists(path string, label string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", label, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+	return nil
+}
+
+func validateExistingLogDirectory(path string, label string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s must be a directory: %s", label, path)
 	}
 	return nil
 }

@@ -369,7 +369,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			},
 			PrometheusEnabled: cfg.Metrics.Enabled,
 		}
-		dnstapProcessor = dnstap.NewProcessor(processorConfig, logger)
+		dnstapProcessor, err = dnstap.NewProcessor(processorConfig, logger)
+		if err != nil {
+			return fmt.Errorf("initialize dnstap processor: %w", err)
+		}
 		logger.Info("DNSTap processor initialized",
 			zap.String("socket", cfg.DNSTap.SocketPath),
 			zap.String("log_file", cfg.DNSTap.LogFile),
