@@ -495,6 +495,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	if cfg.Controller.MaxResponseBytes <= 0 {
 		return fmt.Errorf("invalid controller.max_response_bytes: must be positive")
 	}
+	if err := validateAgentControllerAPIKeyTransport(cfg.Controller); err != nil {
+		return err
+	}
 	if err := validateAgentControllerTLSConfig(cfg.Controller); err != nil {
 		return err
 	}
@@ -753,6 +756,25 @@ func validateAgentControllerTLSConfig(controller ControllerClientConfig) error {
 	return nil
 }
 
+func validateAgentControllerAPIKeyTransport(controller ControllerClientConfig) error {
+	if strings.TrimSpace(controller.APIKey) == "" || controller.AllowPlaintextAPIKey {
+		return nil
+	}
+
+	parsed, err := url.Parse(controller.URL)
+	if err != nil {
+		return fmt.Errorf("invalid controller.url: %w", err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") {
+		return nil
+	}
+	if isLoopbackHost(parsed.Hostname()) {
+		return nil
+	}
+
+	return fmt.Errorf("invalid controller.api_key: plaintext HTTP controller.url is only allowed for loopback hosts; use https or set controller.allow_plaintext_api_key=true for an intentionally trusted transport")
+}
+
 func healthTestRecordNeedsZone(record string) bool {
 	record = strings.TrimSpace(record)
 	return record != "" && !strings.HasSuffix(record, ".")
@@ -820,6 +842,10 @@ func isLoopbackListenEndpoint(listen string) bool {
 	if err != nil {
 		return false
 	}
+	return isLoopbackHost(host)
+}
+
+func isLoopbackHost(host string) bool {
 	host = strings.Trim(host, "[]")
 	if strings.EqualFold(host, "localhost") {
 		return true

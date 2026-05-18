@@ -173,8 +173,8 @@ dnssec:
 
 ```yaml
 controller:
-  # Prefer https:// unless this is an intentionally trusted local/private transport.
-  # Using http:// with api_key logs a warning.
+  # Prefer https:// for non-loopback controllers.
+  # Non-loopback http:// with api_key requires allow_plaintext_api_key: true.
   url: "http://localhost:8080"
   api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
   max_response_bytes: 67108864

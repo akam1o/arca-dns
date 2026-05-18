@@ -287,6 +287,7 @@ Set at least:
 
 - `controller.url`: controller URL
 - `controller.api_key`: raw API key
+- `controller.allow_plaintext_api_key`: set `true` only when intentionally using a trusted non-loopback HTTP transport with an API key
 - `nsd.enabled`, `nsd.zone_directory`, `nsd.control_path`
 - `unbound.enabled`, `unbound.control_path`
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
@@ -459,7 +460,7 @@ The agent uses these controller APIs:
 - `GET /api/v1/zones?fields=summary`
 - `GET /api/v1/zones/:name/signed`
 
-When controller API auth is enabled, the agent sends `controller.api_key` in the `X-API-Key` header. Use an API key with the `agent` role; it is limited to zone summary listing and signed artifact reads.
+When controller API auth is enabled, the agent sends `controller.api_key` in the `X-API-Key` header. Use an API key with the `agent` role; it is limited to zone summary listing and signed artifact reads. Non-loopback `http://` controller URLs are rejected when `controller.api_key` is set unless `controller.allow_plaintext_api_key` is explicitly enabled; prefer HTTPS for remote controllers.
 
 Zone sync does the following:
 

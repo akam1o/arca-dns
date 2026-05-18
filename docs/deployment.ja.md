@@ -285,6 +285,7 @@ sudo dnf install bird nsd unbound arca-dns
 
 - `controller.url`: controller の URL
 - `controller.api_key`: 生の API キー
+- `controller.allow_plaintext_api_key`: 信頼済みの loopback 以外の HTTP transport で API キーを使う場合だけ `true`
 - `nsd.enabled`, `nsd.zone_directory`, `nsd.control_path`
 - `unbound.enabled`, `unbound.control_path`
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
@@ -458,7 +459,7 @@ agent は controller から次の API を利用します。
 - `GET /api/v1/zones?fields=summary`
 - `GET /api/v1/zones/:name/signed`
 
-controller の API 認証が有効な場合、agent は `X-API-Key` header に `controller.api_key` を付与します。`agent` role の API キーを使ってください。この role は zone summary 一覧と signed artifact 読み取りに制限されます。
+controller の API 認証が有効な場合、agent は `X-API-Key` header に `controller.api_key` を付与します。`agent` role の API キーを使ってください。この role は zone summary 一覧と signed artifact 読み取りに制限されます。loopback 以外の `http://` controller URL は、`controller.api_key` 設定時に `controller.allow_plaintext_api_key` を明示的に有効化しない限り拒否されます。remote controller では HTTPS を優先してください。
 
 zone 同期では次を行います。
 

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -176,6 +177,10 @@ func sameOrigin(a *url.URL, b *url.URL) bool {
 }
 
 func validateTLSConfig(cfg config.ControllerClientConfig) error {
+	if err := validateAPIKeyTransport(cfg); err != nil {
+		return err
+	}
+
 	caFile := strings.TrimSpace(cfg.TLS.CAFile)
 	certFile := strings.TrimSpace(cfg.TLS.CertFile)
 	keyFile := strings.TrimSpace(cfg.TLS.KeyFile)
@@ -213,6 +218,33 @@ func validateTLSConfig(cfg config.ControllerClientConfig) error {
 		}
 	}
 	return nil
+}
+
+func validateAPIKeyTransport(cfg config.ControllerClientConfig) error {
+	if strings.TrimSpace(cfg.APIKey) == "" || cfg.AllowPlaintextAPIKey {
+		return nil
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(cfg.URL))
+	if err != nil {
+		return fmt.Errorf("invalid controller URL: %w", err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") {
+		return nil
+	}
+	if isLoopbackURLHost(parsed.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("invalid controller API key transport: plaintext HTTP is only allowed for loopback hosts; use https or set allow_plaintext_api_key=true for an intentionally trusted transport")
+}
+
+func isLoopbackURLHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // SetVerifyChecksums controls whether signed zone downloads must include and

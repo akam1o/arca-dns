@@ -68,6 +68,63 @@ func TestNewClient_NormalizesTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestNewClient_APIKeyTransport(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     config.ControllerClientConfig
+		wantErr string
+	}{
+		{
+			name: "rejects remote http with api key",
+			cfg: config.ControllerClientConfig{
+				URL:    "http://controller.example.com",
+				APIKey: "secret",
+			},
+			wantErr: "plaintext HTTP",
+		},
+		{
+			name: "allows loopback http with api key",
+			cfg: config.ControllerClientConfig{
+				URL:    "http://localhost:8080",
+				APIKey: "secret",
+			},
+		},
+		{
+			name: "allows explicit plaintext opt in",
+			cfg: config.ControllerClientConfig{
+				URL:                  "http://controller.example.com",
+				APIKey:               "secret",
+				AllowPlaintextAPIKey: true,
+			},
+		},
+		{
+			name: "allows https with api key",
+			cfg: config.ControllerClientConfig{
+				URL:    "https://controller.example.com",
+				APIKey: "secret",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewClient(tc.cfg)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatal("Expected NewClient to fail")
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Expected error to contain %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewClient failed: %v", err)
+			}
+		})
+	}
+}
+
 func TestNewClient_RejectsIncompleteClientAuthTLS(t *testing.T) {
 	tests := []struct {
 		name string

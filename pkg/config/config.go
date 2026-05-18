@@ -330,6 +330,10 @@ type ControllerClientConfig struct {
 	// APIKey is the authentication API key
 	APIKey string `mapstructure:"api_key"`
 
+	// AllowPlaintextAPIKey permits sending API keys to non-loopback HTTP URLs.
+	// Prefer HTTPS; enable only for intentionally trusted transports.
+	AllowPlaintextAPIKey bool `mapstructure:"allow_plaintext_api_key"`
+
 	// TLS configuration
 	TLS TLSConfig `mapstructure:"tls"`
 

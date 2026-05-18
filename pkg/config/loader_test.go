@@ -943,6 +943,80 @@ func TestValidateAgentConfig_NormalizesControllerURL(t *testing.T) {
 	assert.Equal(t, "https://controller.example.com/base", cfg.Controller.URL)
 }
 
+func TestValidateAgentConfig_PlaintextAPIKeyTransport(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*AgentConfig)
+		wantErr bool
+	}{
+		{
+			name: "allows loopback http with api key",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "http://127.0.0.1:8080"
+				cfg.Controller.APIKey = "secret"
+			},
+		},
+		{
+			name: "allows https with api key",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "https://controller.example.com"
+				cfg.Controller.APIKey = "secret"
+			},
+		},
+		{
+			name: "allows remote http without api key",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "http://controller.example.com"
+			},
+		},
+		{
+			name: "allows explicit plaintext opt in",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "http://controller.example.com"
+				cfg.Controller.APIKey = "secret"
+				cfg.Controller.AllowPlaintextAPIKey = true
+			},
+		},
+		{
+			name: "rejects remote http with api key",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "http://controller.example.com"
+				cfg.Controller.APIKey = "secret"
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "controller.api_key")
+				assert.Contains(t, err.Error(), "plaintext HTTP")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestLoadAgentConfig_PlaintextAPIKeyOptInFromEnv(t *testing.T) {
+	t.Setenv("ARCA_DNS_CONTROLLER_URL", "http://controller.example.com")
+	t.Setenv("ARCA_DNS_CONTROLLER_API_KEY", "env-only-api-key")
+	t.Setenv("ARCA_DNS_CONTROLLER_ALLOW_PLAINTEXT_API_KEY", "true")
+	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_PUBLIC_KEY", validEnvArtifactSignatureKey)
+
+	cfg, err := LoadAgentConfig("")
+	require.NoError(t, err)
+
+	assert.Equal(t, "http://controller.example.com", cfg.Controller.URL)
+	assert.Equal(t, "env-only-api-key", cfg.Controller.APIKey)
+	assert.True(t, cfg.Controller.AllowPlaintextAPIKey)
+}
+
 func TestValidateAgentConfig_InvalidControllerClientSettings(t *testing.T) {
 	tests := []struct {
 		name   string

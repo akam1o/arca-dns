@@ -1,10 +1,11 @@
 # Example configuration for arca-dns-agent
 
 controller:
-  # Prefer https:// when the controller is not reached over an intentionally
-  # trusted local/private transport. Using http:// with api_key logs a warning.
+  # Prefer https:// when the controller is not reached over loopback.
+  # Enable this only for intentionally trusted local/private HTTP transports.
   url: "http://controller:8080"
   api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
+  allow_plaintext_api_key: true
   timeout: "5s"
   retry_attempts: 3
   retry_delay: "200ms"
