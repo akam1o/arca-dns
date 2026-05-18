@@ -9,6 +9,11 @@ import (
 	"github.com/miekg/dns"
 )
 
+const (
+	// DefaultMaxZoneFileSize is the default maximum BIND zone file size.
+	DefaultMaxZoneFileSize int64 = 10 * 1024 * 1024
+)
+
 // ParsedZone represents the intermediate representation of a parsed BIND zone file
 type ParsedZone struct {
 	Origin     string   // Zone origin (e.g., "example.com.")
@@ -22,6 +27,9 @@ type ParseOptions struct {
 	AllowIncludes bool
 	// DefaultTTL is used when $TTL directive is missing
 	DefaultTTL uint32
+	// MaxBytes is the maximum number of bytes to read from the zone file.
+	// A zero value uses DefaultMaxZoneFileSize. Negative values disable the limit.
+	MaxBytes int64
 }
 
 // DefaultParseOptions returns sensible defaults for zone file parsing
@@ -30,6 +38,7 @@ func DefaultParseOptions() ParseOptions {
 	return ParseOptions{
 		AllowIncludes: false, // Secure default for API usage
 		DefaultTTL:    3600,  // 1 hour default if $TTL not specified
+		MaxBytes:      DefaultMaxZoneFileSize,
 	}
 }
 
@@ -45,7 +54,7 @@ func ParseBINDZone(reader io.Reader, origin string, opts ParseOptions) (*ParsedZ
 	}
 
 	// Read all content for pre-scan validation
-	content, err := io.ReadAll(reader)
+	content, err := readZoneFile(reader, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read zone file: %w", err)
 	}
@@ -101,6 +110,25 @@ func ParseBINDZone(reader io.Reader, origin string, opts ParseOptions) (*ParsedZ
 	}
 
 	return parsed, nil
+}
+
+func readZoneFile(reader io.Reader, opts ParseOptions) ([]byte, error) {
+	maxBytes := opts.MaxBytes
+	if maxBytes == 0 {
+		maxBytes = DefaultMaxZoneFileSize
+	}
+	if maxBytes < 0 {
+		return io.ReadAll(reader)
+	}
+
+	content, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > maxBytes {
+		return nil, fmt.Errorf("zone file exceeds maximum size of %d bytes", maxBytes)
+	}
+	return content, nil
 }
 
 // validateDirectives performs pre-scan validation of zone file directives

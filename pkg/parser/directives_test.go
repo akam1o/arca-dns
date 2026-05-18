@@ -283,4 +283,8 @@ func TestDefaultParseOptions_SecureDefaults(t *testing.T) {
 	if opts.DefaultTTL != 3600 {
 		t.Errorf("expected DefaultTTL to be 3600, got %d", opts.DefaultTTL)
 	}
+
+	if opts.MaxBytes != DefaultMaxZoneFileSize {
+		t.Errorf("expected MaxBytes to be %d, got %d", DefaultMaxZoneFileSize, opts.MaxBytes)
+	}
 }
