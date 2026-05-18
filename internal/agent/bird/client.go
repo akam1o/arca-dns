@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -97,6 +98,10 @@ func (c *client) reconnect() error {
 // Exec executes a command and returns the response.
 // This method is thread-safe (uses mutex for serialization).
 func (c *client) Exec(ctx context.Context, cmd string) (*Response, error) {
+	if err := validateCommand(cmd); err != nil {
+		return nil, err
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -139,6 +144,13 @@ func (c *client) Exec(ctx context.Context, cmd string) (*Response, error) {
 	}
 
 	return resp, nil
+}
+
+func validateCommand(cmd string) error {
+	if strings.ContainsAny(cmd, "\r\n") {
+		return fmt.Errorf("invalid BIRD command: contains line break")
+	}
+	return nil
 }
 
 // Close closes the connection.

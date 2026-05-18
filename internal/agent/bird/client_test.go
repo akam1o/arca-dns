@@ -83,6 +83,29 @@ func TestClientExecWritesFullCommandAcrossPartialWrites(t *testing.T) {
 	}
 }
 
+func TestClientExecRejectsMultiLineCommand(t *testing.T) {
+	conn := newPartialWriteConn("0000\n", 3)
+	client := &client{
+		timeout:   time.Second,
+		conn:      conn,
+		connected: true,
+	}
+
+	_, err := client.Exec(context.Background(), "disable anycast_1\nconfigure")
+	if err == nil {
+		t.Fatal("expected multiline command to be rejected")
+	}
+	if !strings.Contains(err.Error(), "line break") {
+		t.Fatalf("expected line break validation error, got %v", err)
+	}
+	if got := conn.written.String(); got != "" {
+		t.Fatalf("command should not be written, got %q", got)
+	}
+	if !client.connected {
+		t.Fatalf("client should remain connected after validation failure")
+	}
+}
+
 func TestClientExecRejectsZeroByteCommandWrite(t *testing.T) {
 	conn := newPartialWriteConn("0000\n", 0)
 	client := &client{
