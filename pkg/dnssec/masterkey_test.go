@@ -217,6 +217,51 @@ func TestLoadMasterKey_RejectsSymlinkedFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "symlink")
 }
 
+func TestLoadMasterKey_RejectsWorldReadableFile(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "_masterkey")
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+	encoded := base64.StdEncoding.EncodeToString(key)
+	require.NoError(t, os.WriteFile(keyPath, []byte(encoded), 0600))
+	require.NoError(t, os.Chmod(keyPath, 0644))
+
+	loadedKey, src, err := LoadMasterKey(MasterKeyOptions{
+		KeyDirectory:      tmpDir,
+		AllowAutoGenerate: false,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, loadedKey)
+	assert.Empty(t, src)
+	assert.Contains(t, err.Error(), "read master key file")
+	assert.Contains(t, err.Error(), "permissions")
+	assert.Contains(t, err.Error(), "other access")
+}
+
+func TestLoadMasterKey_AllowsGroupReadableFile(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "_masterkey")
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+	encoded := base64.StdEncoding.EncodeToString(key)
+	require.NoError(t, os.WriteFile(keyPath, []byte(encoded), 0600))
+	require.NoError(t, os.Chmod(keyPath, 0640))
+
+	loadedKey, src, err := LoadMasterKey(MasterKeyOptions{
+		KeyDirectory:      tmpDir,
+		AllowAutoGenerate: false,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, MasterKeySourceFile, src)
+	assert.Equal(t, key, loadedKey)
+}
+
 func TestLoadMasterKey_RejectsSymlinkedDirectory(t *testing.T) {
 	t.Setenv(MasterKeyEnvVar, "")
 	tmpDir := t.TempDir()

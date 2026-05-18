@@ -84,7 +84,7 @@ func LoadMasterKey(opts MasterKeyOptions) (key []byte, src MasterKeySource, err 
 	if err := validateExistingKeyDirectory(keyDir); err != nil && !os.IsNotExist(err) {
 		return nil, "", fmt.Errorf("stat master key directory: %w", err)
 	}
-	if data, err := readRegularKeyFile(keyPath); err == nil {
+	if data, err := readRestrictedKeyFile(keyPath); err == nil {
 		key, err := ParseMasterKey(string(data))
 		if err != nil {
 			return nil, "", fmt.Errorf("parse master key from file: %w", err)
@@ -100,7 +100,7 @@ func LoadMasterKey(opts MasterKeyOptions) (key []byte, src MasterKeySource, err 
 		if err := validateExistingKeyDirectory(legacyKeyDir); err != nil {
 			return nil, "", fmt.Errorf("stat legacy master key directory: %w", err)
 		}
-		data, err := readRegularKeyFile(LegacyMasterKeyFilePath)
+		data, err := readRestrictedKeyFile(LegacyMasterKeyFilePath)
 		if err != nil {
 			return nil, "", fmt.Errorf("read legacy master key file: %w", err)
 		}

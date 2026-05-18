@@ -615,7 +615,26 @@ func validateExistingZoneKeyDir(path string) error {
 	return nil
 }
 
+type regularKeyFileValidator func(os.FileInfo) error
+
 func readRegularKeyFile(path string) ([]byte, error) {
+	return readValidatedRegularKeyFile(path, nil)
+}
+
+func readRestrictedKeyFile(path string) ([]byte, error) {
+	return readValidatedRegularKeyFile(path, func(info os.FileInfo) error {
+		perm := info.Mode().Perm()
+		if perm&0o007 != 0 {
+			return fmt.Errorf("key file permissions must not allow other access: %s has %03o", path, perm)
+		}
+		if perm&0o030 != 0 {
+			return fmt.Errorf("key file permissions must not allow group write or execute: %s has %03o", path, perm)
+		}
+		return nil
+	})
+}
+
+func readValidatedRegularKeyFile(path string, validate regularKeyFileValidator) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
@@ -625,6 +644,11 @@ func readRegularKeyFile(path string) ([]byte, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("key file must be a regular file: %s", path)
+	}
+	if validate != nil {
+		if err := validate(info); err != nil {
+			return nil, err
+		}
 	}
 
 	file, err := os.Open(path)
@@ -642,6 +666,11 @@ func readRegularKeyFile(path string) ([]byte, error) {
 	}
 	if !openedInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("key file must be a regular file: %s", path)
+	}
+	if validate != nil {
+		if err := validate(openedInfo); err != nil {
+			return nil, err
+		}
 	}
 
 	return io.ReadAll(file)
