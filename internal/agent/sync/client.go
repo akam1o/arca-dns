@@ -174,7 +174,7 @@ func loadRegularClientCertificate(certFile string, keyFile string) (tls.Certific
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("read client certificate file: %w", err)
 	}
-	keyPEMBlock, err := readRegularTLSFile(keyFile, "client key file")
+	keyPEMBlock, err := readRegularTLSPrivateKeyFile(keyFile)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("read client key file: %w", err)
 	}
@@ -183,6 +183,19 @@ func loadRegularClientCertificate(certFile string, keyFile string) (tls.Certific
 }
 
 func readRegularTLSFile(path string, label string) ([]byte, error) {
+	return readRegularTLSFileValidated(path, label, nil)
+}
+
+func readRegularTLSPrivateKeyFile(path string) ([]byte, error) {
+	return readRegularTLSFileValidated(path, "client key file", func(info os.FileInfo) error {
+		if info.Mode().Perm()&0o007 != 0 {
+			return fmt.Errorf("client key file permissions must not allow other access: %s (mode %04o)", path, info.Mode().Perm())
+		}
+		return nil
+	})
+}
+
+func readRegularTLSFileValidated(path string, label string, validate func(os.FileInfo) error) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
@@ -192,6 +205,11 @@ func readRegularTLSFile(path string, label string) ([]byte, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+	if validate != nil {
+		if err := validate(info); err != nil {
+			return nil, err
+		}
 	}
 
 	file, err := os.Open(path)
@@ -209,6 +227,11 @@ func readRegularTLSFile(path string, label string) ([]byte, error) {
 	}
 	if !openedInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+	if validate != nil {
+		if err := validate(openedInfo); err != nil {
+			return nil, err
+		}
 	}
 
 	return io.ReadAll(file)

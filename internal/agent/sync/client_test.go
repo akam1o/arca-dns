@@ -306,6 +306,64 @@ func TestNewClient_RejectsSymlinkedTLSClientKeyFile(t *testing.T) {
 	}
 }
 
+func TestNewClient_RejectsWorldReadableTLSClientKeyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	certPath := filepath.Join(tmpDir, "client.crt")
+	keyPath := filepath.Join(tmpDir, "client.key")
+	if err := os.WriteFile(certPath, []byte("not a certificate"), 0644); err != nil {
+		t.Fatalf("write cert file: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("not a key"), 0644); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+
+	_, err := NewClient(config.ControllerClientConfig{
+		URL: "https://localhost:8080",
+		TLS: config.TLSConfig{
+			Enabled:    true,
+			ClientAuth: true,
+			CertFile:   certPath,
+			KeyFile:    keyPath,
+		},
+	})
+	if err == nil {
+		t.Fatal("Expected NewClient to fail")
+	}
+	if !strings.Contains(err.Error(), "client key") ||
+		!strings.Contains(err.Error(), "permissions") ||
+		!strings.Contains(err.Error(), "other access") {
+		t.Fatalf("Expected client key permission error, got %v", err)
+	}
+}
+
+func TestNewClient_AllowsGroupReadableTLSClientKeyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	certPath := filepath.Join(tmpDir, "client.crt")
+	keyPath := filepath.Join(tmpDir, "client.key")
+	if err := os.WriteFile(certPath, []byte("not a certificate"), 0644); err != nil {
+		t.Fatalf("write cert file: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("not a key"), 0640); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+
+	_, err := NewClient(config.ControllerClientConfig{
+		URL: "https://localhost:8080",
+		TLS: config.TLSConfig{
+			Enabled:    true,
+			ClientAuth: true,
+			CertFile:   certPath,
+			KeyFile:    keyPath,
+		},
+	})
+	if err == nil {
+		t.Fatal("Expected NewClient to fail while parsing placeholder certificate")
+	}
+	if strings.Contains(err.Error(), "permissions") || strings.Contains(err.Error(), "other access") {
+		t.Fatalf("Expected key permissions to pass before certificate parse error, got %v", err)
+	}
+}
+
 func TestListZones(t *testing.T) {
 	requireTCPListener(t)
 	// Create mock server
