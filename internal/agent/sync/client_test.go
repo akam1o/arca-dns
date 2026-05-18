@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -211,6 +213,96 @@ func TestNewClient_RejectsIncompleteClientAuthTLS(t *testing.T) {
 				t.Fatalf("Expected error to contain %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestNewClient_RejectsSymlinkedTLSCAFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	realPath := filepath.Join(tmpDir, "ca.crt.real")
+	linkPath := filepath.Join(tmpDir, "ca.crt")
+	if err := os.WriteFile(realPath, []byte("not a certificate"), 0644); err != nil {
+		t.Fatalf("write real CA file: %v", err)
+	}
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := NewClient(config.ControllerClientConfig{
+		URL: "https://localhost:8080",
+		TLS: config.TLSConfig{
+			Enabled: true,
+			CAFile:  linkPath,
+		},
+	})
+	if err == nil {
+		t.Fatal("Expected NewClient to fail")
+	}
+	if !strings.Contains(err.Error(), "CA certificate") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Expected symlink CA certificate error, got %v", err)
+	}
+}
+
+func TestNewClient_RejectsSymlinkedTLSClientCertificateFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	realCertPath := filepath.Join(tmpDir, "client.crt.real")
+	certPath := filepath.Join(tmpDir, "client.crt")
+	keyPath := filepath.Join(tmpDir, "client.key")
+	if err := os.WriteFile(realCertPath, []byte("not a certificate"), 0644); err != nil {
+		t.Fatalf("write real cert file: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("not a key"), 0600); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+	if err := os.Symlink(realCertPath, certPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := NewClient(config.ControllerClientConfig{
+		URL: "https://localhost:8080",
+		TLS: config.TLSConfig{
+			Enabled:    true,
+			ClientAuth: true,
+			CertFile:   certPath,
+			KeyFile:    keyPath,
+		},
+	})
+	if err == nil {
+		t.Fatal("Expected NewClient to fail")
+	}
+	if !strings.Contains(err.Error(), "client certificate") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Expected symlink client certificate error, got %v", err)
+	}
+}
+
+func TestNewClient_RejectsSymlinkedTLSClientKeyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	certPath := filepath.Join(tmpDir, "client.crt")
+	realKeyPath := filepath.Join(tmpDir, "client.key.real")
+	keyPath := filepath.Join(tmpDir, "client.key")
+	if err := os.WriteFile(certPath, []byte("not a certificate"), 0644); err != nil {
+		t.Fatalf("write cert file: %v", err)
+	}
+	if err := os.WriteFile(realKeyPath, []byte("not a key"), 0600); err != nil {
+		t.Fatalf("write real key file: %v", err)
+	}
+	if err := os.Symlink(realKeyPath, keyPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := NewClient(config.ControllerClientConfig{
+		URL: "https://localhost:8080",
+		TLS: config.TLSConfig{
+			Enabled:    true,
+			ClientAuth: true,
+			CertFile:   certPath,
+			KeyFile:    keyPath,
+		},
+	})
+	if err == nil {
+		t.Fatal("Expected NewClient to fail")
+	}
+	if !strings.Contains(err.Error(), "client key") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Expected symlink client key error, got %v", err)
 	}
 }
 

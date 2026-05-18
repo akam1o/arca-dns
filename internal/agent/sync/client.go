@@ -115,7 +115,7 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 
 		// Load CA certificate if provided
 		if caFile != "" {
-			caCert, err := os.ReadFile(caFile)
+			caCert, err := readRegularTLSFile(caFile, "CA certificate file")
 			if err != nil {
 				return nil, fmt.Errorf("failed to read CA certificate: %w", err)
 			}
@@ -129,7 +129,7 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 
 		// Load client certificate if mutual TLS is enabled
 		if cfg.TLS.ClientAuth {
-			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+			cert, err := loadRegularClientCertificate(certFile, keyFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to load client certificate: %w", err)
 			}
@@ -167,6 +167,51 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 		maxResponseBytes: maxResponseBytes,
 		verifyChecksums:  true,
 	}, nil
+}
+
+func loadRegularClientCertificate(certFile string, keyFile string) (tls.Certificate, error) {
+	certPEMBlock, err := readRegularTLSFile(certFile, "client certificate file")
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("read client certificate file: %w", err)
+	}
+	keyPEMBlock, err := readRegularTLSFile(keyFile, "client key file")
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("read client key file: %w", err)
+	}
+
+	return tls.X509KeyPair(certPEMBlock, keyPEMBlock)
+}
+
+func readRegularTLSFile(path string, label string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("%s changed while opening: %s", label, path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+
+	return io.ReadAll(file)
 }
 
 func sameOrigin(a *url.URL, b *url.URL) bool {
