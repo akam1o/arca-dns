@@ -226,7 +226,7 @@ func (km *KeyManager) loadKey(zone string, role KeyRole) (*KeyPair, error) {
 
 	// Read active.json to get the active key tag
 	activeFile := filepath.Join(zoneDir, "active.json")
-	activeData, err := os.ReadFile(activeFile)
+	activeData, err := readRegularKeyFile(activeFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, model.ErrZoneNotFound
@@ -265,7 +265,7 @@ func (km *KeyManager) loadKey(zone string, role KeyRole) (*KeyPair, error) {
 	privPath := filepath.Join(zoneDir, privFile)
 
 	// Read public key
-	pubData, err := os.ReadFile(pubPath)
+	pubData, err := readRegularKeyFile(pubPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, model.ErrZoneNotFound
@@ -285,7 +285,7 @@ func (km *KeyManager) loadKey(zone string, role KeyRole) (*KeyPair, error) {
 	}
 
 	// Read and decrypt private key
-	privEncData, err := os.ReadFile(privPath)
+	privEncData, err := readRegularKeyFile(privPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, model.ErrZoneNotFound
@@ -448,7 +448,7 @@ func (km *KeyManager) readActiveKeys(zone string) (activeKeys, error) {
 	activeFile := filepath.Join(zoneDir, "active.json")
 	active := activeKeys{Algorithm: km.algorithm}
 
-	if data, err := os.ReadFile(activeFile); err == nil {
+	if data, err := readRegularKeyFile(activeFile); err == nil {
 		if err := json.Unmarshal(data, &active); err != nil {
 			return activeKeys{}, fmt.Errorf("parse existing active.json: %w", err)
 		}
@@ -500,7 +500,7 @@ func (km *KeyManager) withZoneKeyLock(ctx context.Context, zone string, createDi
 	defer releaseZone()
 
 	existed := true
-	if _, statErr := os.Stat(zoneDir); statErr != nil {
+	if statErr := validateExistingZoneKeyDir(zoneDir); statErr != nil {
 		if !os.IsNotExist(statErr) {
 			return fmt.Errorf("stat zone key directory: %w", statErr)
 		}
@@ -512,6 +512,9 @@ func (km *KeyManager) withZoneKeyLock(ctx context.Context, zone string, createDi
 	if createDir {
 		if err := os.MkdirAll(zoneDir, 0700); err != nil {
 			return fmt.Errorf("create zone directory: %w", err)
+		}
+		if err := validateExistingZoneKeyDir(zoneDir); err != nil {
+			return fmt.Errorf("stat zone key directory: %w", err)
 		}
 		if !existed {
 			if err := syncDir(filepath.Dir(zoneDir)); err != nil {
@@ -558,6 +561,52 @@ func (km *KeyManager) getZoneDir(zone string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(km.keyDir, zoneName), nil
+}
+
+func validateExistingZoneKeyDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("zone key directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("zone key path must be a directory: %s", path)
+	}
+	return nil
+}
+
+func readRegularKeyFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("key file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("key file must be a regular file: %s", path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("key file changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("key file must be a regular file: %s", path)
+	}
+
+	return io.ReadAll(file)
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
