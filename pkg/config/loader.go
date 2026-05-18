@@ -522,8 +522,11 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 				return err
 			}
 		}
-		if cfg.NSD.ControlPath == "" {
-			return fmt.Errorf("invalid nsd.control_path: empty when NSD is enabled")
+		if err := validateExecutablePath("nsd.control_path", cfg.NSD.ControlPath); err != nil {
+			return fmt.Errorf("%w when NSD is enabled", err)
+		}
+		if err := validateExecutablePath("nsd.checkzone_path", cfg.NSD.CheckzonePath); err != nil {
+			return fmt.Errorf("%w when NSD is enabled", err)
 		}
 	}
 
@@ -531,8 +534,11 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		if cfg.Unbound.ConfigPath == "" {
 			return fmt.Errorf("invalid unbound.config_path: empty when Unbound is enabled")
 		}
-		if cfg.Unbound.ControlPath == "" {
-			return fmt.Errorf("invalid unbound.control_path: empty when Unbound is enabled")
+		if err := validateExecutablePath("unbound.control_path", cfg.Unbound.ControlPath); err != nil {
+			return fmt.Errorf("%w when Unbound is enabled", err)
+		}
+		if err := validateExecutablePath("unbound.checkconf_path", cfg.Unbound.CheckconfPath); err != nil {
+			return fmt.Errorf("%w when Unbound is enabled", err)
 		}
 		if err := cfg.Unbound.StubZoneConfig.Validate(); err != nil {
 			return err
@@ -679,6 +685,27 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	return nil
+}
+
+func validateExecutablePath(field string, path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("invalid %s: empty", field)
+	}
+	if trimmed != path {
+		return fmt.Errorf("invalid %s: must not contain surrounding whitespace", field)
+	}
+	if strings.ContainsFunc(path, unsafeExecutablePathChar) {
+		return fmt.Errorf("invalid %s: contains control characters", field)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("invalid %s: must be an absolute path", field)
+	}
+	return nil
+}
+
+func unsafeExecutablePathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
 }
 
 func normalizeControllerURL(rawURL string) (string, error) {

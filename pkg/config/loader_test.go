@@ -1183,6 +1183,53 @@ func TestValidateAgentConfig_NSDMissingConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "nsd.config_path")
 }
 
+func TestValidateAgentConfig_InvalidNSDExecutablePaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+		want   string
+	}{
+		{
+			name: "relative control path",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.ControlPath = "nsd-control"
+			},
+			want: "nsd.control_path",
+		},
+		{
+			name: "control path with surrounding whitespace",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.ControlPath = " /usr/sbin/nsd-control "
+			},
+			want: "nsd.control_path",
+		},
+		{
+			name: "relative checkzone path",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.CheckzonePath = "nsd-checkzone"
+			},
+			want: "nsd.checkzone_path",
+		},
+		{
+			name: "checkzone path with newline",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.CheckzonePath = "/usr/sbin/nsd-checkzone\n--help"
+			},
+			want: "nsd.checkzone_path",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestValidateAgentConfig_NSDZoneDirectoryRequiredWhenNSDDisabled(t *testing.T) {
 	cfg := validAgentConfigForTest()
 	cfg.NSD.Enabled = false
@@ -1255,6 +1302,53 @@ func TestValidateAgentConfig_UnboundMissingConfig(t *testing.T) {
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unbound.config_path")
+}
+
+func TestValidateAgentConfig_InvalidUnboundExecutablePaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+		want   string
+	}{
+		{
+			name: "relative control path",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.ControlPath = "unbound-control"
+			},
+			want: "unbound.control_path",
+		},
+		{
+			name: "control path with surrounding whitespace",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.ControlPath = " /usr/sbin/unbound-control "
+			},
+			want: "unbound.control_path",
+		},
+		{
+			name: "relative checkconf path",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.CheckconfPath = "unbound-checkconf"
+			},
+			want: "unbound.checkconf_path",
+		},
+		{
+			name: "checkconf path with newline",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.CheckconfPath = "/usr/sbin/unbound-checkconf\n--help"
+			},
+			want: "unbound.checkconf_path",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
 }
 
 func TestValidateAgentConfig_BIRDMissingPrefixes(t *testing.T) {
