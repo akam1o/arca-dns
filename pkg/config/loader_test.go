@@ -1430,6 +1430,27 @@ func TestValidateAgentConfig_InvalidDNSTapSocketSettings(t *testing.T) {
 			want: "dnstap.socket_path",
 		},
 		{
+			name: "socket path with surrounding whitespace",
+			mutate: func(cfg *AgentConfig) {
+				cfg.DNSTap.SocketPath = " /var/run/dnstap.sock "
+			},
+			want: "dnstap.socket_path",
+		},
+		{
+			name: "socket path with newline",
+			mutate: func(cfg *AgentConfig) {
+				cfg.DNSTap.SocketPath = "/var/run/dnstap.sock\nserver:"
+			},
+			want: "dnstap.socket_path",
+		},
+		{
+			name: "socket path with nul byte",
+			mutate: func(cfg *AgentConfig) {
+				cfg.DNSTap.SocketPath = "/var/run/dnstap\x00.sock"
+			},
+			want: "dnstap.socket_path",
+		},
+		{
 			name: "empty socket mode",
 			mutate: func(cfg *AgentConfig) {
 				cfg.DNSTap.SocketMode = ""

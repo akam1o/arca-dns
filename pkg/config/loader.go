@@ -599,8 +599,8 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	if cfg.DNSTap.Enabled {
-		if strings.TrimSpace(cfg.DNSTap.SocketPath) == "" {
-			return fmt.Errorf("invalid dnstap.socket_path: empty when DNSTap is enabled")
+		if err := ValidateDNSTapSocketPath(cfg.DNSTap.SocketPath); err != nil {
+			return fmt.Errorf("invalid dnstap.socket_path: %w", err)
 		}
 		if _, err := cfg.DNSTap.SocketFileMode(); err != nil {
 			return fmt.Errorf("invalid dnstap.socket_mode: %w", err)

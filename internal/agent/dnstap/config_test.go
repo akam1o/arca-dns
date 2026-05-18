@@ -112,3 +112,30 @@ func TestSocketPathEscaping(t *testing.T) {
 		})
 	}
 }
+
+func TestDNSTapConfigRejectsUnsafeSocketPath(t *testing.T) {
+	paths := map[string]string{
+		"empty":                  "",
+		"surrounding whitespace": " /var/run/dnstap.sock ",
+		"newline":                "/var/run/dnstap.sock\nserver:",
+		"nul byte":               "/var/run/dnstap\x00.sock",
+	}
+	configs := []struct {
+		name   string
+		config func(string) (string, error)
+	}{
+		{"NSD", NSDDNSTapConfig},
+		{"Unbound", UnboundDNSTapConfig},
+	}
+
+	for pathName, socketPath := range paths {
+		for _, tt := range configs {
+			t.Run(tt.name+"/"+pathName, func(t *testing.T) {
+				generated, err := tt.config(socketPath)
+				require.Error(t, err)
+				assert.Empty(t, generated)
+				assert.Contains(t, err.Error(), "dnstap socket path")
+			})
+		}
+	}
+}

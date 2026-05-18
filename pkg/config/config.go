@@ -760,6 +760,26 @@ func (c DNSTapConfig) SocketFileMode() (os.FileMode, error) {
 	return ParseDNSTapSocketMode(c.SocketMode)
 }
 
+// ValidateDNSTapSocketPath validates a DNSTap Unix socket path before it is
+// rendered into DNS server configuration snippets.
+func ValidateDNSTapSocketPath(path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("empty")
+	}
+	if trimmed != path {
+		return fmt.Errorf("must not contain surrounding whitespace")
+	}
+	if strings.ContainsFunc(path, unsafeDNSTapSocketPathChar) {
+		return fmt.Errorf("contains control characters")
+	}
+	return nil
+}
+
+func unsafeDNSTapSocketPathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
+}
+
 // ParseDNSTapSocketMode parses a DNSTap Unix socket permission mode from an
 // octal string such as "0660" or "0o660".
 func ParseDNSTapSocketMode(value string) (os.FileMode, error) {
