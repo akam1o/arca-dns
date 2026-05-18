@@ -183,6 +183,35 @@ func TestMigrateExportDoesNotFollowOutputSymlink(t *testing.T) {
 	assert.Equal(t, zone.Name, exported.Name)
 }
 
+func TestMigrateExportRejectsSymlinkedOutputDirectory(t *testing.T) {
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	ctx := context.Background()
+	zone := &model.Zone{
+		Name:    "symlink-dir.example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{migrateTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(ctx, zone))
+
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	outputDir := filepath.Join(tmpDir, "output")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	if err := os.Symlink(targetDir, outputDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := exportFromStore(ctx, store, outputDir, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "output directory")
+	assert.Contains(t, err.Error(), "symlink")
+
+	_, statErr := os.Stat(filepath.Join(targetDir, sanitizeFilename(zone.Name)+".json"))
+	assert.True(t, os.IsNotExist(statErr), "export should not write through symlinked output directory")
+}
+
 // TestMigrateImport tests importing zones from JSON files to memory backend.
 func TestMigrateImport(t *testing.T) {
 	// Create temporary input directory with test zone files
@@ -221,6 +250,74 @@ func TestMigrateImport(t *testing.T) {
 	assert.Equal(t, testZone.Name, imported.Name)
 	assert.NotEqual(t, testZone.Version, imported.Version, "Version should be recomputed")
 	assert.NotEmpty(t, imported.Version)
+}
+
+func TestMigrateImportRejectsSymlinkedInputDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	inputDir := filepath.Join(tmpDir, "input")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+
+	testZone := &model.Zone{
+		Name:    "symlink-input.example.com.",
+		Version: "v2024010101-abc12345",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			migrateTestApexNSRecord(),
+		},
+	}
+	data, err := json.MarshalIndent(testZone, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(targetDir, "zone.json"), data, 0644))
+	if err := os.Symlink(targetDir, inputDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	_, err = importToStore(context.Background(), store, inputDir, false, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "input directory")
+	assert.Contains(t, err.Error(), "symlink")
+
+	_, getErr := store.GetZone(context.Background(), testZone.Name)
+	assert.ErrorIs(t, getErr, model.ErrZoneNotFound)
+}
+
+func TestMigrateImportRejectsSymlinkedInputFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	realDir := filepath.Join(tmpDir, "real")
+	require.NoError(t, os.Mkdir(realDir, 0755))
+
+	testZone := &model.Zone{
+		Name:    "symlink-file.example.com.",
+		Version: "v2024010101-abc12345",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			migrateTestApexNSRecord(),
+		},
+	}
+	data, err := json.MarshalIndent(testZone, "", "  ")
+	require.NoError(t, err)
+
+	realFile := filepath.Join(realDir, "zone.json")
+	linkFile := filepath.Join(tmpDir, "zone.json")
+	require.NoError(t, os.WriteFile(realFile, data, 0644))
+	if err := os.Symlink(realFile, linkFile); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	_, err = importToStore(context.Background(), store, tmpDir, false, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "migration file")
+	assert.Contains(t, err.Error(), "symlink")
+
+	_, getErr := store.GetZone(context.Background(), testZone.Name)
+	assert.ErrorIs(t, getErr, model.ErrZoneNotFound)
 }
 
 func TestMigrateImportOverwritePreservesSourceSerial(t *testing.T) {

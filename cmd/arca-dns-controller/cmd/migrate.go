@@ -288,7 +288,7 @@ func exportFromStore(ctx context.Context, store backend.ZoneStore, outputDir str
 	}
 
 	// Create output directory
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := ensureMigrationDirectory(outputDir, "output directory"); err != nil {
 		return 0, fmt.Errorf("create output directory: %w", err)
 	}
 
@@ -316,6 +316,10 @@ func exportFromStore(ctx context.Context, store backend.ZoneStore, outputDir str
 
 func writeMigrationFileAtomicSynced(path string, data []byte, perm os.FileMode) error {
 	dirPath := filepath.Dir(path)
+	if err := validateExistingMigrationDirectory(dirPath, "output directory"); err != nil {
+		return fmt.Errorf("stat output directory: %w", err)
+	}
+
 	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
@@ -360,6 +364,44 @@ func writeMigrationFileAtomicSynced(path string, data []byte, perm os.FileMode) 
 	return nil
 }
 
+func ensureMigrationDirectory(path string, label string) error {
+	existed := true
+	if err := validateExistingMigrationDirectory(path, label); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %s: %w", label, err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", label, err)
+	}
+	if err := validateExistingMigrationDirectory(path, label); err != nil {
+		return fmt.Errorf("stat %s: %w", label, err)
+	}
+	if !existed {
+		if err := syncMigrationDir(filepath.Dir(path)); err != nil {
+			return fmt.Errorf("sync %s parent: %w", label, err)
+		}
+	}
+
+	return nil
+}
+
+func validateExistingMigrationDirectory(path string, label string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s must be a directory: %s", label, path)
+	}
+	return nil
+}
+
 func syncMigrationDir(path string) error {
 	dir, err := os.Open(path)
 	if err != nil {
@@ -379,6 +421,10 @@ func syncMigrationDir(path string) error {
 }
 
 func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string, dryRun bool, overwrite bool) (int, error) {
+	if err := validateExistingMigrationDirectory(inputDir, "input directory"); err != nil {
+		return 0, fmt.Errorf("stat input directory: %w", err)
+	}
+
 	// Read zone files
 	files, err := filepath.Glob(filepath.Join(inputDir, "*.json"))
 	if err != nil {
@@ -394,7 +440,7 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 	// Parse and validate zones
 	zones := make([]*model.Zone, 0, len(files))
 	for _, file := range files {
-		data, err := os.ReadFile(file)
+		data, err := readRegularMigrationFile(file)
 		if err != nil {
 			return 0, fmt.Errorf("read file %s: %w", file, err)
 		}
@@ -454,6 +500,38 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 		fmt.Printf("\nImport complete: %d zones imported\n", imported)
 	}
 	return imported, nil
+}
+
+func readRegularMigrationFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("migration file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("migration file must be a regular file: %s", path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("migration file changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("migration file must be a regular file: %s", path)
+	}
+
+	return io.ReadAll(file)
 }
 
 func overwriteZone(ctx context.Context, store backend.ZoneStore, zone *model.Zone) error {
