@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -596,6 +597,105 @@ func TestFileManager_EnsureDirectory(t *testing.T) {
 	testFile := filepath.Join(subDir, "test.txt")
 	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
 		t.Errorf("Directory should be writable: %v", err)
+	}
+}
+
+func TestFileManager_EnsureDirectoryRejectsSymlinkedZoneDirectory(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	targetDir := filepath.Join(tmpDir, "target")
+	zoneDir := filepath.Join(tmpDir, "zones")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("Failed to create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, zoneDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(zoneDir, 3, logger)
+	err = fm.EnsureDirectory()
+	if err == nil {
+		t.Fatal("EnsureDirectory should reject symlinked zone directory")
+	}
+	if !strings.Contains(err.Error(), "zone directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("EnsureDirectory error = %v, want symlinked zone directory error", err)
+	}
+
+	matches, globErr := filepath.Glob(filepath.Join(targetDir, ".write_test-*"))
+	if globErr != nil {
+		t.Fatalf("Failed to inspect target dir: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("write test should not run inside symlink target, got %v", matches)
+	}
+}
+
+func TestFileManager_WriteZoneFileRejectsSymlinkedZoneDirectory(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	targetDir := filepath.Join(tmpDir, "target")
+	zoneDir := filepath.Join(tmpDir, "zones")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("Failed to create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, zoneDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(zoneDir, 3, logger)
+	err = fm.WriteZoneFile("example.com.", "$ORIGIN example.com.\n")
+	if err == nil {
+		t.Fatal("WriteZoneFile should reject symlinked zone directory")
+	}
+	if !strings.Contains(err.Error(), "zone directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("WriteZoneFile error = %v, want symlinked zone directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "example.com.zone")); !os.IsNotExist(statErr) {
+		t.Fatalf("zone file should not be written inside symlink target, stat err=%v", statErr)
+	}
+}
+
+func TestFileManager_DeleteZoneFileRejectsSymlinkedZoneDirectory(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	targetDir := filepath.Join(tmpDir, "target")
+	zoneDir := filepath.Join(tmpDir, "zones")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("Failed to create target dir: %v", err)
+	}
+	targetZonePath := filepath.Join(targetDir, "example.com.zone")
+	if err := os.WriteFile(targetZonePath, []byte("keep"), 0644); err != nil {
+		t.Fatalf("Failed to write target zone file: %v", err)
+	}
+	if err := os.Symlink(targetDir, zoneDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(zoneDir, 3, logger)
+	err = fm.DeleteZoneFile("example.com.")
+	if err == nil {
+		t.Fatal("DeleteZoneFile should reject symlinked zone directory")
+	}
+	if !strings.Contains(err.Error(), "zone directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("DeleteZoneFile error = %v, want symlinked zone directory error", err)
+	}
+	if _, statErr := os.Stat(targetZonePath); statErr != nil {
+		t.Fatalf("zone file in symlink target should remain, stat err=%v", statErr)
 	}
 }
 

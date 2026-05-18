@@ -76,6 +76,10 @@ func (fm *FileManager) WriteZoneFileValidated(zoneName string, content string, v
 // index entry. The rollback function is intended for service hook failures
 // after the filesystem commit has already succeeded.
 func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, content string, validate func(zonePath string) error) (func() error, error) {
+	if err := fm.ensureZoneDirectory(); err != nil {
+		return nil, err
+	}
+
 	targetPath := fm.GetZonePath(zoneName) // Use safe path with GetZonePath
 
 	// Check disk space (require at least 100MB free)
@@ -199,6 +203,9 @@ func (fm *FileManager) GetZonePath(zoneName string) string {
 
 // ZoneExists checks if a zone file exists.
 func (fm *FileManager) ZoneExists(zoneName string) bool {
+	if err := fm.validateZoneDirectoryIfExists(); err != nil {
+		return false
+	}
 	path := fm.GetZonePath(zoneName)
 	_, err := os.Stat(path)
 	return err == nil
@@ -206,6 +213,9 @@ func (fm *FileManager) ZoneExists(zoneName string) bool {
 
 // ReadZoneFile reads a zone file.
 func (fm *FileManager) ReadZoneFile(zoneName string) (string, error) {
+	if err := fm.validateZoneDirectoryIfExists(); err != nil {
+		return "", err
+	}
 	path := fm.GetZonePath(zoneName)
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -216,6 +226,9 @@ func (fm *FileManager) ReadZoneFile(zoneName string) (string, error) {
 
 // DeleteZoneFile deletes a zone file and its backups.
 func (fm *FileManager) DeleteZoneFile(zoneName string) error {
+	if err := fm.validateZoneDirectoryIfExists(); err != nil {
+		return err
+	}
 	targetPath := fm.GetZonePath(zoneName)
 
 	if err := fm.deleteZoneFiles(zoneName); err != nil {
@@ -414,6 +427,10 @@ func (fm *FileManager) managedZonesIndexPath() string {
 }
 
 func (fm *FileManager) readManagedZones() (map[string]string, error) {
+	if err := fm.validateZoneDirectoryIfExists(); err != nil {
+		return nil, err
+	}
+
 	path := fm.managedZonesIndexPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -478,8 +495,8 @@ func (fm *FileManager) writeManagedZones(zones map[string]string) error {
 	}
 	data = append(data, '\n')
 
-	if err := os.MkdirAll(fm.zoneDir, 0755); err != nil {
-		return fmt.Errorf("create zone directory: %w", err)
+	if err := fm.ensureZoneDirectory(); err != nil {
+		return err
 	}
 
 	path := fm.managedZonesIndexPath()
@@ -647,8 +664,8 @@ func (fm *FileManager) checkDiskSpace(requiredBytes uint64) error {
 
 // EnsureDirectory ensures that the zone directory exists and has correct permissions.
 func (fm *FileManager) EnsureDirectory() error {
-	if err := os.MkdirAll(fm.zoneDir, 0755); err != nil {
-		return fmt.Errorf("failed to create zone directory: %w", err)
+	if err := fm.ensureZoneDirectory(); err != nil {
+		return err
 	}
 
 	// Check write permissions with an unpredictable temp file to avoid following symlinks.
@@ -663,5 +680,53 @@ func (fm *FileManager) EnsureDirectory() error {
 		return fmt.Errorf("fsync zone directory after write test cleanup: %w", err)
 	}
 
+	return nil
+}
+
+func (fm *FileManager) ensureZoneDirectory() error {
+	existed := true
+	if err := validateExistingZoneDirectory(fm.zoneDir); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat zone directory: %w", err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(fm.zoneDir, 0755); err != nil {
+		return fmt.Errorf("failed to create zone directory: %w", err)
+	}
+	if err := validateExistingZoneDirectory(fm.zoneDir); err != nil {
+		return fmt.Errorf("stat zone directory: %w", err)
+	}
+	if !existed {
+		if err := syncDir(filepath.Dir(fm.zoneDir)); err != nil {
+			return fmt.Errorf("fsync zone directory parent: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (fm *FileManager) validateZoneDirectoryIfExists() error {
+	if err := validateExistingZoneDirectory(fm.zoneDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat zone directory: %w", err)
+	}
+	return nil
+}
+
+func validateExistingZoneDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("zone directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("zone path must be a directory: %s", path)
+	}
 	return nil
 }
