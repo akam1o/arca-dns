@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -31,7 +32,14 @@ const (
 
 // Authenticator provides API key authentication middleware.
 type Authenticator struct {
-	config AuthConfig
+	config      AuthConfig
+	credentials []apiKeyCredential
+}
+
+type apiKeyCredential struct {
+	name string
+	role string
+	hash [sha256.Size]byte
 }
 
 // NewAuthenticator creates a new API key authenticator.
@@ -42,7 +50,8 @@ func NewAuthenticator(config AuthConfig) *Authenticator {
 	config.APIKeys = normalizeConfiguredAPIKeys(config.APIKeys)
 	config.APIKeyRoles = normalizeConfiguredAPIKeyRoles(config.APIKeys, config.APIKeyRoles)
 	return &Authenticator{
-		config: config,
+		config:      config,
+		credentials: buildAPIKeyCredentials(config.APIKeys, config.APIKeyRoles),
 	}
 }
 
@@ -73,6 +82,48 @@ func normalizeConfiguredAPIKeyRoles(apiKeys, apiKeyRoles map[string]string) map[
 	return normalized
 }
 
+func buildAPIKeyCredentials(apiKeys, apiKeyRoles map[string]string) []apiKeyCredential {
+	names := make([]string, 0, len(apiKeys))
+	for name := range apiKeys {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	credentials := make([]apiKeyCredential, 0, len(names))
+	for _, name := range names {
+		hash, ok := parseSHA256APIKeyHash(apiKeys[name])
+		if !ok {
+			continue
+		}
+		role := strings.TrimSpace(apiKeyRoles[name])
+		if role == "" {
+			role = AuthRoleAdmin
+		}
+		credentials = append(credentials, apiKeyCredential{
+			name: name,
+			role: role,
+			hash: hash,
+		})
+	}
+	return credentials
+}
+
+func parseSHA256APIKeyHash(value string) ([sha256.Size]byte, bool) {
+	var hash [sha256.Size]byte
+	const prefix = "sha256:"
+
+	hexPart, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(value)), prefix)
+	if !ok || len(hexPart) != sha256.Size*2 {
+		return hash, false
+	}
+	decoded, err := hex.DecodeString(hexPart)
+	if err != nil || len(decoded) != sha256.Size {
+		return hash, false
+	}
+	copy(hash[:], decoded)
+	return hash, true
+}
+
 // Middleware returns a Gin middleware that enforces API key authentication.
 func (a *Authenticator) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -86,20 +137,19 @@ func (a *Authenticator) Middleware() gin.HandlerFunc {
 
 		// Hash the provided key
 		hash := sha256.Sum256([]byte(apiKey))
-		providedHash := "sha256:" + hex.EncodeToString(hash[:])
 
-		// Check against configured keys (constant-time comparison)
+		// Check every configured key so successful authentication does not
+		// change the number of hash comparisons performed.
 		authenticated := false
 		var principal string
 		role := AuthRoleAdmin
-		for name, expectedHash := range a.config.APIKeys {
-			if subtle.ConstantTimeCompare([]byte(providedHash), []byte(expectedHash)) == 1 {
-				authenticated = true
-				principal = name
-				if configuredRole := strings.TrimSpace(a.config.APIKeyRoles[name]); configuredRole != "" {
-					role = configuredRole
+		for _, credential := range a.credentials {
+			if subtle.ConstantTimeCompare(hash[:], credential.hash[:]) == 1 {
+				if !authenticated {
+					principal = credential.name
+					role = credential.role
 				}
-				break
+				authenticated = true
 			}
 		}
 

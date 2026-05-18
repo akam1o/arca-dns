@@ -144,6 +144,30 @@ func TestAuthenticator_Middleware_NormalizesConfiguredHash(t *testing.T) {
 	assert.Equal(t, 200, w.Code)
 }
 
+func TestNewAuthenticator_BuildsFixedHashCredentials(t *testing.T) {
+	testKey := "agent-api-key-12345"
+	hash := sha256.Sum256([]byte(testKey))
+	hashStr := "  sha256:" + strings.ToUpper(hex.EncodeToString(hash[:])) + "  "
+
+	auth := NewAuthenticator(AuthConfig{
+		APIKeys: map[string]string{
+			"malformed": "sha256:not-a-valid-hash",
+			"agent":     hashStr,
+		},
+		APIKeyRoles: map[string]string{
+			"agent": AuthRoleAgent,
+		},
+	})
+
+	if len(auth.credentials) != 1 {
+		t.Fatalf("credentials length=%d, want 1", len(auth.credentials))
+	}
+	credential := auth.credentials[0]
+	assert.Equal(t, "agent", credential.name)
+	assert.Equal(t, AuthRoleAgent, credential.role)
+	assert.Equal(t, hash, credential.hash)
+}
+
 func TestAuthenticator_Middleware_InvalidKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
