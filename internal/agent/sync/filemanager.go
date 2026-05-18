@@ -207,8 +207,8 @@ func (fm *FileManager) ZoneExists(zoneName string) bool {
 		return false
 	}
 	path := fm.GetZonePath(zoneName)
-	_, err := os.Stat(path)
-	return err == nil
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // ReadZoneFile reads a zone file.
@@ -217,7 +217,7 @@ func (fm *FileManager) ReadZoneFile(zoneName string) (string, error) {
 		return "", err
 	}
 	path := fm.GetZonePath(zoneName)
-	content, err := os.ReadFile(path)
+	content, _, err := readRegularSyncFile(path, "zone file")
 	if err != nil {
 		return "", fmt.Errorf("failed to read zone file: %w", err)
 	}
@@ -294,7 +294,7 @@ func (fm *FileManager) deleteZoneFiles(zoneName string) error {
 // Backups are named: {filename}.backup.{random}
 func (fm *FileManager) backupFile(path string) (string, error) {
 	// Copy file
-	content, err := os.ReadFile(path)
+	content, _, err := readRegularSyncFile(path, "zone file")
 	if err != nil {
 		return "", fmt.Errorf("failed to read file for backup: %w", err)
 	}
@@ -318,21 +318,16 @@ type zoneFileSnapshot struct {
 }
 
 func snapshotZoneFile(path string) (zoneFileSnapshot, error) {
-	info, err := os.Stat(path)
+	data, mode, err := readRegularSyncFile(path, "active zone file")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return zoneFileSnapshot{}, nil
 		}
-		return zoneFileSnapshot{}, fmt.Errorf("stat active zone file: %w", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
 		return zoneFileSnapshot{}, fmt.Errorf("read active zone file: %w", err)
 	}
 	return zoneFileSnapshot{
 		exists: true,
-		mode:   info.Mode().Perm(),
+		mode:   mode,
 		data:   data,
 	}, nil
 }
@@ -432,7 +427,7 @@ func (fm *FileManager) readManagedZones() (map[string]string, error) {
 	}
 
 	path := fm.managedZonesIndexPath()
-	data, err := os.ReadFile(path)
+	data, _, err := readRegularSyncFile(path, "managed zone index")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return map[string]string{}, nil
@@ -475,6 +470,42 @@ func (fm *FileManager) readManagedZones() (map[string]string, error) {
 		}
 	}
 	return zones, nil
+}
+
+func readRegularSyncFile(path string, label string) ([]byte, os.FileMode, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, 0, fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, 0, fmt.Errorf("%s changed while opening: %s", label, path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, openedInfo.Mode().Perm(), nil
 }
 
 func (fm *FileManager) writeManagedZones(zones map[string]string) error {

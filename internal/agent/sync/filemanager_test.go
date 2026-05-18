@@ -104,6 +104,99 @@ func TestFileManager_WriteZoneFileDoesNotFollowPredictableTempSymlink(t *testing
 	}
 }
 
+func TestFileManager_ReadZoneFileRejectsSymlinkedZoneFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	targetPath := fm.GetZonePath(zoneName)
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	if err := os.WriteFile(sentinelPath, []byte("secret"), 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err = fm.ReadZoneFile(zoneName)
+	if err == nil {
+		t.Fatal("ReadZoneFile should reject symlinked zone file")
+	}
+	if !strings.Contains(err.Error(), "zone file") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink zone file error, got %v", err)
+	}
+	if fm.ZoneExists(zoneName) {
+		t.Fatal("ZoneExists should not treat symlinked zone file as an active zone")
+	}
+}
+
+func TestFileManager_WriteZoneFileRejectsSymlinkedExistingZoneFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	targetPath := fm.GetZonePath(zoneName)
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("secret")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	content := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	err = fm.WriteZoneFile(zoneName, content)
+	if err == nil {
+		t.Fatal("WriteZoneFile should reject symlinked existing zone file")
+	}
+	if !strings.Contains(err.Error(), "active zone file") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink active zone file error, got %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(targetPath)
+	if err != nil {
+		t.Fatalf("symlinked target should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected target path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+
+	backups, err := filepath.Glob(ZoneBackupPattern(tmpDir, zoneName))
+	if err != nil {
+		t.Fatalf("backup glob failed: %v", err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("symlinked zone file should not be backed up, got %v", backups)
+	}
+}
+
 func TestFileManager_WriteZoneFileManagedIndexFailureDoesNotPublish(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
 	if err != nil {
@@ -186,6 +279,36 @@ func TestFileManager_WriteZoneFileDoesNotFollowManagedIndexTempSymlink(t *testin
 	}
 	if linkInfo.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("expected predictable managed index temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+}
+
+func TestFileManager_ReadManagedZonesRejectsSymlinkedIndex(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	realIndexPath := filepath.Join(tmpDir, "managed-zones.real.json")
+	if err := os.WriteFile(realIndexPath, []byte(`{"entries":[{"name":"example.com.","file":"example.com"}]}`), 0600); err != nil {
+		t.Fatalf("failed to write real managed index: %v", err)
+	}
+	if err := os.Symlink(realIndexPath, fm.managedZonesIndexPath()); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err = fm.readManagedZones()
+	if err == nil {
+		t.Fatal("readManagedZones should reject symlinked managed zone index")
+	}
+	if !strings.Contains(err.Error(), "managed zone index") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink managed zone index error, got %v", err)
 	}
 }
 
