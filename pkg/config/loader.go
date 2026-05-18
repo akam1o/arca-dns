@@ -173,6 +173,7 @@ func LoadAgentConfig(path string) (*AgentConfig, error) {
 
 // ValidateControllerConfig validates the controller configuration.
 func ValidateControllerConfig(cfg *ControllerConfig) error {
+	cfg.API.Listen = strings.TrimSpace(cfg.API.Listen)
 	if cfg.API.Listen == "" {
 		return fmt.Errorf("invalid api.listen: empty")
 	}
@@ -195,6 +196,9 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	}
 
 	if err := validateArtifactSignatureKey("api.artifact_signature_key", cfg.API.ArtifactSignatureKey, true); err != nil {
+		return err
+	}
+	if err := validateControllerAuthExposure(cfg.API.Listen, cfg.API.Auth); err != nil {
 		return err
 	}
 
@@ -405,6 +409,16 @@ func validateControllerAuthConfig(auth *AuthConfig) error {
 	auth.APIKeyRoles = normalizedRoles
 
 	return nil
+}
+
+func validateControllerAuthExposure(apiListen string, auth AuthConfig) error {
+	if auth.Enabled {
+		return nil
+	}
+	if isLoopbackListenEndpoint(apiListen) {
+		return nil
+	}
+	return fmt.Errorf("invalid api.auth.enabled: false is only allowed when api.listen is loopback; bind api.listen to 127.0.0.1 or enable api.auth")
 }
 
 func normalizeSHA256APIKeyHash(hash string) (string, bool) {

@@ -45,11 +45,13 @@ func TestLoadControllerConfig_DefaultsRequireAPIKeys(t *testing.T) {
 }
 
 func TestLoadControllerConfig_AuthDisabledFromEnvAllowsDefaults(t *testing.T) {
+	t.Setenv("ARCA_DNS_API_LISTEN", "127.0.0.1:8080")
 	t.Setenv("ARCA_DNS_API_AUTH_ENABLED", "false")
 	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 
 	cfg, err := LoadControllerConfig("")
 	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:8080", cfg.API.Listen)
 	assert.False(t, cfg.API.Auth.Enabled)
 	assert.Empty(t, cfg.API.Auth.APIKeys)
 	assert.Equal(t, validEnvArtifactSignatureKey, cfg.API.ArtifactSignatureKey)
@@ -158,6 +160,7 @@ func TestLoadControllerConfig_StorageKeyDirectoryAliasesDNSSECKeyDirectory(t *te
 
 	configContent := `
 api:
+  listen: "127.0.0.1:8080"
   artifact_signature_key: "` + validYAMLArtifactSignatureKey + `"
   auth:
     enabled: false
@@ -178,6 +181,7 @@ dnssec:
 }
 
 func TestLoadControllerConfig_StorageKeyDirectoryEnvAliasesDNSSECKeyDirectory(t *testing.T) {
+	t.Setenv("ARCA_DNS_API_LISTEN", "127.0.0.1:8080")
 	t.Setenv("ARCA_DNS_API_AUTH_ENABLED", "false")
 	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 	t.Setenv("ARCA_DNS_STORAGE_KEY_DIRECTORY", "/tmp/env-storage-keys")
@@ -196,6 +200,7 @@ func TestLoadControllerConfig_MismatchedKeyDirectoriesFail(t *testing.T) {
 
 	configContent := `
 api:
+  listen: "127.0.0.1:8080"
   artifact_signature_key: "` + validYAMLArtifactSignatureKey + `"
   auth:
     enabled: false
@@ -255,6 +260,7 @@ func TestLoadControllerConfig_GitAutoPullOptional(t *testing.T) {
 
 			configContent := `
 api:
+  listen: "127.0.0.1:8080"
   artifact_signature_key: "` + validYAMLArtifactSignatureKey + `"
   auth:
     enabled: false
@@ -280,7 +286,7 @@ backend:
 
 func TestLoadControllerConfig_EnvOverride(t *testing.T) {
 	// Set environment variables
-	os.Setenv("ARCA_DNS_API_LISTEN", "0.0.0.0:7070")
+	os.Setenv("ARCA_DNS_API_LISTEN", "127.0.0.1:7070")
 	os.Setenv("ARCA_DNS_OBSERVABILITY_LISTEN", "0.0.0.0:7053")
 	os.Setenv("ARCA_DNS_API_AUTH_ENABLED", "false")
 	os.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
@@ -318,7 +324,7 @@ logging:
 	require.NoError(t, err)
 
 	// Environment variables should override YAML
-	assert.Equal(t, "0.0.0.0:7070", cfg.API.Listen)
+	assert.Equal(t, "127.0.0.1:7070", cfg.API.Listen)
 	assert.Equal(t, "0.0.0.0:7053", cfg.Observability.Listen)
 	assert.False(t, cfg.API.Auth.Enabled)
 	assert.Equal(t, "git", cfg.Backend.Type)
@@ -543,11 +549,24 @@ func TestValidateControllerConfig_AuthRoles(t *testing.T) {
 
 func TestValidateControllerConfig_AuthDisabledAllowsEmptyAPIKeys(t *testing.T) {
 	cfg := DefaultControllerConfig()
+	cfg.API.Listen = "127.0.0.1:8080"
 	cfg.API.ArtifactSignatureKey = validTestArtifactSignatureKey
 	cfg.API.Auth.Enabled = false
 	cfg.API.Auth.APIKeys = nil
 	err := ValidateControllerConfig(cfg)
 	assert.NoError(t, err)
+}
+
+func TestValidateControllerConfig_AuthDisabledRejectsNonLoopbackAPIListen(t *testing.T) {
+	cfg := DefaultControllerConfig()
+	cfg.API.ArtifactSignatureKey = validTestArtifactSignatureKey
+	cfg.API.Auth.Enabled = false
+	cfg.API.Auth.APIKeys = nil
+
+	err := ValidateControllerConfig(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "api.auth.enabled")
+	assert.Contains(t, err.Error(), "loopback")
 }
 
 func TestValidateControllerConfig_RejectsInvalidArtifactSignatureKey(t *testing.T) {
