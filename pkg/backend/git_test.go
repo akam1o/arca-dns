@@ -114,6 +114,27 @@ func TestGitBackend_FreshRepoUsesConfiguredBranch(t *testing.T) {
 	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
 }
 
+func TestNewGitBackendRejectsSymlinkedZonesDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoPath := filepath.Join(tmpDir, "repo")
+	targetDir := filepath.Join(tmpDir, "target")
+	require.NoError(t, os.MkdirAll(repoPath, 0755))
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	if err := os.Symlink(targetDir, filepath.Join(repoPath, "zones")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	backend, err := NewGitBackendWithOptions(repoPath, GitBackendOptions{
+		Branch:      "main",
+		AuthorName:  "test-author",
+		AuthorEmail: "test@example.com",
+	})
+	require.Error(t, err)
+	assert.Nil(t, backend)
+	assert.Contains(t, err.Error(), "zones directory")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
 func runGitCommand(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -190,6 +211,27 @@ func TestGitBackend_WriteZoneRejectsNonRegularZonePath(t *testing.T) {
 	matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(zonePath), "."+filepath.Base(zonePath)+".*.tmp"))
 	require.NoError(t, globErr)
 	assert.Empty(t, matches, "temporary zone files should not be created for non-regular target")
+}
+
+func TestGitBackend_WriteZoneRejectsSymlinkedZonesDirectory(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	zonesDir := filepath.Join(backend.repoPath, "zones")
+	targetDir := filepath.Join(backend.repoPath, "target-zones")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	require.NoError(t, os.RemoveAll(zonesDir))
+	if err := os.Symlink(targetDir, zonesDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := backend.writeZone(zone.Name, zone)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zones directory")
+	assert.Contains(t, err.Error(), "symlink")
+	_, statErr := os.Stat(filepath.Join(targetDir, "example.com.json"))
+	assert.True(t, os.IsNotExist(statErr), "zone file should not be written through symlink")
 }
 
 func TestGitBackend_WriteZoneDoesNotFollowPredictableTempSymlink(t *testing.T) {
@@ -287,6 +329,71 @@ func TestGitBackend_ReadZoneRejectsSymlink(t *testing.T) {
 	_, err = backend.GetZone(context.Background(), zone.Name)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestGitBackend_ReadZoneRejectsSymlinkedZonesDirectory(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	zonesDir := filepath.Join(backend.repoPath, "zones")
+	targetDir := filepath.Join(backend.repoPath, "target-zones")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	data, err := json.Marshal(zone)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(targetDir, "example.com.json"), data, 0600))
+	require.NoError(t, os.RemoveAll(zonesDir))
+	if err := os.Symlink(targetDir, zonesDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err = backend.GetZone(context.Background(), zone.Name)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zones directory")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestGitBackend_ListZonesRejectsSymlinkedZonesDirectory(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zonesDir := filepath.Join(backend.repoPath, "zones")
+	targetDir := filepath.Join(backend.repoPath, "target-zones")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(targetDir, "example.com.json"), []byte(`{"name":"example.com."}`), 0600))
+	require.NoError(t, os.RemoveAll(zonesDir))
+	if err := os.Symlink(targetDir, zonesDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err := backend.ListZones(context.Background(), ListOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zones directory")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestGitBackend_DeleteZoneRejectsSymlinkedZonesDirectory(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	zonesDir := filepath.Join(backend.repoPath, "zones")
+	targetDir := filepath.Join(backend.repoPath, "target-zones")
+	targetPath := filepath.Join(targetDir, "example.com.json")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	data, err := json.Marshal(zone)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(targetPath, data, 0600))
+	require.NoError(t, os.RemoveAll(zonesDir))
+	if err := os.Symlink(targetDir, zonesDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err = backend.DeleteZone(context.Background(), zone.Name)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zones directory")
+	assert.Contains(t, err.Error(), "symlink")
+	require.FileExists(t, targetPath)
 }
 
 func TestGitBackend_CreateZone_UsesSafeFilenameForLongZoneName(t *testing.T) {

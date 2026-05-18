@@ -182,8 +182,7 @@ func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitB
 	}
 
 	// Create zones directory if it doesn't exist
-	zonesDir := filepath.Join(absPath, "zones")
-	if err := os.MkdirAll(zonesDir, 0755); err != nil {
+	if err := ensureGitZonesDirectory(absPath); err != nil {
 		return nil, fmt.Errorf("failed to create zones directory: %w", err)
 	}
 
@@ -222,8 +221,7 @@ func (g *GitBackend) HealthCheck(ctx context.Context) error {
 		return fmt.Errorf("git repository head unavailable: %w", err)
 	}
 
-	zonesDir := filepath.Join(g.repoPath, "zones")
-	if _, err := os.Stat(zonesDir); err != nil && !os.IsNotExist(err) {
+	if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
 		return fmt.Errorf("git zones directory unavailable: %w", err)
 	}
 	return nil
@@ -429,6 +427,10 @@ func (g *GitBackend) zoneFilePathCandidates(zoneName string) ([]string, error) {
 }
 
 func (g *GitBackend) existingZoneFilePath(zoneName string) (string, error) {
+	if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+		return "", err
+	}
+
 	paths, err := g.zoneFilePathCandidates(zoneName)
 	if err != nil {
 		return "", err
@@ -541,6 +543,10 @@ func (g *GitBackend) snapshotExistingZoneFiles(zoneName string) (*gitRollbackPoi
 }
 
 func (g *GitBackend) snapshotZoneFilePaths(relPaths []string) (*gitRollbackPoint, error) {
+	if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+		return nil, err
+	}
+
 	point := &gitRollbackPoint{
 		files: make([]gitRollbackFile, 0, len(relPaths)),
 	}
@@ -595,7 +601,7 @@ func (g *GitBackend) snapshotZoneFilePaths(relPaths []string) (*gitRollbackPoint
 func (g *GitBackend) restoreZoneFile(point *gitRollbackPoint) error {
 	for _, file := range point.files {
 		if file.fileExists {
-			if err := os.MkdirAll(filepath.Dir(file.absPath), 0755); err != nil {
+			if err := ensureGitZonesDirectory(g.repoPath); err != nil {
 				return fmt.Errorf("failed to recreate zone directory: %w", err)
 			}
 			if err := writeFileAtomicSynced(file.absPath, file.fileData, file.fileMode.Perm()); err != nil {
@@ -604,6 +610,9 @@ func (g *GitBackend) restoreZoneFile(point *gitRollbackPoint) error {
 			continue
 		}
 
+		if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+			return fmt.Errorf("failed to validate zone directory before rollback remove: %w", err)
+		}
 		if err := os.Remove(file.absPath); err == nil {
 			if err := syncDir(filepath.Dir(file.absPath)); err != nil {
 				return fmt.Errorf("failed to sync rolled back zone directory: %w", err)
@@ -752,6 +761,9 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 
 	trackedRemovals := 0
 	for _, file := range rollback.files {
+		if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+			return g.wrapWithRollback(rollback, fmt.Errorf("failed to validate zone directory before remove: %w", err))
+		}
 		if file.indexTracked {
 			if _, err := g.worktree.Remove(file.relPath); err != nil {
 				return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove file from git: %w", err))
@@ -819,6 +831,10 @@ func (g *GitBackend) readZone(zoneName string) (*model.Zone, error) {
 }
 
 func (g *GitBackend) readZoneFile(relPath string) (*model.Zone, error) {
+	if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+		return nil, fmt.Errorf("failed to validate zones directory: %w", err)
+	}
+
 	filePath := filepath.Join(g.repoPath, relPath)
 
 	data, _, err := readRegularZoneFile(filePath)
@@ -890,10 +906,8 @@ func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 
 	filePath := filepath.Join(g.repoPath, relPath)
 
-	dirPath := filepath.Dir(filePath)
-
 	// Ensure directory exists
-	if err := os.MkdirAll(dirPath, 0755); err != nil {
+	if err := ensureGitZonesDirectory(g.repoPath); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -954,6 +968,60 @@ func writeFileAtomicSynced(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+func ensureGitZonesDirectory(repoPath string) error {
+	zonesDir := gitZonesDirectory(repoPath)
+	existed := true
+	if err := validateExistingGitZonesDirectory(zonesDir); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat zones directory: %w", err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(zonesDir, 0755); err != nil {
+		return fmt.Errorf("create zones directory: %w", err)
+	}
+	if err := validateExistingGitZonesDirectory(zonesDir); err != nil {
+		return fmt.Errorf("stat zones directory: %w", err)
+	}
+	if !existed {
+		if err := syncDir(filepath.Dir(zonesDir)); err != nil {
+			return fmt.Errorf("sync zones directory parent: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func validateGitZonesDirectoryIfExists(repoPath string) error {
+	zonesDir := gitZonesDirectory(repoPath)
+	if err := validateExistingGitZonesDirectory(zonesDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat zones directory: %w", err)
+	}
+	return nil
+}
+
+func validateExistingGitZonesDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("zones directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("zones path must be a directory: %s", path)
+	}
+	return nil
+}
+
+func gitZonesDirectory(repoPath string) string {
+	return filepath.Join(repoPath, "zones")
+}
+
 func syncDir(path string) error {
 	dir, err := os.Open(path)
 	if err != nil {
@@ -1003,7 +1071,11 @@ func (g *GitBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.
 		return nil, err
 	}
 
-	zonesDir := filepath.Join(g.repoPath, "zones")
+	if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+		return nil, fmt.Errorf("failed to validate zones directory: %w", err)
+	}
+
+	zonesDir := gitZonesDirectory(g.repoPath)
 	entries, err := os.ReadDir(zonesDir)
 	if err != nil {
 		if os.IsNotExist(err) {
