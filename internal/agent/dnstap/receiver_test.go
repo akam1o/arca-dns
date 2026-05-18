@@ -168,6 +168,50 @@ func TestResolveSocketOwnership_EmptyKeepsCurrentOwnership(t *testing.T) {
 	require.Equal(t, -1, gid)
 }
 
+func TestReceiver_RunRejectsSymlinkedSocketDirectory(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	targetDir := filepath.Join(tmpDir, "target")
+	socketDir := filepath.Join(tmpDir, "run")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	if err := os.Symlink(targetDir, socketDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	receiver := NewReceiver(ReceiverConfig{
+		SocketPath: filepath.Join(socketDir, "dnstap.sock"),
+		BufferSize: 1,
+	}, zap.NewNop())
+
+	err = receiver.Run(context.Background(), make(chan Frame, 1))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "dnstap socket directory")
+	require.Contains(t, err.Error(), "symlink")
+	_, statErr := os.Stat(filepath.Join(targetDir, "dnstap.sock"))
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestSetSocketPermissionsRejectsSymlinkedSocketPath(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	realPath := filepath.Join(tmpDir, "target")
+	linkPath := filepath.Join(tmpDir, "dnstap.sock")
+	require.NoError(t, os.WriteFile(realPath, []byte("keep"), 0600))
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	err = setSocketPermissions(linkPath, "", "", 0660)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "dnstap socket path")
+	require.Contains(t, err.Error(), "symlink")
+	info, statErr := os.Stat(realPath)
+	require.NoError(t, statErr)
+	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
+}
+
 func TestRemoveStaleSocket_RemovesUnixSocket(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
 	require.NoError(t, err)
@@ -181,6 +225,50 @@ func TestRemoveStaleSocket_RemovesUnixSocket(t *testing.T) {
 	require.NoError(t, removeStaleSocket(socketPath))
 	_, err = os.Lstat(socketPath)
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestRemoveStaleSocketRejectsSymlinkedSocketPath(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	realPath := filepath.Join(tmpDir, "target")
+	linkPath := filepath.Join(tmpDir, "dnstap.sock")
+	require.NoError(t, os.WriteFile(realPath, []byte("keep"), 0600))
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	err = removeStaleSocket(linkPath)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "dnstap socket path")
+	require.Contains(t, err.Error(), "symlink")
+	contents, readErr := os.ReadFile(realPath)
+	require.NoError(t, readErr)
+	require.Equal(t, []byte("keep"), contents)
+}
+
+func TestRemoveStaleSocketRejectsSymlinkedSocketDirectory(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	targetDir := filepath.Join(tmpDir, "target")
+	socketDir := filepath.Join(tmpDir, "run")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	if err := os.Symlink(targetDir, socketDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	targetSocket := filepath.Join(targetDir, "stale.sock")
+	listener, err := net.Listen("unix", targetSocket)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	err = removeStaleSocket(filepath.Join(socketDir, "stale.sock"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "dnstap socket directory")
+	require.Contains(t, err.Error(), "symlink")
+	_, statErr := os.Lstat(targetSocket)
+	require.NoError(t, statErr)
 }
 
 func TestRemoveStaleSocket_RefusesRegularFile(t *testing.T) {

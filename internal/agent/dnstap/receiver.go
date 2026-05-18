@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	osuser "os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -177,6 +178,10 @@ func removeDNSTapSocketFile(socketPath string, description string) error {
 		return fmt.Errorf("dnstap socket path is empty")
 	}
 
+	if err := validateDNSTapSocketDirectoryForPath(socketPath); err != nil {
+		return err
+	}
+
 	info, err := os.Lstat(socketPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -185,6 +190,9 @@ func removeDNSTapSocketFile(socketPath string, description string) error {
 		return fmt.Errorf("failed to stat dnstap socket path: %w", err)
 	}
 
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("dnstap socket path must not be a symlink: %s", socketPath)
+	}
 	if info.Mode()&os.ModeSocket == 0 {
 		return fmt.Errorf("refusing to remove non-socket dnstap path %q (mode %s)", socketPath, info.Mode())
 	}
@@ -195,20 +203,66 @@ func removeDNSTapSocketFile(socketPath string, description string) error {
 	return nil
 }
 
+func validateDNSTapSocketDirectoryForPath(socketPath string) error {
+	dir := filepath.Dir(socketPath)
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("failed to stat dnstap socket directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("dnstap socket directory must not be a symlink: %s", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("dnstap socket path parent must be a directory: %s", dir)
+	}
+	return nil
+}
+
+func validateDNSTapSocketPath(socketPath string) error {
+	if strings.TrimSpace(socketPath) == "" {
+		return fmt.Errorf("dnstap socket path is empty")
+	}
+	if err := validateDNSTapSocketDirectoryForPath(socketPath); err != nil {
+		return err
+	}
+
+	info, err := os.Lstat(socketPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat dnstap socket path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("dnstap socket path must not be a symlink: %s", socketPath)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("dnstap socket path must be a socket: %s (mode %s)", socketPath, info.Mode())
+	}
+	return nil
+}
+
 func setSocketPermissions(socketPath, owner, group string, mode os.FileMode) error {
+	if err := validateDNSTapSocketPath(socketPath); err != nil {
+		return err
+	}
+
 	uid, gid, err := resolveSocketOwnership(owner, group)
 	if err != nil {
 		return err
 	}
 
 	if uid != -1 || gid != -1 {
-		if err := os.Chown(socketPath, uid, gid); err != nil {
+		if err := os.Lchown(socketPath, uid, gid); err != nil {
 			return fmt.Errorf("failed to set dnstap socket ownership: %w", err)
+		}
+		if err := validateDNSTapSocketPath(socketPath); err != nil {
+			return err
 		}
 	}
 
 	if err := os.Chmod(socketPath, mode.Perm()); err != nil {
 		return fmt.Errorf("failed to set dnstap socket permissions: %w", err)
+	}
+	if err := validateDNSTapSocketPath(socketPath); err != nil {
+		return err
 	}
 	return nil
 }
