@@ -1099,6 +1099,62 @@ func TestValidateAgentConfig_NSDZoneDirectoryRequiredWhenNSDDisabled(t *testing.
 	assert.Contains(t, err.Error(), "nsd.zone_directory")
 }
 
+func TestValidateAgentConfig_InvalidNSDRenderedConfigPaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+		want   string
+	}{
+		{
+			name: "zone directory with surrounding whitespace",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.ZoneDirectory = " /var/lib/nsd/zones "
+			},
+			want: "nsd.zone_directory",
+		},
+		{
+			name: "zone directory with quote",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.ZoneDirectory = `/var/lib/nsd/zones"`
+			},
+			want: "nsd.zone_directory",
+		},
+		{
+			name: "zone directory with newline",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.ZoneDirectory = "/var/lib/nsd/zones\ninclude: \"/tmp/pwn\""
+			},
+			want: "nsd.zone_directory",
+		},
+		{
+			name: "config path with newline",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.Enabled = true
+				cfg.NSD.ConfigPath = "/etc/nsd/nsd.conf\ninclude: \"/tmp/pwn\""
+			},
+			want: "nsd.config_path",
+		},
+		{
+			name: "zone config path with quote",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.Enabled = true
+				cfg.NSD.ZoneConfigPath = `/etc/nsd/arca-dns-zones".conf`
+			},
+			want: "nsd.zone_config_path",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestValidateAgentConfig_UnboundMissingConfig(t *testing.T) {
 	cfg := validAgentConfigForTest()
 	cfg.Unbound.Enabled = true

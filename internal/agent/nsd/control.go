@@ -297,6 +297,13 @@ func (c *Controller) IsRunning() bool {
 
 func (c *Controller) updateManagedZoneConfig(mutator func(map[string]struct{})) (bool, error) {
 	path := c.zoneConfigPath()
+	if err := config.ValidateNSDRenderedConfigPath("nsd.zone_config_path", path); err != nil {
+		return false, err
+	}
+	if err := config.ValidateNSDRenderedConfigPath("nsd.zone_directory", c.config.ZoneDirectory); err != nil {
+		return false, err
+	}
+
 	existing, zones, err := readManagedZoneConfig(path)
 	if err != nil {
 		return false, err

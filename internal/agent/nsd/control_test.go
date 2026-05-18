@@ -168,6 +168,72 @@ func TestController_RejectsInvalidManagedZoneName(t *testing.T) {
 	}
 }
 
+func TestController_RejectsUnsafeManagedConfigPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	tests := []struct {
+		name   string
+		cfg    config.NSDConfig
+		want   string
+		target string
+	}{
+		{
+			name: "zone directory with newline",
+			cfg: config.NSDConfig{
+				Enabled:        true,
+				ConfigPath:     filepath.Join(tmpDir, "nsd.conf"),
+				ZoneConfigPath: filepath.Join(tmpDir, "zone-dir-newline.conf"),
+				ControlPath:    filepath.Join(tmpDir, "nsd-control"),
+				ZoneDirectory:  filepath.Join(tmpDir, "zones") + "\ninclude: \"/tmp/pwn\"",
+				ReloadTimeout:  2 * time.Second,
+			},
+			want:   "nsd.zone_directory",
+			target: filepath.Join(tmpDir, "zone-dir-newline.conf"),
+		},
+		{
+			name: "zone directory with quote",
+			cfg: config.NSDConfig{
+				Enabled:        true,
+				ConfigPath:     filepath.Join(tmpDir, "nsd.conf"),
+				ZoneConfigPath: filepath.Join(tmpDir, "zone-dir-quote.conf"),
+				ControlPath:    filepath.Join(tmpDir, "nsd-control"),
+				ZoneDirectory:  filepath.Join(tmpDir, `zones"`),
+				ReloadTimeout:  2 * time.Second,
+			},
+			want:   "nsd.zone_directory",
+			target: filepath.Join(tmpDir, "zone-dir-quote.conf"),
+		},
+		{
+			name: "zone config path with newline",
+			cfg: config.NSDConfig{
+				Enabled:        true,
+				ConfigPath:     filepath.Join(tmpDir, "nsd.conf"),
+				ZoneConfigPath: filepath.Join(tmpDir, "managed\n.conf"),
+				ControlPath:    filepath.Join(tmpDir, "nsd-control"),
+				ZoneDirectory:  filepath.Join(tmpDir, "zones"),
+				ReloadTimeout:  2 * time.Second,
+			},
+			want:   "nsd.zone_config_path",
+			target: filepath.Join(tmpDir, "managed\n.conf"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := NewController(tt.cfg, zap.NewNop())
+			err := ctrl.EnsureZone("example.com.")
+			if err == nil {
+				t.Fatal("EnsureZone should reject unsafe managed config paths")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if _, statErr := os.Stat(tt.target); !os.IsNotExist(statErr) {
+				t.Fatalf("unsafe managed config path should not create config file, got err=%v", statErr)
+			}
+		})
+	}
+}
+
 func TestWriteFileAtomicCleansTempFileWhenRenameFails(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetPath := filepath.Join(tmpDir, "managed.conf")

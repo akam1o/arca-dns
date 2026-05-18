@@ -371,6 +371,31 @@ type NSDConfig struct {
 	ReloadTimeout time.Duration `mapstructure:"reload_timeout"`
 }
 
+// ValidateNSDRenderedConfigPath validates paths before they are rendered into
+// generated NSD configuration.
+func ValidateNSDRenderedConfigPath(field string, path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("invalid %s: empty", field)
+	}
+	if trimmed != path {
+		return fmt.Errorf("invalid %s: must not contain surrounding whitespace", field)
+	}
+	if strings.ContainsFunc(path, unsafeNSDRenderedConfigPathChar) {
+		return fmt.Errorf("invalid %s: contains unsafe characters", field)
+	}
+	return nil
+}
+
+func unsafeNSDRenderedConfigPathChar(r rune) bool {
+	switch r {
+	case '"', '\\':
+		return true
+	default:
+		return r < ' ' || r == 0x7f
+	}
+}
+
 // UnboundConfig configures Unbound integration.
 type UnboundConfig struct {
 	// Enabled enables Unbound management
