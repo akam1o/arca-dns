@@ -257,6 +257,38 @@ func TestController_UpdateStubZoneConfigCreatesConfigDirectory(t *testing.T) {
 	}
 }
 
+func TestController_UpdateStubZoneConfigRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "unbound.d")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: filepath.Join(configDir, "unbound.conf"),
+		StubZoneConfig: config.StubZoneConfig{
+			NSDAddress: "127.0.0.1",
+			NSDPort:    5353,
+		},
+	}, zap.NewNop())
+
+	err := ctrl.UpdateStubZoneConfig("example.com.")
+	if err == nil {
+		t.Fatal("UpdateStubZoneConfig should reject symlinked config directory")
+	}
+	if !strings.Contains(err.Error(), "config directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("UpdateStubZoneConfig error=%v, want symlinked config directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "stub-zone-example.com.conf")); !os.IsNotExist(statErr) {
+		t.Fatalf("stub-zone config should not be written through symlink, stat err=%v", statErr)
+	}
+}
+
 func TestController_UpdateStubZoneConfigDoesNotFollowPredictableTempSymlink(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctrl := NewController(config.UnboundConfig{
@@ -296,6 +328,37 @@ func TestController_UpdateStubZoneConfigDoesNotFollowPredictableTempSymlink(t *t
 	}
 	if linkInfo.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("expected predictable temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+}
+
+func TestController_DeleteStubZoneConfigRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "unbound.d")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "stub-zone-example.com.conf"), []byte("keep"), 0644); err != nil {
+		t.Fatalf("failed to write target stub-zone config: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: filepath.Join(configDir, "unbound.conf"),
+	}, zap.NewNop())
+
+	err := ctrl.DeleteStubZoneConfig("example.com.")
+	if err == nil {
+		t.Fatal("DeleteStubZoneConfig should reject symlinked config directory")
+	}
+	if !strings.Contains(err.Error(), "config directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("DeleteStubZoneConfig error=%v, want symlinked config directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "stub-zone-example.com.conf")); statErr != nil {
+		t.Fatalf("stub-zone config should not be deleted through symlink, stat err=%v", statErr)
 	}
 }
 

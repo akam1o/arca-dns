@@ -224,6 +224,9 @@ func (c *Controller) DeleteStubZoneConfig(zoneName string) error {
 	}
 
 	stubZoneFile := c.stubZoneConfigPath(normalized)
+	if err := validateConfigDirectoryIfExistsForPath(stubZoneFile); err != nil {
+		return fmt.Errorf("failed to validate stub-zone config directory: %w", err)
+	}
 	if err := os.Remove(stubZoneFile); err != nil {
 		if os.IsNotExist(err) {
 			c.logger.Debug("Stub-zone configuration already absent",
@@ -316,8 +319,8 @@ func normalizeZoneName(zoneName string) (string, error) {
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dirPath := filepath.Dir(path)
-	if err := os.MkdirAll(dirPath, 0755); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
+	if err := ensureConfigDirectoryForPath(path); err != nil {
+		return err
 	}
 
 	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
@@ -357,6 +360,56 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	cleanupTmp = false
 	if err := syncDir(dirPath); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ensureConfigDirectoryForPath(path string) error {
+	dirPath := filepath.Dir(path)
+	existed := true
+	if err := validateExistingConfigDirectory(dirPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat config directory: %w", err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := validateExistingConfigDirectory(dirPath); err != nil {
+		return fmt.Errorf("stat config directory: %w", err)
+	}
+	if !existed {
+		if err := syncDir(filepath.Dir(dirPath)); err != nil {
+			return fmt.Errorf("fsync config directory parent: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func validateConfigDirectoryIfExistsForPath(path string) error {
+	dirPath := filepath.Dir(path)
+	if err := validateExistingConfigDirectory(dirPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat config directory: %w", err)
+	}
+	return nil
+}
+
+func validateExistingConfigDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("config directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("config path must be a directory: %s", path)
 	}
 	return nil
 }

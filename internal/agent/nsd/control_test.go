@@ -234,6 +234,26 @@ func TestController_RejectsUnsafeManagedConfigPaths(t *testing.T) {
 	}
 }
 
+func TestReadManagedZoneConfigRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "nsd.d")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, _, err := readManagedZoneConfig(filepath.Join(configDir, "managed.conf"))
+	if err == nil {
+		t.Fatal("readManagedZoneConfig should reject symlinked config directory")
+	}
+	if !strings.Contains(err.Error(), "config directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("readManagedZoneConfig error=%v, want symlinked config directory error", err)
+	}
+}
+
 func TestWriteFileAtomicCleansTempFileWhenRenameFails(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetPath := filepath.Join(tmpDir, "managed.conf")
@@ -256,6 +276,30 @@ func TestWriteFileAtomicCleansTempFileWhenRenameFails(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("expected temp config files to be removed, got %v", matches)
+	}
+}
+
+func TestWriteFileAtomicRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "nsd.d")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	targetPath := filepath.Join(configDir, "managed.conf")
+	err := writeFileAtomic(targetPath, []byte("zone config"), 0644)
+	if err == nil {
+		t.Fatal("writeFileAtomic should reject symlinked config directory")
+	}
+	if !strings.Contains(err.Error(), "config directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("writeFileAtomic error=%v, want symlinked config directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "managed.conf")); !os.IsNotExist(statErr) {
+		t.Fatalf("config should not be written through symlink, stat err=%v", statErr)
 	}
 }
 

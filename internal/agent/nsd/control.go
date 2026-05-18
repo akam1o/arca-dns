@@ -331,6 +331,10 @@ func (c *Controller) zoneConfigPath() string {
 func readManagedZoneConfig(path string) (string, map[string]struct{}, error) {
 	zones := make(map[string]struct{})
 
+	if err := validateConfigDirectoryIfExistsForPath(path); err != nil {
+		return "", nil, err
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -393,8 +397,8 @@ func renderManagedZoneConfig(configPath, zoneDir string, zones map[string]struct
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dirPath := filepath.Dir(path)
-	if err := os.MkdirAll(dirPath, 0755); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
+	if err := ensureConfigDirectoryForPath(path); err != nil {
+		return err
 	}
 
 	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
@@ -434,6 +438,56 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	cleanupTmp = false
 	if err := syncDir(dirPath); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ensureConfigDirectoryForPath(path string) error {
+	dirPath := filepath.Dir(path)
+	existed := true
+	if err := validateExistingConfigDirectory(dirPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat config directory: %w", err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := validateExistingConfigDirectory(dirPath); err != nil {
+		return fmt.Errorf("stat config directory: %w", err)
+	}
+	if !existed {
+		if err := syncDir(filepath.Dir(dirPath)); err != nil {
+			return fmt.Errorf("fsync config directory parent: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func validateConfigDirectoryIfExistsForPath(path string) error {
+	dirPath := filepath.Dir(path)
+	if err := validateExistingConfigDirectory(dirPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat config directory: %w", err)
+	}
+	return nil
+}
+
+func validateExistingConfigDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("config directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("config path must be a directory: %s", path)
 	}
 	return nil
 }
