@@ -499,6 +499,30 @@ func (km *KeyManager) withZoneKeyLock(ctx context.Context, zone string, createDi
 	}
 	defer releaseZone()
 
+	keyDirExisted := true
+	if statErr := validateExistingKeyDirectory(km.keyDir); statErr != nil {
+		if !os.IsNotExist(statErr) {
+			return fmt.Errorf("stat key directory: %w", statErr)
+		}
+		if !createDir {
+			return model.ErrZoneNotFound
+		}
+		keyDirExisted = false
+	}
+	if createDir {
+		if err := os.MkdirAll(km.keyDir, 0700); err != nil {
+			return fmt.Errorf("create key directory: %w", err)
+		}
+		if err := validateExistingKeyDirectory(km.keyDir); err != nil {
+			return fmt.Errorf("stat key directory: %w", err)
+		}
+		if !keyDirExisted {
+			if err := syncDir(filepath.Dir(km.keyDir)); err != nil {
+				return fmt.Errorf("sync key directory parent: %w", err)
+			}
+		}
+	}
+
 	existed := true
 	if statErr := validateExistingZoneKeyDir(zoneDir); statErr != nil {
 		if !os.IsNotExist(statErr) {
@@ -561,6 +585,20 @@ func (km *KeyManager) getZoneDir(zone string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(km.keyDir, zoneName), nil
+}
+
+func validateExistingKeyDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("key directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("key path must be a directory: %s", path)
+	}
+	return nil
 }
 
 func validateExistingZoneKeyDir(path string) error {

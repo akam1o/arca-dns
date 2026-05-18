@@ -106,6 +106,25 @@ func TestSaveMasterKey_CreatesDirectory(t *testing.T) {
 	assert.DirExists(t, filepath.Dir(keyPath))
 }
 
+func TestSaveMasterKey_RejectsSymlinkedDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyDir := filepath.Join(tmpDir, "keys")
+	targetDir := filepath.Join(tmpDir, "target")
+	require.NoError(t, os.Mkdir(targetDir, 0700))
+	if err := os.Symlink(targetDir, keyDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	err = SaveMasterKey(filepath.Join(keyDir, "_masterkey"), key)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key directory")
+	assert.Contains(t, err.Error(), "symlink")
+	assert.NoFileExists(t, filepath.Join(targetDir, "_masterkey"))
+}
+
 func TestSaveMasterKey_DoesNotFollowPredictableTempSymlink(t *testing.T) {
 	tmpDir := t.TempDir()
 	keyPath := filepath.Join(tmpDir, "_masterkey")
@@ -195,6 +214,33 @@ func TestLoadMasterKey_RejectsSymlinkedFile(t *testing.T) {
 	assert.Nil(t, loadedKey)
 	assert.Empty(t, src)
 	assert.Contains(t, err.Error(), "read master key file")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestLoadMasterKey_RejectsSymlinkedDirectory(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+	keyDir := filepath.Join(tmpDir, "keys")
+	targetDir := filepath.Join(tmpDir, "target")
+	require.NoError(t, os.Mkdir(targetDir, 0700))
+	if err := os.Symlink(targetDir, keyDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+	encoded := base64.StdEncoding.EncodeToString(key)
+	require.NoError(t, os.WriteFile(filepath.Join(targetDir, "_masterkey"), []byte(encoded), 0600))
+
+	loadedKey, src, err := LoadMasterKey(MasterKeyOptions{
+		KeyDirectory:      keyDir,
+		AllowAutoGenerate: false,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, loadedKey)
+	assert.Empty(t, src)
+	assert.Contains(t, err.Error(), "master key directory")
 	assert.Contains(t, err.Error(), "symlink")
 }
 

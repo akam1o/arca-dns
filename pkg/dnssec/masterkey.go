@@ -79,7 +79,11 @@ func LoadMasterKey(opts MasterKeyOptions) (key []byte, src MasterKeySource, err 
 		fileName = MasterKeyFileName
 	}
 	keyPath := MasterKeyPath(opts.KeyDirectory, fileName)
+	keyDir := filepath.Dir(keyPath)
 
+	if err := validateExistingKeyDirectory(keyDir); err != nil && !os.IsNotExist(err) {
+		return nil, "", fmt.Errorf("stat master key directory: %w", err)
+	}
 	if data, err := readRegularKeyFile(keyPath); err == nil {
 		key, err := ParseMasterKey(string(data))
 		if err != nil {
@@ -91,14 +95,22 @@ func LoadMasterKey(opts MasterKeyOptions) (key []byte, src MasterKeySource, err 
 	}
 
 	// Priority 3: Legacy file path (for operational parity)
-	if data, err := readRegularKeyFile(LegacyMasterKeyFilePath); err == nil {
+	if _, err := os.Lstat(LegacyMasterKeyFilePath); err == nil {
+		legacyKeyDir := filepath.Dir(LegacyMasterKeyFilePath)
+		if err := validateExistingKeyDirectory(legacyKeyDir); err != nil {
+			return nil, "", fmt.Errorf("stat legacy master key directory: %w", err)
+		}
+		data, err := readRegularKeyFile(LegacyMasterKeyFilePath)
+		if err != nil {
+			return nil, "", fmt.Errorf("read legacy master key file: %w", err)
+		}
 		key, err := ParseMasterKey(string(data))
 		if err != nil {
 			return nil, "", fmt.Errorf("parse master key from legacy file: %w", err)
 		}
 		return key, MasterKeySourceFile, nil
 	} else if !os.IsNotExist(err) {
-		return nil, "", fmt.Errorf("read legacy master key file: %w", err)
+		return nil, "", fmt.Errorf("stat legacy master key file: %w", err)
 	}
 
 	// Priority 4: Auto-generate (dev only)
@@ -183,6 +195,9 @@ func SaveMasterKey(path string, key []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create key directory: %w", err)
+	}
+	if err := validateExistingKeyDirectory(dir); err != nil {
+		return fmt.Errorf("stat key directory: %w", err)
 	}
 
 	// Encode to base64
