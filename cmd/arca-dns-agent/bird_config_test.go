@@ -99,6 +99,35 @@ func TestApplyBIRDConfigOnStartMarksAppliedOnConfigureSuccess(t *testing.T) {
 	}
 }
 
+func TestApplyBIRDConfigOnStartRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "bird.d")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	path := filepath.Join(configDir, "arca-dns.conf")
+	client := &fakeBIRDClient{}
+	result := applyBIRDConfigOnStart(testBIRDConfig(path), client, zap.NewNop())
+
+	if result.Status.Status != birdConfigStatusUsingExisting {
+		t.Fatalf("status=%s, want %s", result.Status.Status, birdConfigStatusUsingExisting)
+	}
+	if !strings.Contains(result.Status.Error, "config directory") || !strings.Contains(result.Status.Error, "symlink") {
+		t.Fatalf("status error=%q, want symlinked config directory error", result.Status.Error)
+	}
+	if len(client.commands) != 0 {
+		t.Fatalf("configure should not be called, commands=%v", client.commands)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "arca-dns.conf")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config should not be written through symlink, stat err=%v", err)
+	}
+}
+
 func TestWriteFileAtomicCreatesConfigDirectoryAndCleansTemp(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "missing", "nested", "arca-dns.conf")
@@ -128,6 +157,30 @@ func TestWriteFileAtomicCreatesConfigDirectoryAndCleansTemp(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("expected temp files to be removed, got %v", matches)
+	}
+}
+
+func TestWriteFileAtomicRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "bird.d")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	path := filepath.Join(configDir, "arca-dns.conf")
+	err := writeFileAtomic(path, []byte("bird config\n"), 0o644)
+	if err == nil {
+		t.Fatal("writeFileAtomic should reject symlinked config directory")
+	}
+	if !strings.Contains(err.Error(), "config directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("writeFileAtomic error=%v, want symlinked config directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "arca-dns.conf")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("config should not be written through symlink, stat err=%v", statErr)
 	}
 }
 

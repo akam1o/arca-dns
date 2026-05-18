@@ -77,7 +77,7 @@ func applyBIRDConfigOnStart(cfg config.BIRDConfig, client bird.Client, logger *z
 	result.ProtocolNames = protocolNames
 
 	path := cfg.ConfigureOnStart.Path
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := ensureConfigDirectoryForPath(path); err != nil {
 		result.Status.Error = err.Error()
 		logger.Warn("Failed to create BIRD config directory; continuing with existing BIRD runtime config",
 			zap.String("path", path),
@@ -127,6 +127,9 @@ func applyBIRDConfigOnStart(cfg config.BIRDConfig, client bird.Client, logger *z
 }
 
 func readPreviousBIRDConfig(path string) ([]byte, bool, error) {
+	if err := validateConfigDirectoryIfExistsForPath(path); err != nil {
+		return nil, false, err
+	}
 	data, err := os.ReadFile(path)
 	if err == nil {
 		return data, true, nil
@@ -138,6 +141,9 @@ func readPreviousBIRDConfig(path string) ([]byte, bool, error) {
 }
 
 func restoreBIRDConfig(path string, previousConfig []byte, hadPreviousConfig bool) error {
+	if err := validateConfigDirectoryIfExistsForPath(path); err != nil {
+		return err
+	}
 	if hadPreviousConfig {
 		return writeFileAtomic(path, previousConfig, 0o644)
 	}
@@ -153,7 +159,7 @@ func restoreBIRDConfig(path string, previousConfig []byte, hadPreviousConfig boo
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ensureConfigDirectoryForPath(path); err != nil {
 		return err
 	}
 
@@ -193,6 +199,56 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	removeTemp = false
 	if err := syncDir(dir); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ensureConfigDirectoryForPath(path string) error {
+	dir := filepath.Dir(path)
+	existed := true
+	if err := validateExistingConfigDirectory(dir); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat config directory: %w", err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := validateExistingConfigDirectory(dir); err != nil {
+		return fmt.Errorf("stat config directory: %w", err)
+	}
+	if !existed {
+		if err := syncDir(filepath.Dir(dir)); err != nil {
+			return fmt.Errorf("sync config directory parent: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func validateConfigDirectoryIfExistsForPath(path string) error {
+	dir := filepath.Dir(path)
+	if err := validateExistingConfigDirectory(dir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat config directory: %w", err)
+	}
+	return nil
+}
+
+func validateExistingConfigDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("config directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("config path must be a directory: %s", path)
 	}
 	return nil
 }
