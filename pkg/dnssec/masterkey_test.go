@@ -172,6 +172,32 @@ func TestLoadMasterKey_FromFile(t *testing.T) {
 	assert.Equal(t, key, loadedKey)
 }
 
+func TestLoadMasterKey_RejectsSymlinkedFile(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "_masterkey")
+	realKeyPath := filepath.Join(tmpDir, "_masterkey.real")
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+	encoded := base64.StdEncoding.EncodeToString(key)
+	require.NoError(t, os.WriteFile(realKeyPath, []byte(encoded), 0600))
+	if err := os.Symlink(realKeyPath, keyPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	loadedKey, src, err := LoadMasterKey(MasterKeyOptions{
+		KeyDirectory:      tmpDir,
+		AllowAutoGenerate: false,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, loadedKey)
+	assert.Empty(t, src)
+	assert.Contains(t, err.Error(), "read master key file")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
 func TestLoadMasterKey_AutoGenerate(t *testing.T) {
 	tmpDir := t.TempDir()
 
