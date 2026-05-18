@@ -254,6 +254,26 @@ func TestReadManagedZoneConfigRejectsSymlinkedConfigDirectory(t *testing.T) {
 	}
 }
 
+func TestReadManagedZoneConfigRejectsSymlinkedConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "managed.conf")
+	sentinelPath := filepath.Join(tmpDir, "sentinel.conf")
+	if err := os.WriteFile(sentinelPath, []byte("# arca-dns-zone: example.com.\n"), 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, configPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, _, err := readManagedZoneConfig(configPath)
+	if err == nil {
+		t.Fatal("readManagedZoneConfig should reject symlinked config file")
+	}
+	if !strings.Contains(err.Error(), "NSD managed zone config") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("readManagedZoneConfig error=%v, want symlinked config file error", err)
+	}
+}
+
 func TestWriteFileAtomicCleansTempFileWhenRenameFails(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetPath := filepath.Join(tmpDir, "managed.conf")

@@ -335,7 +335,7 @@ func readManagedZoneConfig(path string) (string, map[string]struct{}, error) {
 		return "", nil, err
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := readRegularManagedZoneConfigFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", zones, nil
@@ -362,6 +362,38 @@ func readManagedZoneConfig(path string) (string, map[string]struct{}, error) {
 	}
 
 	return existing, zones, nil
+}
+
+func readRegularManagedZoneConfigFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("NSD managed zone config must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("NSD managed zone config must be a regular file: %s", path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("NSD managed zone config changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("NSD managed zone config must be a regular file: %s", path)
+	}
+
+	return io.ReadAll(file)
 }
 
 func normalizeZoneName(zoneName string) (string, error) {

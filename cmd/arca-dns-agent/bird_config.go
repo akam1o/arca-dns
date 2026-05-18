@@ -130,7 +130,7 @@ func readPreviousBIRDConfig(path string) ([]byte, bool, error) {
 	if err := validateConfigDirectoryIfExistsForPath(path); err != nil {
 		return nil, false, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := readRegularBIRDConfigFile(path)
 	if err == nil {
 		return data, true, nil
 	}
@@ -138,6 +138,38 @@ func readPreviousBIRDConfig(path string) ([]byte, bool, error) {
 		return nil, false, nil
 	}
 	return nil, false, err
+}
+
+func readRegularBIRDConfigFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("BIRD config file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("BIRD config file must be a regular file: %s", path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("BIRD config file changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("BIRD config file must be a regular file: %s", path)
+	}
+
+	return io.ReadAll(file)
 }
 
 func restoreBIRDConfig(path string, previousConfig []byte, hadPreviousConfig bool) error {
