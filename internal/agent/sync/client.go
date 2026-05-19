@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -285,7 +286,43 @@ func validateTLSConfig(cfg config.ControllerClientConfig) error {
 			return fmt.Errorf("invalid TLS configuration: TLS requires an https controller URL")
 		}
 	}
+	if caFile != "" {
+		if err := validateTLSFilePath("ca_file", cfg.TLS.CAFile); err != nil {
+			return err
+		}
+	}
+	if certFile != "" {
+		if err := validateTLSFilePath("cert_file", cfg.TLS.CertFile); err != nil {
+			return err
+		}
+	}
+	if keyFile != "" {
+		if err := validateTLSFilePath("key_file", cfg.TLS.KeyFile); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func validateTLSFilePath(field string, path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("invalid TLS configuration: %s is empty", field)
+	}
+	if trimmed != path {
+		return fmt.Errorf("invalid TLS configuration: %s must not contain surrounding whitespace", field)
+	}
+	if strings.ContainsFunc(path, unsafeTLSFilePathChar) {
+		return fmt.Errorf("invalid TLS configuration: %s contains control characters", field)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("invalid TLS configuration: %s must be an absolute path", field)
+	}
+	return nil
+}
+
+func unsafeTLSFilePathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
 }
 
 func validateAPIKeyTransport(cfg config.ControllerClientConfig) error {

@@ -775,6 +775,22 @@ func validateAgentControllerTLSConfig(controller ControllerClientConfig) error {
 		return fmt.Errorf("invalid controller.tls.client_auth: required when controller.tls.cert_file or key_file is set")
 	}
 
+	if caFile != "" {
+		if err := validateAbsoluteLocalPath("controller.tls.ca_file", controller.TLS.CAFile); err != nil {
+			return err
+		}
+	}
+	if certFile != "" {
+		if err := validateAbsoluteLocalPath("controller.tls.cert_file", controller.TLS.CertFile); err != nil {
+			return err
+		}
+	}
+	if keyFile != "" {
+		if err := validateAbsoluteLocalPath("controller.tls.key_file", controller.TLS.KeyFile); err != nil {
+			return err
+		}
+	}
+
 	if !controller.TLS.ClientAuth {
 		return nil
 	}

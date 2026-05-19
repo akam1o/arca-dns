@@ -1122,6 +1122,46 @@ func TestValidateAgentConfig_InvalidControllerClientSettings(t *testing.T) {
 			},
 			want: "controller.tls.key_file",
 		},
+		{
+			name: "relative tls ca file",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "https://controller.example.com"
+				cfg.Controller.TLS.Enabled = true
+				cfg.Controller.TLS.CAFile = "controller-ca.crt"
+			},
+			want: "controller.tls.ca_file",
+		},
+		{
+			name: "tls ca file with surrounding whitespace",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "https://controller.example.com"
+				cfg.Controller.TLS.Enabled = true
+				cfg.Controller.TLS.CAFile = " /etc/arca-dns/controller-ca.crt "
+			},
+			want: "controller.tls.ca_file",
+		},
+		{
+			name: "relative tls cert file",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "https://controller.example.com"
+				cfg.Controller.TLS.Enabled = true
+				cfg.Controller.TLS.ClientAuth = true
+				cfg.Controller.TLS.CertFile = "client.crt"
+				cfg.Controller.TLS.KeyFile = "/etc/arca-dns/client.key"
+			},
+			want: "controller.tls.cert_file",
+		},
+		{
+			name: "tls key file with newline",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Controller.URL = "https://controller.example.com"
+				cfg.Controller.TLS.Enabled = true
+				cfg.Controller.TLS.ClientAuth = true
+				cfg.Controller.TLS.CertFile = "/etc/arca-dns/client.crt"
+				cfg.Controller.TLS.KeyFile = "/etc/arca-dns/client.key\nextra"
+			},
+			want: "controller.tls.key_file",
+		},
 	}
 
 	for _, tc := range tests {

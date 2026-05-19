@@ -216,6 +216,64 @@ func TestNewClient_RejectsIncompleteClientAuthTLS(t *testing.T) {
 	}
 }
 
+func TestNewClient_RejectsUnsafeTLSFilePaths(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.ControllerClientConfig
+		want string
+	}{
+		{
+			name: "relative ca file",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled: true,
+					CAFile:  "controller-ca.crt",
+				},
+			},
+			want: "ca_file",
+		},
+		{
+			name: "cert file with surrounding whitespace",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					ClientAuth: true,
+					CertFile:   " /tmp/client.crt ",
+					KeyFile:    "/tmp/client.key",
+				},
+			},
+			want: "cert_file",
+		},
+		{
+			name: "key file with newline",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					ClientAuth: true,
+					CertFile:   "/tmp/client.crt",
+					KeyFile:    "/tmp/client.key\nextra",
+				},
+			},
+			want: "key_file",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewClient(tc.cfg)
+			if err == nil {
+				t.Fatal("Expected NewClient to fail")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Expected error to contain %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestNewClient_RejectsSymlinkedTLSCAFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	realPath := filepath.Join(tmpDir, "ca.crt.real")
