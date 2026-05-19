@@ -50,6 +50,71 @@ func TestNewKeyManager_EmptyDirectory(t *testing.T) {
 	assert.Contains(t, err.Error(), "key directory cannot be empty")
 }
 
+func TestNewKeyManager_RejectsUnsafeKeyDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name         string
+		keyDirectory string
+		want         string
+	}{
+		{
+			name:         "relative",
+			keyDirectory: "keys",
+			want:         "absolute path",
+		},
+		{
+			name:         "surrounding whitespace",
+			keyDirectory: " " + tmpDir + " ",
+			want:         "surrounding whitespace",
+		},
+		{
+			name:         "newline",
+			keyDirectory: tmpDir + "\nextra",
+			want:         "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			km, err := NewKeyManager(KeyManagerOptions{
+				KeyDirectory: tc.keyDirectory,
+				MasterKey:    masterKey,
+				Algorithm:    13,
+			})
+			require.Error(t, err)
+			require.Nil(t, km)
+			require.Contains(t, err.Error(), "key directory")
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestNewKeyManager_RejectsSymlinkedKeyDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyDir := filepath.Join(tmpDir, "keys")
+	targetDir := filepath.Join(tmpDir, "target")
+	require.NoError(t, os.Mkdir(targetDir, 0700))
+	if err := os.Symlink(targetDir, keyDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: keyDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.Error(t, err)
+	require.Nil(t, km)
+	require.Contains(t, err.Error(), "key directory")
+	require.Contains(t, err.Error(), "symlink")
+}
+
 func TestNewKeyManager_InvalidMasterKey(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -306,12 +371,6 @@ func TestLoadKSKRejectsSymlinkedZoneKeyDirectory(t *testing.T) {
 func TestGenerateKSKRejectsSymlinkedKeyDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	keyDir := filepath.Join(tmpDir, "keys")
-	targetDir := filepath.Join(tmpDir, "target")
-	require.NoError(t, os.Mkdir(targetDir, 0700))
-	if err := os.Symlink(targetDir, keyDir); err != nil {
-		t.Skipf("symlink unavailable: %v", err)
-	}
-
 	masterKey, err := GenerateMasterKey()
 	require.NoError(t, err)
 
@@ -321,6 +380,12 @@ func TestGenerateKSKRejectsSymlinkedKeyDirectory(t *testing.T) {
 		Algorithm:    13,
 	})
 	require.NoError(t, err)
+
+	targetDir := filepath.Join(tmpDir, "target")
+	require.NoError(t, os.Mkdir(targetDir, 0700))
+	if err := os.Symlink(targetDir, keyDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
 
 	ksk, err := km.GenerateKSK("example.com")
 	require.Error(t, err)

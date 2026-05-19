@@ -78,7 +78,13 @@ func LoadMasterKey(opts MasterKeyOptions) (key []byte, src MasterKeySource, err 
 	if fileName == "" {
 		fileName = MasterKeyFileName
 	}
-	keyPath := MasterKeyPath(opts.KeyDirectory, fileName)
+	if err := validateKeyStorageFileName("master key filename", fileName); err != nil {
+		return nil, "", err
+	}
+	if err := validateKeyStorageDirectoryPath("master key directory", opts.KeyDirectory); err != nil {
+		return nil, "", err
+	}
+	keyPath := MasterKeyPath(filepath.Clean(opts.KeyDirectory), fileName)
 	keyDir := filepath.Dir(keyPath)
 
 	if err := validateExistingKeyDirectory(keyDir); err != nil && !os.IsNotExist(err) {
@@ -190,9 +196,16 @@ func SaveMasterKey(path string, key []byte) error {
 	if len(key) != MasterKeySize {
 		return fmt.Errorf("%w: expected %d bytes, got %d", ErrInvalidMasterKey, MasterKeySize, len(key))
 	}
+	if err := validateKeyStorageFilePath("master key file", path); err != nil {
+		return err
+	}
+	path = filepath.Clean(path)
 
 	// Ensure directory exists
 	dir := filepath.Dir(path)
+	if err := validateKeyStorageDirectoryIfExists(dir, "key directory"); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create key directory: %w", err)
 	}

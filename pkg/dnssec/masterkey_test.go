@@ -106,6 +106,43 @@ func TestSaveMasterKey_CreatesDirectory(t *testing.T) {
 	assert.DirExists(t, filepath.Dir(keyPath))
 }
 
+func TestSaveMasterKey_RejectsUnsafePath(t *testing.T) {
+	tmpDir := t.TempDir()
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "relative",
+			path: "_masterkey",
+			want: "absolute path",
+		},
+		{
+			name: "surrounding whitespace",
+			path: " " + filepath.Join(tmpDir, "_masterkey") + " ",
+			want: "surrounding whitespace",
+		},
+		{
+			name: "newline",
+			path: filepath.Join(tmpDir, "_masterkey") + "\nextra",
+			want: "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := SaveMasterKey(tc.path, key)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "master key file")
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestSaveMasterKey_RejectsSymlinkedDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	keyDir := filepath.Join(tmpDir, "keys")
@@ -287,6 +324,94 @@ func TestLoadMasterKey_RejectsSymlinkedDirectory(t *testing.T) {
 	assert.Empty(t, src)
 	assert.Contains(t, err.Error(), "master key directory")
 	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestLoadMasterKey_RejectsUnsafeKeyDirectory(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name         string
+		keyDirectory string
+		want         string
+	}{
+		{
+			name:         "relative",
+			keyDirectory: "keys",
+			want:         "absolute path",
+		},
+		{
+			name:         "surrounding whitespace",
+			keyDirectory: " " + tmpDir + " ",
+			want:         "surrounding whitespace",
+		},
+		{
+			name:         "newline",
+			keyDirectory: tmpDir + "\nextra",
+			want:         "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key, src, err := LoadMasterKey(MasterKeyOptions{
+				KeyDirectory:      tc.keyDirectory,
+				AllowAutoGenerate: false,
+			})
+			require.Error(t, err)
+			require.Nil(t, key)
+			require.Empty(t, src)
+			require.Contains(t, err.Error(), "master key directory")
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestLoadMasterKey_RejectsUnsafeFileName(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name     string
+		fileName string
+		want     string
+	}{
+		{
+			name:     "parent traversal",
+			fileName: "../_masterkey",
+			want:     "not a path",
+		},
+		{
+			name:     "absolute",
+			fileName: filepath.Join(tmpDir, "_masterkey"),
+			want:     "not a path",
+		},
+		{
+			name:     "surrounding whitespace",
+			fileName: " _masterkey ",
+			want:     "surrounding whitespace",
+		},
+		{
+			name:     "newline",
+			fileName: "_masterkey\nextra",
+			want:     "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key, src, err := LoadMasterKey(MasterKeyOptions{
+				KeyDirectory:      tmpDir,
+				FileName:          tc.fileName,
+				AllowAutoGenerate: false,
+			})
+			require.Error(t, err)
+			require.Nil(t, key)
+			require.Empty(t, src)
+			require.Contains(t, err.Error(), "master key filename")
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
 }
 
 func TestLoadMasterKey_AutoGenerate(t *testing.T) {

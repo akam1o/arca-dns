@@ -63,6 +63,13 @@ func NewKeyManager(opts KeyManagerOptions) (*KeyManager, error) {
 	if opts.KeyDirectory == "" {
 		return nil, fmt.Errorf("key directory cannot be empty")
 	}
+	if err := validateKeyStorageDirectoryPath("key directory", opts.KeyDirectory); err != nil {
+		return nil, err
+	}
+	keyDirectory := filepath.Clean(opts.KeyDirectory)
+	if err := validateKeyStorageDirectoryIfExists(keyDirectory, "key directory"); err != nil {
+		return nil, err
+	}
 
 	if len(opts.MasterKey) != MasterKeySize {
 		return nil, fmt.Errorf("%w: expected %d bytes, got %d", ErrInvalidMasterKey, MasterKeySize, len(opts.MasterKey))
@@ -87,7 +94,7 @@ func NewKeyManager(opts KeyManagerOptions) (*KeyManager, error) {
 	}
 
 	return &KeyManager{
-		keyDir:    opts.KeyDirectory,
+		keyDir:    keyDirectory,
 		masterKey: opts.MasterKey,
 		algorithm: opts.Algorithm,
 		kskBits:   opts.KSKBits,

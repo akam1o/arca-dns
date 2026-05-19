@@ -31,7 +31,6 @@ func setupSigningFailureTest(t *testing.T) (*httptest.Server, *backend.MemoryBac
 	store := backend.NewMemoryBackend()
 	tmpDir := t.TempDir()
 	keyPath := filepath.Join(tmpDir, "keys")
-	require.NoError(t, os.WriteFile(keyPath, []byte("not a directory"), 0600))
 
 	masterKey, err := dnssec.GenerateMasterKey()
 	require.NoError(t, err)
@@ -42,6 +41,7 @@ func setupSigningFailureTest(t *testing.T) (*httptest.Server, *backend.MemoryBac
 		Algorithm:    13,
 	})
 	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(keyPath, []byte("not a directory"), 0600))
 
 	signingService := service.NewSigningService(store, keyManager, filepath.Join(tmpDir, "artifacts"), nil, logger)
 	handler := NewHandler(store, signingService, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
