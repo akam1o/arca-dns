@@ -75,6 +75,50 @@ func TestNewGitBackendRejectsUnsafeRepositoryPath(t *testing.T) {
 	}
 }
 
+func TestNewGitBackendRejectsSymlinkedRepositoryPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	repoPath := filepath.Join(tmpDir, "repo")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	if err := os.Symlink(targetDir, repoPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	backend, err := NewGitBackendWithOptions(repoPath, GitBackendOptions{
+		Branch:      "main",
+		AuthorName:  "test-author",
+		AuthorEmail: "test@example.com",
+	})
+	require.Error(t, err)
+	require.Nil(t, backend)
+	require.Contains(t, err.Error(), "repository directory")
+	require.Contains(t, err.Error(), "symlink")
+}
+
+func TestGitBackendHealthCheckRejectsSymlinkedRepositoryPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoPath := filepath.Join(tmpDir, "repo")
+
+	backend, err := NewGitBackendWithOptions(repoPath, GitBackendOptions{
+		Branch:      "main",
+		AuthorName:  "test-author",
+		AuthorEmail: "test@example.com",
+	})
+	require.NoError(t, err)
+	defer backend.Close()
+
+	targetDir := filepath.Join(tmpDir, "repo-real")
+	require.NoError(t, os.Rename(repoPath, targetDir))
+	if err := os.Symlink(targetDir, repoPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err = backend.HealthCheck(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "repository directory")
+	require.Contains(t, err.Error(), "symlink")
+}
+
 func testGitZone(name string) *model.Zone {
 	return &model.Zone{
 		Name: name,

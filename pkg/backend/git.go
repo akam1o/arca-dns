@@ -223,6 +223,30 @@ func validateGitRepositoryPath(repoPath string) error {
 	return nil
 }
 
+func validateGitRepositoryDirectoryIfExists(path string) error {
+	if err := validateExistingGitRepositoryDirectory(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat repository directory: %w", err)
+	}
+	return nil
+}
+
+func validateExistingGitRepositoryDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("repository directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("repository path must be a directory: %s", path)
+	}
+	return nil
+}
+
 func unsafeGitRepositoryPathChar(r rune) bool {
 	return r < ' ' || r == 0x7f
 }
@@ -235,7 +259,7 @@ func (g *GitBackend) HealthCheck(ctx context.Context) error {
 	}
 	defer g.releaseFileLock()
 
-	if _, err := os.Stat(g.repoPath); err != nil {
+	if err := validateExistingGitRepositoryDirectory(g.repoPath); err != nil {
 		return fmt.Errorf("git repository path unavailable: %w", err)
 	}
 	if _, err := g.repo.Head(); err != nil && err != plumbing.ErrReferenceNotFound {
@@ -250,6 +274,10 @@ func (g *GitBackend) HealthCheck(ctx context.Context) error {
 
 // openOrInitRepo opens an existing repository or initializes a new one
 func openOrInitRepo(path, branch string) (*git.Repository, error) {
+	if err := validateGitRepositoryDirectoryIfExists(path); err != nil {
+		return nil, err
+	}
+
 	// Try to open existing repository
 	repo, err := git.PlainOpen(path)
 	if err == nil {
@@ -301,6 +329,9 @@ func openOrInitRepo(path, branch string) (*git.Repository, error) {
 	// Repository doesn't exist, initialize new one
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create repository directory: %w", err)
+	}
+	if err := validateExistingGitRepositoryDirectory(path); err != nil {
+		return nil, fmt.Errorf("stat repository directory: %w", err)
 	}
 
 	fs := osfs.New(path)
@@ -356,6 +387,10 @@ func (g *GitBackend) releaseRepoLock() {
 func (g *GitBackend) acquireFileLock(ctx context.Context) error {
 	if err := g.acquireRepoLock(ctx); err != nil {
 		return err
+	}
+	if err := validateExistingGitRepositoryDirectory(g.repoPath); err != nil {
+		g.releaseRepoLock()
+		return fmt.Errorf("git repository directory unavailable: %w", err)
 	}
 
 	locked := false
