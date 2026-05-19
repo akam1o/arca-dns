@@ -531,8 +531,8 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	if cfg.Unbound.Enabled {
-		if cfg.Unbound.ConfigPath == "" {
-			return fmt.Errorf("invalid unbound.config_path: empty when Unbound is enabled")
+		if err := validateAbsoluteLocalPath("unbound.config_path", cfg.Unbound.ConfigPath); err != nil {
+			return fmt.Errorf("%w when Unbound is enabled", err)
 		}
 		if err := validateExecutablePath("unbound.control_path", cfg.Unbound.ControlPath); err != nil {
 			return fmt.Errorf("%w when Unbound is enabled", err)

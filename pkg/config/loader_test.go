@@ -1267,6 +1267,13 @@ func TestValidateAgentConfig_InvalidNSDRenderedConfigPaths(t *testing.T) {
 			want: "nsd.zone_directory",
 		},
 		{
+			name: "relative zone directory",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.ZoneDirectory = "var/lib/nsd/zones"
+			},
+			want: "nsd.zone_directory",
+		},
+		{
 			name: "config path with newline",
 			mutate: func(cfg *AgentConfig) {
 				cfg.NSD.Enabled = true
@@ -1275,10 +1282,26 @@ func TestValidateAgentConfig_InvalidNSDRenderedConfigPaths(t *testing.T) {
 			want: "nsd.config_path",
 		},
 		{
+			name: "relative config path",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.Enabled = true
+				cfg.NSD.ConfigPath = "etc/nsd/nsd.conf"
+			},
+			want: "nsd.config_path",
+		},
+		{
 			name: "zone config path with quote",
 			mutate: func(cfg *AgentConfig) {
 				cfg.NSD.Enabled = true
 				cfg.NSD.ZoneConfigPath = `/etc/nsd/arca-dns-zones".conf`
+			},
+			want: "nsd.zone_config_path",
+		},
+		{
+			name: "relative zone config path",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.Enabled = true
+				cfg.NSD.ZoneConfigPath = "etc/nsd/arca-dns-zones.conf"
 			},
 			want: "nsd.zone_config_path",
 		},
@@ -1302,6 +1325,37 @@ func TestValidateAgentConfig_UnboundMissingConfig(t *testing.T) {
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unbound.config_path")
+}
+
+func TestValidateAgentConfig_InvalidUnboundConfigPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		configPath string
+	}{
+		{
+			name:       "relative",
+			configPath: "etc/unbound/unbound.conf",
+		},
+		{
+			name:       "surrounding whitespace",
+			configPath: " /etc/unbound/unbound.conf ",
+		},
+		{
+			name:       "newline",
+			configPath: "/etc/unbound/unbound.conf\ninclude: /tmp/pwn",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.Unbound.Enabled = true
+			cfg.Unbound.ConfigPath = tc.configPath
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "unbound.config_path")
+		})
+	}
 }
 
 func TestValidateAgentConfig_InvalidUnboundExecutablePaths(t *testing.T) {

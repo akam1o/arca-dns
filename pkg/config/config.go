@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -387,6 +388,9 @@ func ValidateNSDRenderedConfigPath(field string, path string) error {
 	}
 	if strings.ContainsFunc(path, unsafeNSDRenderedConfigPathChar) {
 		return fmt.Errorf("invalid %s: contains unsafe characters", field)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("invalid %s: must be an absolute path", field)
 	}
 	return nil
 }
