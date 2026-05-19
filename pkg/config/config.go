@@ -806,6 +806,9 @@ func ValidateDNSTapSocketPath(path string) error {
 	if strings.ContainsFunc(path, unsafeDNSTapSocketPathChar) {
 		return fmt.Errorf("contains control characters")
 	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("must be an absolute path")
+	}
 	return nil
 }
 

@@ -177,6 +177,9 @@ func removeDNSTapSocketFile(socketPath string, description string) error {
 	if strings.TrimSpace(socketPath) == "" {
 		return fmt.Errorf("dnstap socket path is empty")
 	}
+	if !filepath.IsAbs(socketPath) {
+		return fmt.Errorf("dnstap socket path must be an absolute path: %s", socketPath)
+	}
 
 	if err := validateDNSTapSocketDirectoryForPath(socketPath); err != nil {
 		return err
@@ -221,6 +224,9 @@ func validateDNSTapSocketDirectoryForPath(socketPath string) error {
 func validateDNSTapSocketPath(socketPath string) error {
 	if strings.TrimSpace(socketPath) == "" {
 		return fmt.Errorf("dnstap socket path is empty")
+	}
+	if !filepath.IsAbs(socketPath) {
+		return fmt.Errorf("dnstap socket path must be an absolute path: %s", socketPath)
 	}
 	if err := validateDNSTapSocketDirectoryForPath(socketPath); err != nil {
 		return err

@@ -117,6 +117,7 @@ func TestDNSTapConfigRejectsUnsafeSocketPath(t *testing.T) {
 	paths := map[string]string{
 		"empty":                  "",
 		"surrounding whitespace": " /var/run/dnstap.sock ",
+		"relative":               "run/dnstap.sock",
 		"newline":                "/var/run/dnstap.sock\nserver:",
 		"nul byte":               "/var/run/dnstap\x00.sock",
 	}

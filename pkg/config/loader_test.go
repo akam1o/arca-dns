@@ -1769,6 +1769,13 @@ func TestValidateAgentConfig_InvalidDNSTapSocketSettings(t *testing.T) {
 			want: "dnstap.socket_path",
 		},
 		{
+			name: "relative socket path",
+			mutate: func(cfg *AgentConfig) {
+				cfg.DNSTap.SocketPath = "run/dnstap.sock"
+			},
+			want: "dnstap.socket_path",
+		},
+		{
 			name: "socket path with newline",
 			mutate: func(cfg *AgentConfig) {
 				cfg.DNSTap.SocketPath = "/var/run/dnstap.sock\nserver:"

@@ -247,6 +247,12 @@ func TestRemoveStaleSocketRejectsSymlinkedSocketPath(t *testing.T) {
 	require.Equal(t, []byte("keep"), contents)
 }
 
+func TestRemoveStaleSocketRejectsRelativePath(t *testing.T) {
+	err := removeStaleSocket("dnstap.sock")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "absolute path")
+}
+
 func TestRemoveStaleSocketRejectsSymlinkedSocketDirectory(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("/tmp", "dtap-")
 	require.NoError(t, err)
