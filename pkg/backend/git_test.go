@@ -37,6 +37,44 @@ func setupGitBackend(t *testing.T) (*GitBackend, func()) {
 	return backend, cleanup
 }
 
+func TestNewGitBackendRejectsUnsafeRepositoryPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "empty",
+			path: "",
+			want: "empty",
+		},
+		{
+			name: "relative",
+			path: "git-repo",
+			want: "absolute path",
+		},
+		{
+			name: "surrounding whitespace",
+			path: " /tmp/git-repo ",
+			want: "surrounding whitespace",
+		},
+		{
+			name: "newline",
+			path: "/tmp/git-repo\nextra",
+			want: "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backend, err := NewGitBackend(tc.path, "main", "test-author", "test@example.com", false)
+			require.Error(t, err)
+			require.Nil(t, backend)
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func testGitZone(name string) *model.Zone {
 	return &model.Zone{
 		Name: name,

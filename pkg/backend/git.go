@@ -149,10 +149,10 @@ func NewGitBackend(repoPath, branch, authorName, authorEmail string, autoSync bo
 
 // NewGitBackendWithOptions creates a new Git backend with explicit options.
 func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitBackend, error) {
-	absPath, err := filepath.Abs(repoPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve repository path: %w", err)
+	if err := validateGitRepositoryPath(repoPath); err != nil {
+		return nil, err
 	}
+	absPath := filepath.Clean(repoPath)
 
 	if options.Branch == "" {
 		options.Branch = "main"
@@ -204,6 +204,27 @@ func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitB
 		repoLock:     make(chan struct{}, 1),
 		fileLock:     fileLock,
 	}, nil
+}
+
+func validateGitRepositoryPath(repoPath string) error {
+	trimmed := strings.TrimSpace(repoPath)
+	if trimmed == "" {
+		return fmt.Errorf("git repository path is empty")
+	}
+	if trimmed != repoPath {
+		return fmt.Errorf("git repository path must not contain surrounding whitespace: %q", repoPath)
+	}
+	if strings.ContainsFunc(repoPath, unsafeGitRepositoryPathChar) {
+		return fmt.Errorf("git repository path contains control characters: %q", repoPath)
+	}
+	if !filepath.IsAbs(repoPath) {
+		return fmt.Errorf("git repository path must be an absolute path: %s", repoPath)
+	}
+	return nil
+}
+
+func unsafeGitRepositoryPathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
 }
 
 // HealthCheck verifies that the local Git repository is usable without loading

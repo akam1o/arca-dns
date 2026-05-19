@@ -311,6 +311,11 @@ func ValidateControllerBackendConfig(cfg *BackendConfig) error {
 	if !validBackendTypes[cfg.Type] {
 		return fmt.Errorf("invalid backend.type: %s (must be one of: sqlite, postgres, mysql, git, etcd)", cfg.Type)
 	}
+	if cfg.Type == "git" && cfg.Git.RepositoryPath != "" {
+		if err := validateAbsoluteLocalPath("backend.git.repository_path", cfg.Git.RepositoryPath); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

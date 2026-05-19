@@ -325,6 +325,14 @@ func TestFactoryConfigValidation(t *testing.T) {
 			errorMsg:    "repository_path",
 		},
 		{
+			backendType: "git",
+			config: map[string]interface{}{
+				"repository_path": "relative-git-repo",
+			},
+			expectError: true,
+			errorMsg:    "absolute path",
+		},
+		{
 			backendType: "mysql",
 			config:      map[string]interface{}{},
 			expectError: true,

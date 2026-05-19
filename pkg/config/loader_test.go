@@ -659,6 +659,41 @@ func TestValidateControllerConfig_InvalidBackendType(t *testing.T) {
 	}
 }
 
+func TestValidateControllerConfig_InvalidGitRepositoryPath(t *testing.T) {
+	tests := []struct {
+		name           string
+		repositoryPath string
+	}{
+		{
+			name:           "relative",
+			repositoryPath: "var/lib/arca-dns/git",
+		},
+		{
+			name:           "surrounding whitespace",
+			repositoryPath: " /var/lib/arca-dns/git ",
+		},
+		{
+			name:           "whitespace only",
+			repositoryPath: "   ",
+		},
+		{
+			name:           "newline",
+			repositoryPath: "/var/lib/arca-dns/git\nextra",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validControllerConfigForTest()
+			cfg.Backend.Type = "git"
+			cfg.Backend.Git.RepositoryPath = tc.repositoryPath
+			err := ValidateControllerConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "backend.git.repository_path")
+		})
+	}
+}
+
 func TestValidateControllerConfig_InvalidRateLimit(t *testing.T) {
 	cfg := validControllerConfigForTest()
 	cfg.API.RateLimit.Enabled = true
