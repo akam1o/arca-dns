@@ -549,8 +549,8 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	if cfg.BIRD.Enabled {
-		if cfg.BIRD.SocketPath == "" {
-			return fmt.Errorf("invalid bird.socket_path: empty when BIRD is enabled")
+		if err := validateAbsoluteLocalPath("bird.socket_path", cfg.BIRD.SocketPath); err != nil {
+			return fmt.Errorf("%w when BIRD is enabled", err)
 		}
 		if len(cfg.BIRD.Protocols) == 0 && cfg.BIRD.ProtocolName == "" && len(cfg.BIRD.ProtocolNames) == 0 {
 			return fmt.Errorf("invalid bird.protocols: empty when BIRD is enabled (or set bird.protocol_names/protocol_name)")
@@ -688,6 +688,10 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 }
 
 func validateExecutablePath(field string, path string) error {
+	return validateAbsoluteLocalPath(field, path)
+}
+
+func validateAbsoluteLocalPath(field string, path string) error {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" {
 		return fmt.Errorf("invalid %s: empty", field)

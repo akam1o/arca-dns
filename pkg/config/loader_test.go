@@ -1351,6 +1351,41 @@ func TestValidateAgentConfig_InvalidUnboundExecutablePaths(t *testing.T) {
 	}
 }
 
+func TestValidateAgentConfig_InvalidBIRDSocketPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		socketPath string
+	}{
+		{
+			name:       "empty",
+			socketPath: "",
+		},
+		{
+			name:       "relative",
+			socketPath: "bird.ctl",
+		},
+		{
+			name:       "surrounding whitespace",
+			socketPath: " /var/run/bird/bird.ctl ",
+		},
+		{
+			name:       "newline",
+			socketPath: "/var/run/bird/bird.ctl\nextra",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.BIRD.Enabled = true
+			cfg.BIRD.SocketPath = tc.socketPath
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "bird.socket_path")
+		})
+	}
+}
+
 func TestValidateAgentConfig_BIRDMissingPrefixes(t *testing.T) {
 	// Note: anycast_prefixes is now optional (M5 uses protocol enable/disable)
 	// This test now verifies that protocol_name is required
