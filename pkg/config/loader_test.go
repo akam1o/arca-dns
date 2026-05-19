@@ -685,6 +685,60 @@ func TestValidateControllerConfig_EmptyKeyDirectory(t *testing.T) {
 	assert.Contains(t, err.Error(), "key_directory")
 }
 
+func TestValidateControllerConfig_InvalidStoragePaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ControllerConfig)
+		want   string
+	}{
+		{
+			name: "relative artifact directory",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Storage.ArtifactDirectory = "var/lib/arca-dns/artifacts"
+			},
+			want: "storage.artifact_directory",
+		},
+		{
+			name: "artifact directory with surrounding whitespace",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Storage.ArtifactDirectory = " /var/lib/arca-dns/artifacts "
+			},
+			want: "storage.artifact_directory",
+		},
+		{
+			name: "relative storage key directory",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Storage.KeyDirectory = "var/lib/arca-dns/keys"
+			},
+			want: "storage.key_directory",
+		},
+		{
+			name: "dnssec key directory with newline",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.DNSSEC.KeyDirectory = "/var/lib/arca-dns/keys\nextra"
+			},
+			want: "dnssec.key_directory",
+		},
+		{
+			name: "relative dnssec key directory",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.DNSSEC.KeyDirectory = "var/lib/arca-dns/keys"
+			},
+			want: "dnssec.key_directory",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validControllerConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateControllerConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestValidateControllerConfig_InvalidMaxVersionsPerZone(t *testing.T) {
 	cfg := validControllerConfigForTest()
 	cfg.Storage.MaxVersionsPerZone = 0

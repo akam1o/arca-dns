@@ -215,6 +215,20 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return err
 	}
 
+	if err := validateAbsoluteLocalPath("storage.artifact_directory", cfg.Storage.ArtifactDirectory); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.Storage.KeyDirectory) != "" {
+		if err := validateAbsoluteLocalPath("storage.key_directory", cfg.Storage.KeyDirectory); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(cfg.DNSSEC.KeyDirectory) != "" {
+		if err := validateAbsoluteLocalPath("dnssec.key_directory", cfg.DNSSEC.KeyDirectory); err != nil {
+			return err
+		}
+	}
+
 	if cfg.DNSSEC.Enabled {
 		if cfg.DNSSECKeyDirectory() == "" {
 			return fmt.Errorf("invalid dnssec.key_directory: empty when DNSSEC is enabled and storage.key_directory is not set")
@@ -254,10 +268,6 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 				return fmt.Errorf("invalid dnssec.scheduler_check_interval: must be positive when scheduler is enabled")
 			}
 		}
-	}
-
-	if strings.TrimSpace(cfg.Storage.ArtifactDirectory) == "" {
-		return fmt.Errorf("invalid storage.artifact_directory: empty")
 	}
 
 	if cfg.DNSSEC.Enabled && strings.TrimSpace(cfg.Storage.KeyDirectory) == "" && strings.TrimSpace(cfg.DNSSEC.KeyDirectory) == "" {

@@ -55,10 +55,10 @@ For development, the controller can auto-generate a master key on first startup:
 # config.yaml
 dnssec:
   enabled: true
-  key_directory: ./keys
+  key_directory: /tmp/arca-dns-keys
 ```
 
-The master key will be stored in `./keys/_masterkey` with 0600 permissions.
+The master key will be stored in `/tmp/arca-dns-keys/_masterkey` with 0600 permissions.
 
 **⚠️ Warning**: Auto-generation is NOT recommended for production.
 
