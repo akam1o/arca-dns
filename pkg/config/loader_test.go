@@ -451,6 +451,47 @@ func TestValidateControllerConfig_TrustedProxies(t *testing.T) {
 	assert.Contains(t, err.Error(), "api.trusted_proxies[0]")
 }
 
+func TestValidateControllerConfig_TrustedProxiesRejectUnsafeValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		proxy string
+		want  string
+	}{
+		{
+			name:  "all IPv4",
+			proxy: "0.0.0.0/0",
+			want:  "must not trust all addresses",
+		},
+		{
+			name:  "all IPv6",
+			proxy: "::/0",
+			want:  "must not trust all addresses",
+		},
+		{
+			name:  "unspecified IPv4",
+			proxy: "0.0.0.0",
+			want:  "must not be an unspecified address",
+		},
+		{
+			name:  "unspecified IPv6",
+			proxy: "::",
+			want:  "must not be an unspecified address",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validControllerConfigForTest()
+			cfg.API.TrustedProxies = []string{tc.proxy}
+
+			err := ValidateControllerConfig(cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "api.trusted_proxies[0]")
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestValidateControllerConfig_AuthEnabledRequiresAPIKeys(t *testing.T) {
 	cfg := DefaultControllerConfig()
 	cfg.API.Auth.Enabled = true

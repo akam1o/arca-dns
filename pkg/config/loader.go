@@ -385,18 +385,32 @@ func normalizeTrustedProxies(trustedProxies []string) ([]string, error) {
 			return nil, fmt.Errorf("invalid api.trusted_proxies[%d]: empty", i)
 		}
 		if strings.Contains(value, "/") {
-			if _, _, err := net.ParseCIDR(value); err != nil {
+			if _, network, err := net.ParseCIDR(value); err != nil {
 				return nil, fmt.Errorf("invalid api.trusted_proxies[%d]: %q is not a valid CIDR: %w", i, proxy, err)
+			} else if cidrCoversAllAddresses(network) {
+				return nil, fmt.Errorf("invalid api.trusted_proxies[%d]: must not trust all addresses", i)
 			}
 			normalized[i] = value
 			continue
 		}
-		if net.ParseIP(value) == nil {
+		ip := net.ParseIP(value)
+		if ip == nil {
 			return nil, fmt.Errorf("invalid api.trusted_proxies[%d]: %q is not a valid IP address or CIDR", i, proxy)
+		}
+		if ip.IsUnspecified() {
+			return nil, fmt.Errorf("invalid api.trusted_proxies[%d]: must not be an unspecified address", i)
 		}
 		normalized[i] = value
 	}
 	return normalized, nil
+}
+
+func cidrCoversAllAddresses(network *net.IPNet) bool {
+	if network == nil {
+		return false
+	}
+	ones, bits := network.Mask.Size()
+	return bits > 0 && ones == 0
 }
 
 func listenEndpointsOverlap(a, b string) bool {

@@ -7,7 +7,7 @@ api:
   # sync.verify_signatures must use the same shared secret in sync.controller_signature_key.
   # Generate with: openssl rand -base64 32
   artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
-  trusted_proxies: [] # e.g. ["10.0.0.0/8", "192.168.0.0/16"]
+  trusted_proxies: [] # e.g. ["10.0.0.0/8", "192.168.0.0/16"]; do not use 0.0.0.0/0 or ::/0
   auth:
     # The built-in default is true. When enabled, at least one valid API key
     # hash is required; otherwise the controller exits during config validation.
