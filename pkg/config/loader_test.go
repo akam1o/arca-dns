@@ -1211,6 +1211,23 @@ func TestValidateControllerConfig_InvalidRateLimit(t *testing.T) {
 	assert.Contains(t, err.Error(), "api.rate_limit.burst")
 }
 
+func TestValidateControllerConfig_InvalidLoggingFormat(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.Logging.Format = "xml"
+
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "logging.format")
+}
+
+func TestValidateControllerConfig_AllowsEmptyLoggingFormatDefault(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.Logging.Format = ""
+
+	err := ValidateControllerConfig(cfg)
+	assert.NoError(t, err)
+}
+
 func TestValidateControllerConfig_InvalidLoggingOutputPath(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -3162,6 +3179,23 @@ func TestValidateAgentConfig_InvalidLogLevel(t *testing.T) {
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "logging.level")
+}
+
+func TestValidateAgentConfig_InvalidLoggingFormat(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Logging.Format = "xml"
+
+	err := ValidateAgentConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "logging.format")
+}
+
+func TestValidateAgentConfig_AllowsEmptyLoggingFormatDefault(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Logging.Format = ""
+
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
 }
 
 func TestValidateAgentConfig_InvalidLoggingOutputPath(t *testing.T) {

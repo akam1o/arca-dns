@@ -308,6 +308,9 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	if !validLogLevels[cfg.Logging.Level] {
 		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
 	}
+	if err := validateLoggingFormat("logging.format", cfg.Logging.Format); err != nil {
+		return err
+	}
 	if err := validateLoggingOutputPath("logging.output", cfg.Logging.Output); err != nil {
 		return err
 	}
@@ -1024,6 +1027,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	if !validLogLevels[cfg.Logging.Level] {
 		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
 	}
+	if err := validateLoggingFormat("logging.format", cfg.Logging.Format); err != nil {
+		return err
+	}
 	if err := validateLoggingOutputPath("logging.output", cfg.Logging.Output); err != nil {
 		return err
 	}
@@ -1156,6 +1162,16 @@ func isBIRDIdentifierFirstChar(r rune) bool {
 
 func isBIRDIdentifierChar(r rune) bool {
 	return isBIRDIdentifierFirstChar(r) || r >= '0' && r <= '9'
+}
+
+func validateLoggingFormat(field string, format string) error {
+	value := strings.ToLower(strings.TrimSpace(format))
+	switch value {
+	case "", "json", "console":
+		return nil
+	default:
+		return fmt.Errorf("invalid %s: %s (must be json or console)", field, format)
+	}
 }
 
 func validateLoggingOutputPath(field string, output string) error {
