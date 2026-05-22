@@ -966,6 +966,54 @@ func TestValidateControllerConfig_RuntimeBackendRequiresActiveBackendSettings(t 
 			want: "backend.etcd.endpoints[1]",
 		},
 		{
+			name: "etcd endpoint missing port",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "etcd"
+				cfg.Backend.Etcd.Endpoints = []string{"http://etcd-a"}
+			},
+			want: "backend.etcd.endpoints[0]",
+		},
+		{
+			name: "etcd endpoint unsupported scheme",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "etcd"
+				cfg.Backend.Etcd.Endpoints = []string{"ftp://etcd-a:2379"}
+			},
+			want: "backend.etcd.endpoints[0]",
+		},
+		{
+			name: "etcd endpoint with userinfo",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "etcd"
+				cfg.Backend.Etcd.Endpoints = []string{"http://user:pass@etcd-a:2379"}
+			},
+			want: "backend.etcd.endpoints[0]",
+		},
+		{
+			name: "etcd endpoint invalid hostname",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "etcd"
+				cfg.Backend.Etcd.Endpoints = []string{"http://bad_host:2379"}
+			},
+			want: "backend.etcd.endpoints[0]",
+		},
+		{
+			name: "etcd endpoint unspecified host",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "etcd"
+				cfg.Backend.Etcd.Endpoints = []string{"http://0.0.0.0:2379"}
+			},
+			want: "backend.etcd.endpoints[0]",
+		},
+		{
+			name: "etcd endpoint zero port",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "etcd"
+				cfg.Backend.Etcd.Endpoints = []string{"http://etcd-a:0"}
+			},
+			want: "backend.etcd.endpoints[0]",
+		},
+		{
 			name: "etcd placeholder password",
 			mutate: func(cfg *ControllerConfig) {
 				cfg.Backend.Type = "etcd"
@@ -1047,7 +1095,7 @@ func TestValidateControllerConfig_RuntimeBackendAllowsValidActiveBackendSettings
 			name: "etcd",
 			mutate: func(cfg *ControllerConfig) {
 				cfg.Backend.Type = "etcd"
-				cfg.Backend.Etcd.Endpoints = []string{" http://etcd-a:2379 ", "etcd-b:2379"}
+				cfg.Backend.Etcd.Endpoints = []string{" http://etcd-a:2379 ", "etcd-b:2379", "https://etcd-c.example.com:2379", "[::1]:2379"}
 				cfg.Backend.Etcd.DialTimeout = 0
 				cfg.Backend.Etcd.RequestTimeout = 0
 			},

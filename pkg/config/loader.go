@@ -434,6 +434,9 @@ func validateControllerEtcdRuntimeConfig(cfg *EtcdBackendConfig) error {
 		if isPlaceholderSecret(value) {
 			return fmt.Errorf("invalid backend.etcd.endpoints[%d]: replace placeholder value with an etcd endpoint", i)
 		}
+		if err := validateEtcdEndpoint(i, value); err != nil {
+			return err
+		}
 		normalized[i] = value
 	}
 	cfg.Endpoints = normalized
@@ -446,6 +449,54 @@ func validateControllerEtcdRuntimeConfig(cfg *EtcdBackendConfig) error {
 	}
 	if cfg.RequestTimeout < 0 {
 		return fmt.Errorf("invalid backend.etcd.request_timeout: must be non-negative")
+	}
+	return nil
+}
+
+func validateEtcdEndpoint(index int, endpoint string) error {
+	hostPort := endpoint
+	if strings.Contains(endpoint, "://") {
+		parsed, err := url.Parse(endpoint)
+		if err != nil {
+			return fmt.Errorf("invalid backend.etcd.endpoints[%d]: invalid URL: %w", index, err)
+		}
+		switch parsed.Scheme {
+		case "http", "https":
+		default:
+			return fmt.Errorf("invalid backend.etcd.endpoints[%d]: scheme must be http or https", index)
+		}
+		if parsed.User != nil {
+			return fmt.Errorf("invalid backend.etcd.endpoints[%d]: must not include userinfo", index)
+		}
+		hostPort = parsed.Host
+	}
+	if err := validateBackendEndpointHostPort(fmt.Sprintf("backend.etcd.endpoints[%d]", index), hostPort); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateBackendEndpointHostPort(field string, value string) error {
+	host, port, err := net.SplitHostPort(value)
+	if err != nil {
+		return fmt.Errorf("invalid %s: must be in host:port format", field)
+	}
+	if host == "" {
+		return fmt.Errorf("invalid %s: host must not be empty", field)
+	}
+	if strings.ContainsFunc(host, unsafeListenHostChar) {
+		return fmt.Errorf("invalid %s: host contains unsafe characters", field)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsUnspecified() {
+			return fmt.Errorf("invalid %s: host must not be an unspecified address", field)
+		}
+	} else if !isValidStubZoneAddress(host) {
+		return fmt.Errorf("invalid %s: host must be an IP address or DNS hostname", field)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("invalid %s: port must be between 1 and 65535", field)
 	}
 	return nil
 }
