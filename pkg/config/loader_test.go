@@ -700,6 +700,90 @@ func TestValidateControllerConfig_EmptyObservabilityListen(t *testing.T) {
 	assert.Contains(t, err.Error(), "observability.listen")
 }
 
+func TestValidateControllerConfig_InvalidListenAddress(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ControllerConfig)
+		want   string
+	}{
+		{
+			name: "api missing port",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.API.Listen = "127.0.0.1"
+			},
+			want: "api.listen",
+		},
+		{
+			name: "api zero port",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.API.Listen = "127.0.0.1:0"
+			},
+			want: "api.listen",
+		},
+		{
+			name: "api port too high",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.API.Listen = "127.0.0.1:65536"
+			},
+			want: "api.listen",
+		},
+		{
+			name: "api non numeric port",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.API.Listen = "127.0.0.1:http"
+			},
+			want: "api.listen",
+		},
+		{
+			name: "api host with whitespace",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.API.Listen = "127.0.0.1 :8080"
+			},
+			want: "api.listen",
+		},
+		{
+			name: "observability missing port",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Observability.Listen = "127.0.0.1"
+			},
+			want: "observability.listen",
+		},
+		{
+			name: "observability zero port",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Observability.Listen = "127.0.0.1:0"
+			},
+			want: "observability.listen",
+		},
+		{
+			name: "observability non numeric port",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Observability.Listen = "127.0.0.1:http"
+			},
+			want: "observability.listen",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validControllerConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateControllerConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateControllerConfig_AllowsIPv6ListenAddresses(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.API.Listen = "[::1]:8080"
+	cfg.Observability.Listen = "[::1]:9053"
+
+	err := ValidateControllerConfig(cfg)
+	assert.NoError(t, err)
+}
+
 func TestValidateControllerConfig_ObservabilityListenMustNotOverlapAPIListen(t *testing.T) {
 	cfg := validControllerConfigForTest()
 	cfg.API.Listen = "0.0.0.0:8080"
@@ -2638,6 +2722,34 @@ func TestValidateAgentConfig_StatusServerRequiresListen(t *testing.T) {
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "metrics.listen")
+}
+
+func TestValidateAgentConfig_InvalidMetricsListenAddress(t *testing.T) {
+	tests := []string{
+		"127.0.0.1",
+		"127.0.0.1:0",
+		"127.0.0.1:65536",
+		"127.0.0.1:http",
+		"127.0.0.1 :9090",
+	}
+
+	for _, listen := range tests {
+		t.Run(listen, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.Metrics.Listen = listen
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "metrics.listen")
+		})
+	}
+}
+
+func TestValidateAgentConfig_AllowsIPv6LoopbackMetricsListen(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Metrics.Listen = "[::1]:9090"
+
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
 }
 
 func TestValidateAgentConfig_RemoteStatusServerRequiresAuthToken(t *testing.T) {

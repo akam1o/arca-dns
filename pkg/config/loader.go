@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -182,6 +183,12 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return fmt.Errorf("invalid observability.listen: empty")
 	}
 	cfg.Observability.Listen = strings.TrimSpace(cfg.Observability.Listen)
+	if err := validateListenAddress("api.listen", cfg.API.Listen); err != nil {
+		return err
+	}
+	if err := validateListenAddress("observability.listen", cfg.Observability.Listen); err != nil {
+		return err
+	}
 	if listenEndpointsOverlap(cfg.API.Listen, cfg.Observability.Listen) {
 		return fmt.Errorf("invalid observability.listen: must not overlap api.listen")
 	}
@@ -480,6 +487,25 @@ func cidrCoversAllAddresses(network *net.IPNet) bool {
 	}
 	ones, bits := network.Mask.Size()
 	return bits > 0 && ones == 0
+}
+
+func validateListenAddress(field, listen string) error {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("invalid %s: must be in host:port format", field)
+	}
+	if strings.ContainsFunc(host, unsafeListenHostChar) {
+		return fmt.Errorf("invalid %s: host contains unsafe characters", field)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("invalid %s: port must be between 1 and 65535", field)
+	}
+	return nil
+}
+
+func unsafeListenHostChar(r rune) bool {
+	return r <= ' ' || r == 0x7f
 }
 
 func listenEndpointsOverlap(a, b string) bool {
@@ -1155,6 +1181,9 @@ func validateAgentMetricsConfig(metrics *MetricsConfig) error {
 	metrics.Listen = strings.TrimSpace(metrics.Listen)
 	if metrics.Listen == "" {
 		return fmt.Errorf("invalid metrics.listen: empty")
+	}
+	if err := validateListenAddress("metrics.listen", metrics.Listen); err != nil {
+		return err
 	}
 
 	metrics.AuthToken = strings.TrimSpace(metrics.AuthToken)
