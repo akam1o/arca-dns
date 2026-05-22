@@ -578,6 +578,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	if cfg.Controller.MaxResponseBytes <= 0 {
 		return fmt.Errorf("invalid controller.max_response_bytes: must be positive")
 	}
+	if err := validateAgentControllerAPIKey(cfg.Controller.APIKey); err != nil {
+		return err
+	}
 	if err := validateAgentControllerAPIKeyTransport(cfg.Controller); err != nil {
 		return err
 	}
@@ -999,6 +1002,17 @@ func validateAgentControllerTLSConfig(controller ControllerClientConfig) error {
 	}
 	if keyFile == "" {
 		return fmt.Errorf("invalid controller.tls.key_file: empty when controller.tls.client_auth is true")
+	}
+	return nil
+}
+
+func validateAgentControllerAPIKey(apiKey string) error {
+	value := strings.TrimSpace(apiKey)
+	if value == "" {
+		return nil
+	}
+	if isPlaceholderSecret(value) {
+		return fmt.Errorf("invalid controller.api_key: replace placeholder value with the raw agent API key")
 	}
 	return nil
 }

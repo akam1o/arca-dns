@@ -1215,6 +1215,27 @@ func TestValidateAgentConfig_PlaintextAPIKeyTransport(t *testing.T) {
 	}
 }
 
+func TestValidateAgentConfig_RejectsPlaceholderAPIKey(t *testing.T) {
+	tests := []string{
+		"REPLACE_WITH_RAW_AGENT_API_KEY",
+		"changeme",
+		"TODO-agent-key",
+	}
+
+	for _, apiKey := range tests {
+		t.Run(apiKey, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.Controller.URL = "https://controller.example.com"
+			cfg.Controller.APIKey = apiKey
+
+			err := ValidateAgentConfig(cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "controller.api_key")
+			assert.Contains(t, err.Error(), "replace placeholder")
+		})
+	}
+}
+
 func TestLoadAgentConfig_PlaintextAPIKeyOptInFromEnv(t *testing.T) {
 	t.Setenv("ARCA_DNS_CONTROLLER_URL", "http://controller.example.com")
 	t.Setenv("ARCA_DNS_CONTROLLER_API_KEY", "env-only-api-key")

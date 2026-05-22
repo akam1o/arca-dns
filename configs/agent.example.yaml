@@ -2,10 +2,10 @@
 
 controller:
   # Prefer https:// when the controller is not reached over loopback.
-  # Enable this only for intentionally trusted local/private HTTP transports.
-  url: "http://controller:8080"
+  # Enable allow_plaintext_api_key only for intentionally trusted local/private HTTP transports.
+  url: "https://controller.example.com"
   api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
-  allow_plaintext_api_key: true
+  allow_plaintext_api_key: false
   timeout: "5s"
   retry_attempts: 3
   retry_delay: "200ms"
