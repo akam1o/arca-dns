@@ -128,6 +128,8 @@ observability:
   listen: "127.0.0.1:9053"
 backend:
   type: "mysql"
+  mysql:
+    dsn: "user:pass@tcp(mysql:3306)/arca_dns?parseTime=true"
 dnssec:
   enabled: true
   algorithm: 13
@@ -152,6 +154,23 @@ logging:
 	assert.Equal(t, "/tmp/keys", cfg.DNSSEC.KeyDirectory)
 	assert.Equal(t, "/tmp/keys", cfg.DNSSECKeyDirectory())
 	assert.Equal(t, "debug", cfg.Logging.Level)
+}
+
+func TestLoadControllerBackendConfig_AllowsMissingRuntimeDSNForMigrationFlags(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "controller.yaml")
+
+	configContent := `
+backend:
+  type: "postgres"
+`
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	cfg, err := LoadControllerBackendConfig(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "postgres", cfg.Backend.Type)
+	assert.Empty(t, cfg.Backend.Postgres.DSN)
 }
 
 func TestLoadControllerConfig_StorageKeyDirectoryAliasesDNSSECKeyDirectory(t *testing.T) {
@@ -291,6 +310,7 @@ func TestLoadControllerConfig_EnvOverride(t *testing.T) {
 	os.Setenv("ARCA_DNS_API_AUTH_ENABLED", "false")
 	os.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 	os.Setenv("ARCA_DNS_BACKEND_TYPE", "git")
+	os.Setenv("ARCA_DNS_BACKEND_GIT_REPOSITORY_PATH", "/var/lib/arca-dns/git")
 	os.Setenv("ARCA_DNS_LOGGING_LEVEL", "warn")
 	defer func() {
 		os.Unsetenv("ARCA_DNS_API_LISTEN")
@@ -298,6 +318,7 @@ func TestLoadControllerConfig_EnvOverride(t *testing.T) {
 		os.Unsetenv("ARCA_DNS_API_AUTH_ENABLED")
 		os.Unsetenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY")
 		os.Unsetenv("ARCA_DNS_BACKEND_TYPE")
+		os.Unsetenv("ARCA_DNS_BACKEND_GIT_REPOSITORY_PATH")
 		os.Unsetenv("ARCA_DNS_LOGGING_LEVEL")
 	}()
 
@@ -328,6 +349,7 @@ logging:
 	assert.Equal(t, "0.0.0.0:7053", cfg.Observability.Listen)
 	assert.False(t, cfg.API.Auth.Enabled)
 	assert.Equal(t, "git", cfg.Backend.Type)
+	assert.Equal(t, "/var/lib/arca-dns/git", cfg.Backend.Git.RepositoryPath)
 	assert.Equal(t, "warn", cfg.Logging.Level)
 }
 
@@ -696,6 +718,147 @@ func TestValidateControllerConfig_InvalidBackendType(t *testing.T) {
 			err := ValidateControllerConfig(cfg)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "backend.type")
+		})
+	}
+}
+
+func TestValidateControllerConfig_RuntimeBackendRequiresActiveBackendSettings(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ControllerConfig)
+		want   string
+	}{
+		{
+			name: "postgres empty dsn",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "postgres"
+				cfg.Backend.Postgres.DSN = ""
+			},
+			want: "backend.postgres.dsn",
+		},
+		{
+			name: "postgres placeholder dsn",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "postgres"
+				cfg.Backend.Postgres.DSN = "postgres://REPLACE_WITH_USER:REPLACE_WITH_PASSWORD@db:5432/arca_dns"
+			},
+			want: "backend.postgres.dsn",
+		},
+		{
+			name: "mysql empty dsn",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "mysql"
+				cfg.Backend.MySQL.DSN = ""
+			},
+			want: "backend.mysql.dsn",
+		},
+		{
+			name: "mysql dsn control character",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "mysql"
+				cfg.Backend.MySQL.DSN = "user:pass@tcp(db:3306)/arca_dns\nparseTime=true"
+			},
+			want: "backend.mysql.dsn",
+		},
+		{
+			name: "git empty repository path",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "git"
+				cfg.Backend.Git.RepositoryPath = ""
+			},
+			want: "backend.git.repository_path",
+		},
+		{
+			name: "etcd empty endpoints",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "etcd"
+				cfg.Backend.Etcd.Endpoints = nil
+			},
+			want: "backend.etcd.endpoints",
+		},
+		{
+			name: "etcd blank endpoint",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "etcd"
+				cfg.Backend.Etcd.Endpoints = []string{"http://etcd-a:2379", " "}
+			},
+			want: "backend.etcd.endpoints[1]",
+		},
+		{
+			name: "etcd placeholder password",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "etcd"
+				cfg.Backend.Etcd.Endpoints = []string{"http://etcd-a:2379"}
+				cfg.Backend.Etcd.Password = "REPLACE_WITH_ETCD_PASSWORD"
+			},
+			want: "backend.etcd.password",
+		},
+		{
+			name: "etcd negative request timeout",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "etcd"
+				cfg.Backend.Etcd.Endpoints = []string{"http://etcd-a:2379"}
+				cfg.Backend.Etcd.RequestTimeout = -time.Second
+			},
+			want: "backend.etcd.request_timeout",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validControllerConfigForTest()
+			tc.mutate(cfg)
+
+			err := ValidateControllerConfig(cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateControllerConfig_RuntimeBackendAllowsValidActiveBackendSettings(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ControllerConfig)
+	}{
+		{
+			name: "postgres",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "postgres"
+				cfg.Backend.Postgres.DSN = "postgres://user:pass@db:5432/arca_dns?sslmode=require"
+			},
+		},
+		{
+			name: "mysql",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "mysql"
+				cfg.Backend.MySQL.DSN = "user:pass@tcp(db:3306)/arca_dns?parseTime=true"
+			},
+		},
+		{
+			name: "git",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "git"
+				cfg.Backend.Git.RepositoryPath = "/var/lib/arca-dns/git"
+			},
+		},
+		{
+			name: "etcd",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "etcd"
+				cfg.Backend.Etcd.Endpoints = []string{" http://etcd-a:2379 ", "etcd-b:2379"}
+				cfg.Backend.Etcd.DialTimeout = 0
+				cfg.Backend.Etcd.RequestTimeout = 0
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validControllerConfigForTest()
+			tc.mutate(cfg)
+
+			require.NoError(t, ValidateControllerConfig(cfg))
 		})
 	}
 }

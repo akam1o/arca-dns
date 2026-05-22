@@ -215,6 +215,9 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	if err := ValidateControllerBackendConfig(&cfg.Backend); err != nil {
 		return err
 	}
+	if err := validateControllerRuntimeBackendConfig(&cfg.Backend); err != nil {
+		return err
+	}
 
 	if err := validateAbsoluteLocalPath("storage.artifact_directory", cfg.Storage.ArtifactDirectory); err != nil {
 		return err
@@ -324,6 +327,72 @@ func ValidateControllerBackendConfig(cfg *BackendConfig) error {
 		if err := validateAbsoluteLocalPath("backend.git.repository_path", cfg.Git.RepositoryPath); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateControllerRuntimeBackendConfig(cfg *BackendConfig) error {
+	switch cfg.Type {
+	case "postgres":
+		return validateControllerBackendDSN("backend.postgres.dsn", cfg.Postgres.DSN)
+	case "mysql":
+		return validateControllerBackendDSN("backend.mysql.dsn", cfg.MySQL.DSN)
+	case "git":
+		if strings.TrimSpace(cfg.Git.RepositoryPath) == "" {
+			return fmt.Errorf("invalid backend.git.repository_path: empty")
+		}
+	case "etcd":
+		return validateControllerEtcdRuntimeConfig(&cfg.Etcd)
+	}
+	return nil
+}
+
+func validateControllerBackendDSN(field string, dsn string) error {
+	value := strings.TrimSpace(dsn)
+	if value == "" {
+		return fmt.Errorf("invalid %s: empty", field)
+	}
+	if value != dsn {
+		return fmt.Errorf("invalid %s: must not contain surrounding whitespace", field)
+	}
+	if strings.ContainsFunc(dsn, unsafeExecutablePathChar) {
+		return fmt.Errorf("invalid %s: contains control characters", field)
+	}
+	if isPlaceholderSecret(value) {
+		return fmt.Errorf("invalid %s: replace placeholder value with the backend connection string", field)
+	}
+	return nil
+}
+
+func validateControllerEtcdRuntimeConfig(cfg *EtcdBackendConfig) error {
+	if len(cfg.Endpoints) == 0 {
+		return fmt.Errorf("invalid backend.etcd.endpoints: empty")
+	}
+
+	normalized := make([]string, len(cfg.Endpoints))
+	for i, endpoint := range cfg.Endpoints {
+		value := strings.TrimSpace(endpoint)
+		if value == "" {
+			return fmt.Errorf("invalid backend.etcd.endpoints[%d]: empty", i)
+		}
+		if strings.ContainsFunc(value, unsafeExecutablePathChar) {
+			return fmt.Errorf("invalid backend.etcd.endpoints[%d]: contains control characters", i)
+		}
+		if isPlaceholderSecret(value) {
+			return fmt.Errorf("invalid backend.etcd.endpoints[%d]: replace placeholder value with an etcd endpoint", i)
+		}
+		normalized[i] = value
+	}
+	cfg.Endpoints = normalized
+
+	if isPlaceholderSecret(cfg.Password) {
+		return fmt.Errorf("invalid backend.etcd.password: replace placeholder value with the etcd password")
+	}
+	if cfg.DialTimeout < 0 {
+		return fmt.Errorf("invalid backend.etcd.dial_timeout: must be non-negative")
+	}
+	if cfg.RequestTimeout < 0 {
+		return fmt.Errorf("invalid backend.etcd.request_timeout: must be non-negative")
 	}
 	return nil
 }
