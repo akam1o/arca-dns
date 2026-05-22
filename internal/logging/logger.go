@@ -31,9 +31,14 @@ func NewLogger(cfg config.LoggingConfig) (*zap.Logger, error) {
 		return nil, fmt.Errorf("invalid logging.format: %s (must be json or console)", cfg.Format)
 	}
 
-	output := strings.TrimSpace(cfg.Output)
-	if output == "" {
+	output := cfg.Output
+	trimmedOutput := strings.TrimSpace(output)
+	if trimmedOutput == "" {
 		output = "stdout"
+	} else if trimmedOutput != output {
+		return nil, fmt.Errorf("invalid logging.output: must not contain surrounding whitespace")
+	} else {
+		output = trimmedOutput
 	}
 	if err := ensureOutputPath(output); err != nil {
 		return nil, err
@@ -76,10 +81,15 @@ func ensureOutputPath(output string) error {
 }
 
 func ensureLogFilePath(path string, label string) error {
-	dir := filepath.Dir(path)
-	if dir == "." || dir == "" {
-		return validateLogFilePathIfExists(path, label)
+	if strings.ContainsFunc(path, unsafeLogPathChar) {
+		return fmt.Errorf("%s contains control characters: %s", label, path)
 	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("%s must be an absolute path: %s", label, path)
+	}
+	path = filepath.Clean(path)
+
+	dir := filepath.Dir(path)
 	if err := validateExistingLogDirectory(dir, "logging output directory"); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("stat logging output directory: %w", err)
 	}
@@ -90,6 +100,10 @@ func ensureLogFilePath(path string, label string) error {
 		return fmt.Errorf("stat logging output directory: %w", err)
 	}
 	return validateLogFilePathIfExists(path, label)
+}
+
+func unsafeLogPathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
 }
 
 func validateLogFilePathIfExists(path string, label string) error {

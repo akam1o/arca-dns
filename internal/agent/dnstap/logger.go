@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +54,7 @@ func NewLogger(config LoggerConfig, sampler *Sampler, logger *zap.Logger) (*Logg
 	if err := ensureDNSTapLogFilePath(config.LogFile); err != nil {
 		return nil, err
 	}
+	logFile := filepath.Clean(config.LogFile)
 	if config.MaxSize <= 0 {
 		config.MaxSize = 100 // Default 100MB
 	}
@@ -64,7 +66,7 @@ func NewLogger(config LoggerConfig, sampler *Sampler, logger *zap.Logger) (*Logg
 	}
 
 	rotatingWriter := &lumberjack.Logger{
-		Filename:   config.LogFile,
+		Filename:   logFile,
 		MaxSize:    config.MaxSize,
 		MaxBackups: config.MaxBackups,
 		MaxAge:     config.MaxAge,
@@ -80,17 +82,30 @@ func NewLogger(config LoggerConfig, sampler *Sampler, logger *zap.Logger) (*Logg
 }
 
 func ensureDNSTapLogFilePath(path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("dnstap log file is empty")
+	}
+	if trimmed != path {
+		return fmt.Errorf("dnstap log file must not contain surrounding whitespace: %s", path)
+	}
+	if strings.ContainsFunc(path, unsafeDNSTapLogPathChar) {
+		return fmt.Errorf("dnstap log file contains control characters: %s", path)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("dnstap log file must be an absolute path: %s", path)
+	}
+	path = filepath.Clean(path)
+
 	dir := filepath.Dir(path)
-	if dir != "." && dir != "" {
-		if err := validateExistingDNSTapLogDirectory(dir); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("stat dnstap log directory: %w", err)
-		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create dnstap log directory: %w", err)
-		}
-		if err := validateExistingDNSTapLogDirectory(dir); err != nil {
-			return fmt.Errorf("stat dnstap log directory: %w", err)
-		}
+	if err := validateExistingDNSTapLogDirectory(dir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat dnstap log directory: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create dnstap log directory: %w", err)
+	}
+	if err := validateExistingDNSTapLogDirectory(dir); err != nil {
+		return fmt.Errorf("stat dnstap log directory: %w", err)
 	}
 
 	info, err := os.Lstat(path)
@@ -107,6 +122,10 @@ func ensureDNSTapLogFilePath(path string) error {
 		return fmt.Errorf("dnstap log file must be a regular file: %s", path)
 	}
 	return nil
+}
+
+func unsafeDNSTapLogPathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
 }
 
 func validateExistingDNSTapLogDirectory(path string) error {

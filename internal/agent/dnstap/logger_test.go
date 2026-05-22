@@ -29,6 +29,40 @@ func TestNewLoggerRejectsSymlinkedLogFile(t *testing.T) {
 	assert.Equal(t, "unchanged", string(data))
 }
 
+func TestNewLoggerRejectsUnsafeLogFilePath(t *testing.T) {
+	tmpDir := t.TempDir()
+	tests := []struct {
+		name    string
+		logFile string
+		want    string
+	}{
+		{
+			name:    "relative",
+			logFile: "dnstap.log",
+			want:    "absolute path",
+		},
+		{
+			name:    "surrounding whitespace",
+			logFile: " " + filepath.Join(tmpDir, "dnstap.log") + " ",
+			want:    "surrounding whitespace",
+		},
+		{
+			name:    "newline",
+			logFile: filepath.Join(tmpDir, "dnstap.log") + "\nextra",
+			want:    "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewLogger(LoggerConfig{LogFile: tc.logFile}, NewSampler(SamplerConfig{}), zaptest.NewLogger(t))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "dnstap log file")
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestNewLoggerRejectsSymlinkedLogDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetDir := filepath.Join(tmpDir, "target")

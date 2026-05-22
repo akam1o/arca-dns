@@ -710,6 +710,40 @@ func TestValidateControllerConfig_InvalidRateLimit(t *testing.T) {
 	assert.Contains(t, err.Error(), "api.rate_limit.burst")
 }
 
+func TestValidateControllerConfig_InvalidLoggingOutputPath(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{
+			name:   "relative",
+			output: "arca-dns.log",
+		},
+		{
+			name:   "surrounding whitespace",
+			output: " /var/log/arca-dns/controller.log ",
+		},
+		{
+			name:   "stdout surrounding whitespace",
+			output: " stdout ",
+		},
+		{
+			name:   "newline",
+			output: "/var/log/arca-dns/controller.log\nextra",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validControllerConfigForTest()
+			cfg.Logging.Output = tc.output
+			err := ValidateControllerConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "logging.output")
+		})
+	}
+}
+
 func TestValidateControllerConfig_EmptyKeyDirectory(t *testing.T) {
 	cfg := validControllerConfigForTest()
 	cfg.DNSSEC.Enabled = true
@@ -1789,6 +1823,37 @@ func TestValidateAgentConfig_InvalidDNSTapSampleRate(t *testing.T) {
 	assert.Contains(t, err.Error(), "dnstap.sample_rate")
 }
 
+func TestValidateAgentConfig_InvalidDNSTapLogFilePath(t *testing.T) {
+	tests := []struct {
+		name    string
+		logFile string
+	}{
+		{
+			name:    "relative",
+			logFile: "dnstap.log",
+		},
+		{
+			name:    "surrounding whitespace",
+			logFile: " /var/log/arca-dns/dnstap.log ",
+		},
+		{
+			name:    "newline",
+			logFile: "/var/log/arca-dns/dnstap.log\nextra",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.DNSTap.Enabled = true
+			cfg.DNSTap.LogFile = tc.logFile
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "dnstap.log_file")
+		})
+	}
+}
+
 func TestValidateAgentConfig_InvalidUnboundStubZoneConfig(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -2059,4 +2124,38 @@ func TestValidateAgentConfig_InvalidLogLevel(t *testing.T) {
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "logging.level")
+}
+
+func TestValidateAgentConfig_InvalidLoggingOutputPath(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{
+			name:   "relative",
+			output: "arca-dns-agent.log",
+		},
+		{
+			name:   "surrounding whitespace",
+			output: " /var/log/arca-dns/agent.log ",
+		},
+		{
+			name:   "stderr surrounding whitespace",
+			output: " stderr ",
+		},
+		{
+			name:   "newline",
+			output: "/var/log/arca-dns/agent.log\nextra",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.Logging.Output = tc.output
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "logging.output")
+		})
+	}
 }

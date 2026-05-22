@@ -287,6 +287,9 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	if !validLogLevels[cfg.Logging.Level] {
 		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
 	}
+	if err := validateLoggingOutputPath("logging.output", cfg.Logging.Output); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -645,6 +648,11 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		if err := ValidateDNSTapSocketPath(cfg.DNSTap.SocketPath); err != nil {
 			return fmt.Errorf("invalid dnstap.socket_path: %w", err)
 		}
+		if cfg.DNSTap.LogFile != "" {
+			if err := validateAbsoluteLocalPath("dnstap.log_file", cfg.DNSTap.LogFile); err != nil {
+				return err
+			}
+		}
 		if _, err := cfg.DNSTap.SocketFileMode(); err != nil {
 			return fmt.Errorf("invalid dnstap.socket_mode: %w", err)
 		}
@@ -698,8 +706,25 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	if !validLogLevels[cfg.Logging.Level] {
 		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
 	}
+	if err := validateLoggingOutputPath("logging.output", cfg.Logging.Output); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func validateLoggingOutputPath(field string, output string) error {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return nil
+	}
+	if trimmed != output {
+		return fmt.Errorf("invalid %s: must not contain surrounding whitespace", field)
+	}
+	if output == "stdout" || output == "stderr" {
+		return nil
+	}
+	return validateAbsoluteLocalPath(field, output)
 }
 
 func validateExecutablePath(field string, path string) error {

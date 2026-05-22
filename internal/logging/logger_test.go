@@ -41,6 +41,43 @@ func TestNewLoggerRejectsInvalidFormat(t *testing.T) {
 	assert.Contains(t, err.Error(), "logging.format")
 }
 
+func TestNewLoggerRejectsUnsafeOutputPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name:   "relative",
+			output: "arca-dns.log",
+			want:   "absolute path",
+		},
+		{
+			name:   "surrounding whitespace",
+			output: " " + filepath.Join(tmpDir, "arca-dns.log") + " ",
+			want:   "surrounding whitespace",
+		},
+		{
+			name:   "newline",
+			output: filepath.Join(tmpDir, "arca-dns.log") + "\nextra",
+			want:   "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewLogger(config.LoggingConfig{
+				Level:  "info",
+				Format: "json",
+				Output: tc.output,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestNewLoggerRejectsSymlinkedOutputFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	realPath := filepath.Join(tmpDir, "real.log")
