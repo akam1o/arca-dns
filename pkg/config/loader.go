@@ -588,8 +588,8 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		}
 
 		if cfg.BIRD.ConfigureOnStart.Enabled {
-			if cfg.BIRD.ConfigureOnStart.Path == "" {
-				return fmt.Errorf("invalid bird.config.path: empty when bird.config.enabled is true")
+			if err := validateAbsoluteLocalPath("bird.config.path", cfg.BIRD.ConfigureOnStart.Path); err != nil {
+				return fmt.Errorf("%w when bird.config.enabled is true", err)
 			}
 			if cfg.BIRD.ConfigureOnStart.RouterID == "" {
 				return fmt.Errorf("invalid bird.config.router_id: empty when bird.config.enabled is true")

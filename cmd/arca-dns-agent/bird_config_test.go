@@ -99,6 +99,53 @@ func TestApplyBIRDConfigOnStartMarksAppliedOnConfigureSuccess(t *testing.T) {
 	}
 }
 
+func TestApplyBIRDConfigOnStartRejectsUnsafeConfigPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "empty",
+			path: "",
+			want: "empty",
+		},
+		{
+			name: "relative",
+			path: "bird.d/arca-dns.conf",
+			want: "absolute path",
+		},
+		{
+			name: "surrounding whitespace",
+			path: " " + filepath.Join(tmpDir, "arca-dns.conf") + " ",
+			want: "surrounding whitespace",
+		},
+		{
+			name: "newline",
+			path: filepath.Join(tmpDir, "arca-dns.conf") + "\nextra",
+			want: "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeBIRDClient{}
+			result := applyBIRDConfigOnStart(testBIRDConfig(tc.path), client, zap.NewNop())
+
+			if result.Status.Status != birdConfigStatusUsingExisting {
+				t.Fatalf("status=%s, want %s", result.Status.Status, birdConfigStatusUsingExisting)
+			}
+			if !strings.Contains(result.Status.Error, "BIRD config path") || !strings.Contains(result.Status.Error, tc.want) {
+				t.Fatalf("status error=%q, want BIRD config path %q error", result.Status.Error, tc.want)
+			}
+			if len(client.commands) != 0 {
+				t.Fatalf("configure should not be called, commands=%v", client.commands)
+			}
+		})
+	}
+}
+
 func TestApplyBIRDConfigOnStartRejectsSymlinkedConfigDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetDir := filepath.Join(tmpDir, "target")
@@ -197,6 +244,48 @@ func TestWriteFileAtomicCreatesConfigDirectoryAndCleansTemp(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("expected temp files to be removed, got %v", matches)
+	}
+}
+
+func TestWriteFileAtomicRejectsUnsafeConfigPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "empty",
+			path: "",
+			want: "empty",
+		},
+		{
+			name: "relative",
+			path: "arca-dns.conf",
+			want: "absolute path",
+		},
+		{
+			name: "surrounding whitespace",
+			path: " " + filepath.Join(tmpDir, "arca-dns.conf") + " ",
+			want: "surrounding whitespace",
+		},
+		{
+			name: "newline",
+			path: filepath.Join(tmpDir, "arca-dns.conf") + "\nextra",
+			want: "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := writeFileAtomic(tc.path, []byte("bird config\n"), 0o644)
+			if err == nil {
+				t.Fatal("writeFileAtomic should reject unsafe config path")
+			}
+			if !strings.Contains(err.Error(), "BIRD config path") || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("writeFileAtomic error=%v, want BIRD config path %q error", err, tc.want)
+			}
+		})
 	}
 }
 

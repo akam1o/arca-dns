@@ -1603,6 +1603,42 @@ func TestValidateAgentConfig_InvalidBIRDSocketPath(t *testing.T) {
 	}
 }
 
+func TestValidateAgentConfig_InvalidBIRDConfigPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{
+			name: "empty",
+			path: "",
+		},
+		{
+			name: "relative",
+			path: "etc/bird/arca-dns.conf",
+		},
+		{
+			name: "surrounding whitespace",
+			path: " /etc/bird/arca-dns.conf ",
+		},
+		{
+			name: "newline",
+			path: "/etc/bird/arca-dns.conf\ninclude \"/tmp/pwn\"",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.BIRD.Enabled = true
+			cfg.BIRD.ConfigureOnStart.Enabled = true
+			cfg.BIRD.ConfigureOnStart.Path = tc.path
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "bird.config.path")
+		})
+	}
+}
+
 func TestValidateAgentConfig_BIRDMissingPrefixes(t *testing.T) {
 	// Note: anycast_prefixes is now optional (M5 uses protocol enable/disable)
 	// This test now verifies that protocol_name is required

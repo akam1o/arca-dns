@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -76,7 +77,15 @@ func applyBIRDConfigOnStart(cfg config.BIRDConfig, client bird.Client, logger *z
 	}
 	result.ProtocolNames = protocolNames
 
-	path := cfg.ConfigureOnStart.Path
+	path, err := cleanBIRDConfigPath(cfg.ConfigureOnStart.Path)
+	if err != nil {
+		result.Status.Error = err.Error()
+		logger.Warn("Invalid BIRD config path; continuing with existing BIRD runtime config",
+			zap.String("path", cfg.ConfigureOnStart.Path),
+			zap.Error(err))
+		return result
+	}
+	result.Status.Path = path
 	if err := ensureConfigDirectoryForPath(path); err != nil {
 		result.Status.Error = err.Error()
 		logger.Warn("Failed to create BIRD config directory; continuing with existing BIRD runtime config",
@@ -127,6 +136,11 @@ func applyBIRDConfigOnStart(cfg config.BIRDConfig, client bird.Client, logger *z
 }
 
 func readPreviousBIRDConfig(path string) ([]byte, bool, error) {
+	cleanPath, err := cleanBIRDConfigPath(path)
+	if err != nil {
+		return nil, false, err
+	}
+	path = cleanPath
 	if err := validateConfigDirectoryIfExistsForPath(path); err != nil {
 		return nil, false, err
 	}
@@ -173,6 +187,11 @@ func readRegularBIRDConfigFile(path string) ([]byte, error) {
 }
 
 func restoreBIRDConfig(path string, previousConfig []byte, hadPreviousConfig bool) error {
+	cleanPath, err := cleanBIRDConfigPath(path)
+	if err != nil {
+		return err
+	}
+	path = cleanPath
 	if err := validateConfigDirectoryIfExistsForPath(path); err != nil {
 		return err
 	}
@@ -190,6 +209,11 @@ func restoreBIRDConfig(path string, previousConfig []byte, hadPreviousConfig boo
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	cleanPath, err := cleanBIRDConfigPath(path)
+	if err != nil {
+		return err
+	}
+	path = cleanPath
 	dir := filepath.Dir(path)
 	if err := ensureConfigDirectoryForPath(path); err != nil {
 		return err
@@ -235,7 +259,40 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+func cleanBIRDConfigPath(path string) (string, error) {
+	if err := validateBIRDConfigPath(path); err != nil {
+		return "", err
+	}
+	return filepath.Clean(path), nil
+}
+
+func validateBIRDConfigPath(path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("BIRD config path is empty")
+	}
+	if trimmed != path {
+		return fmt.Errorf("BIRD config path must not contain surrounding whitespace: %s", path)
+	}
+	if strings.ContainsFunc(path, unsafeBIRDConfigPathChar) {
+		return fmt.Errorf("BIRD config path contains control characters: %s", path)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("BIRD config path must be an absolute path: %s", path)
+	}
+	return nil
+}
+
+func unsafeBIRDConfigPathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
+}
+
 func ensureConfigDirectoryForPath(path string) error {
+	cleanPath, err := cleanBIRDConfigPath(path)
+	if err != nil {
+		return err
+	}
+	path = cleanPath
 	dir := filepath.Dir(path)
 	existed := true
 	if err := validateExistingConfigDirectory(dir); err != nil {
@@ -261,6 +318,11 @@ func ensureConfigDirectoryForPath(path string) error {
 }
 
 func validateConfigDirectoryIfExistsForPath(path string) error {
+	cleanPath, err := cleanBIRDConfigPath(path)
+	if err != nil {
+		return err
+	}
+	path = cleanPath
 	dir := filepath.Dir(path)
 	if err := validateExistingConfigDirectory(dir); err != nil {
 		if os.IsNotExist(err) {
