@@ -1841,6 +1841,92 @@ func TestValidateAgentConfig_InvalidUnboundExecutablePaths(t *testing.T) {
 	}
 }
 
+func TestValidateAgentConfig_InvalidRuntimeLimits(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+		want   string
+	}{
+		{
+			name: "zero nsd reload timeout",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.ReloadTimeout = 0
+			},
+			want: "nsd.reload_timeout",
+		},
+		{
+			name: "negative nsd reload timeout",
+			mutate: func(cfg *AgentConfig) {
+				cfg.NSD.ReloadTimeout = -time.Second
+			},
+			want: "nsd.reload_timeout",
+		},
+		{
+			name: "zero unbound reload timeout",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.ReloadTimeout = 0
+			},
+			want: "unbound.reload_timeout",
+		},
+		{
+			name: "negative unbound reload timeout",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Unbound.ReloadTimeout = -time.Second
+			},
+			want: "unbound.reload_timeout",
+		},
+		{
+			name: "zero bird command timeout",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.Enabled = true
+				cfg.BIRD.CommandTimeout = 0
+			},
+			want: "bird.command_timeout",
+		},
+		{
+			name: "negative bird command timeout",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.Enabled = true
+				cfg.BIRD.CommandTimeout = -time.Second
+			},
+			want: "bird.command_timeout",
+		},
+		{
+			name: "negative sync jitter",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Sync.Jitter = -time.Second
+			},
+			want: "sync.jitter",
+		},
+		{
+			name: "zero dnstap buffer size",
+			mutate: func(cfg *AgentConfig) {
+				cfg.DNSTap.Enabled = true
+				cfg.DNSTap.BufferSize = 0
+			},
+			want: "dnstap.buffer_size",
+		},
+		{
+			name: "negative dnstap buffer size",
+			mutate: func(cfg *AgentConfig) {
+				cfg.DNSTap.Enabled = true
+				cfg.DNSTap.BufferSize = -1
+			},
+			want: "dnstap.buffer_size",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestValidateAgentConfig_InvalidBIRDSocketPath(t *testing.T) {
 	tests := []struct {
 		name       string

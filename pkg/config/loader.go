@@ -683,6 +683,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		if err := validateExecutablePath("nsd.checkzone_path", cfg.NSD.CheckzonePath); err != nil {
 			return fmt.Errorf("%w when NSD is enabled", err)
 		}
+		if cfg.NSD.ReloadTimeout <= 0 {
+			return fmt.Errorf("invalid nsd.reload_timeout: must be positive when NSD is enabled")
+		}
 	}
 
 	if cfg.Unbound.Enabled {
@@ -701,6 +704,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		if cfg.Unbound.EDNSBufferSize != 1232 {
 			return fmt.Errorf("invalid unbound.edns_buffer_size: must be 1232 for ECMP-safe DNSSEC responses")
 		}
+		if cfg.Unbound.ReloadTimeout <= 0 {
+			return fmt.Errorf("invalid unbound.reload_timeout: must be positive when Unbound is enabled")
+		}
 	}
 
 	if cfg.BIRD.Enabled {
@@ -712,6 +718,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		}
 		if err := validateBIRDProtocolIdentifiers(&cfg.BIRD); err != nil {
 			return err
+		}
+		if cfg.BIRD.CommandTimeout <= 0 {
+			return fmt.Errorf("invalid bird.command_timeout: must be positive when BIRD is enabled")
 		}
 		// Note: AnycastPrefixes is optional - current implementation manages routes
 		// via protocol enable/disable. Individual prefix management would require
@@ -784,6 +793,10 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid sync.max_staleness: must be greater than or equal to sync.sync_interval")
 	}
 
+	if cfg.Sync.Jitter < 0 {
+		return fmt.Errorf("invalid sync.jitter: must be non-negative")
+	}
+
 	if cfg.Sync.BackupVersions < 0 {
 		return fmt.Errorf("invalid sync.backup_versions: must be non-negative")
 	}
@@ -808,6 +821,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		}
 		if cfg.DNSTap.SampleRate <= 0 {
 			return fmt.Errorf("invalid dnstap.sample_rate: must be positive when DNSTap is enabled")
+		}
+		if cfg.DNSTap.BufferSize <= 0 {
+			return fmt.Errorf("invalid dnstap.buffer_size: must be positive when DNSTap is enabled")
 		}
 	}
 
