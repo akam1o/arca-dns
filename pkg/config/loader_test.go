@@ -950,6 +950,15 @@ func TestValidateControllerConfig_RuntimeBackendRequiresActiveBackendSettings(t 
 			want: "backend.git.repository_path",
 		},
 		{
+			name: "git negative pull interval",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "git"
+				cfg.Backend.Git.RepositoryPath = "/var/lib/arca-dns/git"
+				cfg.Backend.Git.PullInterval = -time.Second
+			},
+			want: "backend.git.pull_interval",
+		},
+		{
 			name: "etcd empty endpoints",
 			mutate: func(cfg *ControllerConfig) {
 				cfg.Backend.Type = "etcd"
@@ -1089,6 +1098,7 @@ func TestValidateControllerConfig_RuntimeBackendAllowsValidActiveBackendSettings
 			mutate: func(cfg *ControllerConfig) {
 				cfg.Backend.Type = "git"
 				cfg.Backend.Git.RepositoryPath = "/var/lib/arca-dns/git"
+				cfg.Backend.Git.PullInterval = time.Minute
 			},
 		},
 		{

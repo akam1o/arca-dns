@@ -363,9 +363,14 @@ func ValidateControllerBackendConfig(cfg *BackendConfig) error {
 			return err
 		}
 	}
-	if cfg.Type == "git" && cfg.Git.RepositoryPath != "" {
-		if err := validateAbsoluteLocalPath("backend.git.repository_path", cfg.Git.RepositoryPath); err != nil {
-			return err
+	if cfg.Type == "git" {
+		if cfg.Git.RepositoryPath != "" {
+			if err := validateAbsoluteLocalPath("backend.git.repository_path", cfg.Git.RepositoryPath); err != nil {
+				return err
+			}
+		}
+		if cfg.Git.PullInterval < 0 {
+			return fmt.Errorf("invalid backend.git.pull_interval: must be non-negative")
 		}
 	}
 	return nil
