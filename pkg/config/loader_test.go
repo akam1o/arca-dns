@@ -870,6 +870,34 @@ func TestValidateControllerConfig_RuntimeBackendRequiresActiveBackendSettings(t 
 			want: "backend.postgres.dsn",
 		},
 		{
+			name: "postgres negative max open conns",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "postgres"
+				cfg.Backend.Postgres.DSN = "postgres://user:pass@db:5432/arca_dns?sslmode=require"
+				cfg.Backend.Postgres.MaxOpenConns = -1
+			},
+			want: "backend.postgres.max_open_conns",
+		},
+		{
+			name: "postgres max idle exceeds max open",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "postgres"
+				cfg.Backend.Postgres.DSN = "postgres://user:pass@db:5432/arca_dns?sslmode=require"
+				cfg.Backend.Postgres.MaxOpenConns = 5
+				cfg.Backend.Postgres.MaxIdleConns = 6
+			},
+			want: "backend.postgres.max_idle_conns",
+		},
+		{
+			name: "postgres negative conn max lifetime",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "postgres"
+				cfg.Backend.Postgres.DSN = "postgres://user:pass@db:5432/arca_dns?sslmode=require"
+				cfg.Backend.Postgres.ConnMaxLifetime = -time.Second
+			},
+			want: "backend.postgres.conn_max_lifetime",
+		},
+		{
 			name: "mysql empty dsn",
 			mutate: func(cfg *ControllerConfig) {
 				cfg.Backend.Type = "mysql"
@@ -884,6 +912,34 @@ func TestValidateControllerConfig_RuntimeBackendRequiresActiveBackendSettings(t 
 				cfg.Backend.MySQL.DSN = "user:pass@tcp(db:3306)/arca_dns\nparseTime=true"
 			},
 			want: "backend.mysql.dsn",
+		},
+		{
+			name: "mysql negative max idle conns",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "mysql"
+				cfg.Backend.MySQL.DSN = "user:pass@tcp(db:3306)/arca_dns?parseTime=true"
+				cfg.Backend.MySQL.MaxIdleConns = -1
+			},
+			want: "backend.mysql.max_idle_conns",
+		},
+		{
+			name: "mysql max idle exceeds max open",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "mysql"
+				cfg.Backend.MySQL.DSN = "user:pass@tcp(db:3306)/arca_dns?parseTime=true"
+				cfg.Backend.MySQL.MaxOpenConns = 3
+				cfg.Backend.MySQL.MaxIdleConns = 4
+			},
+			want: "backend.mysql.max_idle_conns",
+		},
+		{
+			name: "mysql negative conn max lifetime",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "mysql"
+				cfg.Backend.MySQL.DSN = "user:pass@tcp(db:3306)/arca_dns?parseTime=true"
+				cfg.Backend.MySQL.ConnMaxLifetime = -time.Second
+			},
+			want: "backend.mysql.conn_max_lifetime",
 		},
 		{
 			name: "git empty repository path",
@@ -954,10 +1010,30 @@ func TestValidateControllerConfig_RuntimeBackendAllowsValidActiveBackendSettings
 			},
 		},
 		{
+			name: "postgres pool settings",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "postgres"
+				cfg.Backend.Postgres.DSN = "postgres://user:pass@db:5432/arca_dns?sslmode=require"
+				cfg.Backend.Postgres.MaxOpenConns = 10
+				cfg.Backend.Postgres.MaxIdleConns = 5
+				cfg.Backend.Postgres.ConnMaxLifetime = 10 * time.Minute
+			},
+		},
+		{
 			name: "mysql",
 			mutate: func(cfg *ControllerConfig) {
 				cfg.Backend.Type = "mysql"
 				cfg.Backend.MySQL.DSN = "user:pass@tcp(db:3306)/arca_dns?parseTime=true"
+			},
+		},
+		{
+			name: "mysql pool settings",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "mysql"
+				cfg.Backend.MySQL.DSN = "user:pass@tcp(db:3306)/arca_dns?parseTime=true"
+				cfg.Backend.MySQL.MaxOpenConns = 10
+				cfg.Backend.MySQL.MaxIdleConns = 5
+				cfg.Backend.MySQL.ConnMaxLifetime = 10 * time.Minute
 			},
 		},
 		{

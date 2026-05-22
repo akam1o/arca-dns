@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -328,6 +329,26 @@ func ValidateControllerBackendConfig(cfg *BackendConfig) error {
 	if !validBackendTypes[cfg.Type] {
 		return fmt.Errorf("invalid backend.type: %s (must be one of: sqlite, postgres, mysql, git, etcd)", cfg.Type)
 	}
+	if cfg.Type == "postgres" {
+		if err := validateControllerSQLPoolConfig(
+			"backend.postgres",
+			cfg.Postgres.MaxOpenConns,
+			cfg.Postgres.MaxIdleConns,
+			cfg.Postgres.ConnMaxLifetime,
+		); err != nil {
+			return err
+		}
+	}
+	if cfg.Type == "mysql" {
+		if err := validateControllerSQLPoolConfig(
+			"backend.mysql",
+			cfg.MySQL.MaxOpenConns,
+			cfg.MySQL.MaxIdleConns,
+			cfg.MySQL.ConnMaxLifetime,
+		); err != nil {
+			return err
+		}
+	}
 	if cfg.Type == "sqlite" {
 		if err := validateSQLiteRuntimeDSN(cfg.SQLite.DSN); err != nil {
 			return err
@@ -337,6 +358,22 @@ func ValidateControllerBackendConfig(cfg *BackendConfig) error {
 		if err := validateAbsoluteLocalPath("backend.git.repository_path", cfg.Git.RepositoryPath); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateControllerSQLPoolConfig(prefix string, maxOpenConns int, maxIdleConns int, connMaxLifetime time.Duration) error {
+	if maxOpenConns < 0 {
+		return fmt.Errorf("invalid %s.max_open_conns: must be non-negative", prefix)
+	}
+	if maxIdleConns < 0 {
+		return fmt.Errorf("invalid %s.max_idle_conns: must be non-negative", prefix)
+	}
+	if maxOpenConns > 0 && maxIdleConns > maxOpenConns {
+		return fmt.Errorf("invalid %s.max_idle_conns: must be less than or equal to %s.max_open_conns when max_open_conns is set", prefix, prefix)
+	}
+	if connMaxLifetime < 0 {
+		return fmt.Errorf("invalid %s.conn_max_lifetime: must be non-negative", prefix)
 	}
 	return nil
 }
