@@ -171,7 +171,8 @@ type BackendConfig struct {
 // SQLiteBackendConfig configures the SQLite backend.
 type SQLiteBackendConfig struct {
 	// DSN is the SQLite data source name.
-	// Examples: "file:arca-dns.db", "file::memory:?cache=shared", ":memory:"
+	// Runtime controller configuration must use a file-backed DSN.
+	// Example: "file:arca-dns.db"
 	DSN string `mapstructure:"dsn"`
 }
 

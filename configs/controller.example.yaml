@@ -35,7 +35,7 @@ observability:
 backend:
   type: "sqlite" # sqlite|postgres|mysql|git|etcd
   sqlite:
-    dsn: "file:/var/lib/arca-dns/arca-dns.db" # persistent path or ":memory:" for testing
+    dsn: "file:/var/lib/arca-dns/arca-dns.db" # controller config must use a file-backed database
   postgres:
     dsn: "postgres://user:pass@localhost:5432/arca_dns?sslmode=disable"
     max_open_conns: 25

@@ -32,7 +32,7 @@ The agent container image contains only `arca-dns-agent` and defaults to sync-on
 ### Controller
 
 - Choose one backend: `sqlite` (default), `postgres`, `mysql`, `git`, or `etcd`
-- Use SQLite with `:memory:` only for disposable local validation
+- Controller configuration must use file-backed SQLite; `:memory:` is only for disposable local validation through test or migration helpers
 - Ensure `storage.artifact_directory` and `storage.key_directory` are writable
 - If DNSSEC is enabled, ensure `dnssec.key_directory` is writable and a DNSSEC master key is configured
 - If API auth is enabled, configure at least one API key hash

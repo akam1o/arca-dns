@@ -659,6 +659,54 @@ func TestValidateControllerConfig_InvalidBackendType(t *testing.T) {
 	}
 }
 
+func TestValidateControllerConfig_RejectsInMemorySQLiteDSN(t *testing.T) {
+	tests := []struct {
+		name string
+		dsn  string
+	}{
+		{
+			name: "memory alias",
+			dsn:  ":memory:",
+		},
+		{
+			name: "file memory alias",
+			dsn:  "file::memory:?cache=shared",
+		},
+		{
+			name: "uri memory mode",
+			dsn:  "file:controller?mode=memory&cache=shared",
+		},
+		{
+			name: "case-insensitive uri memory mode",
+			dsn:  "file:controller?cache=shared&mode=MEMORY",
+		},
+		{
+			name: "encoded uri memory mode",
+			dsn:  "file:controller?cache=shared&%6dode=%6demory",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validControllerConfigForTest()
+			cfg.Backend.Type = "sqlite"
+			cfg.Backend.SQLite.DSN = tc.dsn
+			err := ValidateControllerConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "backend.sqlite.dsn")
+			assert.Contains(t, err.Error(), "in-memory SQLite")
+		})
+	}
+}
+
+func TestValidateControllerConfig_AllowsFileBackedSQLiteDSN(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.Backend.Type = "sqlite"
+	cfg.Backend.SQLite.DSN = "file:/var/lib/arca-dns/controller-memory-name.db?_pragma=journal_mode(memory)"
+
+	assert.NoError(t, ValidateControllerConfig(cfg))
+}
+
 func TestValidateControllerConfig_InvalidGitRepositoryPath(t *testing.T) {
 	tests := []struct {
 		name           string

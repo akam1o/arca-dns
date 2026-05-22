@@ -32,7 +32,7 @@ agent container image には `arca-dns-agent` のみが含まれ、既定では�
 ### Controller
 
 - backend を 1 つ選ぶ: `sqlite`（既定）、`postgres`, `mysql`, `git`, `etcd`
-- 使い捨てのローカル検証だけ SQLite の `:memory:` を使う
+- controller 設定では file-backed SQLite を使う。`:memory:` はテストや migrate helper による使い捨てのローカル検証だけに限定する
 - `storage.artifact_directory` と `storage.key_directory` が書き込み可能であること
 - DNSSEC 有効時は `dnssec.key_directory` が書き込み可能で、DNSSEC マスターキーを設定済みであること
 - API 認証を有効にする場合、少なくとも 1 つの API キーハッシュが必要

@@ -315,12 +315,62 @@ func ValidateControllerBackendConfig(cfg *BackendConfig) error {
 	if !validBackendTypes[cfg.Type] {
 		return fmt.Errorf("invalid backend.type: %s (must be one of: sqlite, postgres, mysql, git, etcd)", cfg.Type)
 	}
+	if cfg.Type == "sqlite" {
+		if err := validateSQLiteRuntimeDSN(cfg.SQLite.DSN); err != nil {
+			return err
+		}
+	}
 	if cfg.Type == "git" && cfg.Git.RepositoryPath != "" {
 		if err := validateAbsoluteLocalPath("backend.git.repository_path", cfg.Git.RepositoryPath); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func validateSQLiteRuntimeDSN(dsn string) error {
+	value := strings.TrimSpace(dsn)
+	if value == "" {
+		return nil
+	}
+	if sqliteDSNUsesMemoryDatabase(value) {
+		return fmt.Errorf("invalid backend.sqlite.dsn: in-memory SQLite DSNs are not allowed for controller storage; use a file-backed SQLite database")
+	}
+	return nil
+}
+
+func sqliteDSNUsesMemoryDatabase(dsn string) bool {
+	pathPart, query, hasQuery := strings.Cut(dsn, "?")
+	if strings.EqualFold(pathPart, ":memory:") ||
+		strings.EqualFold(pathPart, "file::memory:") ||
+		strings.EqualFold(pathPart, "file::memory") {
+		return true
+	}
+	if !hasQuery {
+		return false
+	}
+
+	for _, part := range strings.Split(query, "&") {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		decodedKey, err := url.QueryUnescape(key)
+		if err != nil {
+			decodedKey = key
+		}
+		if !strings.EqualFold(decodedKey, "mode") {
+			continue
+		}
+		decodedValue, err := url.QueryUnescape(value)
+		if err != nil {
+			decodedValue = value
+		}
+		if strings.EqualFold(decodedValue, "memory") {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeTrustedProxies(trustedProxies []string) ([]string, error) {
