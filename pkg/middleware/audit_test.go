@@ -87,6 +87,56 @@ func TestAuditLogger_Middleware_RedactsSensitiveQueryValues(t *testing.T) {
 	assert.NotContains(t, query, "secret-password")
 }
 
+func TestAuditLogger_Middleware_RedactsExpandedSensitiveQueryKeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	core, logs := observer.New(zapcore.InfoLevel)
+	logger := zap.New(core)
+
+	router := gin.New()
+	router.Use(NewAuditLogger(logger).Middleware())
+	router.GET("/test", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	rawQuery := strings.Join([]string{
+		"x-api-key=secret-x-api-key",
+		"metrics.auth_token=secret-auth-token",
+		"sync.controller_signature_key=secret-signature-key",
+		"artifact_signature_key=secret-artifact-key",
+		"client.secret=secret-client-secret",
+		"credentials%5Bapi-key%5D=secret-nested-api-key",
+		"foo=bar",
+	}, "&")
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/test?"+rawQuery,
+		nil,
+	)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	entries := logs.All()
+	require.Len(t, entries, 1)
+
+	query, ok := entries[0].ContextMap()["query"].(string)
+	require.True(t, ok)
+	assert.Contains(t, query, "x-api-key=REDACTED")
+	assert.Contains(t, query, "metrics.auth_token=REDACTED")
+	assert.Contains(t, query, "sync.controller_signature_key=REDACTED")
+	assert.Contains(t, query, "artifact_signature_key=REDACTED")
+	assert.Contains(t, query, "client.secret=REDACTED")
+	assert.Contains(t, query, "credentials%5Bapi-key%5D=REDACTED")
+	assert.Contains(t, query, "foo=bar")
+	assert.NotContains(t, query, "secret-x-api-key")
+	assert.NotContains(t, query, "secret-auth-token")
+	assert.NotContains(t, query, "secret-signature-key")
+	assert.NotContains(t, query, "secret-artifact-key")
+	assert.NotContains(t, query, "secret-client-secret")
+	assert.NotContains(t, query, "secret-nested-api-key")
+}
+
 func TestAuditLogger_Middleware_TruncatesLongFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

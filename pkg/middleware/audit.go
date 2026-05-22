@@ -18,17 +18,53 @@ const (
 
 var sensitiveAuditQueryKeys = map[string]struct{}{
 	"access_token":             {},
-	"api-key":                  {},
+	"access_key":               {},
 	"api_key":                  {},
 	"apikey":                   {},
+	"artifact_signature_key":   {},
 	"auth_token":               {},
+	"authorization":            {},
+	"bearer":                   {},
+	"client_secret":            {},
 	"controller_signature_key": {},
+	"id_token":                 {},
+	"jwt":                      {},
 	"password":                 {},
 	"passwd":                   {},
+	"refresh_token":            {},
 	"secret":                   {},
+	"secret_key":               {},
+	"session":                  {},
+	"session_id":               {},
 	"signature":                {},
+	"signature_key":            {},
 	"token":                    {},
+	"vault_token":              {},
+	"x_api_key":                {},
 }
+
+var sensitiveAuditQueryKeySuffixes = []string{
+	"_access_key",
+	"_access_token",
+	"_api_key",
+	"_auth_token",
+	"_authorization",
+	"_bearer",
+	"_id_token",
+	"_jwt",
+	"_passwd",
+	"_password",
+	"_refresh_token",
+	"_secret",
+	"_secret_key",
+	"_signature",
+	"_signature_key",
+	"_session",
+	"_session_id",
+	"_token",
+}
+
+var auditQueryKeyReplacer = strings.NewReplacer("-", "_", ".", "_", "[", "_", "]", "")
 
 // AuditLogger provides audit logging middleware for API requests.
 type AuditLogger struct {
@@ -115,8 +151,22 @@ func isSensitiveAuditQueryKey(key string) bool {
 		decodedKey = key
 	}
 
-	_, ok := sensitiveAuditQueryKeys[strings.ToLower(strings.TrimSpace(decodedKey))]
-	return ok
+	normalizedKey := normalizeAuditQueryKey(decodedKey)
+	if _, ok := sensitiveAuditQueryKeys[normalizedKey]; ok {
+		return true
+	}
+
+	for _, suffix := range sensitiveAuditQueryKeySuffixes {
+		if strings.HasSuffix(normalizedKey, suffix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func normalizeAuditQueryKey(key string) string {
+	return auditQueryKeyReplacer.Replace(strings.ToLower(strings.TrimSpace(key)))
 }
 
 func truncateAuditLogField(value string) string {
