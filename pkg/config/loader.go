@@ -189,6 +189,9 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	if err := validateListenAddress("observability.listen", cfg.Observability.Listen); err != nil {
 		return err
 	}
+	if err := validateObservabilityAuthConfig(&cfg.Observability); err != nil {
+		return err
+	}
 	if listenEndpointsOverlap(cfg.API.Listen, cfg.Observability.Listen) {
 		return fmt.Errorf("invalid observability.listen: must not overlap api.listen")
 	}
@@ -506,6 +509,22 @@ func validateListenAddress(field, listen string) error {
 
 func unsafeListenHostChar(r rune) bool {
 	return r <= ' ' || r == 0x7f
+}
+
+func validateObservabilityAuthConfig(observability *ObservabilityConfig) error {
+	observability.AuthToken = strings.TrimSpace(observability.AuthToken)
+	if observability.AuthToken != "" {
+		if isPlaceholderSecret(observability.AuthToken) {
+			return fmt.Errorf("invalid observability.auth_token: replace placeholder value with a generated status token")
+		}
+		if len([]byte(observability.AuthToken)) < minStatusAuthTokenBytes {
+			return fmt.Errorf("invalid observability.auth_token: must be at least %d bytes", minStatusAuthTokenBytes)
+		}
+	}
+	if !isLoopbackListenEndpoint(observability.Listen) && observability.AuthToken == "" {
+		return fmt.Errorf("invalid observability.auth_token: required when observability.listen is not loopback; bind observability.listen to 127.0.0.1 or set observability.auth_token")
+	}
+	return nil
 }
 
 func listenEndpointsOverlap(a, b string) bool {

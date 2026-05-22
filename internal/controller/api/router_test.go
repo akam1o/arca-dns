@@ -154,6 +154,51 @@ func TestSetupObservabilityRouter_RoutesBypassAuth(t *testing.T) {
 	}
 }
 
+func TestSetupObservabilityRouterWithConfig_ProtectsStatusAndMetrics(t *testing.T) {
+	const token = "controller-status-token-32-byte-secret"
+	logger := zap.NewNop()
+	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = true
+	apiCfg.Auth.APIKeys = nil
+	apiCfg.RateLimit.Enabled = false
+	observabilityCfg := config.ObservabilityConfig{AuthToken: token}
+
+	router := SetupObservabilityRouterWithConfig(handler, &apiCfg, &observabilityCfg, logger)
+
+	tests := []struct {
+		name   string
+		path   string
+		header string
+		want   int
+	}{
+		{name: "health remains open", path: "/health", want: http.StatusOK},
+		{name: "ready remains open", path: "/ready", want: http.StatusOK},
+		{name: "status without token", path: "/status", want: http.StatusUnauthorized},
+		{name: "status wrong token", path: "/status", header: "Bearer wrong-token", want: http.StatusUnauthorized},
+		{name: "status with token", path: "/status", header: "Bearer " + token, want: http.StatusOK},
+		{name: "metrics without token", path: "/metrics", want: http.StatusUnauthorized},
+		{name: "metrics with token", path: "/metrics", header: "Bearer " + token, want: http.StatusNotImplemented},
+		{name: "api alias status without token", path: "/api/v1/status", want: http.StatusUnauthorized},
+		{name: "api alias status with token", path: "/api/v1/status", header: "Bearer " + token, want: http.StatusOK},
+		{name: "api alias metrics without token", path: "/api/v1/metrics", want: http.StatusUnauthorized},
+		{name: "api alias metrics with token", path: "/api/v1/metrics", header: "Bearer " + token, want: http.StatusNotImplemented},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
+			}
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			require.Equal(t, tt.want, w.Code)
+		})
+	}
+}
+
 func TestSetupRouter_AgentRoleCanOnlyReadSyncArtifacts(t *testing.T) {
 	logger := zap.NewNop()
 	store := backend.NewMemoryBackend()

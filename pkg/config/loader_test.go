@@ -307,6 +307,7 @@ func TestLoadControllerConfig_EnvOverride(t *testing.T) {
 	// Set environment variables
 	os.Setenv("ARCA_DNS_API_LISTEN", "127.0.0.1:7070")
 	os.Setenv("ARCA_DNS_OBSERVABILITY_LISTEN", "0.0.0.0:7053")
+	os.Setenv("ARCA_DNS_OBSERVABILITY_AUTH_TOKEN", validStatusAuthToken)
 	os.Setenv("ARCA_DNS_API_AUTH_ENABLED", "false")
 	os.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 	os.Setenv("ARCA_DNS_BACKEND_TYPE", "git")
@@ -315,6 +316,7 @@ func TestLoadControllerConfig_EnvOverride(t *testing.T) {
 	defer func() {
 		os.Unsetenv("ARCA_DNS_API_LISTEN")
 		os.Unsetenv("ARCA_DNS_OBSERVABILITY_LISTEN")
+		os.Unsetenv("ARCA_DNS_OBSERVABILITY_AUTH_TOKEN")
 		os.Unsetenv("ARCA_DNS_API_AUTH_ENABLED")
 		os.Unsetenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY")
 		os.Unsetenv("ARCA_DNS_BACKEND_TYPE")
@@ -347,6 +349,7 @@ logging:
 	// Environment variables should override YAML
 	assert.Equal(t, "127.0.0.1:7070", cfg.API.Listen)
 	assert.Equal(t, "0.0.0.0:7053", cfg.Observability.Listen)
+	assert.Equal(t, validStatusAuthToken, cfg.Observability.AuthToken)
 	assert.False(t, cfg.API.Auth.Enabled)
 	assert.Equal(t, "git", cfg.Backend.Type)
 	assert.Equal(t, "/var/lib/arca-dns/git", cfg.Backend.Git.RepositoryPath)
@@ -782,6 +785,44 @@ func TestValidateControllerConfig_AllowsIPv6ListenAddresses(t *testing.T) {
 
 	err := ValidateControllerConfig(cfg)
 	assert.NoError(t, err)
+}
+
+func TestValidateControllerConfig_RemoteObservabilityRequiresAuthToken(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.Observability.Listen = "0.0.0.0:9053"
+	cfg.Observability.AuthToken = ""
+
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "observability.auth_token")
+}
+
+func TestValidateControllerConfig_RemoteObservabilityAcceptsAuthToken(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.Observability.Listen = "0.0.0.0:9053"
+	cfg.Observability.AuthToken = validStatusAuthToken
+
+	err := ValidateControllerConfig(cfg)
+	assert.NoError(t, err)
+}
+
+func TestValidateControllerConfig_ObservabilityAuthTokenMustBeStrongEnough(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.Observability.AuthToken = "short"
+
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "observability.auth_token")
+}
+
+func TestValidateControllerConfig_RejectsPlaceholderObservabilityAuthToken(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.Observability.AuthToken = "REPLACE_WITH_STATUS_AUTH_TOKEN"
+
+	err := ValidateControllerConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "observability.auth_token")
+	assert.Contains(t, err.Error(), "placeholder")
 }
 
 func TestValidateControllerConfig_ObservabilityListenMustNotOverlapAPIListen(t *testing.T) {

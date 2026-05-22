@@ -204,7 +204,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Setup routers
 	apiRouter := api.SetupRouter(handler, &cfg.API, logger)
-	observabilityRouter := api.SetupObservabilityRouter(handler, &cfg.API, logger)
+	observabilityRouter := api.SetupObservabilityRouterWithConfig(handler, &cfg.API, &cfg.Observability, logger)
 
 	// Create HTTP servers
 	apiSrv := newControllerHTTPServer(cfg.API.Listen, apiRouter)

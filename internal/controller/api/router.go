@@ -1,7 +1,10 @@
 package api
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"net/http"
+	"strings"
 
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/middleware"
@@ -87,17 +90,25 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 	return router
 }
 
-// SetupObservabilityRouter configures unauthenticated operational endpoints for
-// the controller observability listener.
+// SetupObservabilityRouter configures operational endpoints for the controller
+// observability listener. It preserves the historical unauthenticated behavior;
+// controller serving code should use SetupObservabilityRouterWithConfig.
 func SetupObservabilityRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *gin.Engine {
+	return SetupObservabilityRouterWithConfig(handler, cfg, nil, logger)
+}
+
+// SetupObservabilityRouterWithConfig configures operational endpoints for the
+// controller observability listener.
+func SetupObservabilityRouterWithConfig(handler *Handler, cfg *config.APIConfig, observability *config.ObservabilityConfig, logger *zap.Logger) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 
 	router := newControllerRouter(handler, cfg, logger, false)
-	registerObservabilityRoutes(router, handler)
+	statusAuth := observabilityAuthMiddleware(observabilityAuthToken(observability))
+	registerObservabilityRoutes(router, handler, statusAuth)
 
 	// Keep the historical /api/v1 aliases on the observability listener only.
 	v1 := router.Group("/api/v1")
-	registerObservabilityRoutes(v1, handler)
+	registerObservabilityRoutes(v1, handler, statusAuth)
 
 	return router
 }
@@ -127,15 +138,58 @@ type routeGroup interface {
 	GET(string, ...gin.HandlerFunc) gin.IRoutes
 }
 
-func registerObservabilityRoutes(routes routeGroup, handler *Handler) {
-	registerStatusRoutes(routes, handler)
-	routes.GET("/metrics", handler.Metrics)
+func registerObservabilityRoutes(routes routeGroup, handler *Handler, statusAuth gin.HandlerFunc) {
+	routes.GET("/health", handler.Health)
+	routes.GET("/ready", handler.Ready)
+	routes.GET("/status", statusAuth, handler.Status)
+	routes.GET("/metrics", statusAuth, handler.Metrics)
 }
 
 func registerStatusRoutes(routes routeGroup, handler *Handler) {
 	routes.GET("/health", handler.Health)
 	routes.GET("/ready", handler.Ready)
 	routes.GET("/status", handler.Status)
+}
+
+func observabilityAuthToken(observability *config.ObservabilityConfig) string {
+	if observability == nil {
+		return ""
+	}
+	return observability.AuthToken
+}
+
+func observabilityAuthMiddleware(token string) gin.HandlerFunc {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return func(c *gin.Context) {
+			c.Next()
+		}
+	}
+
+	return func(c *gin.Context) {
+		if observabilityAuthTokenMatches(c.GetHeader("Authorization"), token) {
+			c.Next()
+			return
+		}
+
+		c.Header("WWW-Authenticate", `Bearer realm="arca-dns-controller-observability"`)
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	}
+}
+
+func observabilityAuthTokenMatches(authHeader string, expected string) bool {
+	const bearerPrefix = "bearer "
+	value := strings.TrimSpace(authHeader)
+	if len(value) < len(bearerPrefix) || !strings.EqualFold(value[:len(bearerPrefix)], bearerPrefix) {
+		return false
+	}
+	provided := strings.TrimSpace(value[len(bearerPrefix):])
+	if provided == "" {
+		return false
+	}
+	providedHash := sha256.Sum256([]byte(provided))
+	expectedHash := sha256.Sum256([]byte(expected))
+	return subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1
 }
 
 func roleGuard(authEnabled bool, allowedRoles ...string) gin.HandlerFunc {

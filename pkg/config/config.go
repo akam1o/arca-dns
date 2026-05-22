@@ -98,10 +98,13 @@ type APIConfig struct {
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
 }
 
-// ObservabilityConfig configures the controller's unauthenticated operational endpoints.
+// ObservabilityConfig configures the controller's operational endpoints.
 type ObservabilityConfig struct {
 	// Listen address for health, readiness, status, and Prometheus metrics.
 	Listen string `mapstructure:"listen"`
+
+	// AuthToken protects /status and /metrics when set.
+	AuthToken string `mapstructure:"auth_token"`
 }
 
 // TLSConfig configures TLS for agent -> controller communication (typically terminated by a reverse proxy).
