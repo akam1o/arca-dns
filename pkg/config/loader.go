@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -594,27 +595,37 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 			if err := validateAbsoluteLocalPath("bird.config.path", cfg.BIRD.ConfigureOnStart.Path); err != nil {
 				return fmt.Errorf("%w when bird.config.enabled is true", err)
 			}
-			if cfg.BIRD.ConfigureOnStart.RouterID == "" {
-				return fmt.Errorf("invalid bird.config.router_id: empty when bird.config.enabled is true")
+			if err := validateBIRDIPAddress("bird.config.router_id", cfg.BIRD.ConfigureOnStart.RouterID); err != nil {
+				return fmt.Errorf("%w when bird.config.enabled is true", err)
 			}
 			if cfg.BIRD.ConfigureOnStart.LocalAS == 0 {
 				return fmt.Errorf("invalid bird.config.local_as: must be > 0 when bird.config.enabled is true")
 			}
-			if cfg.BIRD.ConfigureOnStart.SourceIP == "" {
-				return fmt.Errorf("invalid bird.config.source_ip: empty when bird.config.enabled is true")
+			if err := validateBIRDIPAddress("bird.config.source_ip", cfg.BIRD.ConfigureOnStart.SourceIP); err != nil {
+				return fmt.Errorf("%w when bird.config.enabled is true", err)
+			}
+			if err := validateBIRDAnycastPrefixes(cfg.BIRD.AnycastPrefixes); err != nil {
+				return fmt.Errorf("%w when bird.config.enabled is true", err)
 			}
 			if len(cfg.BIRD.Protocols) == 0 && len(cfg.BIRD.ConfigureOnStart.Neighbors) == 0 {
 				return fmt.Errorf("invalid bird.protocols: must be non-empty when bird.config.enabled is true (or set bird.config.neighbors for legacy config)")
 			}
-			for _, p := range cfg.BIRD.Protocols {
-				if p.Name == "" {
-					return fmt.Errorf("invalid bird.protocols.name: empty")
-				}
-				if p.NeighborAddress == "" {
-					return fmt.Errorf("invalid bird.protocols.neighbor_address: empty")
+			for i, p := range cfg.BIRD.Protocols {
+				if err := validateBIRDIPAddress(fmt.Sprintf("bird.protocols[%d].neighbor_address", i), p.NeighborAddress); err != nil {
+					return err
 				}
 				if p.NeighborASN == 0 {
-					return fmt.Errorf("invalid bird.protocols.neighbor_asn: must be > 0")
+					return fmt.Errorf("invalid bird.protocols[%d].neighbor_asn: must be > 0", i)
+				}
+			}
+			if len(cfg.BIRD.Protocols) == 0 {
+				for i, neighbor := range cfg.BIRD.ConfigureOnStart.Neighbors {
+					if err := validateBIRDIPAddress(fmt.Sprintf("bird.config.neighbors[%d].address", i), neighbor.Address); err != nil {
+						return err
+					}
+					if neighbor.ASN == 0 {
+						return fmt.Errorf("invalid bird.config.neighbors[%d].asn: must be > 0", i)
+					}
 				}
 			}
 			if cfg.BIRD.ConfigureOnStart.BFD.Enabled {
@@ -754,6 +765,37 @@ func validateBIRDIdentifier(field string, name string) error {
 		}
 		if !isBIRDIdentifierChar(r) {
 			return fmt.Errorf("invalid %s: %q must contain only letters, digits, and underscores", field, name)
+		}
+	}
+	return nil
+}
+
+func validateBIRDIPAddress(field string, value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("invalid %s: empty", field)
+	}
+	if trimmed != value {
+		return fmt.Errorf("invalid %s: must not contain surrounding whitespace", field)
+	}
+	if net.ParseIP(value) == nil {
+		return fmt.Errorf("invalid %s: must be an IP address", field)
+	}
+	return nil
+}
+
+func validateBIRDAnycastPrefixes(prefixes []string) error {
+	for i, raw := range prefixes {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return fmt.Errorf("invalid bird.anycast_prefixes[%d]: %w", i, err)
+		}
+		if !prefix.Addr().Is4() && !prefix.Addr().Is6() {
+			return fmt.Errorf("invalid bird.anycast_prefixes[%d]: unsupported IP family", i)
 		}
 	}
 	return nil

@@ -1745,6 +1745,110 @@ func TestValidateAgentConfig_BIRDProtocolIdentifierPrecedence(t *testing.T) {
 	}
 }
 
+func TestValidateAgentConfig_InvalidBIRDGeneratedConfigValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+		want   string
+	}{
+		{
+			name: "invalid router id",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.ConfigureOnStart.RouterID = "router.example.com"
+			},
+			want: "bird.config.router_id",
+		},
+		{
+			name: "source ip with surrounding whitespace",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.ConfigureOnStart.SourceIP = " 192.0.2.53 "
+			},
+			want: "bird.config.source_ip",
+		},
+		{
+			name: "invalid anycast prefix",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.AnycastPrefixes = []string{"192.0.2.53/32; import all;"}
+			},
+			want: "bird.anycast_prefixes[0]",
+		},
+		{
+			name: "invalid protocol neighbor address",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.Protocols[0].NeighborAddress = "neighbor.example.com"
+			},
+			want: "bird.protocols[0].neighbor_address",
+		},
+		{
+			name: "zero protocol neighbor asn",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.Protocols[0].NeighborASN = 0
+			},
+			want: "bird.protocols[0].neighbor_asn",
+		},
+		{
+			name: "invalid legacy neighbor address",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.Protocols = nil
+				cfg.BIRD.ConfigureOnStart.Neighbors = []BIRDNeighborConfig{
+					{Address: "neighbor.example.com", ASN: 65001},
+				}
+			},
+			want: "bird.config.neighbors[0].address",
+		},
+		{
+			name: "zero legacy neighbor asn",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.Protocols = nil
+				cfg.BIRD.ConfigureOnStart.Neighbors = []BIRDNeighborConfig{
+					{Address: "192.0.2.1", ASN: 0},
+				}
+			},
+			want: "bird.config.neighbors[0].asn",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.BIRD.Enabled = true
+			cfg.Health.TestRecord = "health.example.com."
+			cfg.BIRD.ConfigureOnStart.Enabled = true
+			cfg.BIRD.ConfigureOnStart.Path = "/etc/bird/arca-dns.conf"
+			cfg.BIRD.ConfigureOnStart.RouterID = "192.0.2.53"
+			cfg.BIRD.ConfigureOnStart.LocalAS = 65000
+			cfg.BIRD.ConfigureOnStart.SourceIP = "192.0.2.53"
+			cfg.BIRD.AnycastPrefixes = []string{"192.0.2.53/32", "2001:db8::53/128"}
+			cfg.BIRD.Protocols = []BIRDProtocolConfig{
+				{Name: "anycast_1", NeighborAddress: "192.0.2.1", NeighborASN: 65001},
+			}
+
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateAgentConfig_AllowsTrimmedBIRDAnycastPrefixes(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.BIRD.Enabled = true
+	cfg.Health.TestRecord = "health.example.com."
+	cfg.BIRD.ConfigureOnStart.Enabled = true
+	cfg.BIRD.ConfigureOnStart.Path = "/etc/bird/arca-dns.conf"
+	cfg.BIRD.ConfigureOnStart.RouterID = "192.0.2.53"
+	cfg.BIRD.ConfigureOnStart.LocalAS = 65000
+	cfg.BIRD.ConfigureOnStart.SourceIP = "192.0.2.53"
+	cfg.BIRD.AnycastPrefixes = []string{" 192.0.2.53/32 ", ""}
+	cfg.BIRD.Protocols = []BIRDProtocolConfig{
+		{Name: "anycast_1", NeighborAddress: "192.0.2.1", NeighborASN: 65001},
+	}
+
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
+}
+
 func TestValidateAgentConfig_InvalidSyncInterval(t *testing.T) {
 	cfg := validAgentConfigForTest()
 	cfg.Sync.SyncInterval = 0
