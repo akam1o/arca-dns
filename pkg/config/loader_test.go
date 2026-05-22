@@ -2649,6 +2649,59 @@ func TestValidateAgentConfig_InvalidDNSTapLogFilePath(t *testing.T) {
 	}
 }
 
+func TestValidateAgentConfig_InvalidDNSTapLogRotation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*LogRotationConfig)
+		want   string
+	}{
+		{
+			name: "negative max size",
+			mutate: func(cfg *LogRotationConfig) {
+				cfg.MaxSize = -1
+			},
+			want: "dnstap.log_rotation.max_size",
+		},
+		{
+			name: "negative max age",
+			mutate: func(cfg *LogRotationConfig) {
+				cfg.MaxAge = -1
+			},
+			want: "dnstap.log_rotation.max_age",
+		},
+		{
+			name: "negative max backups",
+			mutate: func(cfg *LogRotationConfig) {
+				cfg.MaxBackups = -1
+			},
+			want: "dnstap.log_rotation.max_backups",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.DNSTap.Enabled = true
+			tc.mutate(&cfg.DNSTap.LogRotation)
+
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateAgentConfig_AllowsDNSTapLogRotationZeroValues(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.DNSTap.Enabled = true
+	cfg.DNSTap.LogRotation.MaxSize = 0
+	cfg.DNSTap.LogRotation.MaxAge = 0
+	cfg.DNSTap.LogRotation.MaxBackups = 0
+
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
+}
+
 func TestValidateAgentConfig_InvalidUnboundStubZoneConfig(t *testing.T) {
 	tests := []struct {
 		name   string

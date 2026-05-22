@@ -897,6 +897,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 			if err := validateAbsoluteLocalPath("dnstap.log_file", cfg.DNSTap.LogFile); err != nil {
 				return err
 			}
+			if err := validateDNSTapLogRotationConfig(cfg.DNSTap.LogRotation); err != nil {
+				return err
+			}
 		}
 		if _, err := cfg.DNSTap.SocketFileMode(); err != nil {
 			return fmt.Errorf("invalid dnstap.socket_mode: %w", err)
@@ -958,6 +961,19 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return err
 	}
 
+	return nil
+}
+
+func validateDNSTapLogRotationConfig(cfg LogRotationConfig) error {
+	if cfg.MaxSize < 0 {
+		return fmt.Errorf("invalid dnstap.log_rotation.max_size: must be non-negative")
+	}
+	if cfg.MaxAge < 0 {
+		return fmt.Errorf("invalid dnstap.log_rotation.max_age: must be non-negative")
+	}
+	if cfg.MaxBackups < 0 {
+		return fmt.Errorf("invalid dnstap.log_rotation.max_backups: must be non-negative")
+	}
 	return nil
 }
 
