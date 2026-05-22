@@ -2481,6 +2481,76 @@ func TestValidateAgentConfig_InvalidHealthTiming(t *testing.T) {
 	}
 }
 
+func TestValidateAgentConfig_InvalidHealthServerAddress(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+		want   string
+	}{
+		{
+			name: "nsd missing port",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Health.NSDServer = "127.0.0.1"
+			},
+			want: "health.nsd_server",
+		},
+		{
+			name: "nsd surrounding whitespace",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Health.NSDServer = " 127.0.0.1:5353 "
+			},
+			want: "health.nsd_server",
+		},
+		{
+			name: "nsd unspecified host",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Health.NSDServer = "0.0.0.0:5353"
+			},
+			want: "health.nsd_server",
+		},
+		{
+			name: "unbound empty host",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Health.UnboundServer = ":53"
+			},
+			want: "health.unbound_server",
+		},
+		{
+			name: "unbound zero port",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Health.UnboundServer = "127.0.0.1:0"
+			},
+			want: "health.unbound_server",
+		},
+		{
+			name: "unbound invalid hostname",
+			mutate: func(cfg *AgentConfig) {
+				cfg.Health.UnboundServer = "bad_host:53"
+			},
+			want: "health.unbound_server",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateAgentConfig_AllowsEmptyHealthServerAddressDefaults(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Health.NSDServer = ""
+	cfg.Health.UnboundServer = ""
+
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
+}
+
 func TestValidateAgentConfig_BIRDRequiresExplicitHealthRecord(t *testing.T) {
 	cfg := validAgentConfigForTest()
 	cfg.BIRD.Enabled = true

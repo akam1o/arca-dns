@@ -935,6 +935,16 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	if cfg.Health.RecoveryThreshold <= 0 {
 		return fmt.Errorf("invalid health.recovery_threshold: must be positive")
 	}
+	if cfg.NSD.Enabled {
+		if err := validateHealthServerAddress("health.nsd_server", cfg.Health.NSDServer); err != nil {
+			return err
+		}
+	}
+	if cfg.Unbound.Enabled {
+		if err := validateHealthServerAddress("health.unbound_server", cfg.Health.UnboundServer); err != nil {
+			return err
+		}
+	}
 
 	if cfg.BIRD.Enabled {
 		if !cfg.NSD.Enabled && !cfg.Unbound.Enabled {
@@ -973,6 +983,38 @@ func validateDNSTapLogRotationConfig(cfg LogRotationConfig) error {
 	}
 	if cfg.MaxBackups < 0 {
 		return fmt.Errorf("invalid dnstap.log_rotation.max_backups: must be non-negative")
+	}
+	return nil
+}
+
+func validateHealthServerAddress(field string, address string) error {
+	value := strings.TrimSpace(address)
+	if value == "" {
+		return nil
+	}
+	if value != address {
+		return fmt.Errorf("invalid %s: must not contain surrounding whitespace", field)
+	}
+	host, port, err := net.SplitHostPort(value)
+	if err != nil {
+		return fmt.Errorf("invalid %s: must be in host:port format", field)
+	}
+	if host == "" {
+		return fmt.Errorf("invalid %s: host must not be empty", field)
+	}
+	if strings.ContainsFunc(host, unsafeListenHostChar) {
+		return fmt.Errorf("invalid %s: host contains unsafe characters", field)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsUnspecified() {
+			return fmt.Errorf("invalid %s: host must not be an unspecified address", field)
+		}
+	} else if !isValidStubZoneAddress(host) {
+		return fmt.Errorf("invalid %s: host must be an IP address or DNS hostname", field)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("invalid %s: port must be between 1 and 65535", field)
 	}
 	return nil
 }
