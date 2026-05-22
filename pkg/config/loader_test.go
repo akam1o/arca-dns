@@ -1650,6 +1650,101 @@ func TestValidateAgentConfig_BIRDMissingPrefixes(t *testing.T) {
 	assert.Contains(t, err.Error(), "protocol_name")
 }
 
+func TestValidateAgentConfig_InvalidBIRDProtocolIdentifiers(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+		want   string
+	}{
+		{
+			name: "legacy protocol name with hyphen",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.ProtocolName = "anycast-1"
+			},
+			want: "bird.protocol_name",
+		},
+		{
+			name: "legacy protocol name starts with digit",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.ProtocolName = "1anycast"
+			},
+			want: "bird.protocol_name",
+		},
+		{
+			name: "protocol names entry with command separator",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.ProtocolName = ""
+				cfg.BIRD.ProtocolNames = []string{"anycast_1", "anycast; disable all;"}
+			},
+			want: "bird.protocol_names[1]",
+		},
+		{
+			name: "protocol names empty entry",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.ProtocolName = ""
+				cfg.BIRD.ProtocolNames = []string{"anycast_1", ""}
+			},
+			want: "bird.protocol_names[1]",
+		},
+		{
+			name: "protocol config name with newline",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.ProtocolName = ""
+				cfg.BIRD.Protocols = []BIRDProtocolConfig{
+					{Name: "anycast_1"},
+					{Name: "anycast_2\nconfigure"},
+				}
+			},
+			want: "bird.protocols[1].name",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.BIRD.Enabled = true
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateAgentConfig_BIRDProtocolIdentifierPrecedence(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentConfig)
+	}{
+		{
+			name: "protocols take precedence over legacy fields",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.Protocols = []BIRDProtocolConfig{{Name: "anycast_1"}}
+				cfg.BIRD.ProtocolNames = []string{"anycast; disable all;"}
+				cfg.BIRD.ProtocolName = "1anycast"
+			},
+		},
+		{
+			name: "protocol names take precedence over legacy protocol name",
+			mutate: func(cfg *AgentConfig) {
+				cfg.BIRD.ProtocolNames = []string{"anycast_1"}
+				cfg.BIRD.ProtocolName = "1anycast"
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfigForTest()
+			cfg.BIRD.Enabled = true
+			cfg.Health.TestRecord = "health.example.com."
+			tc.mutate(cfg)
+			err := ValidateAgentConfig(cfg)
+			assert.NoError(t, err)
+		})
+	}
+}
+
 func TestValidateAgentConfig_InvalidSyncInterval(t *testing.T) {
 	cfg := validAgentConfigForTest()
 	cfg.Sync.SyncInterval = 0

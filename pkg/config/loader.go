@@ -573,6 +573,9 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		if len(cfg.BIRD.Protocols) == 0 && cfg.BIRD.ProtocolName == "" && len(cfg.BIRD.ProtocolNames) == 0 {
 			return fmt.Errorf("invalid bird.protocols: empty when BIRD is enabled (or set bird.protocol_names/protocol_name)")
 		}
+		if err := validateBIRDProtocolIdentifiers(&cfg.BIRD); err != nil {
+			return err
+		}
 		// Note: AnycastPrefixes is optional - current implementation manages routes
 		// via protocol enable/disable. Individual prefix management would require
 		// more complex BIRD command generation.
@@ -711,6 +714,57 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	return nil
+}
+
+func validateBIRDProtocolIdentifiers(cfg *BIRDConfig) error {
+	if len(cfg.Protocols) > 0 {
+		for i, protocol := range cfg.Protocols {
+			if err := validateBIRDIdentifier(fmt.Sprintf("bird.protocols[%d].name", i), protocol.Name); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if len(cfg.ProtocolNames) > 0 {
+		for i, name := range cfg.ProtocolNames {
+			if err := validateBIRDIdentifier(fmt.Sprintf("bird.protocol_names[%d]", i), name); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if cfg.ProtocolName != "" {
+		return validateBIRDIdentifier("bird.protocol_name", cfg.ProtocolName)
+	}
+	return nil
+}
+
+func validateBIRDIdentifier(field string, name string) error {
+	if name == "" {
+		return fmt.Errorf("invalid %s: empty", field)
+	}
+	for i, r := range name {
+		if i == 0 {
+			if isBIRDIdentifierFirstChar(r) {
+				continue
+			}
+			return fmt.Errorf("invalid %s: %q must start with a letter or underscore", field, name)
+		}
+		if !isBIRDIdentifierChar(r) {
+			return fmt.Errorf("invalid %s: %q must contain only letters, digits, and underscores", field, name)
+		}
+	}
+	return nil
+}
+
+func isBIRDIdentifierFirstChar(r rune) bool {
+	return r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z'
+}
+
+func isBIRDIdentifierChar(r rune) bool {
+	return isBIRDIdentifierFirstChar(r) || r >= '0' && r <= '9'
 }
 
 func validateLoggingOutputPath(field string, output string) error {
