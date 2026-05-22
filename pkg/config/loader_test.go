@@ -1277,6 +1277,50 @@ func TestValidateControllerConfig_InvalidAlgorithm(t *testing.T) {
 	assert.Contains(t, err.Error(), "algorithm")
 }
 
+func TestValidateControllerConfig_InvalidDNSSECKeySize(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ControllerConfig)
+		want   string
+	}{
+		{
+			name: "negative ksk key size",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.DNSSEC.Algorithm = 8
+				cfg.DNSSEC.KSKKeySize = -1
+			},
+			want: "dnssec.ksk_key_size",
+		},
+		{
+			name: "negative zsk key size",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.DNSSEC.Algorithm = 8
+				cfg.DNSSEC.ZSKKeySize = -1
+			},
+			want: "dnssec.zsk_key_size",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validControllerConfigForTest()
+			tc.mutate(cfg)
+			err := ValidateControllerConfig(cfg)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateControllerConfig_AllowsDefaultDNSSECKeySizes(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.DNSSEC.KSKKeySize = 0
+	cfg.DNSSEC.ZSKKeySize = 0
+
+	err := ValidateControllerConfig(cfg)
+	assert.NoError(t, err)
+}
+
 func TestValidateControllerConfig_InvalidSignatureValidity(t *testing.T) {
 	cfg := validControllerConfigForTest()
 	cfg.DNSSEC.SignatureValidity = -1 * time.Hour

@@ -256,6 +256,12 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		if !validAlgorithms[cfg.DNSSEC.Algorithm] {
 			return fmt.Errorf("invalid dnssec.algorithm: %d (must be 8 or 13)", cfg.DNSSEC.Algorithm)
 		}
+		if cfg.DNSSEC.KSKKeySize < 0 {
+			return fmt.Errorf("invalid dnssec.ksk_key_size: must be non-negative")
+		}
+		if cfg.DNSSEC.ZSKKeySize < 0 {
+			return fmt.Errorf("invalid dnssec.zsk_key_size: must be non-negative")
+		}
 
 		if cfg.DNSSEC.SignatureValidity <= 0 {
 			return fmt.Errorf("invalid dnssec.signature_validity: must be positive")
