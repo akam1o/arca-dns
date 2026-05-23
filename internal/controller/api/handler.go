@@ -362,20 +362,9 @@ func signArtifact(body string, key string) string {
 
 // ListZones handles GET /api/v1/zones
 func (h *Handler) ListZones(c *gin.Context) {
-	// Parse pagination parameters
-	offset := 0
-	limit := 100 // Default limit
-
-	if offsetStr := c.Query("offset"); offsetStr != "" {
-		if val, err := strconv.Atoi(offsetStr); err == nil && val >= 0 {
-			offset = val
-		}
-	}
-
-	if limitStr := c.Query("limit"); limitStr != "" {
-		if val, err := strconv.Atoi(limitStr); err == nil && val > 0 && val <= 1000 {
-			limit = val
-		}
+	offset, limit, ok := parsePagination(c, 100)
+	if !ok {
+		return
 	}
 
 	if listZonesSummaryOnly(c) {
@@ -434,6 +423,42 @@ func listZonesSummaryOnly(c *gin.Context) bool {
 	return fields == "summary" || fields == "summaries"
 }
 
+func parsePagination(c *gin.Context, defaultLimit int) (int, int, bool) {
+	offset := 0
+	limit := defaultLimit
+
+	if offsetStr := c.Query("offset"); offsetStr != "" {
+		val, err := strconv.Atoi(offsetStr)
+		if err != nil || val < 0 {
+			writeInvalidPagination(c, "offset", "must be a non-negative integer")
+			return 0, 0, false
+		}
+		offset = val
+	}
+
+	if limitStr := c.Query("limit"); limitStr != "" {
+		val, err := strconv.Atoi(limitStr)
+		if err != nil || val <= 0 || val > 1000 {
+			writeInvalidPagination(c, "limit", "must be an integer between 1 and 1000")
+			return 0, 0, false
+		}
+		limit = val
+	}
+
+	return offset, limit, true
+}
+
+func writeInvalidPagination(c *gin.Context, field string, reason string) {
+	c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+		model.ErrorCodeInvalidInput,
+		"Invalid pagination parameter",
+		map[string]interface{}{
+			"field":  field,
+			"reason": reason,
+		},
+	))
+}
+
 // ListZoneVersions handles GET /api/v1/zones/:name/versions
 // Returns version history when the backend supports RevisionStore.
 func (h *Handler) ListZoneVersions(c *gin.Context) {
@@ -469,20 +494,9 @@ func (h *Handler) ListZoneVersions(c *gin.Context) {
 		return
 	}
 
-	// Parse pagination parameters
-	offset := 0
-	limit := 10 // Default limit (matches OpenAPI)
-
-	if offsetStr := c.Query("offset"); offsetStr != "" {
-		if val, convErr := strconv.Atoi(offsetStr); convErr == nil && val >= 0 {
-			offset = val
-		}
-	}
-
-	if limitStr := c.Query("limit"); limitStr != "" {
-		if val, convErr := strconv.Atoi(limitStr); convErr == nil && val > 0 && val <= 1000 {
-			limit = val
-		}
+	offset, limit, paginationOK := parsePagination(c, 10)
+	if !paginationOK {
+		return
 	}
 
 	versions, err := revisionStore.ListRevisions(c.Request.Context(), name, backend.ListOptions{

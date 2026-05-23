@@ -581,6 +581,29 @@ func TestListZones_Pagination(t *testing.T) {
 	assert.Equal(t, 2, result.Pagination.Count)
 }
 
+func TestListZones_InvalidPagination(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	tests := []string{
+		"offset=-1",
+		"offset=abc",
+		"limit=0",
+		"limit=1001",
+		"limit=abc",
+	}
+
+	for _, query := range tests {
+		t.Run(query, func(t *testing.T) {
+			resp, err := http.Get(server.URL + "/api/v1/zones?" + query)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
+}
+
 func TestUpdateZone(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()

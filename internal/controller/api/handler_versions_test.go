@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -152,4 +153,40 @@ func TestZoneVersions_GitBackend(t *testing.T) {
 	var rev model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&rev))
 	assert.Equal(t, oldest, rev.Version)
+}
+
+func TestZoneVersions_InvalidPagination(t *testing.T) {
+	repoDir := t.TempDir()
+	store, err := backend.NewGitBackend(repoDir, "main", "tester", "tester@example.com", false)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+		},
+	}
+	require.NoError(t, store.CreateZone(context.Background(), zone))
+
+	_, server := setupTestWithStore(t, store)
+
+	tests := []string{
+		"offset=-1",
+		"offset=abc",
+		"limit=0",
+		"limit=1001",
+		"limit=abc",
+	}
+
+	for _, query := range tests {
+		t.Run(query, func(t *testing.T) {
+			resp, err := http.Get(server.URL + "/api/v1/zones/example.com./versions?" + query)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
 }
