@@ -1,8 +1,6 @@
 package middleware
 
 import (
-	"bytes"
-	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -46,36 +44,8 @@ func (rv *RequestValidator) Middleware() gin.HandlerFunc {
 			return
 		}
 
-		// For requests with body, enforce size limit by reading with LimitReader
-		// This handles both Content-Length and chunked/unknown-length bodies
 		if c.Request.Body != nil {
-			// Read body with size limit
-			body, err := io.ReadAll(io.LimitReader(c.Request.Body, rv.maxBodySize+1))
-			c.Request.Body.Close()
-
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error":   "invalid_request",
-					"message": "Failed to read request body",
-				})
-				c.Abort()
-				return
-			}
-
-			// Check if we read more than the limit
-			if int64(len(body)) > rv.maxBodySize {
-				c.JSON(http.StatusRequestEntityTooLarge, gin.H{
-					"error":    "request_too_large",
-					"message":  "Request body exceeds maximum size limit",
-					"max_size": rv.maxBodySize,
-				})
-				c.Abort()
-				return
-			}
-
-			// Restore body for downstream handlers
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
-			c.Request.ContentLength = int64(len(body))
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, rv.maxBodySize)
 		}
 
 		c.Next()
