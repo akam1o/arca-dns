@@ -116,6 +116,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Metrics (Prometheus text format).
 	metrics := ctrlmetrics.NewControllerMetrics()
 	store = ctrlmetrics.WrapZoneStore(store, metrics)
+	if err := validateControllerStoreCapabilities(store); err != nil {
+		return err
+	}
 
 	// Initialize DNSSEC signing service if enabled
 	var signingService *service.SigningService
@@ -302,6 +305,16 @@ func startControllerHTTPServer(logger *zap.Logger, name string, srv *http.Server
 			errCh <- controllerHTTPServerError{name: name, err: err}
 		}
 	}()
+}
+
+func validateControllerStoreCapabilities(store backend.ZoneStore) error {
+	if store == nil {
+		return fmt.Errorf("backend store is nil")
+	}
+	if _, ok := store.(backend.ConditionalDeleteStore); !ok {
+		return fmt.Errorf("backend missing required capability: %s", backend.CapabilityConditionalDeleteStore)
+	}
+	return nil
 }
 
 func applyServeFlagOverrides(cmd *cobra.Command, cfg *config.ControllerConfig) {

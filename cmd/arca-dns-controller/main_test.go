@@ -8,10 +8,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
+
+type controllerStoreWithoutConditionalDelete struct {
+	backend.ZoneStore
+}
 
 func TestNewStoreFromConfig_SQLite(t *testing.T) {
 	cfg := config.DefaultControllerConfig()
@@ -55,6 +60,21 @@ func TestNewStoreFromConfig_RejectsMemory(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported backend type: memory") {
 		t.Fatalf("expected memory backend error, got %v", err)
+	}
+}
+
+func TestValidateControllerStoreCapabilities(t *testing.T) {
+	store := backend.NewMemoryBackend()
+	if err := validateControllerStoreCapabilities(store); err != nil {
+		t.Fatalf("validateControllerStoreCapabilities returned error: %v", err)
+	}
+
+	err := validateControllerStoreCapabilities(&controllerStoreWithoutConditionalDelete{ZoneStore: store})
+	if err == nil {
+		t.Fatal("expected missing capability error")
+	}
+	if !strings.Contains(err.Error(), backend.CapabilityConditionalDeleteStore) {
+		t.Fatalf("expected ConditionalDeleteStore error, got %v", err)
 	}
 }
 
