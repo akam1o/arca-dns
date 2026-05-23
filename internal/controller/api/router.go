@@ -10,6 +10,7 @@ import (
 	"github.com/akam1o/arca-dns/pkg/middleware"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"go.uber.org/zap"
 )
 
@@ -114,6 +115,8 @@ func SetupObservabilityRouterWithConfig(handler *Handler, cfg *config.APIConfig,
 }
 
 func newControllerRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger, includeMetrics bool) *gin.Engine {
+	binding.EnableDecoderDisallowUnknownFields = true
+
 	router := gin.New()
 
 	router.Use(gin.Recovery())

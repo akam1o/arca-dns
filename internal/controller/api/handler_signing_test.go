@@ -143,8 +143,7 @@ func TestDeleteZone_CleansDNSSECArtifactsAndKeys(t *testing.T) {
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -336,8 +335,7 @@ func TestCreateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -363,8 +361,7 @@ func TestCreateZone_DoesNotPersistWhenSignedArtifactStoreFails(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -421,8 +418,7 @@ func TestCreateZone_KeepsSignedArtifactWhenPostCreateReadFails(t *testing.T) {
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -481,8 +477,7 @@ func TestUpdateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 
 	update := *current
 	update.SOA.Refresh = 7200
-	body, err := json.Marshal(&update)
-	require.NoError(t, err)
+	body := marshalUpdateZoneRequest(t, &update)
 
 	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/signing-fails.com.", bytes.NewReader(body))
 	require.NoError(t, err)

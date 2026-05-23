@@ -47,6 +47,37 @@ func setupTest(t *testing.T) (*Handler, *backend.MemoryBackend, *httptest.Server
 	return handler, store, server
 }
 
+func marshalCreateZoneRequest(t *testing.T, zone *model.Zone) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(createZoneRequest{
+		Name:    zone.Name,
+		SOA:     zone.SOA,
+		Records: zone.Records,
+	})
+	require.NoError(t, err)
+	return body
+}
+
+func marshalUpdateZoneRequest(t *testing.T, zone *model.Zone) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(updateZoneRequest{
+		Name: zone.Name,
+		SOA:  zone.SOA,
+	})
+	require.NoError(t, err)
+	return body
+}
+
+func decodeAPIError(t *testing.T, body io.Reader) model.APIError {
+	t.Helper()
+
+	var apiErr model.APIError
+	require.NoError(t, json.NewDecoder(body).Decode(&apiErr))
+	return apiErr
+}
+
 type readinessFailingStore struct {
 	*backend.MemoryBackend
 }
@@ -204,8 +235,7 @@ func TestCreateZone(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -222,21 +252,35 @@ func TestCreateZone(t *testing.T) {
 	assert.NotZero(t, created.SOA.Serial)
 }
 
-func TestCreateZone_IgnoresClientManagedFields(t *testing.T) {
+func TestCreateZone_RejectsUnknownJSONFields(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
 
-	clientTime := time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)
 	body, err := json.Marshal(map[string]interface{}{
-		"name":       "managed.example.",
+		"name":       "unknown.example.",
 		"version":    "client-version",
-		"created_at": clientTime,
-		"updated_at": clientTime,
-		"dnssec": map[string]interface{}{
-			"enabled":   true,
-			"algorithm": 13,
-		},
-		"soa": model.DefaultSOA("ns1.managed.example.", "admin.managed.example."),
+		"soa":        model.DefaultSOA("ns1.unknown.example.", "admin.unknown.example."),
+		"records":    []model.Record{apiTestApexNSRecord()},
+		"unexpected": true,
+	})
+	require.NoError(t, err)
+
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	_, err = store.GetZone(context.Background(), "unknown.example.")
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+}
+
+func TestCreateZone_IgnoresClientManagedRecordIDs(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	body, err := json.Marshal(map[string]interface{}{
+		"name": "managed.example.",
+		"soa":  model.DefaultSOA("ns1.managed.example.", "admin.managed.example."),
 		"records": []map[string]interface{}{
 			{
 				"name":  "@",
@@ -263,11 +307,8 @@ func TestCreateZone_IgnoresClientManagedFields(t *testing.T) {
 
 	var created model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
-	assert.NotEqual(t, "client-version", created.Version)
 	assert.False(t, created.CreatedAt.IsZero())
 	assert.False(t, created.UpdatedAt.IsZero())
-	assert.NotEqual(t, clientTime, created.CreatedAt)
-	assert.NotEqual(t, clientTime, created.UpdatedAt)
 	assert.Nil(t, created.DNSSEC)
 	require.Len(t, created.Records, 2)
 	createdA := apiRecordByNameType(created.Records, "@", model.RecordTypeA)
@@ -407,8 +448,7 @@ func TestCreateZone_Duplicate(t *testing.T) {
 		Records: []model.Record{apiTestApexNSRecord()},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	// First create should succeed
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
@@ -417,8 +457,7 @@ func TestCreateZone_Duplicate(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	// Second create should fail with conflict
-	body, err = json.Marshal(zone)
-	require.NoError(t, err)
+	body = marshalCreateZoneRequest(t, zone)
 	resp, err = http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -439,8 +478,7 @@ func TestCreateZone_RejectsDuplicateRecords(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -648,17 +686,9 @@ func TestUpdateZone(t *testing.T) {
 	require.NoError(t, err)
 	originalVersion := retrieved.Version
 
-	// Update the zone. Records in a zone update request are ignored; record
-	// mutations belong to record-specific workflows.
 	retrieved.SOA.Refresh = 7200
-	retrieved.Records = append(retrieved.Records, model.Record{
-		Name:  "www",
-		Type:  "A",
-		TTL:   300,
-		Value: "192.0.2.2",
-	})
 
-	body, _ := json.Marshal(retrieved)
+	body := marshalUpdateZoneRequest(t, retrieved)
 	req, _ := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", originalVersion)
@@ -694,8 +724,7 @@ func TestUpdateZone_RejectsWeakIfMatch(t *testing.T) {
 	require.NoError(t, err)
 	retrieved.SOA.Refresh = 7200
 
-	body, err := json.Marshal(retrieved)
-	require.NoError(t, err)
+	body := marshalUpdateZoneRequest(t, retrieved)
 	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -837,7 +866,7 @@ func TestUpdateZone_RepairsStoredDerivedPriority(t *testing.T) {
 	assert.Equal(t, uint16(10), *storedMX.Priority)
 }
 
-func TestUpdateZone_EmptyRecordsPreservesExistingRecords(t *testing.T) {
+func TestUpdateZone_RejectsUnknownJSONFields(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
 
@@ -868,10 +897,10 @@ func TestUpdateZone_EmptyRecordsPreservesExistingRecords(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var updated model.Zone
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
-	userRecords := apiRecordsExceptType(updated.Records, model.RecordTypeNS)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	userRecords := apiRecordsExceptType(unchanged.Records, model.RecordTypeNS)
 	assert.Len(t, userRecords, 1)
 	assert.Equal(t, "192.0.2.1", userRecords[0].Value)
 }
@@ -963,6 +992,42 @@ func TestCreateRecord(t *testing.T) {
 	createdRecord := apiRecordByNameType(updated.Records, "www", model.RecordTypeA)
 	require.NotNil(t, createdRecord)
 	assert.Equal(t, "192.0.2.2", createdRecord.Value)
+}
+
+func TestCreateRecord_RejectsUnknownJSONFields(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	body, err := json.Marshal(map[string]interface{}{
+		"name":       "www",
+		"type":       model.RecordTypeA,
+		"ttl":        300,
+		"value":      "192.0.2.2",
+		"unexpected": true,
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Len(t, unchanged.Records, 1)
 }
 
 func TestCreateRecord_RejectsExpandedRelativeNamesTooLong(t *testing.T) {
@@ -1667,7 +1732,7 @@ func TestUpdateZone_Conflict(t *testing.T) {
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	// Try to update with wrong version
-	body, _ := json.Marshal(zone)
+	body := marshalUpdateZoneRequest(t, zone)
 	req, _ := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", "wrong-version")
@@ -1980,7 +2045,7 @@ func TestUpdateZone_MissingIfMatch(t *testing.T) {
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	// Try to update without If-Match header
-	body, _ := json.Marshal(zone)
+	body := marshalUpdateZoneRequest(t, zone)
 	req, _ := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	// No If-Match header
@@ -2005,8 +2070,7 @@ func TestUpdateZone_RejectsWildcardIfMatch(t *testing.T) {
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	zone.SOA.Refresh = 7200
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalUpdateZoneRequest(t, zone)
 	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")

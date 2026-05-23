@@ -55,8 +55,7 @@ func TestZoneVersions_NotSupportedBackend(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -86,8 +85,7 @@ func TestZoneVersions_GitBackend(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -103,9 +101,8 @@ func TestZoneVersions_GitBackend(t *testing.T) {
 	require.NotEmpty(t, etag)
 	require.NoError(t, resp.Body.Close())
 
-	current.Records = append(current.Records, model.Record{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"})
-	body, err = json.Marshal(&current)
-	require.NoError(t, err)
+	current.SOA.Refresh = 7200
+	body = marshalUpdateZoneRequest(t, &current)
 	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
