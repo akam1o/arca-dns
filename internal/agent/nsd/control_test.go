@@ -11,6 +11,31 @@ import (
 	"go.uber.org/zap"
 )
 
+func TestMain(m *testing.M) {
+	if os.Getenv("ARCA_DNS_NSD_CONTROL_HELPER") == "1" {
+		runNSDControlHelper()
+		return
+	}
+	os.Exit(m.Run())
+}
+
+func runNSDControlHelper() {
+	logPath := os.Getenv("ARCA_DNS_NSD_CONTROL_LOG")
+	if logPath != "" {
+		file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			_, _ = os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(2)
+		}
+		_, writeErr := file.WriteString(strings.Join(os.Args[1:], " ") + "\n")
+		closeErr := file.Close()
+		if writeErr != nil || closeErr != nil {
+			os.Exit(2)
+		}
+	}
+	os.Exit(0)
+}
+
 func TestNewController(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cfg := config.NSDConfig{
@@ -188,11 +213,12 @@ func TestController_RejectsUnsafeCommandPaths(t *testing.T) {
 func TestController_EnsureZoneConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	commandLog := filepath.Join(tmpDir, "commands.log")
-	controlPath := filepath.Join(tmpDir, "nsd-control")
-	controlScript := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + commandLog + "\"\n"
-	if err := os.WriteFile(controlPath, []byte(controlScript), 0755); err != nil {
-		t.Fatalf("Failed to write fake nsd-control: %v", err)
+	controlPath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("Failed to resolve test executable: %v", err)
 	}
+	t.Setenv("ARCA_DNS_NSD_CONTROL_HELPER", "1")
+	t.Setenv("ARCA_DNS_NSD_CONTROL_LOG", commandLog)
 
 	zoneDir := filepath.Join(tmpDir, "zones")
 	zoneConfigPath := filepath.Join(tmpDir, "arca-dns-zones.conf")
