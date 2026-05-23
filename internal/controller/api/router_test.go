@@ -171,6 +171,40 @@ func TestSetupRouter_StatusRouteRequiresManagementAuth(t *testing.T) {
 	}
 }
 
+func TestSetupRouter_RateLimitUsesAuthenticatedPrincipal(t *testing.T) {
+	const adminKey = "admin-key"
+	const secondAdminKey = "second-admin-key"
+	logger := zap.NewNop()
+	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = true
+	apiCfg.Auth.APIKeys = map[string]string{
+		"admin":        routerTestAPIKeyHash(adminKey),
+		"second-admin": routerTestAPIKeyHash(secondAdminKey),
+	}
+	apiCfg.Auth.APIKeyRoles = map[string]string{
+		"admin":        middleware.AuthRoleAdmin,
+		"second-admin": middleware.AuthRoleAdmin,
+	}
+	apiCfg.RateLimit.Enabled = true
+	apiCfg.RateLimit.RequestsPerSecond = 1
+	apiCfg.RateLimit.Burst = 1
+
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	perform := func(key string) int {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/zones", nil)
+		req.Header.Set("X-API-Key", key)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	require.Equal(t, http.StatusOK, perform(adminKey))
+	require.Equal(t, http.StatusOK, perform(secondAdminKey))
+	require.Equal(t, http.StatusTooManyRequests, perform(adminKey))
+}
+
 func TestSetupObservabilityRouter_RoutesBypassAuth(t *testing.T) {
 	logger := zap.NewNop()
 	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)

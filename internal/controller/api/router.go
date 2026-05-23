@@ -39,22 +39,13 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 	auditLogger := middleware.NewAuditLogger(logger)
 	router.Use(auditLogger.Middleware())
 
-	if cfg != nil && cfg.RateLimit.Enabled {
-		rateLimiterConfig := middleware.DefaultRateLimiterConfig()
-		rateLimiterConfig.ReadRPS = cfg.RateLimit.RequestsPerSecond
-		rateLimiterConfig.WriteRPS = writeRPSFromReadRPS(cfg.RateLimit.RequestsPerSecond)
-		rateLimiterConfig.Burst = cfg.RateLimit.Burst
-
-		rateLimiter := middleware.NewRateLimiter(rateLimiterConfig)
-		router.Use(rateLimiter.Middleware())
-	}
-
 	// API v1 routes (with authentication if enabled)
 	v1 := router.Group("/api/v1")
 
 	requestValidator := middleware.NewRequestValidator()
 
 	var authMiddleware gin.HandlerFunc
+	var rateLimitMiddleware gin.HandlerFunc
 	if cfg != nil && cfg.Auth.Enabled {
 		authConfig := middleware.AuthConfig{
 			APIKeys:                 cfg.Auth.APIKeys,
@@ -65,16 +56,31 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 		authenticator := middleware.NewAuthenticator(authConfig)
 		authMiddleware = authenticator.Middleware()
 	}
+	if cfg != nil && cfg.RateLimit.Enabled {
+		rateLimiterConfig := middleware.DefaultRateLimiterConfig()
+		rateLimiterConfig.ReadRPS = cfg.RateLimit.RequestsPerSecond
+		rateLimiterConfig.WriteRPS = writeRPSFromReadRPS(cfg.RateLimit.RequestsPerSecond)
+		rateLimiterConfig.Burst = cfg.RateLimit.Burst
+
+		rateLimiter := middleware.NewRateLimiter(rateLimiterConfig)
+		rateLimitMiddleware = rateLimiter.Middleware()
+	}
 
 	statusProtected := router.Group("")
 	if authMiddleware != nil {
 		statusProtected.Use(authMiddleware)
+	}
+	if rateLimitMiddleware != nil {
+		statusProtected.Use(rateLimitMiddleware)
 	}
 	statusProtected.GET("/status", requestValidator.Middleware(), handler.Status)
 
 	protected := v1.Group("")
 	if authMiddleware != nil {
 		protected.Use(authMiddleware)
+	}
+	if rateLimitMiddleware != nil {
+		protected.Use(rateLimitMiddleware)
 	}
 
 	authEnabled := cfg != nil && cfg.Auth.Enabled
