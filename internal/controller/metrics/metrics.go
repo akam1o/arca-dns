@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/metrics/promtext"
+	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/gin-gonic/gin"
 )
 
@@ -28,6 +30,17 @@ type backendKey struct {
 	Status    string
 }
 
+type backendErrorKey struct {
+	Operation  string
+	ErrorClass string
+}
+
+type backendDurKey struct {
+	Operation  string
+	Status     string
+	ErrorClass string
+}
+
 type signKey struct {
 	Status string
 }
@@ -40,8 +53,10 @@ type ControllerMetrics struct {
 	apiRequests map[apiKey]uint64
 	apiLatency  map[apiDurKey]*Histogram
 
-	backendOps map[backendKey]uint64
-	signingDur map[signKey]*Histogram
+	backendOps     map[backendKey]uint64
+	backendErrors  map[backendErrorKey]uint64
+	backendLatency map[backendDurKey]*Histogram
+	signingDur     map[signKey]*Histogram
 
 	// DNSSEC scheduler metrics
 	schedulerLastRun          time.Time
@@ -50,6 +65,7 @@ type ControllerMetrics struct {
 	schedulerResign           map[string]uint64
 
 	requestLatencyBuckets []float64
+	backendLatencyBuckets []float64
 	signingLatencyBuckets []float64
 }
 
@@ -58,9 +74,14 @@ func NewControllerMetrics() *ControllerMetrics {
 		apiRequests:     make(map[apiKey]uint64),
 		apiLatency:      make(map[apiDurKey]*Histogram),
 		backendOps:      make(map[backendKey]uint64),
+		backendErrors:   make(map[backendErrorKey]uint64),
+		backendLatency:  make(map[backendDurKey]*Histogram),
 		signingDur:      make(map[signKey]*Histogram),
 		schedulerResign: make(map[string]uint64),
 		requestLatencyBuckets: []float64{
+			0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
+		},
+		backendLatencyBuckets: []float64{
 			0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
 		},
 		signingLatencyBuckets: []float64{
@@ -106,6 +127,54 @@ func (m *ControllerMetrics) IncBackendOperation(operation string, status string)
 	m.mu.Lock()
 	m.backendOps[backendKey{Operation: operation, Status: status}]++
 	m.mu.Unlock()
+}
+
+func (m *ControllerMetrics) ObserveBackendOperation(operation string, err error, seconds float64) {
+	status := statusLabel(err)
+	errorClass := errorClassLabel(err)
+
+	m.mu.Lock()
+	m.backendOps[backendKey{Operation: operation, Status: status}]++
+	if err != nil {
+		m.backendErrors[backendErrorKey{Operation: operation, ErrorClass: errorClass}]++
+	}
+
+	dk := backendDurKey{Operation: operation, Status: status, ErrorClass: errorClass}
+	h, ok := m.backendLatency[dk]
+	if !ok {
+		h = NewHistogram(m.backendLatencyBuckets)
+		m.backendLatency[dk] = h
+	}
+	h.Observe(seconds)
+	m.mu.Unlock()
+}
+
+func statusLabel(err error) string {
+	if err == nil {
+		return "success"
+	}
+	return "error"
+}
+
+func errorClassLabel(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, model.ErrZoneNotFound):
+		return "not_found"
+	case errors.Is(err, model.ErrVersionNotFound):
+		return "version_not_found"
+	case errors.Is(err, model.ErrZoneAlreadyExists):
+		return "already_exists"
+	case errors.Is(err, model.ErrConflict):
+		return "conflict"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	default:
+		return "backend_error"
+	}
 }
 
 func (m *ControllerMetrics) ObserveSigningDuration(status string, seconds float64) {
@@ -184,6 +253,14 @@ func (m *ControllerMetrics) Render(zonesTotal int) string {
 	for k, v := range m.backendOps {
 		backendOps[k] = v
 	}
+	backendErrors := make(map[backendErrorKey]uint64, len(m.backendErrors))
+	for k, v := range m.backendErrors {
+		backendErrors[k] = v
+	}
+	backendLatency := make(map[backendDurKey]*Histogram, len(m.backendLatency))
+	for k, v := range m.backendLatency {
+		backendLatency[k] = v.Clone()
+	}
 	signingDur := make(map[signKey]*Histogram, len(m.signingDur))
 	for k, v := range m.signingDur {
 		signingDur[k] = v.Clone()
@@ -240,6 +317,27 @@ func (m *ControllerMetrics) Render(zonesTotal int) string {
 			promtext.Label{Name: "status", Value: k.Status},
 		)
 		b.WriteString(fmt.Sprintf("backend_operations_total{%s} %d\n", labelSet, v))
+	}
+
+	b.WriteString("# HELP backend_operation_errors_total Backend operation errors by bounded error class.\n")
+	b.WriteString("# TYPE backend_operation_errors_total counter\n")
+	for k, v := range backendErrors {
+		labelSet := promtext.FormatLabels(
+			promtext.Label{Name: "operation", Value: k.Operation},
+			promtext.Label{Name: "error_class", Value: k.ErrorClass},
+		)
+		b.WriteString(fmt.Sprintf("backend_operation_errors_total{%s} %d\n", labelSet, v))
+	}
+
+	b.WriteString("# HELP backend_operation_duration_seconds Backend operation latency histogram.\n")
+	b.WriteString("# TYPE backend_operation_duration_seconds histogram\n")
+	for k, h := range backendLatency {
+		labelSet := promtext.FormatLabels(
+			promtext.Label{Name: "operation", Value: k.Operation},
+			promtext.Label{Name: "status", Value: k.Status},
+			promtext.Label{Name: "error_class", Value: k.ErrorClass},
+		)
+		b.WriteString(h.RenderPrometheus("backend_operation_duration_seconds", labelSet))
 	}
 
 	b.WriteString("# HELP dnssec_scheduler_last_run_timestamp_seconds Last DNSSEC scheduler run time.\n")

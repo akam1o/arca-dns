@@ -73,6 +73,25 @@ func TestControllerMetricsRenderEscapesPrometheusLabels(t *testing.T) {
 	require.Contains(t, rendered, `dnssec_scheduler_resign_total{result="resign\"bad\\tail"} 1`)
 }
 
+func TestControllerMetricsRenderBackendErrorClassesAndLatency(t *testing.T) {
+	metrics := NewControllerMetrics()
+	metrics.ObserveBackendOperation("get_zone", nil, 0.004)
+	metrics.ObserveBackendOperation("get_zone", model.ErrZoneNotFound, 0.02)
+	metrics.ObserveBackendOperation("update_zone", model.ErrConflict, 0.2)
+	metrics.ObserveBackendOperation("health_check", context.DeadlineExceeded, 0.5)
+
+	rendered := metrics.Render(0)
+
+	require.Contains(t, rendered, `backend_operations_total{operation="get_zone",status="success"} 1`)
+	require.Contains(t, rendered, `backend_operations_total{operation="get_zone",status="error"} 1`)
+	require.Contains(t, rendered, `backend_operation_errors_total{operation="get_zone",error_class="not_found"} 1`)
+	require.Contains(t, rendered, `backend_operation_errors_total{operation="update_zone",error_class="conflict"} 1`)
+	require.Contains(t, rendered, `backend_operation_errors_total{operation="health_check",error_class="timeout"} 1`)
+	require.Contains(t, rendered, `backend_operation_duration_seconds_count{operation="get_zone",status="success",error_class="none"} 1`)
+	require.Contains(t, rendered, `backend_operation_duration_seconds_count{operation="get_zone",status="error",error_class="not_found"} 1`)
+	require.Contains(t, rendered, `backend_operation_duration_seconds_count{operation="update_zone",status="error",error_class="conflict"} 1`)
+}
+
 type summaryOnlyStore struct {
 	total          int
 	listZonesCalls int

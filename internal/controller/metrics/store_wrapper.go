@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"time"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -50,65 +51,67 @@ func WrapZoneStore(inner backend.ZoneStore, metrics *ControllerMetrics) backend.
 }
 
 func (s *InstrumentedZoneStore) GetZone(ctx context.Context, name string) (*model.Zone, error) {
+	start := time.Now()
 	zone, err := s.inner.GetZone(ctx, name)
-	s.metrics.IncBackendOperation("get_zone", statusLabel(err))
+	s.metrics.ObserveBackendOperation("get_zone", err, time.Since(start).Seconds())
 	return zone, err
 }
 
 func (s *InstrumentedZoneStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	start := time.Now()
 	zones, err := s.inner.ListZones(ctx, opts)
-	s.metrics.IncBackendOperation("list_zones", statusLabel(err))
+	s.metrics.ObserveBackendOperation("list_zones", err, time.Since(start).Seconds())
 	return zones, err
 }
 
 func (s *InstrumentedZoneStore) ListZoneSummaries(ctx context.Context, opts backend.ListOptions) ([]*backend.ZoneSummary, error) {
+	start := time.Now()
 	summaries, err := backend.ListZoneSummaries(ctx, s.inner, opts)
-	s.metrics.IncBackendOperation("list_zone_summaries", statusLabel(err))
+	s.metrics.ObserveBackendOperation("list_zone_summaries", err, time.Since(start).Seconds())
 	return summaries, err
 }
 
 func (s *InstrumentedZoneStore) HealthCheck(ctx context.Context) error {
+	start := time.Now()
 	err := backend.CheckHealth(ctx, s.inner)
-	s.metrics.IncBackendOperation("health_check", statusLabel(err))
+	s.metrics.ObserveBackendOperation("health_check", err, time.Since(start).Seconds())
 	return err
 }
 
 func (s *InstrumentedZoneStore) CreateZone(ctx context.Context, zone *model.Zone) error {
+	start := time.Now()
 	err := s.inner.CreateZone(ctx, zone)
-	s.metrics.IncBackendOperation("create_zone", statusLabel(err))
+	s.metrics.ObserveBackendOperation("create_zone", err, time.Since(start).Seconds())
 	return err
 }
 
 func (s *InstrumentedZoneStore) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
+	start := time.Now()
 	err := s.inner.UpdateZone(ctx, zone, expectedVersion)
-	s.metrics.IncBackendOperation("update_zone", statusLabel(err))
+	s.metrics.ObserveBackendOperation("update_zone", err, time.Since(start).Seconds())
 	return err
 }
 
 func (s *InstrumentedZoneStore) DeleteZone(ctx context.Context, name string) error {
+	start := time.Now()
 	err := s.inner.DeleteZone(ctx, name)
-	s.metrics.IncBackendOperation("delete_zone", statusLabel(err))
+	s.metrics.ObserveBackendOperation("delete_zone", err, time.Since(start).Seconds())
 	return err
 }
 
 func (s *InstrumentedZoneStore) Close() error {
+	start := time.Now()
 	err := s.inner.Close()
-	s.metrics.IncBackendOperation("close", statusLabel(err))
+	s.metrics.ObserveBackendOperation("close", err, time.Since(start).Seconds())
 	return err
 }
 
 func recordConditionalDelete(ctx context.Context, store backend.ZoneStore, metrics *ControllerMetrics, name string, expectedVersion string) error {
+	start := time.Now()
 	conditionalStore := store.(backend.ConditionalDeleteStore)
 	err := conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
-	metrics.IncBackendOperation("delete_zone", statusLabel(err))
+	metrics.ObserveBackendOperation("delete_zone", err, time.Since(start).Seconds())
 	return err
-}
-
-func statusLabel(err error) string {
-	if err == nil {
-		return "success"
-	}
-	return "error"
 }
 
 type instrumentedMetadataStore struct {
@@ -116,9 +119,10 @@ type instrumentedMetadataStore struct {
 }
 
 func (s *instrumentedMetadataStore) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	start := time.Now()
 	metadataStore := s.inner.(backend.DNSSECMetadataStore)
 	err := metadataStore.UpdateDNSSECMetadata(ctx, zoneName, dnssec)
-	s.metrics.IncBackendOperation("update_dnssec_metadata", statusLabel(err))
+	s.metrics.ObserveBackendOperation("update_dnssec_metadata", err, time.Since(start).Seconds())
 	return err
 }
 
@@ -127,23 +131,26 @@ type instrumentedRevisionStore struct {
 }
 
 func (s *instrumentedRevisionStore) GetRevision(ctx context.Context, zoneName, version string) (*model.Zone, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	zone, err := revisionStore.GetRevision(ctx, zoneName, version)
-	s.metrics.IncBackendOperation("get_revision", statusLabel(err))
+	s.metrics.ObserveBackendOperation("get_revision", err, time.Since(start).Seconds())
 	return zone, err
 }
 
 func (s *instrumentedRevisionStore) ListRevisions(ctx context.Context, zoneName string, opts backend.ListOptions) ([]*model.ZoneVersion, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	versions, err := revisionStore.ListRevisions(ctx, zoneName, opts)
-	s.metrics.IncBackendOperation("list_revisions", statusLabel(err))
+	s.metrics.ObserveBackendOperation("list_revisions", err, time.Since(start).Seconds())
 	return versions, err
 }
 
 func (s *instrumentedRevisionStore) GetCurrentVersion(ctx context.Context, zoneName string) (string, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	version, err := revisionStore.GetCurrentVersion(ctx, zoneName)
-	s.metrics.IncBackendOperation("get_current_version", statusLabel(err))
+	s.metrics.ObserveBackendOperation("get_current_version", err, time.Since(start).Seconds())
 	return version, err
 }
 
@@ -152,30 +159,34 @@ type instrumentedMetadataRevisionStore struct {
 }
 
 func (s *instrumentedMetadataRevisionStore) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	start := time.Now()
 	metadataStore := s.inner.(backend.DNSSECMetadataStore)
 	err := metadataStore.UpdateDNSSECMetadata(ctx, zoneName, dnssec)
-	s.metrics.IncBackendOperation("update_dnssec_metadata", statusLabel(err))
+	s.metrics.ObserveBackendOperation("update_dnssec_metadata", err, time.Since(start).Seconds())
 	return err
 }
 
 func (s *instrumentedMetadataRevisionStore) GetRevision(ctx context.Context, zoneName, version string) (*model.Zone, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	zone, err := revisionStore.GetRevision(ctx, zoneName, version)
-	s.metrics.IncBackendOperation("get_revision", statusLabel(err))
+	s.metrics.ObserveBackendOperation("get_revision", err, time.Since(start).Seconds())
 	return zone, err
 }
 
 func (s *instrumentedMetadataRevisionStore) ListRevisions(ctx context.Context, zoneName string, opts backend.ListOptions) ([]*model.ZoneVersion, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	versions, err := revisionStore.ListRevisions(ctx, zoneName, opts)
-	s.metrics.IncBackendOperation("list_revisions", statusLabel(err))
+	s.metrics.ObserveBackendOperation("list_revisions", err, time.Since(start).Seconds())
 	return versions, err
 }
 
 func (s *instrumentedMetadataRevisionStore) GetCurrentVersion(ctx context.Context, zoneName string) (string, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	version, err := revisionStore.GetCurrentVersion(ctx, zoneName)
-	s.metrics.IncBackendOperation("get_current_version", statusLabel(err))
+	s.metrics.ObserveBackendOperation("get_current_version", err, time.Since(start).Seconds())
 	return version, err
 }
 
