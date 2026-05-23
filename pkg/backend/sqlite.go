@@ -102,9 +102,7 @@ func sqliteDSNQuerySeparator(dsn string) string {
 	return "?"
 }
 
-// InitSchema creates the database schema inline (for in-memory or first-run usage).
-func (s *SQLiteBackend) InitSchema() error {
-	schema := `
+const sqliteSchemaSQL = `
 	CREATE TABLE IF NOT EXISTS zones (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT UNIQUE NOT NULL,
@@ -144,7 +142,10 @@ func (s *SQLiteBackend) InitSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_records_name_type ON records(zone_id, name, type);
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_records_unique ON records(zone_id, name, type, ttl, value_hash);
 	`
-	_, err := s.db.Exec(schema)
+
+// InitSchema creates the database schema inline (for in-memory or first-run usage).
+func (s *SQLiteBackend) InitSchema() error {
+	_, err := s.db.Exec(sqliteSchemaSQL)
 	return err
 }
 

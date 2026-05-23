@@ -55,9 +55,7 @@ func (p *PostgresBackend) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// InitSchema creates tables if they don't exist (for simple deployments).
-func (p *PostgresBackend) InitSchema() error {
-	schema := `
+const postgresSchemaSQL = `
 	CREATE TABLE IF NOT EXISTS zones (
 		id SERIAL PRIMARY KEY,
 		name VARCHAR(255) UNIQUE NOT NULL,
@@ -98,7 +96,10 @@ func (p *PostgresBackend) InitSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_records_name_type ON records(zone_id, name, type);
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_records_unique ON records(zone_id, name, type, ttl, value_hash);
 	`
-	_, err := p.db.Exec(schema)
+
+// InitSchema creates tables if they don't exist (for simple deployments).
+func (p *PostgresBackend) InitSchema() error {
+	_, err := p.db.Exec(postgresSchemaSQL)
 	return err
 }
 
