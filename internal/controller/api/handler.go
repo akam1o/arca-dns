@@ -347,6 +347,24 @@ func rejectWildcardIfMatch(c *gin.Context, operation string) bool {
 	return true
 }
 
+func etagMismatchDetails(providedETag, currentVersion string) map[string]interface{} {
+	return map[string]interface{}{
+		"provided_etag":   providedETag,
+		"current_version": currentVersion,
+	}
+}
+
+func concurrentVersionConflictDetails(ctx context.Context, store backend.ZoneStore, zoneName, providedETag, matchedVersion string) map[string]interface{} {
+	details := map[string]interface{}{
+		"provided_etag":   providedETag,
+		"matched_version": matchedVersion,
+	}
+	if current, err := store.GetZone(ctx, zoneName); err == nil && current != nil {
+		details["current_version"] = current.Version
+	}
+	return details
+}
+
 func sha256HexAndHash8(s string) (string, string) {
 	sum := sha256.Sum256([]byte(s))
 	hexSum := hex.EncodeToString(sum[:])
@@ -741,7 +759,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",
-			map[string]interface{}{"expected_version": ifMatch},
+			etagMismatchDetails(ifMatch, current.Version),
 		))
 		return
 	}
@@ -814,7 +832,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
 				"Zone version mismatch (optimistic lock failure)",
-				map[string]interface{}{"expected_version": ifMatch},
+				concurrentVersionConflictDetails(c.Request.Context(), h.store, zone.Name, ifMatch, expectedVersion),
 			))
 			return
 		}
@@ -906,7 +924,7 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",
-			map[string]interface{}{"expected_version": ifMatch},
+			etagMismatchDetails(ifMatch, current.Version),
 		))
 		return
 	}
@@ -933,7 +951,7 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
 				"Zone version mismatch (optimistic lock failure)",
-				map[string]interface{}{"expected_version": ifMatch},
+				concurrentVersionConflictDetails(c.Request.Context(), h.store, normalizedName, ifMatch, current.Version),
 			))
 			return
 		}

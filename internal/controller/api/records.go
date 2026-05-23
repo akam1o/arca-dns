@@ -77,7 +77,7 @@ func (h *Handler) CreateRecord(c *gin.Context) {
 	}
 	record.ID = ""
 
-	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
+	zone, expectedVersion, providedETag, ok := h.loadZoneForRecordMutation(c, name)
 	if !ok {
 		return
 	}
@@ -94,7 +94,7 @@ func (h *Handler) CreateRecord(c *gin.Context) {
 	}
 
 	zone.Records = append(zone.Records, record)
-	updated, ok := h.commitRecordMutation(c, zone, expectedVersion)
+	updated, ok := h.commitRecordMutation(c, zone, expectedVersion, providedETag)
 	if !ok {
 		return
 	}
@@ -129,7 +129,7 @@ func (h *Handler) BulkRecords(c *gin.Context) {
 		return
 	}
 
-	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
+	zone, expectedVersion, providedETag, ok := h.loadZoneForRecordMutation(c, name)
 	if !ok {
 		return
 	}
@@ -153,7 +153,7 @@ func (h *Handler) BulkRecords(c *gin.Context) {
 	}
 	zone.Records = records
 
-	updated, ok := h.commitRecordMutation(c, zone, expectedVersion)
+	updated, ok := h.commitRecordMutation(c, zone, expectedVersion, providedETag)
 	if !ok {
 		return
 	}
@@ -190,7 +190,7 @@ func (h *Handler) UpdateRecord(c *gin.Context) {
 		))
 		return
 	}
-	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
+	zone, expectedVersion, providedETag, ok := h.loadZoneForRecordMutation(c, name)
 	if !ok {
 		return
 	}
@@ -218,7 +218,7 @@ func (h *Handler) UpdateRecord(c *gin.Context) {
 	}
 
 	zone.Records[idx] = record
-	updated, ok := h.commitRecordMutation(c, zone, expectedVersion)
+	updated, ok := h.commitRecordMutation(c, zone, expectedVersion, providedETag)
 	if !ok {
 		return
 	}
@@ -240,7 +240,7 @@ func (h *Handler) DeleteRecord(c *gin.Context) {
 		return
 	}
 
-	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
+	zone, expectedVersion, providedETag, ok := h.loadZoneForRecordMutation(c, name)
 	if !ok {
 		return
 	}
@@ -256,7 +256,7 @@ func (h *Handler) DeleteRecord(c *gin.Context) {
 	}
 
 	zone.Records = append(zone.Records[:idx], zone.Records[idx+1:]...)
-	updated, ok := h.commitRecordMutation(c, zone, expectedVersion)
+	updated, ok := h.commitRecordMutation(c, zone, expectedVersion, providedETag)
 	if !ok {
 		return
 	}
@@ -379,7 +379,7 @@ func (h *Handler) recordBatchError(c *gin.Context, status int, message string, i
 	c.JSON(status, model.NewAPIErrorWithDetails(errorCode, message, details))
 }
 
-func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model.Zone, string, bool) {
+func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model.Zone, string, string, bool) {
 	ifMatch := c.GetHeader("If-Match")
 	if ifMatch == "" {
 		c.JSON(http.StatusPreconditionRequired, model.NewAPIErrorWithDetails(
@@ -387,10 +387,10 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 			"If-Match header is required for record updates",
 			map[string]interface{}{"header": "If-Match"},
 		))
-		return nil, "", false
+		return nil, "", "", false
 	}
 	if rejectWildcardIfMatch(c, "record updates") {
-		return nil, "", false
+		return nil, "", "", false
 	}
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
@@ -401,7 +401,7 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 				"Zone not found",
 				map[string]interface{}{"zone": name},
 			))
-			return nil, "", false
+			return nil, "", "", false
 		}
 		h.logger.Error("Failed to get zone for record mutation", zap.String("zone", name), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
@@ -409,16 +409,16 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 			"Failed to update record",
 			map[string]interface{}{"error": "internal error"},
 		))
-		return nil, "", false
+		return nil, "", "", false
 	}
 
 	if !strongETagMatches(ifMatch, zone.Version) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",
-			map[string]interface{}{"expected_version": ifMatch},
+			etagMismatchDetails(ifMatch, zone.Version),
 		))
-		return nil, "", false
+		return nil, "", "", false
 	}
 
 	if err := model.RepairZoneDerivedFields(zone); err != nil {
@@ -428,10 +428,10 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 			"Zone validation failed",
 			map[string]interface{}{"error": err.Error()},
 		))
-		return nil, "", false
+		return nil, "", "", false
 	}
 
-	return zone, zone.Version, true
+	return zone, zone.Version, ifMatch, true
 }
 
 func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record *model.Record) bool {
@@ -470,7 +470,7 @@ func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record 
 	return true
 }
 
-func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expectedVersion string) (*model.Zone, bool) {
+func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expectedVersion, providedETag string) (*model.Zone, bool) {
 	if err := model.ValidateZone(zone); err != nil {
 		h.logger.Warn("Zone validation failed after record mutation", zap.String("zone", zone.Name), zap.Error(err))
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
@@ -524,7 +524,7 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
 				"Zone version mismatch (optimistic lock failure)",
-				map[string]interface{}{"expected_version": expectedVersion},
+				concurrentVersionConflictDetails(c.Request.Context(), h.store, zone.Name, providedETag, expectedVersion),
 			))
 			return nil, false
 		}

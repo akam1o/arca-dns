@@ -1651,6 +1651,8 @@ func TestCreateRecord_RejectsStaleIfMatch(t *testing.T) {
 		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
 
 	record := model.Record{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"}
 	body, err := json.Marshal(record)
@@ -1665,6 +1667,10 @@ func TestCreateRecord_RejectsStaleIfMatch(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeConflict, apiErr.Code)
+	assert.Equal(t, "stale-version", apiErr.Details["provided_etag"])
+	assert.Equal(t, current.Version, apiErr.Details["current_version"])
 }
 
 func TestUpdateZone_PreservesDNSSECMetadata(t *testing.T) {
@@ -1730,6 +1736,8 @@ func TestUpdateZone_Conflict(t *testing.T) {
 		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
 
 	// Try to update with wrong version
 	body := marshalUpdateZoneRequest(t, zone)
@@ -1743,6 +1751,10 @@ func TestUpdateZone_Conflict(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeConflict, apiErr.Code)
+	assert.Equal(t, "wrong-version", apiErr.Details["provided_etag"])
+	assert.Equal(t, current.Version, apiErr.Details["current_version"])
 }
 
 func TestDeleteZone(t *testing.T) {
@@ -1843,6 +1855,8 @@ func TestDeleteZone_RejectsStaleIfMatch(t *testing.T) {
 		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
 
 	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
 	req.Header.Set("If-Match", "stale-version")
@@ -1852,6 +1866,10 @@ func TestDeleteZone_RejectsStaleIfMatch(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeConflict, apiErr.Code)
+	assert.Equal(t, "stale-version", apiErr.Details["provided_etag"])
+	assert.Equal(t, current.Version, apiErr.Details["current_version"])
 	_, err = store.GetZone(context.TODO(), "example.com.")
 	assert.NoError(t, err)
 }
