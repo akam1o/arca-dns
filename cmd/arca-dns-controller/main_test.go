@@ -155,6 +155,43 @@ func TestNewStoreFromConfig_GitRequiresRepositoryPath(t *testing.T) {
 	}
 }
 
+func TestNewStoreFromConfig_Git(t *testing.T) {
+	cfg := config.DefaultControllerConfig()
+	cfg.Backend.Type = "git"
+	cfg.Backend.Git.RepositoryPath = t.TempDir()
+	cfg.Backend.Git.Branch = "main"
+	cfg.Backend.Git.Author = "Test User"
+	cfg.Backend.Git.Email = "test@example.com"
+	cfg.Backend.Git.AutoPush = false
+	autoPull := false
+	cfg.Backend.Git.AutoPull = &autoPull
+
+	store, err := newStoreFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("newStoreFromConfig returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close returned error: %v", err)
+		}
+	})
+
+	infoStore, ok := store.(backend.Backend)
+	if !ok {
+		t.Fatal("git store does not expose backend metadata")
+	}
+	info := infoStore.Info()
+	if info.Type != "git" {
+		t.Fatalf("backend type = %q, want git", info.Type)
+	}
+	if !containsString(info.Capabilities, backend.CapabilityRevisionStore) {
+		t.Fatalf("git backend capabilities missing %s: %v", backend.CapabilityRevisionStore, info.Capabilities)
+	}
+	if !containsString(info.Capabilities, backend.CapabilityConditionalDeleteStore) {
+		t.Fatalf("git backend capabilities missing %s: %v", backend.CapabilityConditionalDeleteStore, info.Capabilities)
+	}
+}
+
 func TestNewStoreFromConfig_EtcdRequiresEndpoints(t *testing.T) {
 	cfg := config.DefaultControllerConfig()
 	cfg.Backend.Type = "etcd"
@@ -182,6 +219,15 @@ func TestNewStoreFromConfig_RejectsMemory(t *testing.T) {
 	if !strings.Contains(err.Error(), "unsupported backend type: memory") {
 		t.Fatalf("expected memory backend error, got %v", err)
 	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestValidateControllerStoreCapabilities(t *testing.T) {
