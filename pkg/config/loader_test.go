@@ -959,6 +959,42 @@ func TestValidateControllerConfig_RuntimeBackendRequiresActiveBackendSettings(t 
 			want: "backend.git.pull_interval",
 		},
 		{
+			name: "git invalid branch",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "git"
+				cfg.Backend.Git.RepositoryPath = "/var/lib/arca-dns/git"
+				cfg.Backend.Git.Branch = "feature branch"
+			},
+			want: "backend.git.branch",
+		},
+		{
+			name: "git author control character",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "git"
+				cfg.Backend.Git.RepositoryPath = "/var/lib/arca-dns/git"
+				cfg.Backend.Git.Author = "test\nauthor"
+			},
+			want: "backend.git.author",
+		},
+		{
+			name: "git email whitespace",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "git"
+				cfg.Backend.Git.RepositoryPath = "/var/lib/arca-dns/git"
+				cfg.Backend.Git.Email = "test user@example.com"
+			},
+			want: "backend.git.email",
+		},
+		{
+			name: "git remote url control character",
+			mutate: func(cfg *ControllerConfig) {
+				cfg.Backend.Type = "git"
+				cfg.Backend.Git.RepositoryPath = "/var/lib/arca-dns/git"
+				cfg.Backend.Git.RemoteURL = "https://example.com/arca-dns.git\nextra"
+			},
+			want: "backend.git.remote_url",
+		},
+		{
 			name: "etcd empty endpoints",
 			mutate: func(cfg *ControllerConfig) {
 				cfg.Backend.Type = "etcd"
@@ -1098,6 +1134,10 @@ func TestValidateControllerConfig_RuntimeBackendAllowsValidActiveBackendSettings
 			mutate: func(cfg *ControllerConfig) {
 				cfg.Backend.Type = "git"
 				cfg.Backend.Git.RepositoryPath = "/var/lib/arca-dns/git"
+				cfg.Backend.Git.Branch = "main"
+				cfg.Backend.Git.Author = "arca-dns-controller"
+				cfg.Backend.Git.Email = "noreply@arca-dns"
+				cfg.Backend.Git.RemoteURL = "git@github.com:akam1o/arca-dns.git"
 				cfg.Backend.Git.PullInterval = time.Minute
 			},
 		},

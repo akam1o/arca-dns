@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/spf13/viper"
 )
 
@@ -369,9 +371,72 @@ func ValidateControllerBackendConfig(cfg *BackendConfig) error {
 				return err
 			}
 		}
-		if cfg.Git.PullInterval < 0 {
-			return fmt.Errorf("invalid backend.git.pull_interval: must be non-negative")
+		if err := validateControllerGitBackendOptions(&cfg.Git); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func validateControllerGitBackendOptions(cfg *GitBackendConfig) error {
+	if cfg.Branch != "" {
+		if err := plumbing.NewBranchReferenceName(cfg.Branch).Validate(); err != nil {
+			return fmt.Errorf("invalid backend.git.branch: %q", cfg.Branch)
+		}
+	}
+	if cfg.Author != "" {
+		if err := validateGitAuthorName("backend.git.author", cfg.Author); err != nil {
+			return err
+		}
+	}
+	if cfg.Email != "" {
+		if err := validateGitAuthorEmail("backend.git.email", cfg.Email); err != nil {
+			return err
+		}
+	}
+	if cfg.RemoteURL != "" {
+		if err := validateGitRemoteURL("backend.git.remote_url", cfg.RemoteURL); err != nil {
+			return err
+		}
+	}
+	if cfg.PullInterval < 0 {
+		return fmt.Errorf("invalid backend.git.pull_interval: must be non-negative")
+	}
+	return nil
+}
+
+func validateGitAuthorName(field string, name string) error {
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("invalid %s: must not contain surrounding whitespace", field)
+	}
+	if strings.ContainsFunc(name, unsafeExecutablePathChar) {
+		return fmt.Errorf("invalid %s: contains control characters", field)
+	}
+	if strings.ContainsAny(name, "<>") {
+		return fmt.Errorf("invalid %s: must not contain angle brackets", field)
+	}
+	return nil
+}
+
+func validateGitAuthorEmail(field string, email string) error {
+	if strings.ContainsFunc(email, unicode.IsSpace) {
+		return fmt.Errorf("invalid %s: must not contain whitespace", field)
+	}
+	if strings.ContainsFunc(email, unsafeExecutablePathChar) {
+		return fmt.Errorf("invalid %s: contains control characters", field)
+	}
+	if strings.ContainsAny(email, "<>") {
+		return fmt.Errorf("invalid %s: must not contain angle brackets", field)
+	}
+	return nil
+}
+
+func validateGitRemoteURL(field string, remoteURL string) error {
+	if strings.TrimSpace(remoteURL) != remoteURL {
+		return fmt.Errorf("invalid %s: must not contain surrounding whitespace", field)
+	}
+	if strings.ContainsFunc(remoteURL, unsafeExecutablePathChar) {
+		return fmt.Errorf("invalid %s: contains control characters", field)
 	}
 	return nil
 }
