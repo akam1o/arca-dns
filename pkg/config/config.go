@@ -37,7 +37,8 @@ type ControllerConfig struct {
 }
 
 // DNSSECKeyDirectory returns the effective directory used for DNSSEC key
-// material. storage.key_directory is kept as a compatibility alias.
+// material. dnssec.key_directory is canonical; storage.key_directory is kept as
+// a compatibility alias.
 func (c *ControllerConfig) DNSSECKeyDirectory() string {
 	if keyDirectory := strings.TrimSpace(c.DNSSEC.KeyDirectory); keyDirectory != "" {
 		return keyDirectory
@@ -267,7 +268,7 @@ type DNSSECConfig struct {
 	// Algorithm is the DNSSEC algorithm (8=RSA-SHA256, 13=ECDSA-P256)
 	Algorithm uint8 `mapstructure:"algorithm"`
 
-	// KeyDirectory is the directory where keys are stored
+	// KeyDirectory is the canonical directory where DNSSEC keys are stored
 	KeyDirectory string `mapstructure:"key_directory"`
 
 	// KSKKeySize is the KSK key size in bits (for RSA)
@@ -316,12 +317,12 @@ type DNSSECConfig struct {
 	MasterKeyAutoGenerate bool `mapstructure:"master_key_auto_generate"`
 }
 
-// StorageConfig configures artifact and key storage.
+// StorageConfig configures artifact storage.
 type StorageConfig struct {
 	// ArtifactDirectory is where signed zone files are stored
 	ArtifactDirectory string `mapstructure:"artifact_directory"`
 
-	// KeyDirectory is where DNSSEC keys are stored
+	// KeyDirectory is a deprecated compatibility alias for dnssec.key_directory.
 	KeyDirectory string `mapstructure:"key_directory"`
 
 	// MaxVersionsPerZone is the maximum number of versions to keep
@@ -784,7 +785,6 @@ func DefaultControllerConfig() *ControllerConfig {
 		},
 		Storage: StorageConfig{
 			ArtifactDirectory:  "/var/lib/arca-dns/artifacts",
-			KeyDirectory:       "/var/lib/arca-dns/keys",
 			MaxVersionsPerZone: 10,
 		},
 		Logging: LoggingConfig{

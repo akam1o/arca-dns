@@ -101,6 +101,9 @@ func TestDefaultControllerConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "sqlite", cfg.Backend.Type)
 	assert.True(t, cfg.DNSSEC.Enabled)
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
+	assert.Equal(t, "/var/lib/arca-dns/keys", cfg.DNSSEC.KeyDirectory)
+	assert.Empty(t, cfg.Storage.KeyDirectory)
+	assert.Equal(t, "/var/lib/arca-dns/keys", cfg.DNSSECKeyDirectory())
 	assert.Equal(t, "info", cfg.Logging.Level)
 }
 
@@ -136,7 +139,6 @@ dnssec:
   key_directory: "/tmp/keys"
 storage:
   artifact_directory: "/tmp/artifacts"
-  key_directory: "/tmp/keys"
 logging:
   level: "debug"
 `
@@ -153,6 +155,7 @@ logging:
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
 	assert.Equal(t, "/tmp/keys", cfg.DNSSEC.KeyDirectory)
 	assert.Equal(t, "/tmp/keys", cfg.DNSSECKeyDirectory())
+	assert.Empty(t, cfg.Storage.KeyDirectory)
 	assert.Equal(t, "debug", cfg.Logging.Level)
 }
 
@@ -1320,6 +1323,18 @@ func TestValidateControllerConfig_EmptyKeyDirectory(t *testing.T) {
 	err := ValidateControllerConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "key_directory")
+}
+
+func TestValidateControllerConfig_StorageKeyDirectoryAliasesDNSSECKeyDirectory(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.DNSSEC.Enabled = true
+	cfg.DNSSEC.KeyDirectory = ""
+	cfg.Storage.KeyDirectory = "/tmp/storage-keys"
+
+	err := ValidateControllerConfig(cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "/tmp/storage-keys", cfg.DNSSEC.KeyDirectory)
+	assert.Equal(t, "/tmp/storage-keys", cfg.DNSSECKeyDirectory())
 }
 
 func TestValidateControllerConfig_InvalidStoragePaths(t *testing.T) {

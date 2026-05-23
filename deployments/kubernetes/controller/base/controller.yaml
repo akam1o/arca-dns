@@ -32,7 +32,6 @@ backend:
 
 storage:
   artifact_directory: "/var/lib/arca-dns/artifacts"
-  key_directory: "/var/lib/arca-dns/keys"
   max_versions_per_zone: 10
 
 dnssec:

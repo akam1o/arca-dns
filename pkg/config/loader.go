@@ -110,16 +110,23 @@ func applyControllerKeyDirectoryAliases(v *viper.Viper, cfg *ControllerConfig) e
 	storageKeySet := v.IsSet("storage.key_directory")
 	dnssecKeySet := v.IsSet("dnssec.key_directory")
 
+	if storageKeySet && dnssecKeySet && !sameConfigPath(cfg.Storage.KeyDirectory, cfg.DNSSEC.KeyDirectory) {
+		return fmt.Errorf("invalid key_directory: storage.key_directory and dnssec.key_directory must match when both are set")
+	}
+
 	if storageKeySet && !dnssecKeySet {
 		cfg.DNSSEC.KeyDirectory = cfg.Storage.KeyDirectory
 		return nil
 	}
 
-	if storageKeySet && dnssecKeySet && !sameConfigPath(cfg.Storage.KeyDirectory, cfg.DNSSEC.KeyDirectory) {
-		return fmt.Errorf("invalid key_directory: storage.key_directory and dnssec.key_directory must match when both are set")
-	}
-
+	applyControllerKeyDirectoryAlias(cfg)
 	return nil
+}
+
+func applyControllerKeyDirectoryAlias(cfg *ControllerConfig) {
+	if strings.TrimSpace(cfg.DNSSEC.KeyDirectory) == "" && strings.TrimSpace(cfg.Storage.KeyDirectory) != "" {
+		cfg.DNSSEC.KeyDirectory = cfg.Storage.KeyDirectory
+	}
 }
 
 func sameConfigPath(a, b string) bool {
@@ -232,6 +239,8 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 		return err
 	}
 
+	applyControllerKeyDirectoryAlias(cfg)
+
 	if err := validateAbsoluteLocalPath("storage.artifact_directory", cfg.Storage.ArtifactDirectory); err != nil {
 		return err
 	}
@@ -291,10 +300,6 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 				return fmt.Errorf("invalid dnssec.scheduler_check_interval: must be positive when scheduler is enabled")
 			}
 		}
-	}
-
-	if cfg.DNSSEC.Enabled && strings.TrimSpace(cfg.Storage.KeyDirectory) == "" && strings.TrimSpace(cfg.DNSSEC.KeyDirectory) == "" {
-		return fmt.Errorf("invalid storage.key_directory: empty when DNSSEC is enabled and dnssec.key_directory is not set")
 	}
 
 	if cfg.Storage.MaxVersionsPerZone < 1 {

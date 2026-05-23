@@ -33,7 +33,7 @@ The agent container image contains only `arca-dns-agent` and defaults to sync-on
 
 - Choose one backend: `sqlite` (default), `postgres`, `mysql`, `git`, or `etcd`
 - Controller configuration must use file-backed SQLite; `:memory:` is only for disposable local validation through test or migration helpers
-- Ensure `storage.artifact_directory` and `storage.key_directory` are writable
+- Ensure `storage.artifact_directory` and `dnssec.key_directory` are writable
 - If DNSSEC is enabled, ensure `dnssec.key_directory` is writable and a DNSSEC master key is configured
 - If API auth is enabled, configure at least one API key hash
 
@@ -136,7 +136,7 @@ openssl rand -base64 32 | sudo tee /etc/arca-dns/master.key >/dev/null
 sudo chmod 600 /etc/arca-dns/master.key
 ```
 
-When both `storage.key_directory` and `dnssec.key_directory` are set, they must point to the same path, such as `/var/lib/arca-dns/keys`. `storage.key_directory` remains available as a compatibility alias for the DNSSEC key directory.
+Use `dnssec.key_directory` as the canonical DNSSEC key directory. `storage.key_directory` remains available as a deprecated compatibility alias; when both are set, they must point to the same path, such as `/var/lib/arca-dns/keys`.
 
 ## Backend Preparation
 
@@ -275,7 +275,7 @@ Minimum production checks:
 - replace the `api.auth.api_keys` placeholder with a real `sha256:<64 hex>` value
 - choose `backend.type` and configure the selected backend
 - if DNSSEC is enabled, configure `/etc/arca-dns/master.key` or `ARCA_DNS_DNSSEC_MASTER_KEY_B64`
-- verify `storage.*` and `dnssec.key_directory` are writable by the service
+- verify `storage.artifact_directory` and `dnssec.key_directory` are writable by the service
 
 The packaged controller runs as the `arca-dns` service user. The agent keeps root for NSD/Unbound/BIRD control, but its systemd unit is sandboxed and only the configured DNS, BIRD, state, log, and runtime paths are writable. If you customize those paths, add matching permissions or a systemd drop-in.
 

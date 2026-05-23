@@ -33,7 +33,7 @@ agent container image には `arca-dns-agent` のみが含まれ、既定では�
 
 - backend を 1 つ選ぶ: `sqlite`（既定）、`postgres`, `mysql`, `git`, `etcd`
 - controller 設定では file-backed SQLite を使う。`:memory:` はテストや migrate helper による使い捨てのローカル検証だけに限定する
-- `storage.artifact_directory` と `storage.key_directory` が書き込み可能であること
+- `storage.artifact_directory` と `dnssec.key_directory` が書き込み可能であること
 - DNSSEC 有効時は `dnssec.key_directory` が書き込み可能で、DNSSEC マスターキーを設定済みであること
 - API 認証を有効にする場合、少なくとも 1 つの API キーハッシュが必要
 
@@ -134,7 +134,7 @@ openssl rand -base64 32 | sudo tee /etc/arca-dns/master.key >/dev/null
 sudo chmod 600 /etc/arca-dns/master.key
 ```
 
-`storage.key_directory` と `dnssec.key_directory` の両方を設定する場合は、同じディレクトリ（例: `/var/lib/arca-dns/keys`）を指定してください。`storage.key_directory` は DNSSEC key directory の互換 alias として残しています。
+`dnssec.key_directory` を DNSSEC key directory の canonical な設定として使用してください。`storage.key_directory` は非推奨の互換 alias として残しています。両方を設定する場合は、同じディレクトリ（例: `/var/lib/arca-dns/keys`）を指定してください。
 
 ## Backend の準備
 
@@ -273,7 +273,7 @@ sudo dnf install bird nsd unbound arca-dns
 - `api.auth.api_keys` の placeholder を実際の `sha256:<64 hex>` に置き換える
 - `backend.type` と backend 固有設定を決める
 - DNSSEC 有効時は `/etc/arca-dns/master.key` または `ARCA_DNS_DNSSEC_MASTER_KEY_B64` を設定する
-- `storage.*` と `dnssec.key_directory` が service から書き込み可能であることを確認する
+- `storage.artifact_directory` と `dnssec.key_directory` が service から書き込み可能であることを確認する
 
 パッケージ版 controller は `arca-dns` service user で起動します。agent は NSD/Unbound/BIRD の制御のため root を維持しますが、systemd unit で sandboxing され、設定済みの DNS、BIRD、state、log、runtime path のみを書き込み可能にしています。path を変更する場合は、権限または systemd drop-in も合わせて調整してください。
 
