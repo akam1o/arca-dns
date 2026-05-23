@@ -23,14 +23,47 @@ func WrapZoneStore(inner backend.ZoneStore, metrics *ControllerMetrics) backend.
 	_, hasDNSSECMetadata := inner.(backend.DNSSECMetadataStore)
 	_, hasRevisions := inner.(backend.RevisionStore)
 	_, hasConditionalDelete := inner.(backend.ConditionalDeleteStore)
+	_, hasWatchable := inner.(backend.WatchableStore)
+	_, hasTransactional := inner.(backend.TransactionalStore)
+	_, hasBackendInfo := inner.(backend.Backend)
 
 	switch {
+	case hasDNSSECMetadata && hasRevisions && hasConditionalDelete && hasWatchable && hasBackendInfo:
+		revisionConditional := &instrumentedMetadataRevisionConditionalDeleteStore{
+			instrumentedMetadataRevisionStore: &instrumentedMetadataRevisionStore{InstrumentedZoneStore: base},
+		}
+		return &instrumentedMetadataRevisionConditionalDeleteWatchableBackendStore{
+			instrumentedMetadataRevisionConditionalDeleteBackendStore: &instrumentedMetadataRevisionConditionalDeleteBackendStore{
+				instrumentedMetadataRevisionConditionalDeleteStore: revisionConditional,
+			},
+		}
+	case hasDNSSECMetadata && hasRevisions && hasConditionalDelete && hasBackendInfo:
+		return &instrumentedMetadataRevisionConditionalDeleteBackendStore{
+			instrumentedMetadataRevisionConditionalDeleteStore: &instrumentedMetadataRevisionConditionalDeleteStore{
+				instrumentedMetadataRevisionStore: &instrumentedMetadataRevisionStore{InstrumentedZoneStore: base},
+			},
+		}
 	case hasDNSSECMetadata && hasRevisions && hasConditionalDelete:
 		return &instrumentedMetadataRevisionConditionalDeleteStore{
 			instrumentedMetadataRevisionStore: &instrumentedMetadataRevisionStore{InstrumentedZoneStore: base},
 		}
 	case hasDNSSECMetadata && hasRevisions:
 		return &instrumentedMetadataRevisionStore{InstrumentedZoneStore: base}
+	case hasDNSSECMetadata && hasConditionalDelete && hasTransactional && hasBackendInfo:
+		metadataConditional := &instrumentedMetadataConditionalDeleteStore{
+			instrumentedMetadataStore: &instrumentedMetadataStore{InstrumentedZoneStore: base},
+		}
+		return &instrumentedMetadataConditionalDeleteTransactionalBackendStore{
+			instrumentedMetadataConditionalDeleteBackendStore: &instrumentedMetadataConditionalDeleteBackendStore{
+				instrumentedMetadataConditionalDeleteStore: metadataConditional,
+			},
+		}
+	case hasDNSSECMetadata && hasConditionalDelete && hasBackendInfo:
+		return &instrumentedMetadataConditionalDeleteBackendStore{
+			instrumentedMetadataConditionalDeleteStore: &instrumentedMetadataConditionalDeleteStore{
+				instrumentedMetadataStore: &instrumentedMetadataStore{InstrumentedZoneStore: base},
+			},
+		}
 	case hasDNSSECMetadata && hasConditionalDelete:
 		return &instrumentedMetadataConditionalDeleteStore{
 			instrumentedMetadataStore: &instrumentedMetadataStore{InstrumentedZoneStore: base},
@@ -206,6 +239,25 @@ func (s *instrumentedMetadataConditionalDeleteStore) DeleteZoneWithVersion(ctx c
 	return recordConditionalDelete(ctx, s.inner, s.metrics, name, expectedVersion)
 }
 
+type instrumentedMetadataConditionalDeleteBackendStore struct {
+	*instrumentedMetadataConditionalDeleteStore
+}
+
+func (s *instrumentedMetadataConditionalDeleteBackendStore) Info() backend.BackendInfo {
+	return s.inner.(backend.Backend).Info()
+}
+
+type instrumentedMetadataConditionalDeleteTransactionalBackendStore struct {
+	*instrumentedMetadataConditionalDeleteBackendStore
+}
+
+func (s *instrumentedMetadataConditionalDeleteTransactionalBackendStore) BeginTx(ctx context.Context) (backend.Tx, error) {
+	start := time.Now()
+	tx, err := s.inner.(backend.TransactionalStore).BeginTx(ctx)
+	s.metrics.ObserveBackendOperation("begin_tx", err, time.Since(start).Seconds())
+	return tx, err
+}
+
 type instrumentedRevisionConditionalDeleteStore struct {
 	*instrumentedRevisionStore
 }
@@ -220,4 +272,23 @@ type instrumentedMetadataRevisionConditionalDeleteStore struct {
 
 func (s *instrumentedMetadataRevisionConditionalDeleteStore) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	return recordConditionalDelete(ctx, s.inner, s.metrics, name, expectedVersion)
+}
+
+type instrumentedMetadataRevisionConditionalDeleteBackendStore struct {
+	*instrumentedMetadataRevisionConditionalDeleteStore
+}
+
+func (s *instrumentedMetadataRevisionConditionalDeleteBackendStore) Info() backend.BackendInfo {
+	return s.inner.(backend.Backend).Info()
+}
+
+type instrumentedMetadataRevisionConditionalDeleteWatchableBackendStore struct {
+	*instrumentedMetadataRevisionConditionalDeleteBackendStore
+}
+
+func (s *instrumentedMetadataRevisionConditionalDeleteWatchableBackendStore) Watch(ctx context.Context, zoneName string) (<-chan backend.ZoneEvent, error) {
+	start := time.Now()
+	ch, err := s.inner.(backend.WatchableStore).Watch(ctx, zoneName)
+	s.metrics.ObserveBackendOperation("watch", err, time.Since(start).Seconds())
+	return ch, err
 }

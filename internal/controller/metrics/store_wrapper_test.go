@@ -134,3 +134,50 @@ func TestWrapZoneStorePreservesConditionalDeleteStore(t *testing.T) {
 	_, ok := wrapped.(backend.ConditionalDeleteStore)
 	assert.True(t, ok)
 }
+
+func TestWrapZoneStorePreservesBackendInfo(t *testing.T) {
+	wrapped := WrapZoneStore(backend.NewMemoryBackend(), NewControllerMetrics())
+
+	infoStore, ok := wrapped.(backend.Backend)
+	require.True(t, ok)
+	assert.Equal(t, "memory", infoStore.Info().Type)
+}
+
+func TestWrapZoneStorePreservesTransactionalStore(t *testing.T) {
+	sqlite, err := backend.NewSQLiteBackend(":memory:")
+	require.NoError(t, err)
+	defer sqlite.Close()
+
+	wrapped := WrapZoneStore(sqlite, NewControllerMetrics())
+
+	_, ok := wrapped.(backend.TransactionalStore)
+	assert.True(t, ok)
+
+	infoStore, ok := wrapped.(backend.Backend)
+	require.True(t, ok)
+	assert.Equal(t, "sqlite", infoStore.Info().Type)
+}
+
+func TestWrapZoneStorePreservesWatchableStore(t *testing.T) {
+	wrapped := WrapZoneStore(&backend.EtcdBackend{}, NewControllerMetrics())
+
+	_, ok := wrapped.(backend.WatchableStore)
+	assert.True(t, ok)
+
+	infoStore, ok := wrapped.(backend.Backend)
+	require.True(t, ok)
+	assert.Equal(t, "etcd", infoStore.Info().Type)
+}
+
+func TestWrapZoneStoreDoesNotInventAdvancedCapabilities(t *testing.T) {
+	wrapped := WrapZoneStore(&zoneStoreWithoutConditionalDelete{inner: backend.NewMemoryBackend()}, NewControllerMetrics())
+
+	_, hasBackendInfo := wrapped.(backend.Backend)
+	assert.False(t, hasBackendInfo)
+
+	_, hasTransactional := wrapped.(backend.TransactionalStore)
+	assert.False(t, hasTransactional)
+
+	_, hasWatchable := wrapped.(backend.WatchableStore)
+	assert.False(t, hasWatchable)
+}
