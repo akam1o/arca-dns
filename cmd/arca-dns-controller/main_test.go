@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -49,6 +50,51 @@ func TestNewStoreFromConfig_PostgresRequiresDSN(t *testing.T) {
 	}
 }
 
+func TestNewStoreFromConfig_MySQLRequiresDSN(t *testing.T) {
+	cfg := config.DefaultControllerConfig()
+	cfg.Backend.Type = "mysql"
+	cfg.Backend.MySQL.DSN = ""
+
+	store, err := newStoreFromConfig(cfg)
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("expected error for missing mysql DSN")
+	}
+	if !strings.Contains(err.Error(), "backend.mysql.dsn") {
+		t.Fatalf("expected mysql DSN error, got %v", err)
+	}
+}
+
+func TestNewStoreFromConfig_GitRequiresRepositoryPath(t *testing.T) {
+	cfg := config.DefaultControllerConfig()
+	cfg.Backend.Type = "git"
+	cfg.Backend.Git.RepositoryPath = ""
+
+	store, err := newStoreFromConfig(cfg)
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("expected error for missing git repository path")
+	}
+	if !strings.Contains(err.Error(), "backend.git.repository_path") {
+		t.Fatalf("expected git repository path error, got %v", err)
+	}
+}
+
+func TestNewStoreFromConfig_EtcdRequiresEndpoints(t *testing.T) {
+	cfg := config.DefaultControllerConfig()
+	cfg.Backend.Type = "etcd"
+	cfg.Backend.Etcd.Endpoints = nil
+
+	store, err := newStoreFromConfig(cfg)
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("expected error for missing etcd endpoints")
+	}
+	if !strings.Contains(err.Error(), "backend.etcd.endpoints") {
+		t.Fatalf("expected etcd endpoints error, got %v", err)
+	}
+}
+
 func TestNewStoreFromConfig_RejectsMemory(t *testing.T) {
 	cfg := config.DefaultControllerConfig()
 	cfg.Backend.Type = "memory"
@@ -69,12 +115,28 @@ func TestValidateControllerStoreCapabilities(t *testing.T) {
 		t.Fatalf("validateControllerStoreCapabilities returned error: %v", err)
 	}
 
+	if err := validateControllerStoreCapabilities(nil); err == nil || !strings.Contains(err.Error(), "backend store is nil") {
+		t.Fatalf("expected nil store error, got %v", err)
+	}
+
 	err := validateControllerStoreCapabilities(&controllerStoreWithoutConditionalDelete{ZoneStore: store})
 	if err == nil {
 		t.Fatal("expected missing capability error")
 	}
 	if !strings.Contains(err.Error(), backend.CapabilityConditionalDeleteStore) {
 		t.Fatalf("expected ConditionalDeleteStore error, got %v", err)
+	}
+}
+
+func TestControllerHTTPServerError(t *testing.T) {
+	wrapped := errors.New("listen tcp failed")
+	err := controllerHTTPServerError{name: "api", err: wrapped}
+
+	if got, want := err.Error(), "api server failed: listen tcp failed"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, wrapped) {
+		t.Fatalf("errors.Is() did not match wrapped error")
 	}
 }
 
