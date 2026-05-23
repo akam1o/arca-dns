@@ -243,7 +243,7 @@ func TestConvertRecordToRR_InvalidMX(t *testing.T) {
 
 	_, err := convertRecordToRR("example.com.", record)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid MX value format")
+	assert.Contains(t, err.Error(), "MX value must be")
 }
 
 func TestConvertRecordToRR_SplitsLongTXT(t *testing.T) {
@@ -276,7 +276,7 @@ func TestConvertRecordToRR_InvalidSRV(t *testing.T) {
 
 	_, err := convertRecordToRR("example.com.", record)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid SRV value format")
+	assert.Contains(t, err.Error(), "SRV value must be")
 }
 
 func TestConvertRecordToRR_InvalidCAA(t *testing.T) {

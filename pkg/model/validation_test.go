@@ -137,6 +137,17 @@ func TestValidateMXValue(t *testing.T) {
 	}
 }
 
+func TestParseMXValue(t *testing.T) {
+	rdata, err := ParseMXValue("10 mail.example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, uint16(10), rdata.Priority)
+	assert.Equal(t, "mail.example.com.", rdata.Target)
+
+	_, err = ParseMXValue("65536 mail.example.com.")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid MX priority")
+}
+
 func TestValidateTXTValue(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -199,6 +210,19 @@ func TestValidateSRVValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseSRVValue(t *testing.T) {
+	rdata, err := ParseSRVValue("10 60 5060 sip.example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, uint16(10), rdata.Priority)
+	assert.Equal(t, uint16(60), rdata.Weight)
+	assert.Equal(t, uint16(5060), rdata.Port)
+	assert.Equal(t, "sip.example.com.", rdata.Target)
+
+	_, err = ParseSRVValue("10 60 65536 sip.example.com.")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid SRV port")
 }
 
 func TestNormalizeRecordDerivedFields_DerivesPriority(t *testing.T) {

@@ -213,19 +213,19 @@ func canonicalRecordValue(recordType, value, zoneName string) string {
 	case RecordTypeCNAME, RecordTypeNS, RecordTypePTR:
 		return NormalizeDomainTargetName(value, zoneName)
 	case RecordTypeMX:
-		parts := strings.Fields(value)
-		if len(parts) == 2 {
-			return parts[0] + " " + NormalizeDomainTargetName(parts[1], zoneName)
+		rdata, err := ParseMXValue(value)
+		if err == nil {
+			return fmt.Sprintf("%d %s", rdata.Priority, NormalizeDomainTargetName(rdata.Target, zoneName))
 		}
 	case RecordTypeSRV:
-		parts := strings.Fields(value)
-		if len(parts) == 4 {
-			return strings.Join([]string{
-				parts[0],
-				parts[1],
-				parts[2],
-				NormalizeDomainTargetName(parts[3], zoneName),
-			}, " ")
+		rdata, err := ParseSRVValue(value)
+		if err == nil {
+			return fmt.Sprintf("%d %d %d %s",
+				rdata.Priority,
+				rdata.Weight,
+				rdata.Port,
+				NormalizeDomainTargetName(rdata.Target, zoneName),
+			)
 		}
 	}
 
@@ -428,17 +428,17 @@ func ValidateRecordValueInZone(recordType, value, zoneName string) error {
 	case RecordTypeCNAME, RecordTypeNS, RecordTypePTR:
 		return ValidateDomainTargetInZone(value, zoneName)
 	case RecordTypeMX:
-		parts := strings.Fields(value)
-		if len(parts) != 2 {
-			return fmt.Errorf("MX value must be 'priority domain': %s", value)
+		rdata, err := ParseMXValue(value)
+		if err != nil {
+			return err
 		}
-		return ValidateDomainTargetInZone(parts[1], zoneName)
+		return ValidateDomainTargetInZone(rdata.Target, zoneName)
 	case RecordTypeSRV:
-		parts := strings.Fields(value)
-		if len(parts) != 4 {
-			return fmt.Errorf("SRV value must be 'priority weight port target': %s", value)
+		rdata, err := ParseSRVValue(value)
+		if err != nil {
+			return err
 		}
-		return ValidateDomainTargetInZone(parts[3], zoneName)
+		return ValidateDomainTargetInZone(rdata.Target, zoneName)
 	default:
 		return nil
 	}
@@ -570,21 +570,42 @@ func ValidateIPv6(ip string) error {
 	return nil
 }
 
-// ValidateMXValue validates an MX record value (priority + domain).
-func ValidateMXValue(value string) error {
+// MXRData is the parsed RDATA for an MX record.
+type MXRData struct {
+	Priority uint16
+	Target   string
+}
+
+// SRVRData is the parsed RDATA for an SRV record.
+type SRVRData struct {
+	Priority uint16
+	Weight   uint16
+	Port     uint16
+	Target   string
+}
+
+// ParseMXValue parses an MX record value (priority + domain).
+func ParseMXValue(value string) (MXRData, error) {
 	parts := strings.Fields(value)
 	if len(parts) != 2 {
-		return fmt.Errorf("MX value must be 'priority domain': %s", value)
+		return MXRData{}, fmt.Errorf("MX value must be 'priority domain': %s", value)
 	}
 
-	// Validate priority (0-65535)
-	priority, err := strconv.Atoi(parts[0])
-	if err != nil || priority < 0 || priority > 65535 {
-		return fmt.Errorf("invalid MX priority: %s", parts[0])
+	priority, err := parseUint16Field(parts[0])
+	if err != nil {
+		return MXRData{}, fmt.Errorf("invalid MX priority: %s", parts[0])
 	}
 
-	// Validate domain
-	return ValidateDomainTarget(parts[1])
+	return MXRData{Priority: priority, Target: parts[1]}, nil
+}
+
+// ValidateMXValue validates an MX record value (priority + domain).
+func ValidateMXValue(value string) error {
+	rdata, err := ParseMXValue(value)
+	if err != nil {
+		return err
+	}
+	return ValidateDomainTarget(rdata.Target)
 }
 
 // ValidateTXTValue validates a TXT record value.
@@ -611,33 +632,38 @@ func SplitTXTValue(value string) []string {
 	return chunks
 }
 
-// ValidateSRVValue validates an SRV record value (priority weight port target).
-func ValidateSRVValue(value string) error {
+// ParseSRVValue parses an SRV record value (priority weight port target).
+func ParseSRVValue(value string) (SRVRData, error) {
 	parts := strings.Fields(value)
 	if len(parts) != 4 {
-		return fmt.Errorf("SRV value must be 'priority weight port target': %s", value)
+		return SRVRData{}, fmt.Errorf("SRV value must be 'priority weight port target': %s", value)
 	}
 
-	// Validate priority (0-65535)
-	priority, err := strconv.Atoi(parts[0])
-	if err != nil || priority < 0 || priority > 65535 {
-		return fmt.Errorf("invalid SRV priority: %s", parts[0])
+	priority, err := parseUint16Field(parts[0])
+	if err != nil {
+		return SRVRData{}, fmt.Errorf("invalid SRV priority: %s", parts[0])
 	}
 
-	// Validate weight (0-65535)
-	weight, err := strconv.Atoi(parts[1])
-	if err != nil || weight < 0 || weight > 65535 {
-		return fmt.Errorf("invalid SRV weight: %s", parts[1])
+	weight, err := parseUint16Field(parts[1])
+	if err != nil {
+		return SRVRData{}, fmt.Errorf("invalid SRV weight: %s", parts[1])
 	}
 
-	// Validate port (0-65535)
-	port, err := strconv.Atoi(parts[2])
-	if err != nil || port < 0 || port > 65535 {
-		return fmt.Errorf("invalid SRV port: %s", parts[2])
+	port, err := parseUint16Field(parts[2])
+	if err != nil {
+		return SRVRData{}, fmt.Errorf("invalid SRV port: %s", parts[2])
 	}
 
-	// Validate target
-	return ValidateDomainTarget(parts[3])
+	return SRVRData{Priority: priority, Weight: weight, Port: port, Target: parts[3]}, nil
+}
+
+// ValidateSRVValue validates an SRV record value (priority weight port target).
+func ValidateSRVValue(value string) error {
+	rdata, err := ParseSRVValue(value)
+	if err != nil {
+		return err
+	}
+	return ValidateDomainTarget(rdata.Target)
 }
 
 // ValidateCAAValue validates a CAA record value (flags tag value).
@@ -663,26 +689,19 @@ func ValidateCAAValue(value string) error {
 }
 
 func recordPriorityFromValue(recordType, value string) (uint16, bool, error) {
-	parts := strings.Fields(value)
 	switch recordType {
 	case RecordTypeMX:
-		if len(parts) != 2 {
-			return 0, false, fmt.Errorf("MX value must be 'priority domain': %s", value)
-		}
-		priority, err := parseUint16Field(parts[0])
+		rdata, err := ParseMXValue(value)
 		if err != nil {
-			return 0, false, fmt.Errorf("invalid MX priority: %s", parts[0])
+			return 0, false, err
 		}
-		return priority, true, nil
+		return rdata.Priority, true, nil
 	case RecordTypeSRV:
-		if len(parts) != 4 {
-			return 0, false, fmt.Errorf("SRV value must be 'priority weight port target': %s", value)
-		}
-		priority, err := parseUint16Field(parts[0])
+		rdata, err := ParseSRVValue(value)
 		if err != nil {
-			return 0, false, fmt.Errorf("invalid SRV priority: %s", parts[0])
+			return 0, false, err
 		}
-		return priority, true, nil
+		return rdata.Priority, true, nil
 	default:
 		return 0, false, nil
 	}
