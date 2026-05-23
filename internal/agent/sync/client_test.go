@@ -973,6 +973,66 @@ func TestFetchSignedZone_NotModified(t *testing.T) {
 	}
 }
 
+func TestFetchSignedZone_DoesNotSendUnsafeConditionalETag(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	tests := []string{
+		"*",
+		`"*"`,
+		"etag,other",
+		`bad\etag`,
+		`bad"etag`,
+		"bad\x7fetag",
+	}
+
+	for _, currentETag := range tests {
+		t.Run(currentETag, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("If-None-Match"); got != "" {
+					t.Errorf("Expected unsafe ETag %q not to be sent, got If-None-Match %q", currentETag, got)
+				}
+
+				w.Header().Set("ETag", `"`+hashHex+`"`)
+				w.Header().Set("X-Zone-Serial", "2024122801")
+				w.Header().Set("X-Zone-Hash", hashHex)
+				w.Header().Set("X-Zone-Hash8", hashHex[:8])
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, zoneContent)
+			}))
+			defer server.Close()
+
+			client, err := NewClient(config.ControllerClientConfig{
+				URL:           server.URL,
+				Timeout:       5 * time.Second,
+				RetryAttempts: 1,
+				RetryDelay:    100 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("NewClient failed: %v", err)
+			}
+			defer client.Close()
+
+			content, etag, notModified, err := client.FetchSignedZone(context.Background(), "example.com.", currentETag)
+			if err != nil {
+				t.Fatalf("FetchSignedZone failed: %v", err)
+			}
+			if notModified {
+				t.Fatal("Expected unsafe conditional ETag to force a full fetch")
+			}
+			if content != zoneContent {
+				t.Errorf("Expected zone content %q, got %q", zoneContent, content)
+			}
+			if etag != `"`+hashHex+`"` {
+				t.Errorf("Expected ETag %q, got %q", `"`+hashHex+`"`, etag)
+			}
+		})
+	}
+}
+
 func TestFetchSignedZone_NotModifiedRejectsShortChecksum(t *testing.T) {
 	requireTCPListener(t)
 	currentETag := strings.Repeat("a", sha256.Size*2)

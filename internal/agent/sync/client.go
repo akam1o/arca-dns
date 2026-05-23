@@ -84,17 +84,18 @@ func normalizeIfNoneMatch(etag string) string {
 	if etag == "" {
 		return ""
 	}
-	if etag == "*" {
-		return "*"
-	}
 	etag = strings.TrimPrefix(etag, "W/")
 	etag = strings.TrimSpace(etag)
 	etag = strings.Trim(etag, "\"")
-	if etag == "" {
+	if etag == "" || etag == "*" || strings.ContainsAny(etag, `",\`) || strings.ContainsFunc(etag, isInvalidETagChar) {
 		return ""
 	}
 	// Use a quoted strong ETag to match typical HTTP semantics and controller responses.
 	return `"` + etag + `"`
+}
+
+func isInvalidETagChar(r rune) bool {
+	return r < 0x20 || r == 0x7f
 }
 
 // NewClient creates a new controller client with retry logic and connection pooling.
