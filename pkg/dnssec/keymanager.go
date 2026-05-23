@@ -36,8 +36,9 @@ type activeKeys struct {
 }
 
 const (
-	dnskeyKSKFlags = dns.SEP | dns.ZONE
-	dnskeyZSKFlags = dns.ZONE
+	dnskeyKSKFlags       = dns.SEP | dns.ZONE
+	dnskeyZSKFlags       = dns.ZONE
+	maxDNSSECKeyFileSize = 1 * 1024 * 1024
 )
 
 // KeyManagerOptions configures the key manager.
@@ -652,6 +653,9 @@ func readValidatedRegularKeyFile(path string, validate regularKeyFileValidator) 
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("key file must be a regular file: %s", path)
 	}
+	if info.Size() > maxDNSSECKeyFileSize {
+		return nil, fmt.Errorf("key file exceeds maximum size of %d bytes: %s", maxDNSSECKeyFileSize, path)
+	}
 	if validate != nil {
 		if err := validate(info); err != nil {
 			return nil, err
@@ -674,13 +678,23 @@ func readValidatedRegularKeyFile(path string, validate regularKeyFileValidator) 
 	if !openedInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("key file must be a regular file: %s", path)
 	}
+	if openedInfo.Size() > maxDNSSECKeyFileSize {
+		return nil, fmt.Errorf("key file exceeds maximum size of %d bytes: %s", maxDNSSECKeyFileSize, path)
+	}
 	if validate != nil {
 		if err := validate(openedInfo); err != nil {
 			return nil, err
 		}
 	}
 
-	return io.ReadAll(file)
+	data, err := io.ReadAll(io.LimitReader(file, maxDNSSECKeyFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxDNSSECKeyFileSize {
+		return nil, fmt.Errorf("key file exceeds maximum size of %d bytes: %s", maxDNSSECKeyFileSize, path)
+	}
+	return data, nil
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {

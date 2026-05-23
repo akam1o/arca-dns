@@ -313,6 +313,34 @@ func TestLoadKSKRejectsSymlinkedActiveFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "symlink")
 }
 
+func TestLoadKSKRejectsOversizedActiveFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	_, err = km.GenerateKSK("example.com")
+	require.NoError(t, err)
+
+	activePath := filepath.Join(tmpDir, "example.com", "active.json")
+	file, err := os.OpenFile(activePath, os.O_WRONLY|os.O_TRUNC, 0600)
+	require.NoError(t, err)
+	require.NoError(t, file.Truncate(maxDNSSECKeyFileSize+1))
+	require.NoError(t, file.Close())
+
+	ksk, err := km.LoadKSK("example.com")
+	require.Error(t, err)
+	assert.Nil(t, ksk)
+	assert.Contains(t, err.Error(), "read active.json")
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
 func TestLoadKSKRejectsSymlinkedPublicKey(t *testing.T) {
 	tmpDir := t.TempDir()
 	masterKey, err := GenerateMasterKey()

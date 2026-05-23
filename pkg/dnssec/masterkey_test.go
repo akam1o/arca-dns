@@ -278,6 +278,28 @@ func TestLoadMasterKey_RejectsWorldReadableFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "other access")
 }
 
+func TestLoadMasterKey_RejectsOversizedFile(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "_masterkey")
+
+	file, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	require.NoError(t, err)
+	require.NoError(t, file.Truncate(maxDNSSECKeyFileSize+1))
+	require.NoError(t, file.Close())
+
+	loadedKey, src, err := LoadMasterKey(MasterKeyOptions{
+		KeyDirectory:      tmpDir,
+		AllowAutoGenerate: false,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, loadedKey)
+	assert.Empty(t, src)
+	assert.Contains(t, err.Error(), "read master key file")
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
 func TestLoadMasterKey_AllowsGroupReadableFile(t *testing.T) {
 	t.Setenv(MasterKeyEnvVar, "")
 	tmpDir := t.TempDir()
