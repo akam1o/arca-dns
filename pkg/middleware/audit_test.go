@@ -169,3 +169,55 @@ func TestAuditLogger_Middleware_TruncatesLongFields(t *testing.T) {
 	assert.True(t, strings.HasSuffix(userAgent, auditLogTruncatedMark))
 	assert.LessOrEqual(t, len(userAgent), maxAuditLogFieldLength+len(auditLogTruncatedMark))
 }
+
+func TestAuditLogger_Middleware_ValidatesRequestID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name      string
+		header    string
+		generated bool
+	}{
+		{name: "valid request id", header: "request-123", generated: false},
+		{name: "empty request id", header: "", generated: true},
+		{name: "too long request id", header: strings.Repeat("a", maxAuditRequestIDLength+1), generated: true},
+		{name: "control character request id", header: "request\x7fid", generated: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			core, logs := observer.New(zapcore.InfoLevel)
+			logger := zap.New(core)
+
+			router := gin.New()
+			router.Use(NewAuditLogger(logger).Middleware())
+			router.GET("/test", func(c *gin.Context) {
+				c.Status(http.StatusNoContent)
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			if tt.header != "" {
+				req.Header.Set("X-Request-ID", tt.header)
+			}
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusNoContent, w.Code)
+			entries := logs.All()
+			require.Len(t, entries, 1)
+
+			requestID, ok := entries[0].ContextMap()["request_id"].(string)
+			require.True(t, ok)
+			assert.NotEmpty(t, requestID)
+			assert.LessOrEqual(t, len(requestID), maxAuditRequestIDLength)
+			assert.False(t, strings.ContainsFunc(requestID, isControlCharacter))
+
+			if tt.generated {
+				assert.NotEqual(t, tt.header, requestID)
+				assert.Equal(t, requestID, w.Header().Get("X-Request-ID"))
+			} else {
+				assert.Equal(t, tt.header, requestID)
+			}
+		})
+	}
+}

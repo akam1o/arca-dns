@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	maxAuditLogFieldLength = 1024
-	auditLogRedactedValue  = "REDACTED"
-	auditLogTruncatedMark  = "...(truncated)"
+	maxAuditLogFieldLength  = 1024
+	maxAuditRequestIDLength = 128
+	auditLogRedactedValue   = "REDACTED"
+	auditLogTruncatedMark   = "...(truncated)"
 )
 
 var sensitiveAuditQueryKeys = map[string]struct{}{
@@ -81,10 +82,8 @@ func NewAuditLogger(logger *zap.Logger) *AuditLogger {
 // Middleware returns a Gin middleware that logs all API requests.
 func (al *AuditLogger) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Generate request ID if not already present
-		requestID := c.GetHeader("X-Request-ID")
-		if requestID == "" {
-			requestID = uuid.New().String()
+		requestID, generated := auditRequestID(c.GetHeader("X-Request-ID"))
+		if generated {
 			c.Header("X-Request-ID", requestID)
 		}
 
@@ -125,6 +124,18 @@ func (al *AuditLogger) Middleware() gin.HandlerFunc {
 			zap.Int("response_size", c.Writer.Size()),
 		)
 	}
+}
+
+func auditRequestID(headerValue string) (string, bool) {
+	requestID := strings.TrimSpace(headerValue)
+	if requestID == "" || len(requestID) > maxAuditRequestIDLength || strings.ContainsFunc(requestID, isControlCharacter) {
+		return uuid.New().String(), true
+	}
+	return requestID, false
+}
+
+func isControlCharacter(r rune) bool {
+	return r < 0x20 || r == 0x7f
 }
 
 func sanitizeAuditQuery(rawQuery string) string {
