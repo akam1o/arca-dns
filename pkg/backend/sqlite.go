@@ -206,12 +206,8 @@ func (s *SQLiteBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mod
 		return nil, fmt.Errorf("error iterating zones: %w", err)
 	}
 
-	for _, zone := range zones {
-		records, err := s.loadRecordsDB(ctx, s.db, zone.Name)
-		if err != nil {
-			return nil, err
-		}
-		zone.Records = records
+	if err := s.loadRecordsForZonesDB(ctx, s.db, zones); err != nil {
+		return nil, err
 	}
 
 	return zones, nil
@@ -630,6 +626,55 @@ func (s *SQLiteBackend) loadRecordsDB(ctx context.Context, q querier, zoneName s
 	return records, rows.Err()
 }
 
+func (s *SQLiteBackend) loadRecordsForZonesDB(ctx context.Context, q querier, zones []*model.Zone) error {
+	if len(zones) == 0 {
+		return nil
+	}
+
+	recordsByZone := make(map[string][]model.Record, len(zones))
+	for start := 0; start < len(zones); {
+		end := sqlBatchEnd(start, len(zones))
+		query := fmt.Sprintf(`
+			SELECT z.name, r.id, r.name, r.type, r.ttl, r.value, r.priority
+			FROM records r
+			JOIN zones z ON r.zone_id = z.id
+			WHERE z.name IN (%s)
+			ORDER BY z.name, r.name, r.type, r.id
+		`, sqlQuestionPlaceholders(end-start))
+
+		rows, err := q.QueryContext(ctx, query, sqlZoneNameArgs(zones, start, end)...)
+		if err != nil {
+			return fmt.Errorf("query records for zones: %w", err)
+		}
+
+		for rows.Next() {
+			var zoneName string
+			var rec model.Record
+			var id int64
+			var priority sql.NullInt64
+			if err := rows.Scan(&zoneName, &id, &rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan record: %w", err)
+			}
+			rec.ID = formatSQLRecordID(id)
+			if priority.Valid {
+				p := uint16(priority.Int64)
+				rec.Priority = &p
+			}
+			recordsByZone[zoneName] = append(recordsByZone[zoneName], rec)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("iterate records for zones: %w", err)
+		}
+		rows.Close()
+		start = end
+	}
+
+	assignZoneRecords(zones, recordsByZone)
+	return nil
+}
+
 func (s *SQLiteBackend) insertZoneTx(ctx context.Context, tx *sql.Tx, zone *model.Zone) (int64, error) {
 	query := `
 		INSERT INTO zones (
@@ -840,12 +885,8 @@ func (t *sqliteTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zo
 		return nil, fmt.Errorf("iterate zones: %w", err)
 	}
 
-	for _, zone := range zones {
-		records, err := t.backend.loadRecordsDB(ctx, t.tx, zone.Name)
-		if err != nil {
-			return nil, err
-		}
-		zone.Records = records
+	if err := t.backend.loadRecordsForZonesDB(ctx, t.tx, zones); err != nil {
+		return nil, err
 	}
 	return zones, nil
 }

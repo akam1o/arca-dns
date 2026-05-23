@@ -361,6 +361,46 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		}
 	})
 
+	t.Run("ListZones_LoadsRecordsForEachZone", func(t *testing.T) {
+		prefix := fmt.Sprintf("list-records-%d", time.Now().UnixNano())
+		expected := map[string]string{
+			fmt.Sprintf("%s-alpha.example.com.", prefix): "192.0.2.10",
+			fmt.Sprintf("%s-beta.example.com.", prefix):  "192.0.2.11",
+		}
+
+		for name, value := range expected {
+			zone := createTestZone(name)
+			zone.Records = testZoneRecords(name, model.Record{
+				Name:  "www",
+				Type:  model.RecordTypeA,
+				TTL:   300,
+				Value: value,
+			})
+			require.NoError(t, store.CreateZone(ctx, zone))
+		}
+
+		zones, err := store.ListZones(ctx, ListOptions{Limit: 0})
+		require.NoError(t, err)
+
+		listed := make(map[string]*model.Zone, len(zones))
+		for _, zone := range zones {
+			listed[zone.Name] = zone
+		}
+		for name, value := range expected {
+			zone, ok := listed[name]
+			require.True(t, ok, "expected listed zone %s", name)
+			require.Len(t, zone.Records, 2, "expected apex NS and www A records for %s", name)
+
+			foundA := false
+			for _, record := range zone.Records {
+				if record.Name == "www" && record.Type == model.RecordTypeA && record.Value == value {
+					foundA = true
+				}
+			}
+			assert.True(t, foundA, "expected listed records for %s to include A %s", name, value)
+		}
+	})
+
 	t.Run("ListZones_Pagination", func(t *testing.T) {
 		// Create test zones with unique prefix
 		prefix := fmt.Sprintf("page-%d", time.Now().UnixNano())
