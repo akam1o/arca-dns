@@ -637,6 +637,55 @@ func TestMigrateCopy(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunCopyDryRunSkipsDestinationBackendCreation(t *testing.T) {
+	oldConfigFile := migrateConfigFile
+	oldFromBackend := migrateFromBackend
+	oldFromDSN := migrateFromDSN
+	oldFromPath := migrateFromPath
+	oldToBackend := migrateToBackend
+	oldToDSN := migrateToDSN
+	oldToPath := migrateToPath
+	oldDryRun := migrateDryRun
+	oldOverwrite := migrateOverwrite
+	t.Cleanup(func() {
+		migrateConfigFile = oldConfigFile
+		migrateFromBackend = oldFromBackend
+		migrateFromDSN = oldFromDSN
+		migrateFromPath = oldFromPath
+		migrateToBackend = oldToBackend
+		migrateToDSN = oldToDSN
+		migrateToPath = oldToPath
+		migrateDryRun = oldDryRun
+		migrateOverwrite = oldOverwrite
+	})
+
+	tmpDir := t.TempDir()
+	sourceDSN := "file:" + filepath.Join(tmpDir, "source.db")
+	sourceStore, err := createBackendForCopy("sqlite", sourceDSN, "", nil)
+	require.NoError(t, err)
+	require.NoError(t, sourceStore.CreateZone(context.Background(), &model.Zone{
+		Name: "dryrun-copy.example.com.",
+		SOA:  model.DefaultSOA("ns1.dryrun-copy.example.com.", "admin.dryrun-copy.example.com."),
+		Records: []model.Record{
+			migrateTestApexNSRecord(),
+			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.50"},
+		},
+	}))
+	require.NoError(t, sourceStore.Close())
+
+	migrateConfigFile = ""
+	migrateFromBackend = "sqlite"
+	migrateFromDSN = sourceDSN
+	migrateFromPath = ""
+	migrateToBackend = "postgres"
+	migrateToDSN = ""
+	migrateToPath = ""
+	migrateDryRun = true
+	migrateOverwrite = false
+
+	require.NoError(t, runCopy(nil, nil), "dry-run should not require creating the destination backend")
+}
+
 func TestSameDNSSECConfig(t *testing.T) {
 	expiration := time.Unix(1700000000, 0).UTC()
 	laterExpiration := expiration.Add(time.Hour)
@@ -722,6 +771,30 @@ func TestCreateBackendForCopySupportsSQLite(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
+}
+
+func TestCreateBackendForCopyRequiresBackendSpecificConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		backendType string
+		wantErr     string
+	}{
+		{name: "postgres", backendType: "postgres", wantErr: "PostgreSQL backend requires"},
+		{name: "mysql", backendType: "mysql", wantErr: "MySQL backend requires"},
+		{name: "git", backendType: "git", wantErr: "Git backend requires"},
+		{name: "unsupported", backendType: "memory", wantErr: "unsupported backend type"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := createBackendForCopy(tt.backendType, "", "", nil)
+			if store != nil {
+				require.NoError(t, store.Close())
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 func TestCreateBackendPostgresRequiresDSN(t *testing.T) {

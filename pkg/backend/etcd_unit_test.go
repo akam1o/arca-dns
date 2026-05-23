@@ -20,6 +20,19 @@ func TestEtcdBackendKeyHelpersNormalizeZoneNames(t *testing.T) {
 	require.Equal(t, "/arca/history/example.com./", backend.historyPrefixForZone("Example.COM"))
 }
 
+func TestEtcdBackendZoneLockHelpersNormalizeNames(t *testing.T) {
+	backend := &EtcdBackend{}
+
+	first := backend.acquireZoneLock("Example.COM")
+	backend.releaseZoneLock(first)
+
+	second := backend.acquireZoneLock("example.com.")
+	require.Same(t, first, second)
+	backend.releaseZoneLock(second)
+
+	backend.releaseZoneLock(nil)
+}
+
 func TestEtcdBackendConvertEtcdEvent(t *testing.T) {
 	backend := &EtcdBackend{prefix: "/arca"}
 	zone := &model.Zone{
