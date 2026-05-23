@@ -55,9 +55,18 @@ func (p *PostgresBackend) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// CountZones returns the number of zones without loading zone records.
+func (p *PostgresBackend) CountZones(ctx context.Context) (int, error) {
+	var count int
+	if err := p.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM zones").Scan(&count); err != nil {
+		return 0, fmt.Errorf("count zones: %w", err)
+	}
+	return count, nil
+}
+
 const postgresSchemaSQL = `
-	CREATE TABLE IF NOT EXISTS zones (
-		id SERIAL PRIMARY KEY,
+		CREATE TABLE IF NOT EXISTS zones (
+			id SERIAL PRIMARY KEY,
 		name VARCHAR(255) UNIQUE NOT NULL,
 		version VARCHAR(64) NOT NULL,
 		soa_mname VARCHAR(255) NOT NULL,
@@ -448,6 +457,7 @@ func (p *PostgresBackend) Info() BackendInfo {
 		Capabilities: []string{
 			CapabilityZoneStore,
 			CapabilityZoneSummaryStore,
+			CapabilityZoneCountStore,
 			CapabilityHealthStore,
 			CapabilityTransactionalStore,
 			CapabilityDNSSECMetadataStore,

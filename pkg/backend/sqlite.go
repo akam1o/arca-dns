@@ -62,6 +62,15 @@ func (s *SQLiteBackend) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// CountZones returns the number of zones without loading zone records.
+func (s *SQLiteBackend) CountZones(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM zones").Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count zones: %w", err)
+	}
+	return count, nil
+}
+
 func sqliteDSNWithDefaultPragmas(dsn string) string {
 	defaults := []struct {
 		name  string
@@ -482,6 +491,7 @@ func (s *SQLiteBackend) Info() BackendInfo {
 		Capabilities: []string{
 			CapabilityZoneStore,
 			CapabilityZoneSummaryStore,
+			CapabilityZoneCountStore,
 			CapabilityHealthStore,
 			CapabilityTransactionalStore,
 			CapabilityDNSSECMetadataStore,

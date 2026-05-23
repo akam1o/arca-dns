@@ -151,6 +151,19 @@ func (e *EtcdBackend) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// CountZones returns the number of zone keys without loading zone payloads.
+func (e *EtcdBackend) CountZones(ctx context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
+	defer cancel()
+
+	prefix := fmt.Sprintf("%s/%s/", e.prefix, etcdZonesPrefix)
+	resp, err := e.client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+	if err != nil {
+		return 0, fmt.Errorf("failed to count zones: %w", err)
+	}
+	return int(resp.Count), nil
+}
+
 // Per-zone mutex helpers
 func (e *EtcdBackend) acquireZoneLock(zoneName string) *sync.Mutex {
 	normalized := model.NormalizeZoneName(zoneName)
@@ -604,6 +617,7 @@ func (e *EtcdBackend) Info() BackendInfo {
 		Capabilities: []string{
 			CapabilityZoneStore,
 			CapabilityZoneSummaryStore,
+			CapabilityZoneCountStore,
 			CapabilityHealthStore,
 			CapabilityDNSSECMetadataStore,
 			CapabilityConditionalDeleteStore,

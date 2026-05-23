@@ -135,6 +135,19 @@ func TestWrapZoneStorePreservesConditionalDeleteStore(t *testing.T) {
 	assert.True(t, ok)
 }
 
+func TestWrapZoneStorePreservesZoneCountStore(t *testing.T) {
+	ctx := context.Background()
+	inner := backend.NewMemoryBackend()
+	wrapped := WrapZoneStore(inner, NewControllerMetrics())
+
+	countStore, ok := wrapped.(backend.ZoneCountStore)
+	require.True(t, ok)
+
+	count, err := countStore.CountZones(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+}
+
 func TestWrapZoneStorePreservesBackendInfo(t *testing.T) {
 	wrapped := WrapZoneStore(backend.NewMemoryBackend(), NewControllerMetrics())
 

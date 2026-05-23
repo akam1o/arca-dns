@@ -104,6 +104,13 @@ func (s *InstrumentedZoneStore) ListZoneSummaries(ctx context.Context, opts back
 	return summaries, err
 }
 
+func (s *InstrumentedZoneStore) CountZones(ctx context.Context) (int, error) {
+	start := time.Now()
+	count, err := backend.CountZones(ctx, s.inner)
+	s.metrics.ObserveBackendOperation("count_zones", err, time.Since(start).Seconds())
+	return count, err
+}
+
 func (s *InstrumentedZoneStore) HealthCheck(ctx context.Context) error {
 	start := time.Now()
 	err := backend.CheckHealth(ctx, s.inner)

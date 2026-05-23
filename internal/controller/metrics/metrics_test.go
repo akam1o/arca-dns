@@ -94,6 +94,7 @@ func TestControllerMetricsRenderBackendErrorClassesAndLatency(t *testing.T) {
 
 type summaryOnlyStore struct {
 	total          int
+	summaryCalls   int
 	listZonesCalls int
 }
 
@@ -107,6 +108,7 @@ func (s *summaryOnlyStore) ListZones(ctx context.Context, opts backend.ListOptio
 }
 
 func (s *summaryOnlyStore) ListZoneSummaries(ctx context.Context, opts backend.ListOptions) ([]*backend.ZoneSummary, error) {
+	s.summaryCalls++
 	if opts.Offset >= s.total {
 		return []*backend.ZoneSummary{}, nil
 	}
@@ -140,11 +142,39 @@ func (s *summaryOnlyStore) Close() error {
 	return nil
 }
 
+type countOnlyStore struct {
+	summaryOnlyStore
+	count      int
+	countCalls int
+}
+
+func (s *countOnlyStore) CountZones(ctx context.Context) (int, error) {
+	s.countCalls++
+	return s.count, nil
+}
+
+func (s *countOnlyStore) ListZoneSummaries(ctx context.Context, opts backend.ListOptions) ([]*backend.ZoneSummary, error) {
+	s.summaryCalls++
+	return nil, fmt.Errorf("ListZoneSummaries should not be used for CountZones")
+}
+
 func TestCountZonesUsesSummaries(t *testing.T) {
 	store := &summaryOnlyStore{total: 2501}
 
 	count, err := CountZones(context.Background(), store)
 	require.NoError(t, err)
 	require.Equal(t, 2501, count)
+	require.Zero(t, store.listZonesCalls)
+	require.Equal(t, 3, store.summaryCalls)
+}
+
+func TestCountZonesUsesBackendCount(t *testing.T) {
+	store := &countOnlyStore{count: 2501}
+
+	count, err := CountZones(context.Background(), store)
+	require.NoError(t, err)
+	require.Equal(t, 2501, count)
+	require.Equal(t, 1, store.countCalls)
+	require.Zero(t, store.summaryCalls)
 	require.Zero(t, store.listZonesCalls)
 }

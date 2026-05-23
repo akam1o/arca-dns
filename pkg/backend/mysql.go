@@ -66,6 +66,15 @@ func (m *MySQLBackend) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// CountZones returns the number of zones without loading zone records.
+func (m *MySQLBackend) CountZones(ctx context.Context) (int, error) {
+	var count int
+	if err := m.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM zones").Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count zones: %w", err)
+	}
+	return count, nil
+}
+
 // RunMigrations applies database migrations.
 func (m *MySQLBackend) RunMigrations(migrationsPath string) error {
 	migrationDB, err := sql.Open("mysql", m.dsn)
@@ -745,6 +754,7 @@ func (m *MySQLBackend) Info() BackendInfo {
 		Capabilities: []string{
 			CapabilityZoneStore,
 			CapabilityZoneSummaryStore,
+			CapabilityZoneCountStore,
 			CapabilityHealthStore,
 			CapabilityTransactionalStore,
 			CapabilityDNSSECMetadataStore,

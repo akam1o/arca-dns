@@ -79,6 +79,36 @@ func TestMemoryBackend_HealthCheck(t *testing.T) {
 	assert.ErrorIs(t, backend.HealthCheck(ctx), context.Canceled)
 }
 
+func TestMemoryBackend_CountZones(t *testing.T) {
+	backend := NewMemoryBackend()
+	ctx := context.Background()
+
+	count, err := backend.CountZones(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+
+	require.NoError(t, backend.CreateZone(ctx, &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: testZoneRecords("example.com."),
+	}))
+	require.NoError(t, backend.CreateZone(ctx, &model.Zone{
+		Name:    "example.net.",
+		SOA:     model.DefaultSOA("ns1.example.net.", "admin.example.net."),
+		Records: testZoneRecords("example.net."),
+	}))
+
+	count, err = backend.CountZones(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	count, err = backend.CountZones(cancelCtx)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 0, count)
+}
+
 func TestMemoryBackend_GetZoneCopiesRecordPriority(t *testing.T) {
 	backend := NewMemoryBackend()
 	ctx := context.Background()
