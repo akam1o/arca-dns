@@ -220,6 +220,24 @@ example.com. 3600 IN NS ns1.example.com.
 	}
 }
 
+func TestParseBINDZone_AllowsLongDirectiveScanLine(t *testing.T) {
+	input := ";" + strings.Repeat("a", 70*1024) + `
+example.com. 3600 IN SOA ns1.example.com. admin.example.com. (
+    2024010101 3600 1800 604800 86400
+)
+example.com. 3600 IN NS ns1.example.com.
+`
+	opts := DefaultParseOptions()
+
+	parsed, err := ParseBINDZone(strings.NewReader(input), "example.com.", opts)
+	if err != nil {
+		t.Fatalf("unexpected error for long comment line: %v", err)
+	}
+	if parsed == nil {
+		t.Fatal("parsed zone is nil")
+	}
+}
+
 func TestParseBINDZone_AllowsExplicitUnlimitedSize(t *testing.T) {
 	input := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. (
     2024010101 3600 1800 604800 86400

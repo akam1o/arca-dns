@@ -134,6 +134,7 @@ func readZoneFile(reader io.Reader, opts ParseOptions) ([]byte, error) {
 // validateDirectives performs pre-scan validation of zone file directives
 func validateDirectives(content string, opts ParseOptions) error {
 	scanner := bufio.NewScanner(strings.NewReader(content))
+	scanner.Buffer(make([]byte, 1024), directiveScanMaxTokenSize(opts))
 	lineNum := 0
 	includeCount := 0
 
@@ -180,4 +181,16 @@ func validateDirectives(content string, opts ParseOptions) error {
 	}
 
 	return nil
+}
+
+func directiveScanMaxTokenSize(opts ParseOptions) int {
+	maxBytes := opts.MaxBytes
+	if maxBytes == 0 {
+		maxBytes = DefaultMaxZoneFileSize
+	}
+	maxInt := int64(int(^uint(0) >> 1))
+	if maxBytes < 0 || maxBytes > maxInt {
+		return int(maxInt)
+	}
+	return int(maxBytes)
 }
