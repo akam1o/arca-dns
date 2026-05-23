@@ -94,6 +94,53 @@ logging:
 	}
 }
 
+func TestRunServeReturnsConfiguredLoggerError(t *testing.T) {
+	origConfigFile := configFile
+	t.Cleanup(func() {
+		configFile = origConfigFile
+	})
+
+	tmpDir := t.TempDir()
+	logOutputPath := filepath.Join(tmpDir, "controller.log")
+	if err := os.Mkdir(logOutputPath, 0700); err != nil {
+		t.Fatalf("create log output directory: %v", err)
+	}
+	configFile = filepath.Join(tmpDir, "controller.yaml")
+	configYAML := `
+api:
+  listen: "127.0.0.1:8080"
+  artifact_signature_key: "test-artifact-signature-key-32-bytes"
+  auth:
+    enabled: false
+observability:
+  listen: "127.0.0.1:9053"
+backend:
+  type: "sqlite"
+  sqlite:
+    dsn: "` + filepath.Join(tmpDir, "arca-dns.db") + `"
+dnssec:
+  enabled: false
+storage:
+  artifact_directory: "` + filepath.Join(tmpDir, "artifacts") + `"
+logging:
+  level: "error"
+  format: "json"
+  output: "` + logOutputPath + `"
+`
+	if err := os.WriteFile(configFile, []byte(configYAML), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := runServe(&cobra.Command{Use: "serve"}, nil)
+	if err == nil {
+		t.Fatal("expected configured logger error")
+	}
+	if !strings.Contains(err.Error(), "failed to initialize configured logger") ||
+		!strings.Contains(err.Error(), "must be a regular file") {
+		t.Fatalf("expected configured logger error, got %v", err)
+	}
+}
+
 func TestNewStoreFromConfig_SQLite(t *testing.T) {
 	cfg := config.DefaultControllerConfig()
 	cfg.Backend.Type = "sqlite"
@@ -189,6 +236,22 @@ func TestNewStoreFromConfig_Git(t *testing.T) {
 	}
 	if !containsString(info.Capabilities, backend.CapabilityConditionalDeleteStore) {
 		t.Fatalf("git backend capabilities missing %s: %v", backend.CapabilityConditionalDeleteStore, info.Capabilities)
+	}
+}
+
+func TestNewStoreFromConfig_GitRejectsInvalidRemoteURL(t *testing.T) {
+	cfg := config.DefaultControllerConfig()
+	cfg.Backend.Type = "git"
+	cfg.Backend.Git.RepositoryPath = t.TempDir()
+	cfg.Backend.Git.RemoteURL = "https://example.com/repo.git\nbad"
+
+	store, err := newStoreFromConfig(cfg)
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("expected error for invalid git remote URL")
+	}
+	if !strings.Contains(err.Error(), "invalid git remote_url") {
+		t.Fatalf("expected git remote URL validation error, got %v", err)
 	}
 }
 
