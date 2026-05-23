@@ -27,6 +27,7 @@ import (
 	"github.com/akam1o/arca-dns/internal/agent/unbound"
 	applogging "github.com/akam1o/arca-dns/internal/logging"
 	"github.com/akam1o/arca-dns/pkg/config"
+	"github.com/akam1o/arca-dns/pkg/metrics/promtext"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -887,13 +888,15 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 		sort.Strings(checkTypes)
 		for _, checkType := range checkTypes {
 			result := healthStatus.Checks[health.CheckType(checkType)]
-			sb.WriteString(fmt.Sprintf("arca_dns_agent_health_check_status{type=%q} %d\n", checkType, boolToInt(result.Success)))
+			labelSet := promtext.FormatLabels(promtext.Label{Name: "type", Value: checkType})
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_health_check_status{%s} %d\n", labelSet, boolToInt(result.Success)))
 		}
 
 		sb.WriteString("\n# HELP arca_dns_agent_bgp_control_status BGP control status (1 for the current status, 0 otherwise).\n")
 		sb.WriteString("# TYPE arca_dns_agent_bgp_control_status gauge\n")
 		for _, status := range []string{bgpControlStatusActive, bgpControlStatusDisabled, bgpControlStatusUnknown} {
-			sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_control_status{status=%q} %d\n", status, boolToInt(bgpStatus == status)))
+			labelSet := promtext.FormatLabels(promtext.Label{Name: "status", Value: status})
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_control_status{%s} %d\n", labelSet, boolToInt(bgpStatus == status)))
 		}
 
 		if routeCtrl != nil {
@@ -927,7 +930,8 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 		sb.WriteString("\n# HELP arca_dns_agent_bird_config_status BIRD generated config status (1 for the current status, 0 otherwise).\n")
 		sb.WriteString("# TYPE arca_dns_agent_bird_config_status gauge\n")
 		for _, status := range []string{birdConfigStatusDisabled, birdConfigStatusApplied, birdConfigStatusUsingExisting} {
-			sb.WriteString(fmt.Sprintf("arca_dns_agent_bird_config_status{status=%q} %d\n", status, boolToInt(birdConfigStatus.Status == status)))
+			labelSet := promtext.FormatLabels(promtext.Label{Name: "status", Value: status})
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_bird_config_status{%s} %d\n", labelSet, boolToInt(birdConfigStatus.Status == status)))
 		}
 
 		sb.WriteString("\n# HELP arca_dns_agent_bird_config_last_attempt_timestamp_seconds Unix timestamp of the last generated BIRD config apply attempt (0 if none).\n")

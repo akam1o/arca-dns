@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
+	"github.com/akam1o/arca-dns/pkg/metrics/promtext"
 	"github.com/gin-gonic/gin"
 )
 
@@ -202,14 +203,21 @@ func (m *ControllerMetrics) Render(zonesTotal int) string {
 	b.WriteString("# HELP api_requests_total Total number of API requests.\n")
 	b.WriteString("# TYPE api_requests_total counter\n")
 	for k, v := range apiRequests {
-		b.WriteString(fmt.Sprintf("api_requests_total{method=%q,path=%q,status=%q} %d\n",
-			k.Method, k.Path, fmt.Sprintf("%d", k.Status), v))
+		labelSet := promtext.FormatLabels(
+			promtext.Label{Name: "method", Value: k.Method},
+			promtext.Label{Name: "path", Value: k.Path},
+			promtext.Label{Name: "status", Value: fmt.Sprintf("%d", k.Status)},
+		)
+		b.WriteString(fmt.Sprintf("api_requests_total{%s} %d\n", labelSet, v))
 	}
 
 	b.WriteString("# HELP api_request_duration_seconds API request latency histogram.\n")
 	b.WriteString("# TYPE api_request_duration_seconds histogram\n")
 	for k, h := range apiLatency {
-		labelSet := fmt.Sprintf("method=%q,path=%q", k.Method, k.Path)
+		labelSet := promtext.FormatLabels(
+			promtext.Label{Name: "method", Value: k.Method},
+			promtext.Label{Name: "path", Value: k.Path},
+		)
 		b.WriteString(h.RenderPrometheus("api_request_duration_seconds", labelSet))
 	}
 
@@ -220,14 +228,18 @@ func (m *ControllerMetrics) Render(zonesTotal int) string {
 	b.WriteString("# HELP dnssec_signing_duration_seconds DNSSEC signing duration histogram.\n")
 	b.WriteString("# TYPE dnssec_signing_duration_seconds histogram\n")
 	for k, h := range signingDur {
-		labelSet := fmt.Sprintf("status=%q", k.Status)
+		labelSet := promtext.FormatLabels(promtext.Label{Name: "status", Value: k.Status})
 		b.WriteString(h.RenderPrometheus("dnssec_signing_duration_seconds", labelSet))
 	}
 
 	b.WriteString("# HELP backend_operations_total Backend operations by operation and status.\n")
 	b.WriteString("# TYPE backend_operations_total counter\n")
 	for k, v := range backendOps {
-		b.WriteString(fmt.Sprintf("backend_operations_total{operation=%q,status=%q} %d\n", k.Operation, k.Status, v))
+		labelSet := promtext.FormatLabels(
+			promtext.Label{Name: "operation", Value: k.Operation},
+			promtext.Label{Name: "status", Value: k.Status},
+		)
+		b.WriteString(fmt.Sprintf("backend_operations_total{%s} %d\n", labelSet, v))
 	}
 
 	b.WriteString("# HELP dnssec_scheduler_last_run_timestamp_seconds Last DNSSEC scheduler run time.\n")
@@ -253,7 +265,8 @@ func (m *ControllerMetrics) Render(zonesTotal int) string {
 	b.WriteString("# HELP dnssec_scheduler_resign_total DNSSEC resign attempts.\n")
 	b.WriteString("# TYPE dnssec_scheduler_resign_total counter\n")
 	for k, v := range schedulerResign {
-		b.WriteString(fmt.Sprintf("dnssec_scheduler_resign_total{result=%q} %d\n", k, v))
+		labelSet := promtext.FormatLabels(promtext.Label{Name: "result", Value: k})
+		b.WriteString(fmt.Sprintf("dnssec_scheduler_resign_total{%s} %d\n", labelSet, v))
 	}
 
 	return b.String()

@@ -53,6 +53,26 @@ func TestControllerMetricsRenderConcurrentSigningObserve(t *testing.T) {
 	wg.Wait()
 }
 
+func TestControllerMetricsRenderEscapesPrometheusLabels(t *testing.T) {
+	metrics := NewControllerMetrics()
+	metrics.apiRequests[apiKey{Method: `GET"`, Path: "/bad\npath\\tail", Status: 418}] = 2
+
+	h := NewHistogram([]float64{1})
+	h.Observe(0.5)
+	metrics.apiLatency[apiDurKey{Method: `GET"`, Path: "/bad\npath\\tail"}] = h
+	metrics.IncBackendOperation(`sync"op`, "bad\nstatus\\tail")
+	metrics.ObserveSigningDuration("signed\nok", 0.2)
+	metrics.IncResign(`resign"bad\tail`)
+
+	rendered := metrics.Render(1)
+
+	require.Contains(t, rendered, `api_requests_total{method="GET\"",path="/bad\npath\\tail",status="418"} 2`)
+	require.Contains(t, rendered, `api_request_duration_seconds_bucket{method="GET\"",path="/bad\npath\\tail",le="1"} 1`)
+	require.Contains(t, rendered, `backend_operations_total{operation="sync\"op",status="bad\nstatus\\tail"} 1`)
+	require.Contains(t, rendered, `dnssec_signing_duration_seconds_bucket{status="signed\nok",le="+Inf"} 1`)
+	require.Contains(t, rendered, `dnssec_scheduler_resign_total{result="resign\"bad\\tail"} 1`)
+}
+
 type summaryOnlyStore struct {
 	total          int
 	listZonesCalls int
