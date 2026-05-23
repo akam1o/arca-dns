@@ -401,6 +401,49 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		}
 	})
 
+	t.Run("ListZones_LoadsRecordsForLargePage", func(t *testing.T) {
+		prefix := fmt.Sprintf("list-large-%d", time.Now().UnixNano())
+		const zoneCount = 30
+
+		expected := make(map[string]string, zoneCount)
+		for i := 0; i < zoneCount; i++ {
+			name := fmt.Sprintf("%s-%02d.example.com.", prefix, i)
+			value := fmt.Sprintf("large record content %02d", i)
+			expected[name] = value
+
+			zone := createTestZone(name)
+			zone.Records = testZoneRecords(name, model.Record{
+				Name:  "txt",
+				Type:  model.RecordTypeTXT,
+				TTL:   300,
+				Value: value,
+			})
+			require.NoError(t, store.CreateZone(ctx, zone))
+		}
+
+		zones, err := store.ListZones(ctx, ListOptions{Limit: 0})
+		require.NoError(t, err)
+
+		found := 0
+		for _, zone := range zones {
+			value, ok := expected[zone.Name]
+			if !ok {
+				continue
+			}
+			found++
+			require.Len(t, zone.Records, 2, "expected apex NS and TXT records for %s", zone.Name)
+
+			hasTXT := false
+			for _, record := range zone.Records {
+				if record.Name == "txt" && record.Type == model.RecordTypeTXT && record.Value == value {
+					hasTXT = true
+				}
+			}
+			assert.True(t, hasTXT, "expected listed records for %s to include TXT %q", zone.Name, value)
+		}
+		assert.Equal(t, zoneCount, found, "expected the full large page to be returned with records")
+	})
+
 	t.Run("ListZones_Pagination", func(t *testing.T) {
 		// Create test zones with unique prefix
 		prefix := fmt.Sprintf("page-%d", time.Now().UnixNano())

@@ -499,6 +499,47 @@ func TestUpdateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 	assert.Equal(t, current.Records, unchanged.Records)
 }
 
+func TestUpdateZone_DoesNotPersistWhenSignedArtifactStoreFails(t *testing.T) {
+	server, store := setupArtifactStoreFailureTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "artifact-store-fails.com.",
+		SOA:  model.DefaultSOA("ns1.artifact-store-fails.com.", "admin.artifact-store-fails.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.Background(), zone))
+
+	current, err := store.GetZone(context.Background(), "artifact-store-fails.com.")
+	require.NoError(t, err)
+
+	update := *current
+	update.SOA.Refresh = 7200
+	body := marshalUpdateZoneRequest(t, &update)
+
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/artifact-store-fails.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get("ETag"))
+
+	unchanged, err := store.GetZone(context.Background(), "artifact-store-fails.com.")
+	require.NoError(t, err)
+	assert.Equal(t, current.Version, unchanged.Version)
+	assert.Equal(t, current.SOA.Serial, unchanged.SOA.Serial)
+	assert.Equal(t, current.SOA.Refresh, unchanged.SOA.Refresh)
+	assert.Equal(t, current.Records, unchanged.Records)
+}
+
 func TestCreateRecord_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 	server, store := setupSigningFailureTest(t)
 	defer server.Close()
@@ -533,6 +574,46 @@ func TestCreateRecord_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 	assert.Empty(t, resp.Header.Get("ETag"))
 
 	unchanged, err := store.GetZone(context.Background(), "signing-fails.com.")
+	require.NoError(t, err)
+	assert.Equal(t, current.Version, unchanged.Version)
+	assert.Equal(t, current.SOA.Serial, unchanged.SOA.Serial)
+	assert.Equal(t, current.Records, unchanged.Records)
+}
+
+func TestCreateRecord_DoesNotPersistWhenSignedArtifactStoreFails(t *testing.T) {
+	server, store := setupArtifactStoreFailureTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "artifact-store-fails.com.",
+		SOA:  model.DefaultSOA("ns1.artifact-store-fails.com.", "admin.artifact-store-fails.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.Background(), zone))
+
+	current, err := store.GetZone(context.Background(), "artifact-store-fails.com.")
+	require.NoError(t, err)
+
+	record := model.Record{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"}
+	body, err := json.Marshal(&record)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/artifact-store-fails.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get("ETag"))
+
+	unchanged, err := store.GetZone(context.Background(), "artifact-store-fails.com.")
 	require.NoError(t, err)
 	assert.Equal(t, current.Version, unchanged.Version)
 	assert.Equal(t, current.SOA.Serial, unchanged.SOA.Serial)
