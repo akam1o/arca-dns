@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,80 @@ import (
 
 type controllerStoreWithoutConditionalDelete struct {
 	backend.ZoneStore
+}
+
+func TestRunServeReturnsConfigLoadError(t *testing.T) {
+	origConfigFile := configFile
+	t.Cleanup(func() {
+		configFile = origConfigFile
+	})
+
+	configFile = filepath.Join(t.TempDir(), "missing.yaml")
+
+	err := runServe(&cobra.Command{Use: "serve"}, nil)
+	if err == nil {
+		t.Fatal("expected config load error")
+	}
+	if !strings.Contains(err.Error(), "failed to load configuration") {
+		t.Fatalf("expected config load error, got %v", err)
+	}
+}
+
+func TestRunServeRevalidatesFlagOverridesBeforeBackendInit(t *testing.T) {
+	origConfigFile := configFile
+	origListenAddr := listenAddr
+	origObservabilityListenAddr := observabilityListenAddr
+	t.Cleanup(func() {
+		configFile = origConfigFile
+		listenAddr = origListenAddr
+		observabilityListenAddr = origObservabilityListenAddr
+	})
+
+	tmpDir := t.TempDir()
+	configFile = filepath.Join(tmpDir, "controller.yaml")
+	configYAML := `
+api:
+  listen: "127.0.0.1:8080"
+  artifact_signature_key: "test-artifact-signature-key-32-bytes"
+  auth:
+    enabled: false
+observability:
+  listen: "127.0.0.1:9053"
+backend:
+  type: "sqlite"
+  sqlite:
+    dsn: "` + filepath.Join(tmpDir, "arca-dns.db") + `"
+dnssec:
+  enabled: false
+storage:
+  artifact_directory: "` + filepath.Join(tmpDir, "artifacts") + `"
+logging:
+  level: "error"
+  format: "json"
+  output: "stdout"
+`
+	if err := os.WriteFile(configFile, []byte(configYAML), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmd := &cobra.Command{Use: "serve"}
+	cmd.Flags().StringVar(&listenAddr, "listen", ":8080", "HTTP server listen address")
+	cmd.Flags().StringVar(&observabilityListenAddr, "observability-listen", ":9053", "HTTP observability server listen address")
+	if err := cmd.Flags().Set("listen", "127.0.0.1:19053"); err != nil {
+		t.Fatalf("set listen flag: %v", err)
+	}
+	if err := cmd.Flags().Set("observability-listen", "127.0.0.1:19053"); err != nil {
+		t.Fatalf("set observability listen flag: %v", err)
+	}
+
+	err := runServe(cmd, nil)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "invalid configuration after applying command-line flags") ||
+		!strings.Contains(err.Error(), "observability.listen") {
+		t.Fatalf("expected flag override validation error, got %v", err)
+	}
 }
 
 func TestNewStoreFromConfig_SQLite(t *testing.T) {
