@@ -88,29 +88,38 @@ func TestSetupRouter_ProtectedRoutesStillLimitBodySize(t *testing.T) {
 	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 }
 
-func TestSetupRouter_StatusRoutesBypassAuthAndMetricsStaysSeparate(t *testing.T) {
+func TestSetupRouter_StatusRouteRequiresManagementAuth(t *testing.T) {
+	const adminKey = "admin-key"
 	logger := zap.NewNop()
 	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
 	apiCfg := config.DefaultControllerConfig().API
 	apiCfg.Auth.Enabled = true
-	apiCfg.Auth.APIKeys = nil
+	apiCfg.Auth.APIKeys = map[string]string{"admin": routerTestAPIKeyHash(adminKey)}
+	apiCfg.Auth.APIKeyRoles = map[string]string{"admin": middleware.AuthRoleAdmin}
 	apiCfg.RateLimit.Enabled = false
 
 	router := SetupRouter(handler, &apiCfg, logger)
 
 	tests := []struct {
+		name string
 		path string
+		key  string
 		want int
 	}{
-		{path: "/health", want: http.StatusOK},
-		{path: "/ready", want: http.StatusOK},
-		{path: "/status", want: http.StatusOK},
-		{path: "/metrics", want: http.StatusNotFound},
+		{name: "health remains open", path: "/health", want: http.StatusOK},
+		{name: "ready remains open", path: "/ready", want: http.StatusOK},
+		{name: "status without api key", path: "/status", want: http.StatusUnauthorized},
+		{name: "status with invalid api key", path: "/status", key: "wrong-key", want: http.StatusUnauthorized},
+		{name: "status with api key", path: "/status", key: adminKey, want: http.StatusOK},
+		{name: "metrics stays separate", path: "/metrics", want: http.StatusNotFound},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.key != "" {
+				req.Header.Set("X-API-Key", tt.key)
+			}
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
 

@@ -26,7 +26,7 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 
 	router := newControllerRouter(handler, cfg, logger, true)
 
-	registerStatusRoutes(router, handler)
+	registerHealthRoutes(router, handler)
 
 	// Audit and rate limiting are scoped to the management API listener.
 	auditLogger := middleware.NewAuditLogger(logger)
@@ -47,7 +47,7 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 
 	requestValidator := middleware.NewRequestValidator()
 
-	protected := v1.Group("")
+	var authMiddleware gin.HandlerFunc
 	if cfg != nil && cfg.Auth.Enabled {
 		authConfig := middleware.AuthConfig{
 			APIKeys:     cfg.Auth.APIKeys,
@@ -55,7 +55,18 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 			HeaderName:  "X-API-Key",
 		}
 		authenticator := middleware.NewAuthenticator(authConfig)
-		protected.Use(authenticator.Middleware())
+		authMiddleware = authenticator.Middleware()
+	}
+
+	statusProtected := router.Group("")
+	if authMiddleware != nil {
+		statusProtected.Use(authMiddleware)
+	}
+	statusProtected.GET("/status", requestValidator.Middleware(), handler.Status)
+
+	protected := v1.Group("")
+	if authMiddleware != nil {
+		protected.Use(authMiddleware)
 	}
 
 	authEnabled := cfg != nil && cfg.Auth.Enabled
@@ -148,10 +159,9 @@ func registerObservabilityRoutes(routes routeGroup, handler *Handler, statusAuth
 	routes.GET("/metrics", statusAuth, handler.Metrics)
 }
 
-func registerStatusRoutes(routes routeGroup, handler *Handler) {
+func registerHealthRoutes(routes routeGroup, handler *Handler) {
 	routes.GET("/health", handler.Health)
 	routes.GET("/ready", handler.Ready)
-	routes.GET("/status", handler.Status)
 }
 
 func observabilityAuthToken(observability *config.ObservabilityConfig) string {
