@@ -320,6 +320,26 @@ func TestMigrateImportRejectsSymlinkedInputFile(t *testing.T) {
 	assert.ErrorIs(t, getErr, model.ErrZoneNotFound)
 }
 
+func TestMigrateImportRejectsOversizedInputFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputPath := filepath.Join(tmpDir, "oversized.json")
+	file, err := os.OpenFile(inputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	require.NoError(t, err)
+	if err := file.Truncate(maxMigrationFileSize + 1); err != nil {
+		_ = file.Close()
+		require.NoError(t, err)
+	}
+	require.NoError(t, file.Close())
+
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	_, err = importToStore(context.Background(), store, tmpDir, false, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "migration file")
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
 func TestMigrateImportOverwritePreservesSourceSerial(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctx := context.Background()

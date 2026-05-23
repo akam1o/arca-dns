@@ -38,6 +38,7 @@ var (
 const (
 	defaultMigrateBackend    = "sqlite"
 	supportedMigrateBackends = "sqlite, postgres, mysql, git, etcd"
+	maxMigrationFileSize     = config.DefaultControllerClientMaxResponseBytes
 )
 
 var errOverwriteConditionalDeleteUnsupported = errors.New("backend does not support atomic conditional delete")
@@ -513,6 +514,9 @@ func readRegularMigrationFile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("migration file must be a regular file: %s", path)
 	}
+	if info.Size() > maxMigrationFileSize {
+		return nil, fmt.Errorf("migration file exceeds maximum size of %d bytes: %s", maxMigrationFileSize, path)
+	}
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -530,8 +534,18 @@ func readRegularMigrationFile(path string) ([]byte, error) {
 	if !openedInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("migration file must be a regular file: %s", path)
 	}
+	if openedInfo.Size() > maxMigrationFileSize {
+		return nil, fmt.Errorf("migration file exceeds maximum size of %d bytes: %s", maxMigrationFileSize, path)
+	}
 
-	return io.ReadAll(file)
+	data, err := io.ReadAll(io.LimitReader(file, maxMigrationFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxMigrationFileSize {
+		return nil, fmt.Errorf("migration file exceeds maximum size of %d bytes: %s", maxMigrationFileSize, path)
+	}
+	return data, nil
 }
 
 func overwriteZone(ctx context.Context, store backend.ZoneStore, zone *model.Zone) error {
