@@ -441,13 +441,13 @@ func TestSyncer_SyncAll_SignedConditionalFetch(t *testing.T) {
 	require.NoError(t, fileMgr.EnsureDirectory())
 
 	syncer := NewSyncer(client, fileMgr, config.SyncConfig{
-		SyncInterval:        30 * time.Second,
-		Jitter:              5 * time.Second,
-		MaxStaleness:        5 * time.Minute,
-		BackupVersions:      3,
-		VerifyChecksums:     true,
-		VerifySignatures:    true,
-		ControllerPublicKey: signatureKey,
+		SyncInterval:           30 * time.Second,
+		Jitter:                 5 * time.Second,
+		MaxStaleness:           5 * time.Minute,
+		BackupVersions:         3,
+		VerifyChecksums:        true,
+		VerifySignatures:       true,
+		ControllerSignatureKey: signatureKey,
 	}, logger)
 
 	ctx := context.Background()
@@ -1046,9 +1046,9 @@ func TestSyncer_IsStale(t *testing.T) {
 func TestNewSyncer_AppliesSignatureVerification(t *testing.T) {
 	client := &Client{}
 	syncer := NewSyncer(client, nil, config.SyncConfig{
-		VerifyChecksums:     true,
-		VerifySignatures:    true,
-		ControllerPublicKey: "test-signature-key",
+		VerifyChecksums:        true,
+		VerifySignatures:       true,
+		ControllerSignatureKey: "test-signature-key",
 	}, zap.NewNop())
 
 	require.NotNil(t, syncer)

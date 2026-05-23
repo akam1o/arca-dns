@@ -2827,6 +2827,7 @@ func TestValidateAgentConfig_AcceptsLegacyControllerPublicKeyAlias(t *testing.T)
 	err := ValidateAgentConfig(cfg)
 	assert.NoError(t, err)
 	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
+	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 }
 
 func TestValidateAgentConfig_PrefersControllerSignatureKeyAlias(t *testing.T) {
@@ -2835,6 +2836,17 @@ func TestValidateAgentConfig_PrefersControllerSignatureKeyAlias(t *testing.T) {
 
 	err := ValidateAgentConfig(cfg)
 	assert.NoError(t, err)
+	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
+	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
+}
+
+func TestValidateAgentConfig_ValidatesCanonicalControllerSignatureKey(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Sync.ControllerPublicKey = "short"
+
+	err := ValidateAgentConfig(cfg)
+	assert.NoError(t, err)
+	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
 	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 }
 

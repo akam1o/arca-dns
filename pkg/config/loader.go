@@ -1014,7 +1014,7 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	if cfg.Sync.VerifySignatures {
-		if err := validateArtifactSignatureKey("sync.controller_signature_key", cfg.Sync.ControllerPublicKey, true); err != nil {
+		if err := validateArtifactSignatureKey("sync.controller_signature_key", cfg.Sync.ControllerSignatureKey, true); err != nil {
 			return err
 		}
 	}
@@ -1414,11 +1414,13 @@ func applyAgentSignatureKeyAliases(cfg *AgentConfig) error {
 	legacyPublicKey := strings.TrimSpace(cfg.Sync.ControllerPublicKey)
 
 	if signatureKey != "" {
+		cfg.Sync.ControllerSignatureKey = signatureKey
 		cfg.Sync.ControllerPublicKey = signatureKey
 		return nil
 	}
 	if legacyPublicKey != "" {
 		cfg.Sync.ControllerSignatureKey = legacyPublicKey
+		cfg.Sync.ControllerPublicKey = legacyPublicKey
 	}
 	return nil
 }
