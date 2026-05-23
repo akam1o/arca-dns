@@ -139,6 +139,41 @@ func TestFileManager_ReadZoneFileRejectsSymlinkedZoneFile(t *testing.T) {
 	}
 }
 
+func TestFileManager_ReadZoneFileRejectsOversizedZoneFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	file, err := os.OpenFile(fm.GetZonePath(zoneName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		t.Fatalf("failed to create oversized zone file: %v", err)
+	}
+	if err := file.Truncate(maxSyncFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("failed to size oversized zone file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("failed to close oversized zone file: %v", err)
+	}
+
+	_, err = fm.ReadZoneFile(zoneName)
+	if err == nil {
+		t.Fatal("ReadZoneFile should reject oversized zone file")
+	}
+	if !strings.Contains(err.Error(), "zone file") || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("expected oversized zone file error, got %v", err)
+	}
+}
+
 func TestFileManager_WriteZoneFileRejectsSymlinkedExistingZoneFile(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
 	if err != nil {
@@ -309,6 +344,40 @@ func TestFileManager_ReadManagedZonesRejectsSymlinkedIndex(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "managed zone index") || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("expected symlink managed zone index error, got %v", err)
+	}
+}
+
+func TestFileManager_ReadManagedZonesRejectsOversizedIndex(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	file, err := os.OpenFile(fm.managedZonesIndexPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		t.Fatalf("failed to create oversized managed index: %v", err)
+	}
+	if err := file.Truncate(maxSyncFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("failed to size oversized managed index: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("failed to close oversized managed index: %v", err)
+	}
+
+	_, err = fm.readManagedZones()
+	if err == nil {
+		t.Fatal("readManagedZones should reject oversized managed zone index")
+	}
+	if !strings.Contains(err.Error(), "managed zone index") || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("expected oversized managed zone index error, got %v", err)
 	}
 }
 

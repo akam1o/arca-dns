@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"go.uber.org/zap"
 )
@@ -22,7 +23,10 @@ type FileManager struct {
 	logger         *zap.Logger
 }
 
-const managedZonesIndexFile = ".arca-dns-managed-zones.json"
+const (
+	managedZonesIndexFile = ".arca-dns-managed-zones.json"
+	maxSyncFileSize       = config.DefaultControllerClientMaxResponseBytes
+)
 
 type managedZonesIndex struct {
 	Zones   []string           `json:"zones,omitempty"`
@@ -483,6 +487,9 @@ func readRegularSyncFile(path string, label string) ([]byte, os.FileMode, error)
 	if !info.Mode().IsRegular() {
 		return nil, 0, fmt.Errorf("%s must be a regular file: %s", label, path)
 	}
+	if info.Size() > maxSyncFileSize {
+		return nil, 0, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxSyncFileSize, path)
+	}
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -500,10 +507,16 @@ func readRegularSyncFile(path string, label string) ([]byte, os.FileMode, error)
 	if !openedInfo.Mode().IsRegular() {
 		return nil, 0, fmt.Errorf("%s must be a regular file: %s", label, path)
 	}
+	if openedInfo.Size() > maxSyncFileSize {
+		return nil, 0, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxSyncFileSize, path)
+	}
 
-	data, err := io.ReadAll(file)
+	data, err := io.ReadAll(io.LimitReader(file, maxSyncFileSize+1))
 	if err != nil {
 		return nil, 0, err
+	}
+	if int64(len(data)) > maxSyncFileSize {
+		return nil, 0, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxSyncFileSize, path)
 	}
 	return data, openedInfo.Mode().Perm(), nil
 }
