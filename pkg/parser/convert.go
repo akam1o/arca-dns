@@ -11,28 +11,35 @@ import (
 // BindToModel converts a BIND zone file to a model.Zone
 // This is the main entry point for parsing raw zone files
 func BindToModel(raw string, origin string) (*model.Zone, error) {
+	zone, _, err := BindToModelWithMetadata(raw, origin)
+	return zone, err
+}
+
+// BindToModelWithMetadata converts a BIND zone file to a model.Zone and
+// reports non-fatal normalization changes.
+func BindToModelWithMetadata(raw string, origin string) (*model.Zone, NormalizeMetadata, error) {
 	// Parse the BIND zone file
 	reader := strings.NewReader(raw)
 	opts := DefaultParseOptions()
 
 	parsed, err := ParseBINDZone(reader, origin, opts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse zone file: %w", err)
+		return nil, NormalizeMetadata{}, fmt.Errorf("failed to parse zone file: %w", err)
 	}
 
 	// Normalize to model.Zone
 	normOpts := DefaultNormalizeOptions()
-	zone, err := NormalizeParsedZone(parsed, normOpts)
+	zone, metadata, err := NormalizeParsedZoneWithMetadata(parsed, normOpts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to normalize zone: %w", err)
+		return nil, metadata, fmt.Errorf("failed to normalize zone: %w", err)
 	}
 
 	// Validate the result
 	if err := model.ValidateZone(zone); err != nil {
-		return nil, fmt.Errorf("validation failed: %w", err)
+		return nil, metadata, fmt.Errorf("validation failed: %w", err)
 	}
 
-	return zone, nil
+	return zone, metadata, nil
 }
 
 // ModelToBind converts a model.Zone to BIND zone file format
@@ -65,13 +72,20 @@ func ModelToBindWriter(zone *model.Zone, w io.Writer) error {
 // BindToModelWithDefaults is a convenience function that uses sensible defaults
 // for origin extraction from the zone file itself
 func BindToModelWithDefaults(raw string) (*model.Zone, error) {
+	zone, _, err := BindToModelWithDefaultsMetadata(raw)
+	return zone, err
+}
+
+// BindToModelWithDefaultsMetadata is a convenience function that uses sensible
+// defaults for origin extraction and reports non-fatal normalization changes.
+func BindToModelWithDefaultsMetadata(raw string) (*model.Zone, NormalizeMetadata, error) {
 	// Try to extract origin from $ORIGIN directive or SOA record
 	origin, err := extractOrigin(raw)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract origin: %w", err)
+		return nil, NormalizeMetadata{}, fmt.Errorf("failed to extract origin: %w", err)
 	}
 
-	return BindToModel(raw, origin)
+	return BindToModelWithMetadata(raw, origin)
 }
 
 // extractOrigin attempts to extract the zone origin from a BIND zone file

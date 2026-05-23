@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"net"
 	"testing"
 
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -253,6 +254,59 @@ func TestDeduplicateRecords(t *testing.T) {
 				t.Errorf("expected %d records after deduplication, got %d", tt.output, len(result))
 			}
 		})
+	}
+}
+
+func TestNormalizeParsedZoneWithMetadataReportsDeduplicatedRecords(t *testing.T) {
+	parsed := &ParsedZone{
+		Origin:     "example.com.",
+		DefaultTTL: 3600,
+		Records: []dns.RR{
+			&dns.SOA{
+				Hdr: dns.RR_Header{
+					Name:   "example.com.",
+					Rrtype: dns.TypeSOA,
+					Class:  dns.ClassINET,
+					Ttl:    3600,
+				},
+				Ns:      "ns1.example.com.",
+				Mbox:    "admin.example.com.",
+				Serial:  2024010101,
+				Refresh: 3600,
+				Retry:   1800,
+				Expire:  604800,
+				Minttl:  86400,
+			},
+			&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   "www.example.com.",
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    3600,
+				},
+				A: net.IPv4(192, 0, 2, 1),
+			},
+			&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   "www.example.com.",
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    3600,
+				},
+				A: net.IPv4(192, 0, 2, 1),
+			},
+		},
+	}
+
+	zone, metadata, err := NormalizeParsedZoneWithMetadata(parsed, DefaultNormalizeOptions())
+	if err != nil {
+		t.Fatalf("NormalizeParsedZoneWithMetadata failed: %v", err)
+	}
+	if len(zone.Records) != 1 {
+		t.Fatalf("expected 1 deduplicated record, got %d", len(zone.Records))
+	}
+	if metadata.DuplicateRecords != 1 {
+		t.Fatalf("expected 1 duplicate record, got %d", metadata.DuplicateRecords)
 	}
 }
 

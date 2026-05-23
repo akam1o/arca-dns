@@ -19,6 +19,11 @@ type NormalizeOptions struct {
 	SortRecords bool
 }
 
+// NormalizeMetadata reports non-fatal changes applied during normalization.
+type NormalizeMetadata struct {
+	DuplicateRecords int
+}
+
 // DefaultNormalizeOptions returns sensible defaults for zone normalization
 func DefaultNormalizeOptions() NormalizeOptions {
 	return NormalizeOptions{
@@ -30,8 +35,16 @@ func DefaultNormalizeOptions() NormalizeOptions {
 
 // NormalizeParsedZone converts a ParsedZone to a normalized model.Zone
 func NormalizeParsedZone(parsed *ParsedZone, opts NormalizeOptions) (*model.Zone, error) {
+	zone, _, err := NormalizeParsedZoneWithMetadata(parsed, opts)
+	return zone, err
+}
+
+// NormalizeParsedZoneWithMetadata converts a ParsedZone to a normalized
+// model.Zone and reports non-fatal normalization changes.
+func NormalizeParsedZoneWithMetadata(parsed *ParsedZone, opts NormalizeOptions) (*model.Zone, NormalizeMetadata, error) {
+	var metadata NormalizeMetadata
 	if parsed == nil {
-		return nil, fmt.Errorf("parsed zone is nil")
+		return nil, metadata, fmt.Errorf("parsed zone is nil")
 	}
 
 	// Canonicalize origin
@@ -69,7 +82,7 @@ func NormalizeParsedZone(parsed *ParsedZone, opts NormalizeOptions) (*model.Zone
 		switch v := rr.(type) {
 		case *dns.SOA:
 			if hasSOA {
-				return nil, fmt.Errorf("multiple SOA records found")
+				return nil, metadata, fmt.Errorf("multiple SOA records found")
 			}
 			hasSOA = true
 
@@ -190,26 +203,26 @@ func NormalizeParsedZone(parsed *ParsedZone, opts NormalizeOptions) (*model.Zone
 			if rrType == "" {
 				rrType = fmt.Sprintf("TYPE%d", rr.Header().Rrtype)
 			}
-			return nil, fmt.Errorf("unsupported record type: %s (for record %s)", rrType, name)
+			return nil, metadata, fmt.Errorf("unsupported record type: %s (for record %s)", rrType, name)
 		}
 	}
 
 	if !hasSOA {
-		return nil, fmt.Errorf("no SOA record found")
+		return nil, metadata, fmt.Errorf("no SOA record found")
 	}
 
 	zone.SOA = *soaRecord
 
 	// Apply normalization options
 	if opts.Deduplicate {
-		zone.Records = deduplicateRecords(zone.Records)
+		zone.Records, metadata.DuplicateRecords = deduplicateRecordsWithCount(zone.Records)
 	}
 
 	if opts.SortRecords {
 		sortRecords(zone.Records)
 	}
 
-	return zone, nil
+	return zone, metadata, nil
 }
 
 // canonicalizeDomain converts a domain name to canonical form (lowercase, FQDN with trailing dot)
@@ -227,19 +240,27 @@ func canonicalizeDomain(name string) string {
 
 // deduplicateRecords removes duplicate records based on all fields
 func deduplicateRecords(records []model.Record) []model.Record {
+	deduplicated, _ := deduplicateRecordsWithCount(records)
+	return deduplicated
+}
+
+func deduplicateRecordsWithCount(records []model.Record) ([]model.Record, int) {
 	seen := make(map[string]bool)
 	result := make([]model.Record, 0, len(records))
+	duplicates := 0
 
 	for _, r := range records {
 		// Create key from all fields except ID
 		key := fmt.Sprintf("%s|%s|%d|%s", r.Name, r.Type, r.TTL, r.Value)
-		if !seen[key] {
-			seen[key] = true
-			result = append(result, r)
+		if seen[key] {
+			duplicates++
+			continue
 		}
+		seen[key] = true
+		result = append(result, r)
 	}
 
-	return result
+	return result, duplicates
 }
 
 // sortRecords sorts records by name, type, then value for deterministic output

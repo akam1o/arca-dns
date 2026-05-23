@@ -113,13 +113,14 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 
 	// Parse BIND zone file to model
 	var modelZone *model.Zone
+	var normalizeMetadata parser.NormalizeMetadata
 
 	if origin != "" {
 		// Use provided origin
-		modelZone, err = parser.BindToModel(rawZone, origin)
+		modelZone, normalizeMetadata, err = parser.BindToModelWithMetadata(rawZone, origin)
 	} else {
 		// Try to extract origin from zone file
-		modelZone, err = parser.BindToModelWithDefaults(rawZone)
+		modelZone, normalizeMetadata, err = parser.BindToModelWithDefaultsMetadata(rawZone)
 	}
 
 	if err != nil {
@@ -240,7 +241,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 	h.logger.Info("Zone created from raw BIND format", zap.String("zone", createdZone.Name), zap.String("version", createdZone.Version))
 
 	// Return created zone summary
-	c.JSON(http.StatusCreated, gin.H{
+	response := gin.H{
 		"name":    createdZone.Name,
 		"version": createdZone.Version,
 		"soa": gin.H{
@@ -254,7 +255,23 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		},
 		"records_count": len(createdZone.Records),
 		"message":       "zone successfully parsed and created from BIND format",
-	})
+	}
+	if warnings := rawZoneImportWarnings(normalizeMetadata); len(warnings) > 0 {
+		response["warnings"] = warnings
+	}
+	c.JSON(http.StatusCreated, response)
+}
+
+func rawZoneImportWarnings(metadata parser.NormalizeMetadata) []gin.H {
+	warnings := make([]gin.H, 0, 1)
+	if metadata.DuplicateRecords > 0 {
+		warnings = append(warnings, gin.H{
+			"code":    "duplicate_records_deduplicated",
+			"message": "duplicate records were deduplicated during import",
+			"count":   metadata.DuplicateRecords,
+		})
+	}
+	return warnings
 }
 
 func readRawZoneContent(reader io.Reader) ([]byte, error) {

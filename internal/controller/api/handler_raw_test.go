@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -240,6 +241,50 @@ func TestCreateZoneRaw_Duplicate(t *testing.T) {
 	require.NoError(t, err)
 	defer resp2.Body.Close()
 	assert.Equal(t, http.StatusConflict, resp2.StatusCode)
+}
+
+func TestCreateZoneRaw_ReturnsDeduplicationWarning(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zoneFile := strings.Join([]string{
+		"$TTL 3600",
+		"dedup.com. IN SOA ns1.dedup.com. admin.dedup.com. (",
+		"    2024010101 3600 1800 604800 86400",
+		")",
+		"dedup.com. IN NS ns1.dedup.com.",
+		"www.dedup.com. IN A 192.0.2.1",
+		"www.dedup.com. IN A 192.0.2.1",
+		"",
+	}, "\n")
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=dedup.com.", strings.NewReader(zoneFile))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var body struct {
+		RecordsCount int `json:"records_count"`
+		Warnings     []struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Count   int    `json:"count"`
+		} `json:"warnings"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, 2, body.RecordsCount)
+	require.Len(t, body.Warnings, 1)
+	assert.Equal(t, "duplicate_records_deduplicated", body.Warnings[0].Code)
+	assert.Equal(t, 1, body.Warnings[0].Count)
+	assert.NotEmpty(t, body.Warnings[0].Message)
+
+	created, err := store.GetZone(context.Background(), "dedup.com.")
+	require.NoError(t, err)
+	require.Len(t, created.Records, 2)
 }
 
 func TestCreateZoneRaw_InvalidZone_NoSOA(t *testing.T) {

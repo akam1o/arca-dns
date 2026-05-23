@@ -329,6 +329,21 @@ paths:
                   message:
                     type: string
                     example: "zone successfully parsed and created from BIND format"
+                  warnings:
+                    type: array
+                    description: Non-fatal import warnings.
+                    items:
+                      type: object
+                      properties:
+                        code:
+                          type: string
+                          example: "duplicate_records_deduplicated"
+                        message:
+                          type: string
+                          example: "duplicate records were deduplicated during import"
+                        count:
+                          type: integer
+                          example: 1
         '400':
           description: Bad request (parse error, unsupported directive, validation failure)
           content:
