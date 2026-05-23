@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+const rawZoneMultipartOverheadBytes int64 = 1 << 20
+
+var errRawZoneTooLarge = errors.New("zone file exceeds maximum size")
 
 // CreateZoneRaw handles POST /api/v1/zones/raw
 // Accepts BIND zone files in multipart/form-data or text/plain format
@@ -23,9 +28,15 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 
 	// Handle different content types
 	if strings.HasPrefix(contentType, "multipart/form-data") {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, parser.DefaultMaxZoneFileSize+rawZoneMultipartOverheadBytes)
+
 		// Parse multipart form
 		file, header, err := c.Request.FormFile("zonefile")
 		if err != nil {
+			if rawZoneReadTooLarge(err) {
+				writeRawZoneTooLarge(c)
+				return
+			}
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"missing zonefile in form data",
@@ -36,8 +47,12 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		defer file.Close()
 
 		// Read file content
-		content, err := io.ReadAll(file)
+		content, err := readRawZoneContent(file)
 		if err != nil {
+			if rawZoneReadTooLarge(err) {
+				writeRawZoneTooLarge(c)
+				return
+			}
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"failed to read zonefile",
@@ -59,8 +74,12 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 
 	} else if strings.HasPrefix(contentType, "text/plain") || contentType == "" {
 		// Read raw body
-		body, err := io.ReadAll(c.Request.Body)
+		body, err := readRawZoneContent(c.Request.Body)
 		if err != nil {
+			if rawZoneReadTooLarge(err) {
+				writeRawZoneTooLarge(c)
+				return
+			}
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"failed to read request body",
@@ -233,6 +252,30 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		"records_count": len(createdZone.Records),
 		"message":       "zone successfully parsed and created from BIND format",
 	})
+}
+
+func readRawZoneContent(reader io.Reader) ([]byte, error) {
+	content, err := io.ReadAll(io.LimitReader(reader, parser.DefaultMaxZoneFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > parser.DefaultMaxZoneFileSize {
+		return nil, errRawZoneTooLarge
+	}
+	return content, nil
+}
+
+func rawZoneReadTooLarge(err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	return errors.Is(err, errRawZoneTooLarge) || errors.As(err, &maxBytesErr)
+}
+
+func writeRawZoneTooLarge(c *gin.Context) {
+	c.JSON(http.StatusRequestEntityTooLarge, model.NewAPIErrorWithDetails(
+		model.ErrorCodeInvalidInput,
+		fmt.Sprintf("zone file exceeds maximum size of %d bytes", parser.DefaultMaxZoneFileSize),
+		map[string]interface{}{"max_bytes": parser.DefaultMaxZoneFileSize},
+	))
 }
 
 // extractValidationError extracts the validation error message from a wrapped error

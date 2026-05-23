@@ -15,6 +15,7 @@ import (
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/dnssec"
+	"github.com/akam1o/arca-dns/pkg/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -275,6 +276,47 @@ func TestCreateZoneRaw_EmptyContent(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestCreateZoneRaw_TextPlainRejectsOversizedBody(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	body := strings.Repeat("A", int(parser.DefaultMaxZoneFileSize)+1)
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=oversized.com.",
+		strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+}
+
+func TestCreateZoneRaw_MultipartRejectsOversizedZoneFile(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("zonefile", "oversized.com.zone")
+	require.NoError(t, err)
+	_, err = part.Write(bytes.Repeat([]byte("A"), int(parser.DefaultMaxZoneFileSize)+1))
+	require.NoError(t, err)
+	require.NoError(t, writer.WriteField("origin", "oversized.com."))
+	require.NoError(t, writer.Close())
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw", &body)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
 }
 
 func TestCreateZoneRaw_UnsupportedContentType(t *testing.T) {
