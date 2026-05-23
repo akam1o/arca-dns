@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func TestNewStoreFromConfig_SQLite(t *testing.T) {
@@ -70,6 +72,30 @@ func TestNewControllerHTTPServer_HasTimeouts(t *testing.T) {
 	}
 	if server.IdleTimeout != 60*time.Second {
 		t.Fatalf("IdleTimeout=%s, want 60s", server.IdleTimeout)
+	}
+}
+
+func TestStartControllerHTTPServerReportsListenError(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	server := newControllerHTTPServer(listener.Addr().String(), http.NewServeMux())
+	errCh := make(chan controllerHTTPServerError, 1)
+	startControllerHTTPServer(zap.NewNop(), "api", server, errCh)
+
+	select {
+	case serverErr := <-errCh:
+		if serverErr.name != "api" {
+			t.Fatalf("server name = %q, want api", serverErr.name)
+		}
+		if serverErr.err == nil {
+			t.Fatal("server error is nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for listen error")
 	}
 }
 

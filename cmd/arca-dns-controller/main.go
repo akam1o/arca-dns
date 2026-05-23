@@ -47,7 +47,7 @@ performs DNSSEC signing, and distributes zone artifacts to agents.`,
 		Use:   "serve",
 		Short: "Start the controller API server",
 		Long:  "Start the controller API server to handle zone management requests",
-		Run:   runServe,
+		RunE:  runServe,
 	}
 
 	serveCmd.Flags().StringVar(&listenAddr, "listen", ":8080", "HTTP API server listen address")
@@ -64,28 +64,30 @@ performs DNSSEC signing, and distributes zone artifacts to agents.`,
 	}
 }
 
-func runServe(cmd *cobra.Command, args []string) {
+func runServe(cmd *cobra.Command, args []string) error {
 	// Initialize a bootstrap logger until configuration is loaded.
 	bootstrapLogger, err := zap.NewProduction()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
 
 	// Load configuration (defaults < YAML file < environment variables)
 	cfg, err := config.LoadControllerConfig(configFile)
 	if err != nil {
-		bootstrapLogger.Fatal("Failed to load configuration", zap.Error(err))
+		_ = bootstrapLogger.Sync()
+		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
 	applyServeFlagOverrides(cmd, cfg)
 	if err := config.ValidateControllerConfig(cfg); err != nil {
-		bootstrapLogger.Fatal("Invalid configuration after applying command-line flags", zap.Error(err))
+		_ = bootstrapLogger.Sync()
+		return fmt.Errorf("invalid configuration after applying command-line flags: %w", err)
 	}
 
 	logger, err := applogging.NewLogger(cfg.Logging)
 	if err != nil {
-		bootstrapLogger.Fatal("Failed to initialize configured logger", zap.Error(err))
+		_ = bootstrapLogger.Sync()
+		return fmt.Errorf("failed to initialize configured logger: %w", err)
 	}
 	defer func() { _ = logger.Sync() }()
 	_ = bootstrapLogger.Sync()
@@ -99,8 +101,16 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Initialize backend from configuration
 	store, err := newStoreFromConfig(cfg)
 	if err != nil {
-		logger.Fatal("Failed to initialize backend", zap.Error(err))
+		return fmt.Errorf("failed to initialize backend: %w", err)
 	}
+	storeOpen := true
+	defer func() {
+		if storeOpen {
+			if err := store.Close(); err != nil {
+				logger.Error("Failed to close backend", zap.Error(err))
+			}
+		}
+	}()
 	logger.Info("Backend initialized", zap.String("type", cfg.Backend.Type))
 
 	// Metrics (Prometheus text format).
@@ -123,7 +133,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			AllowAutoGenerate: cfg.DNSSEC.MasterKeyAutoGenerate,
 		})
 		if err != nil {
-			logger.Fatal("Failed to load master key", zap.Error(err))
+			return fmt.Errorf("failed to load master key: %w", err)
 		}
 		logger.Info("Master key loaded", zap.String("source", string(src)))
 
@@ -136,7 +146,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			ZSKBits:      cfg.DNSSEC.ZSKKeySize,
 		})
 		if err != nil {
-			logger.Fatal("Failed to create key manager", zap.Error(err))
+			return fmt.Errorf("failed to create key manager: %w", err)
 		}
 
 		signingService = service.NewSigningService(
@@ -154,8 +164,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		if cfg.DNSSEC.SchedulerEnabled {
 			// Validate scheduler configuration
 			if cfg.DNSSEC.SchedulerCheckInterval <= 0 {
-				logger.Fatal("Invalid scheduler check interval",
-					zap.Duration("interval", cfg.DNSSEC.SchedulerCheckInterval))
+				return fmt.Errorf("invalid scheduler check interval: %s", cfg.DNSSEC.SchedulerCheckInterval)
 			}
 
 			logger.Info("Initializing DNSSEC signature freshness scheduler")
@@ -211,23 +220,23 @@ func runServe(cmd *cobra.Command, args []string) {
 	observabilitySrv := newControllerHTTPServer(cfg.Observability.Listen, observabilityRouter)
 
 	// Start servers in goroutines
-	go func() {
-		logger.Info("HTTP API server listening", zap.String("addr", cfg.API.Listen))
-		if err := apiSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Failed to start API server", zap.Error(err))
-		}
-	}()
-	go func() {
-		logger.Info("HTTP observability server listening", zap.String("addr", cfg.Observability.Listen))
-		if err := observabilitySrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Failed to start observability server", zap.Error(err))
-		}
-	}()
+	serverErrCh := make(chan controllerHTTPServerError, 2)
+	startControllerHTTPServer(logger, "api", apiSrv, serverErrCh)
+	startControllerHTTPServer(logger, "observability", observabilitySrv, serverErrCh)
 
 	// Wait for interrupt signal for graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	defer signal.Stop(quit)
+
+	var serverErr error
+	select {
+	case sig := <-quit:
+		logger.Info("Received shutdown signal", zap.String("signal", sig.String()))
+	case err := <-serverErrCh:
+		serverErr = err
+		logger.Error("HTTP server stopped with error", zap.String("server", err.name), zap.Error(err.err))
+	}
 
 	logger.Info("Shutting down servers...")
 
@@ -264,8 +273,35 @@ func runServe(cmd *cobra.Command, args []string) {
 	if err := store.Close(); err != nil {
 		logger.Error("Failed to close backend", zap.Error(err))
 	}
+	storeOpen = false
 
 	logger.Info("Servers stopped")
+	if serverErr != nil {
+		return serverErr
+	}
+	return nil
+}
+
+type controllerHTTPServerError struct {
+	name string
+	err  error
+}
+
+func (e controllerHTTPServerError) Error() string {
+	return fmt.Sprintf("%s server failed: %v", e.name, e.err)
+}
+
+func (e controllerHTTPServerError) Unwrap() error {
+	return e.err
+}
+
+func startControllerHTTPServer(logger *zap.Logger, name string, srv *http.Server, errCh chan<- controllerHTTPServerError) {
+	go func() {
+		logger.Info("HTTP server listening", zap.String("server", name), zap.String("addr", srv.Addr))
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- controllerHTTPServerError{name: name, err: err}
+		}
+	}()
 }
 
 func applyServeFlagOverrides(cmd *cobra.Command, cfg *config.ControllerConfig) {
