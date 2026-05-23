@@ -159,6 +159,8 @@ func TestValidateTXTValue(t *testing.T) {
 		{"valid long chunked value", strings.Repeat("a", MaxTXTValueLength), false},
 		{"empty", "", false}, // TXT records can be empty
 		{"too long", strings.Repeat("a", MaxTXTValueLength+1), true},
+		{"control character", "line\nbreak", true},
+		{"invalid utf8", string([]byte{0xff}), true},
 	}
 
 	for _, tt := range tests {
@@ -180,6 +182,18 @@ func TestSplitTXTValue(t *testing.T) {
 	assert.Len(t, chunks, 2)
 	assert.Len(t, chunks[0], MaxTXTCharacterStringLength)
 	assert.Len(t, chunks[1], 45)
+	assert.Equal(t, value, strings.Join(chunks, ""))
+}
+
+func TestSplitTXTValue_PreservesUTF8Boundaries(t *testing.T) {
+	value := strings.Repeat("あ", 86)
+	chunks := SplitTXTValue(value)
+
+	assert.Len(t, chunks, 2)
+	for _, chunk := range chunks {
+		assert.LessOrEqual(t, len(chunk), MaxTXTCharacterStringLength)
+		assert.NoError(t, ValidateTXTValue(chunk))
+	}
 	assert.Equal(t, value, strings.Join(chunks, ""))
 }
 
@@ -325,10 +339,13 @@ func TestValidateCAAValue(t *testing.T) {
 		{"valid issue", "0 issue \"letsencrypt.org\"", false},
 		{"valid issuewild", "0 issuewild \"ca.example.com\"", false},
 		{"valid iodef", "0 iodef \"mailto:security@example.com\"", false},
+		{"valid empty quoted value", "0 issue \"\"", false},
 		{"missing fields", "0 issue", true},
 		{"invalid flags", "abc issue \"letsencrypt.org\"", true},
 		{"flags too high", "256 issue \"letsencrypt.org\"", true},
 		{"invalid tag", "0 issue! \"letsencrypt.org\"", true},
+		{"unbalanced quote", "0 issue \"letsencrypt.org", true},
+		{"control character", "0 issue \"line\nbreak\"", true},
 	}
 
 	for _, tt := range tests {

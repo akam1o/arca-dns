@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -584,6 +585,13 @@ type SRVRData struct {
 	Target   string
 }
 
+// CAARData is the parsed RDATA for a CAA record.
+type CAARData struct {
+	Flags uint8
+	Tag   string
+	Value string
+}
+
 // ParseMXValue parses an MX record value (priority + domain).
 func ParseMXValue(value string) (MXRData, error) {
 	parts := strings.Fields(value)
@@ -614,6 +622,12 @@ func ValidateTXTValue(value string) error {
 	if len(value) > MaxTXTValueLength {
 		return fmt.Errorf("TXT value too long (max %d bytes)", MaxTXTValueLength)
 	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("TXT value must be valid UTF-8")
+	}
+	if strings.ContainsFunc(value, unsafeTXTControlCharacter) {
+		return fmt.Errorf("TXT value contains control characters")
+	}
 	return nil
 }
 
@@ -625,8 +639,15 @@ func SplitTXTValue(value string) []string {
 
 	chunks := make([]string, 0, (len(value)+MaxTXTCharacterStringLength-1)/MaxTXTCharacterStringLength)
 	for len(value) > MaxTXTCharacterStringLength {
-		chunks = append(chunks, value[:MaxTXTCharacterStringLength])
-		value = value[MaxTXTCharacterStringLength:]
+		end := MaxTXTCharacterStringLength
+		for end > 0 && !utf8.RuneStart(value[end]) {
+			end--
+		}
+		if end == 0 {
+			end = MaxTXTCharacterStringLength
+		}
+		chunks = append(chunks, value[:end])
+		value = value[end:]
 	}
 	chunks = append(chunks, value)
 	return chunks
@@ -668,24 +689,40 @@ func ValidateSRVValue(value string) error {
 
 // ValidateCAAValue validates a CAA record value (flags tag value).
 func ValidateCAAValue(value string) error {
+	_, err := ParseCAAValue(value)
+	return err
+}
+
+// ParseCAAValue parses a CAA record value (flags tag value).
+func ParseCAAValue(value string) (CAARData, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return CAARData{}, fmt.Errorf("CAA value must be 'flags tag value': %s", value)
+	}
+
 	parts := strings.Fields(value)
 	if len(parts) < 3 {
-		return fmt.Errorf("CAA value must be 'flags tag value': %s", value)
+		return CAARData{}, fmt.Errorf("CAA value must be 'flags tag value': %s", value)
 	}
 
-	// Validate flags (0-255)
 	flags, err := strconv.Atoi(parts[0])
 	if err != nil || flags < 0 || flags > 255 {
-		return fmt.Errorf("invalid CAA flags: %s", parts[0])
+		return CAARData{}, fmt.Errorf("invalid CAA flags: %s", parts[0])
 	}
 
-	// Tag should be alphanumeric
 	tag := parts[1]
 	if !caaTagRegex.MatchString(tag) {
-		return fmt.Errorf("invalid CAA tag: %s", tag)
+		return CAARData{}, fmt.Errorf("invalid CAA tag: %s", tag)
 	}
 
-	return nil
+	afterFlags := strings.TrimSpace(strings.TrimPrefix(trimmed, parts[0]))
+	rawValue := strings.TrimSpace(strings.TrimPrefix(afterFlags, tag))
+	caaValue, err := parseCAAStringValue(rawValue)
+	if err != nil {
+		return CAARData{}, err
+	}
+
+	return CAARData{Flags: uint8(flags), Tag: tag, Value: caaValue}, nil
 }
 
 func recordPriorityFromValue(recordType, value string) (uint16, bool, error) {
@@ -716,6 +753,32 @@ func parseUint16Field(value string) (uint16, error) {
 		return 0, fmt.Errorf("value outside uint16 range: %s", value)
 	}
 	return uint16(parsed), nil
+}
+
+func unsafeTXTControlCharacter(r rune) bool {
+	return r < 0x20 || r == 0x7f
+}
+
+func parseCAAStringValue(rawValue string) (string, error) {
+	if rawValue == "" {
+		return "", fmt.Errorf("CAA value must include a value field")
+	}
+
+	if strings.HasPrefix(rawValue, `"`) || strings.HasSuffix(rawValue, `"`) || strings.Contains(rawValue, `"`) {
+		unquoted, err := strconv.Unquote(rawValue)
+		if err != nil {
+			return "", fmt.Errorf("invalid CAA quoted value: %s", rawValue)
+		}
+		rawValue = unquoted
+	}
+
+	if !utf8.ValidString(rawValue) {
+		return "", fmt.Errorf("CAA value must be valid UTF-8")
+	}
+	if strings.ContainsFunc(rawValue, unsafeTXTControlCharacter) {
+		return "", fmt.Errorf("CAA value contains control characters")
+	}
+	return rawValue, nil
 }
 
 func uint16Ptr(value uint16) *uint16 {

@@ -172,25 +172,15 @@ func convertRecordToRR(origin string, record *model.Record) (dns.RR, error) {
 
 	case model.RecordTypeCAA:
 		hdr.Rrtype = dns.TypeCAA
-		// Parse CAA value "flags tag value"
-		parts := strings.Fields(record.Value)
-		if len(parts) < 3 {
-			return nil, fmt.Errorf("invalid CAA value format: %s", record.Value)
-		}
-		var flags uint8
-		_, err := fmt.Sscanf(parts[0], "%d", &flags)
+		rdata, err := model.ParseCAAValue(record.Value)
 		if err != nil {
-			return nil, fmt.Errorf("invalid CAA flags: %s", parts[0])
+			return nil, err
 		}
-		tag := parts[1]
-		value := strings.Join(parts[2:], " ")
-		// Remove quotes if present
-		value = strings.Trim(value, "\"")
 		return &dns.CAA{
 			Hdr:   hdr,
-			Flag:  flags,
-			Tag:   tag,
-			Value: value,
+			Flag:  rdata.Flags,
+			Tag:   rdata.Tag,
+			Value: rdata.Value,
 		}, nil
 
 	default:
