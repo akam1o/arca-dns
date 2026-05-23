@@ -40,7 +40,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"missing zonefile in form data",
-				map[string]interface{}{"error": "internal error"},
+				rawZoneErrorDetails("missing_form_file", "zonefile", ""),
 			))
 			return
 		}
@@ -56,7 +56,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"failed to read zonefile",
-				map[string]interface{}{"error": "internal error"},
+				rawZoneErrorDetails("read_failed", "zonefile", ""),
 			))
 			return
 		}
@@ -83,7 +83,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"failed to read request body",
-				map[string]interface{}{"error": "internal error"},
+				rawZoneErrorDetails("read_failed", "body", ""),
 			))
 			return
 		}
@@ -106,7 +106,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"zone file content is empty",
-			map[string]interface{}{"error": "internal error"},
+			rawZoneErrorDetails("empty_body", "zonefile", ""),
 		))
 		return
 	}
@@ -129,7 +129,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"zone file uses unsupported $GENERATE directive",
-				map[string]interface{}{"error": "internal error"},
+				rawZoneDirectiveErrorDetails("$GENERATE"),
 			))
 			return
 		}
@@ -137,33 +137,36 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"zone file contains $INCLUDE directive (not supported via API for security)",
-				map[string]interface{}{"error": "internal error"},
+				rawZoneDirectiveErrorDetails("$INCLUDE"),
 			))
 			return
 		}
 		if strings.Contains(errStr, "validation failed") {
+			reason := sanitizeRawZoneError(extractValidationError(errStr))
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
-				fmt.Sprintf("zone validation failed: %s", extractValidationError(errStr)),
-				map[string]interface{}{"error": "internal error"},
+				fmt.Sprintf("zone validation failed: %s", reason),
+				rawZoneErrorDetails("validation_failed", "zone", reason),
 			))
 			return
 		}
 
 		// Generic parse error
+		reason := sanitizeRawZoneError(errStr)
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
-			fmt.Sprintf("failed to parse zone file: %s", sanitizeError(errStr)),
-			map[string]interface{}{"error": "internal error"},
+			fmt.Sprintf("failed to parse zone file: %s", reason),
+			rawZoneErrorDetails("parse_failed", "zonefile", reason),
 		))
 		return
 	}
 
 	if err := model.NormalizeZoneDerivedFields(modelZone); err != nil {
+		reason := sanitizeRawZoneError(err.Error())
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"zone validation failed",
-			map[string]interface{}{"error": "internal error"},
+			rawZoneErrorDetails("validation_failed", "zone", reason),
 		))
 		return
 	}
@@ -278,6 +281,25 @@ func writeRawZoneTooLarge(c *gin.Context) {
 	))
 }
 
+func rawZoneDirectiveErrorDetails(directive string) map[string]interface{} {
+	return map[string]interface{}{
+		"reason":    "unsupported_directive",
+		"field":     "zonefile",
+		"directive": directive,
+	}
+}
+
+func rawZoneErrorDetails(reason, field, safeError string) map[string]interface{} {
+	details := map[string]interface{}{"reason": reason}
+	if field != "" {
+		details["field"] = field
+	}
+	if safeError != "" {
+		details["error"] = safeError
+	}
+	return details
+}
+
 // extractValidationError extracts the validation error message from a wrapped error
 func extractValidationError(errStr string) string {
 	// Extract the part after "validation failed:"
@@ -288,11 +310,25 @@ func extractValidationError(errStr string) string {
 	return errStr
 }
 
-// sanitizeError removes sensitive internal details from error messages
-func sanitizeError(errStr string) string {
-	// Remove file paths
-	if idx := strings.Index(errStr, ":"); idx != -1 {
-		return strings.TrimSpace(errStr[idx+1:])
+func sanitizeRawZoneError(errStr string) string {
+	const maxRawZoneErrorLength = 512
+
+	sanitized := strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			return ' '
+		case r < 0x20 || r == 0x7f:
+			return -1
+		default:
+			return r
+		}
+	}, strings.TrimSpace(errStr))
+	sanitized = strings.Join(strings.Fields(sanitized), " ")
+	if sanitized == "" {
+		return "unknown error"
 	}
-	return errStr
+	if len(sanitized) > maxRawZoneErrorLength {
+		return sanitized[:maxRawZoneErrorLength] + "..."
+	}
+	return sanitized
 }

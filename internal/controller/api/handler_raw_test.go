@@ -15,6 +15,7 @@ import (
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/dnssec"
+	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/akam1o/arca-dns/pkg/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -260,6 +261,12 @@ invalid.com. IN A 192.0.2.1
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "parse_failed", apiErr.Details["reason"])
+	assert.Equal(t, "zonefile", apiErr.Details["field"])
+	assert.Contains(t, apiErr.Details["error"], "SOA")
+	assert.NotEqual(t, "internal error", apiErr.Details["error"])
 }
 
 func TestCreateZoneRaw_EmptyContent(t *testing.T) {
@@ -276,6 +283,11 @@ func TestCreateZoneRaw_EmptyContent(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "empty_body", apiErr.Details["reason"])
+	assert.Equal(t, "zonefile", apiErr.Details["field"])
+	assert.NotContains(t, apiErr.Details, "error")
 }
 
 func TestCreateZoneRaw_TextPlainRejectsOversizedBody(t *testing.T) {
@@ -355,6 +367,41 @@ func TestCreateZoneRaw_NoOrigin(t *testing.T) {
 
 	// Should fail because @ symbol requires $ORIGIN
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "parse_failed", apiErr.Details["reason"])
+	assert.Equal(t, "zonefile", apiErr.Details["field"])
+	assert.NotEqual(t, "internal error", apiErr.Details["error"])
+}
+
+func TestCreateZoneRaw_UnsupportedDirectiveDetails(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	zoneFile := `$TTL 3600
+generate.com. IN SOA ns1.generate.com. admin.generate.com. (
+    2024010101 3600 1800 604800 86400
+)
+generate.com. IN NS ns1.generate.com.
+$GENERATE 1-2 host$.generate.com. A 192.0.2.$
+`
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=generate.com.",
+		strings.NewReader(zoneFile))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "unsupported_directive", apiErr.Details["reason"])
+	assert.Equal(t, "zonefile", apiErr.Details["field"])
+	assert.Equal(t, "$GENERATE", apiErr.Details["directive"])
+	assert.NotContains(t, apiErr.Details, "error")
 }
 
 func TestCreateZoneRaw_AllRecordTypes(t *testing.T) {
