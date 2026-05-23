@@ -27,6 +27,8 @@ const (
 	listZonesPageLimit       = 1000
 	maxErrorResponseBodySize = 4 * 1024
 	maxTLSFileSize           = 4 * 1024 * 1024
+	zoneSignatureHeader      = "X-Zone-Signature"
+	zoneSignatureKeyIDHeader = "X-Zone-Signature-Key-ID"
 )
 
 // Client is an HTTP client for communicating with the arca-dns controller.
@@ -39,6 +41,7 @@ type Client struct {
 	verifyChecksums  bool
 	verifySignatures bool
 	signatureKey     string
+	signatureKeys    map[string]string
 }
 
 // ZoneInfo contains information about a zone from the controller.
@@ -376,8 +379,15 @@ func (c *Client) SetVerifyChecksums(enabled bool) {
 // SetSignatureVerification controls whether signed zone downloads must include
 // a valid X-Zone-Signature header. The signature is base64(HMAC-SHA256(body, key)).
 func (c *Client) SetSignatureVerification(enabled bool, key string) {
+	c.SetSignatureVerificationKeys(enabled, key, nil)
+}
+
+// SetSignatureVerificationKeys controls signature verification with an optional
+// key ring keyed by X-Zone-Signature-Key-ID.
+func (c *Client) SetSignatureVerificationKeys(enabled bool, key string, keys map[string]string) {
 	c.verifySignatures = enabled
-	c.signatureKey = key
+	c.signatureKey = strings.TrimSpace(key)
+	c.signatureKeys = normalizeSignatureKeyRing(keys)
 }
 
 func (c *Client) readResponseBody(body io.Reader) ([]byte, error) {
@@ -618,7 +628,7 @@ func (c *Client) fetchSignedZoneArtifact(ctx context.Context, zoneName string, c
 		}
 
 		if c.verifySignatures {
-			if err := verifyArtifactSignature([]byte(currentBody), resp.Header.Get("X-Zone-Signature"), c.signatureKey); err != nil {
+			if err := verifyArtifactSignature([]byte(currentBody), resp.Header.Get(zoneSignatureHeader), resp.Header.Get(zoneSignatureKeyIDHeader), c.signatureKey, c.signatureKeys); err != nil {
 				return nil, fmt.Errorf("invalid signature header in 304 response: %w", err)
 			}
 		}
@@ -649,7 +659,8 @@ func (c *Client) fetchSignedZoneArtifact(ctx context.Context, zoneName string, c
 	zoneSerial := resp.Header.Get("X-Zone-Serial")
 	zoneHash := resp.Header.Get("X-Zone-Hash")
 	zoneHash8 := resp.Header.Get("X-Zone-Hash8")
-	zoneSignature := resp.Header.Get("X-Zone-Signature")
+	zoneSignature := resp.Header.Get(zoneSignatureHeader)
+	zoneSignatureKeyID := resp.Header.Get(zoneSignatureKeyIDHeader)
 
 	// Verify SHA256 checksum when enabled. A full checksum header is required
 	// because the agent otherwise cannot detect truncated or altered artifacts.
@@ -666,7 +677,7 @@ func (c *Client) fetchSignedZoneArtifact(ctx context.Context, zoneName string, c
 	}
 
 	if c.verifySignatures {
-		if err := verifyArtifactSignature(body, zoneSignature, c.signatureKey); err != nil {
+		if err := verifyArtifactSignature(body, zoneSignature, zoneSignatureKeyID, c.signatureKey, c.signatureKeys); err != nil {
 			return nil, err
 		}
 	}
@@ -753,10 +764,26 @@ func artifactSignature(body []byte, key string) string {
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func verifyArtifactSignature(body []byte, signatureHeader string, key string) error {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return fmt.Errorf("signature verification enabled but controller public key is empty")
+func normalizeSignatureKeyRing(keys map[string]string) map[string]string {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	normalized := make(map[string]string, len(keys))
+	for keyID, key := range keys {
+		keyID = strings.ToLower(strings.TrimSpace(keyID))
+		key = strings.TrimSpace(key)
+		if keyID != "" && key != "" {
+			normalized[keyID] = key
+		}
+	}
+	return normalized
+}
+
+func verifyArtifactSignature(body []byte, signatureHeader string, keyIDHeader string, legacyKey string, keyRing map[string]string) error {
+	key, err := artifactSignatureVerificationKey(keyIDHeader, legacyKey, keyRing)
+	if err != nil {
+		return err
 	}
 
 	signatureHeader = strings.TrimSpace(signatureHeader)
@@ -779,6 +806,33 @@ func verifyArtifactSignature(body []byte, signatureHeader string, key string) er
 	}
 
 	return nil
+}
+
+func artifactSignatureVerificationKey(keyIDHeader string, legacyKey string, keyRing map[string]string) (string, error) {
+	keyID := strings.ToLower(strings.TrimSpace(keyIDHeader))
+	if keyID != "" {
+		key := strings.TrimSpace(keyRing[keyID])
+		if key == "" {
+			return "", fmt.Errorf("unknown signature key id: %s", keyID)
+		}
+		return key, nil
+	}
+
+	legacyKey = strings.TrimSpace(legacyKey)
+	if legacyKey != "" {
+		return legacyKey, nil
+	}
+
+	switch len(keyRing) {
+	case 0:
+		return "", fmt.Errorf("signature verification enabled but controller signature key is empty")
+	case 1:
+		for _, key := range keyRing {
+			return strings.TrimSpace(key), nil
+		}
+	}
+
+	return "", fmt.Errorf("missing signature key id header in response")
 }
 
 // doWithRetry executes an HTTP request with retry logic.

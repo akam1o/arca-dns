@@ -219,6 +219,11 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 	if err := validateArtifactSignatureKey("api.artifact_signature_key", cfg.API.ArtifactSignatureKey, true); err != nil {
 		return err
 	}
+	keyID, err := normalizeArtifactSignatureKeyID("api.artifact_signature_key_id", cfg.API.ArtifactSignatureKeyID)
+	if err != nil {
+		return err
+	}
+	cfg.API.ArtifactSignatureKeyID = keyID
 	if err := validateControllerAuthExposure(cfg.API.Listen, cfg.API.Auth); err != nil {
 		return err
 	}
@@ -830,6 +835,26 @@ func validateArtifactSignatureKey(field string, key string, required bool) error
 	return nil
 }
 
+func normalizeArtifactSignatureKeyID(field string, keyID string) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(keyID))
+	if value == "" {
+		return "", nil
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return "", fmt.Errorf("invalid %s: must contain only letters, digits, dash, underscore, or dot", field)
+	}
+	return value, nil
+}
+
 func isPlaceholderSecret(value string) bool {
 	normalized := strings.ToUpper(strings.TrimSpace(value))
 	return strings.Contains(normalized, "REPLACE") ||
@@ -1023,8 +1048,16 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	}
 
 	if cfg.Sync.VerifySignatures {
-		if err := validateArtifactSignatureKey("sync.controller_signature_key", cfg.Sync.ControllerSignatureKey, true); err != nil {
+		if cfg.Sync.ControllerSignatureKey == "" && len(cfg.Sync.ControllerSignatureKeys) == 0 {
+			return fmt.Errorf("invalid sync.controller_signature_key: required when sync.verify_signatures is true; set sync.controller_signature_key or sync.controller_signature_keys")
+		}
+		if err := validateArtifactSignatureKey("sync.controller_signature_key", cfg.Sync.ControllerSignatureKey, cfg.Sync.ControllerSignatureKey != ""); err != nil {
 			return err
+		}
+		for keyID, key := range cfg.Sync.ControllerSignatureKeys {
+			if err := validateArtifactSignatureKey("sync.controller_signature_keys."+keyID, key, true); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1421,6 +1454,11 @@ func healthTestRecordNeedsZone(record string) bool {
 func applyAgentSignatureKeyAliases(cfg *AgentConfig) error {
 	signatureKey := strings.TrimSpace(cfg.Sync.ControllerSignatureKey)
 	legacyPublicKey := strings.TrimSpace(cfg.Sync.ControllerPublicKey)
+	signatureKeys, err := normalizeArtifactSignatureKeys("sync.controller_signature_keys", cfg.Sync.ControllerSignatureKeys)
+	if err != nil {
+		return err
+	}
+	cfg.Sync.ControllerSignatureKeys = signatureKeys
 
 	if signatureKey != "" {
 		cfg.Sync.ControllerSignatureKey = signatureKey
@@ -1432,6 +1470,25 @@ func applyAgentSignatureKeyAliases(cfg *AgentConfig) error {
 		cfg.Sync.ControllerPublicKey = legacyPublicKey
 	}
 	return nil
+}
+
+func normalizeArtifactSignatureKeys(field string, keys map[string]string) (map[string]string, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	normalized := make(map[string]string, len(keys))
+	for keyID, key := range keys {
+		normalizedKeyID, err := normalizeArtifactSignatureKeyID(field+"."+keyID, keyID)
+		if err != nil {
+			return nil, err
+		}
+		if normalizedKeyID == "" {
+			return nil, fmt.Errorf("invalid %s: key id must not be empty", field)
+		}
+		normalized[normalizedKeyID] = strings.TrimSpace(key)
+	}
+	return normalized, nil
 }
 
 func normalizeHTTPPath(path string, defaultPath string) string {
@@ -1556,6 +1613,30 @@ func bindControllerAPIKeyEnvVars(v *viper.Viper) {
 // visible to Unmarshal even when a key is absent from the YAML file.
 func bindAgentEnvVars(v *viper.Viper) {
 	bindEnvVarsFromStruct(v, reflect.TypeOf(AgentConfig{}), "")
+	bindAgentSignatureKeyEnvVars(v)
+}
+
+func bindAgentSignatureKeyEnvVars(v *viper.Viper) {
+	const keyPrefix = "ARCA_DNS_SYNC_CONTROLLER_SIGNATURE_KEYS_"
+
+	signatureKeys := make(map[string]string)
+	for keyID, key := range v.GetStringMapString("sync.controller_signature_keys") {
+		signatureKeys[keyID] = key
+	}
+
+	for _, env := range os.Environ() {
+		name, value, ok := strings.Cut(env, "=")
+		if !ok || !strings.HasPrefix(name, keyPrefix) {
+			continue
+		}
+		keyID := strings.TrimPrefix(name, keyPrefix)
+		keyID = strings.ToLower(keyID)
+		signatureKeys[keyID] = value
+	}
+
+	if len(signatureKeys) > 0 {
+		v.Set("sync.controller_signature_keys", signatureKeys)
+	}
 }
 
 func bindEnvVarsFromStruct(v *viper.Viper, typ reflect.Type, prefix string) {

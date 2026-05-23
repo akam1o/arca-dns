@@ -47,7 +47,7 @@ type Syncer struct {
 func NewSyncer(client *Client, fileMgr *FileManager, cfg config.SyncConfig, logger *zap.Logger) *Syncer {
 	if client != nil {
 		client.SetVerifyChecksums(cfg.VerifyChecksums)
-		client.SetSignatureVerification(cfg.VerifySignatures, cfg.ControllerSignatureKey)
+		client.SetSignatureVerificationKeys(cfg.VerifySignatures, cfg.ControllerSignatureKey, cfg.ControllerSignatureKeys)
 	}
 
 	return &Syncer{

@@ -1392,6 +1392,93 @@ func TestFetchSignedZone_SignatureVerification(t *testing.T) {
 	}
 }
 
+func TestFetchSignedZone_SignatureVerificationUsesKeyIDRing(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	previousKey := "previous-signature-key"
+
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+		w.Header().Set("X-Zone-Serial", "2024122801")
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Hash8", hashHex[:8])
+		w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), previousKey))
+		w.Header().Set("X-Zone-Signature-Key-ID", "previous")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetSignatureVerificationKeys(true, "", map[string]string{
+		"current":  "current-signature-key",
+		"previous": previousKey,
+	})
+
+	content, _, _, err := client.FetchSignedZone(context.Background(), "example.com.", "")
+	if err != nil {
+		t.Fatalf("FetchSignedZone failed with key ring signature: %v", err)
+	}
+	if content != zoneContent {
+		t.Errorf("Zone content mismatch")
+	}
+}
+
+func TestFetchSignedZone_UnknownSignatureKeyIDRejected(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	signatureKey := "test-signature-key"
+
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+		w.Header().Set("X-Zone-Serial", "2024122801")
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Hash8", hashHex[:8])
+		w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), signatureKey))
+		w.Header().Set("X-Zone-Signature-Key-ID", "unknown")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetSignatureVerificationKeys(true, "", map[string]string{"primary": signatureKey})
+
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "")
+	if err == nil {
+		t.Fatal("Expected unknown signature key id to fail")
+	}
+	if err.Error() != "unknown signature key id: unknown" {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+}
+
 func TestFetchSignedZone_SignatureVerificationForcesFullFetch(t *testing.T) {
 	requireTCPListener(t)
 	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
@@ -1579,6 +1666,7 @@ func TestFetchSignedZone_InvalidSignatureRejected(t *testing.T) {
 		w.Header().Set("X-Zone-Hash", hashHex)
 		w.Header().Set("X-Zone-Hash8", hashHex[:8])
 		w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), "wrong-signature-key"))
+		w.Header().Set("X-Zone-Signature-Key-ID", "primary")
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, zoneContent)
@@ -1595,7 +1683,7 @@ func TestFetchSignedZone_InvalidSignatureRejected(t *testing.T) {
 		t.Fatalf("NewClient failed: %v", err)
 	}
 	defer client.Close()
-	client.SetSignatureVerification(true, "test-signature-key")
+	client.SetSignatureVerificationKeys(true, "", map[string]string{"primary": "test-signature-key"})
 
 	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "")
 	if err == nil {

@@ -19,10 +19,11 @@ sync:
   backup_versions: 3
   verify_checksums: true
   verify_signatures: true
-  # Required when verify_signatures is true. This is a shared HMAC secret and
-  # must match controller api.artifact_signature_key.
+  # Required when verify_signatures is true. Keys must include the controller
+  # api.artifact_signature_key_id and matching shared HMAC secret.
   # Generate with: openssl rand -base64 32
-  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  controller_signature_keys:
+    primary: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 health:
   check_interval: "10s"

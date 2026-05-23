@@ -123,6 +123,7 @@ func TestLoadControllerConfig_FromYAML(t *testing.T) {
 api:
   listen: "127.0.0.1:9090"
   artifact_signature_key: "` + validYAMLArtifactSignatureKey + `"
+  artifact_signature_key_id: "Primary"
   auth:
     enabled: true
     api_keys:
@@ -151,6 +152,7 @@ logging:
 	assert.Equal(t, "127.0.0.1:9090", cfg.API.Listen)
 	assert.Equal(t, "127.0.0.1:9053", cfg.Observability.Listen)
 	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.API.ArtifactSignatureKey)
+	assert.Equal(t, "primary", cfg.API.ArtifactSignatureKeyID)
 	assert.Equal(t, "mysql", cfg.Backend.Type)
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
 	assert.Equal(t, "/tmp/keys", cfg.DNSSEC.KeyDirectory)
@@ -666,6 +668,24 @@ func TestValidateControllerConfig_RejectsInvalidArtifactSignatureKey(t *testing.
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
+}
+
+func TestValidateControllerConfig_NormalizesArtifactSignatureKeyID(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.API.ArtifactSignatureKeyID = "Primary-Key.1"
+
+	err := ValidateControllerConfig(cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "primary-key.1", cfg.API.ArtifactSignatureKeyID)
+}
+
+func TestValidateControllerConfig_RejectsInvalidArtifactSignatureKeyID(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.API.ArtifactSignatureKeyID = "primary key"
+
+	err := ValidateControllerConfig(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "api.artifact_signature_key_id")
 }
 
 func TestValidateControllerConfig_RejectsMissingArtifactSignatureKeyWhenAuthEnabled(t *testing.T) {
@@ -1517,6 +1537,9 @@ dnstap:
 sync:
   min_free_bytes: 123456789
   controller_signature_key: "` + validYAMLArtifactSignatureKey + `"
+  controller_signature_keys:
+    Primary: "` + validYAMLArtifactSignatureKey + `"
+    Previous: "` + validTestArtifactSignatureKey + `"
 metrics:
   auth_token: "` + validStatusAuthToken + `"
 logging:
@@ -1539,6 +1562,10 @@ logging:
 	assert.Equal(t, int64(123456789), cfg.Sync.MinFreeBytes)
 	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
+	assert.Equal(t, map[string]string{
+		"primary":  validYAMLArtifactSignatureKey,
+		"previous": validTestArtifactSignatureKey,
+	}, cfg.Sync.ControllerSignatureKeys)
 	assert.Equal(t, validStatusAuthToken, cfg.Metrics.AuthToken)
 	assert.Equal(t, "debug", cfg.Logging.Level)
 }
@@ -1554,6 +1581,7 @@ func TestLoadAgentConfig_EnvOverrideWithYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_SYNC_VERIFY_CHECKSUMS", "false")
 	t.Setenv("ARCA_DNS_SYNC_MIN_FREE_BYTES", "20971520")
 	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_SIGNATURE_KEY", validEnvArtifactSignatureKey)
+	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_SIGNATURE_KEYS_PREVIOUS", validTestArtifactSignatureKey)
 	t.Setenv("ARCA_DNS_HEALTH_QUERY_TIMEOUT", "2s")
 	t.Setenv("ARCA_DNS_METRICS_PATH", "/env-metrics")
 	t.Setenv("ARCA_DNS_METRICS_AUTH_TOKEN", validStatusAuthToken)
@@ -1605,6 +1633,7 @@ logging:
 	assert.Equal(t, int64(20971520), cfg.Sync.MinFreeBytes)
 	assert.Equal(t, validEnvArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, validEnvArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
+	assert.Equal(t, map[string]string{"previous": validTestArtifactSignatureKey}, cfg.Sync.ControllerSignatureKeys)
 	assert.Equal(t, 2*time.Second, cfg.Health.QueryTimeout)
 	assert.Equal(t, "/env-metrics", cfg.Metrics.Path)
 	assert.Equal(t, validStatusAuthToken, cfg.Metrics.AuthToken)
@@ -2810,9 +2839,24 @@ func TestValidateAgentConfig_VerifySignaturesRequiresKey(t *testing.T) {
 	cfg.Sync.VerifySignatures = true
 	cfg.Sync.ControllerPublicKey = ""
 	cfg.Sync.ControllerSignatureKey = ""
+	cfg.Sync.ControllerSignatureKeys = nil
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "sync.controller_signature_key")
+}
+
+func TestValidateAgentConfig_VerifySignaturesAcceptsKeyRing(t *testing.T) {
+	cfg := DefaultAgentConfig()
+	cfg.Sync.VerifySignatures = true
+	cfg.Sync.ControllerPublicKey = ""
+	cfg.Sync.ControllerSignatureKey = ""
+	cfg.Sync.ControllerSignatureKeys = map[string]string{
+		"Primary": validTestArtifactSignatureKey,
+	}
+
+	err := ValidateAgentConfig(cfg)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"primary": validTestArtifactSignatureKey}, cfg.Sync.ControllerSignatureKeys)
 }
 
 func TestValidateAgentConfig_RejectsInvalidSignatureKey(t *testing.T) {
@@ -2842,6 +2886,44 @@ func TestValidateAgentConfig_RejectsInvalidSignatureKey(t *testing.T) {
 			err := ValidateAgentConfig(cfg)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "sync.controller_signature_key")
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateAgentConfig_RejectsInvalidSignatureKeyRing(t *testing.T) {
+	tests := []struct {
+		name string
+		keys map[string]string
+		want string
+	}{
+		{
+			name: "invalid key id",
+			keys: map[string]string{"primary key": validTestArtifactSignatureKey},
+			want: "sync.controller_signature_keys.primary key",
+		},
+		{
+			name: "placeholder key",
+			keys: map[string]string{"primary": "REPLACE_WITH_SHARED_SIGNATURE_KEY"},
+			want: "placeholder",
+		},
+		{
+			name: "short key",
+			keys: map[string]string{"primary": "short-secret"},
+			want: "at least 32 bytes",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultAgentConfig()
+			cfg.Sync.VerifySignatures = true
+			cfg.Sync.ControllerSignatureKey = ""
+			cfg.Sync.ControllerPublicKey = ""
+			cfg.Sync.ControllerSignatureKeys = tc.keys
+
+			err := ValidateAgentConfig(cfg)
+			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}

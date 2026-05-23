@@ -135,7 +135,7 @@ controller は `record.type` に応じて `record.value` を検証します（`p
 ### Zone Artifacts（agent 向け）
 
 - `GET /zones/:name/signed`: 署名済みゾーンファイル（BIND 形式）をダウンロード
-  - レスポンスヘッダに `ETag`, `X-Zone-Serial`, `X-Zone-Hash`, 任意の `X-Zone-Signature`, `Content-Disposition` を含みます。
+  - レスポンスヘッダに `ETag`, `X-Zone-Serial`, `X-Zone-Hash`, 任意の `X-Zone-Signature`, 任意の `X-Zone-Signature-Key-ID`, `Content-Disposition` を含みます。
   - 署名サービスが利用できない場合、controller は未署名の生成ゾーンへフォールバックします。
 
 ### DNSSEC

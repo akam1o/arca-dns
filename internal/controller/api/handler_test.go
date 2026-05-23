@@ -1990,6 +1990,7 @@ func TestGetSignedZone_WithArtifactSignature(t *testing.T) {
 	handler, store, server := setupTest(t)
 	defer server.Close()
 	handler.SetArtifactSignatureKey("test-signature-key")
+	handler.SetArtifactSignatureKeyID("primary")
 
 	zone := &model.Zone{
 		Name: "example.com.",
@@ -2009,12 +2010,14 @@ func TestGetSignedZone_WithArtifactSignature(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Equal(t, signArtifact(string(body), "test-signature-key"), resp.Header.Get("X-Zone-Signature"))
+	assert.Equal(t, "primary", resp.Header.Get("X-Zone-Signature-Key-ID"))
 }
 
 func TestGetSignedZone_AgentClientVerifiesArtifactSignature(t *testing.T) {
 	handler, store, server := setupTest(t)
 	defer server.Close()
 	handler.SetArtifactSignatureKey("test-signature-key")
+	handler.SetArtifactSignatureKeyID("primary")
 
 	zone := &model.Zone{
 		Name: "example.com.",
@@ -2034,7 +2037,7 @@ func TestGetSignedZone_AgentClientVerifiesArtifactSignature(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer client.Close()
-	client.SetSignatureVerification(true, "test-signature-key")
+	client.SetSignatureVerificationKeys(true, "", map[string]string{"primary": "test-signature-key"})
 
 	zoneFile, _, notModified, err := client.FetchSignedZone(context.Background(), "example.com.", "")
 	require.NoError(t, err)

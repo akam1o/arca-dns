@@ -1046,15 +1046,17 @@ func TestSyncer_IsStale(t *testing.T) {
 func TestNewSyncer_AppliesSignatureVerification(t *testing.T) {
 	client := &Client{}
 	syncer := NewSyncer(client, nil, config.SyncConfig{
-		VerifyChecksums:        true,
-		VerifySignatures:       true,
-		ControllerSignatureKey: "test-signature-key",
+		VerifyChecksums:  true,
+		VerifySignatures: true,
+		ControllerSignatureKeys: map[string]string{
+			"primary": "test-signature-key",
+		},
 	}, zap.NewNop())
 
 	require.NotNil(t, syncer)
 	assert.True(t, client.verifyChecksums)
 	assert.True(t, client.verifySignatures)
-	assert.Equal(t, "test-signature-key", client.signatureKey)
+	assert.Equal(t, map[string]string{"primary": "test-signature-key"}, client.signatureKeys)
 }
 
 func TestSyncer_GetAllZoneStates(t *testing.T) {

@@ -145,6 +145,7 @@ api:
   listen: "0.0.0.0:8080"
   # Generate with: openssl rand -base64 32
   artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  artifact_signature_key_id: "primary"
   # TLS is typically terminated by a reverse proxy / ingress.
   auth:
     enabled: true
@@ -182,8 +183,8 @@ controller:
 sync:
   sync_interval: "30s"
   verify_signatures: true
-  # Shared HMAC secret; must match api.artifact_signature_key.
-  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  controller_signature_keys:
+    primary: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 nsd:
   enabled: true

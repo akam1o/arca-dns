@@ -86,8 +86,11 @@ type APIConfig struct {
 	Listen string `mapstructure:"listen"`
 
 	// ArtifactSignatureKey signs signed-zone artifact responses with HMAC-SHA256.
-	// Agents use sync.controller_signature_key with the same shared secret to verify.
+	// Agents use sync.controller_signature_key or sync.controller_signature_keys to verify.
 	ArtifactSignatureKey string `mapstructure:"artifact_signature_key"`
+
+	// ArtifactSignatureKeyID identifies ArtifactSignatureKey in signed artifact responses.
+	ArtifactSignatureKeyID string `mapstructure:"artifact_signature_key_id"`
 
 	// Authentication configuration
 	Auth AuthConfig `mapstructure:"auth"`
@@ -723,6 +726,9 @@ type SyncConfig struct {
 
 	// ControllerSignatureKey is the shared HMAC key used to verify controller artifact signatures.
 	ControllerSignatureKey string `mapstructure:"controller_signature_key"`
+
+	// ControllerSignatureKeys maps signature key IDs to shared HMAC keys for rotation.
+	ControllerSignatureKeys map[string]string `mapstructure:"controller_signature_keys"`
 
 	// ControllerPublicKey is a deprecated alias for ControllerSignatureKey.
 	ControllerPublicKey string `mapstructure:"controller_public_key"`

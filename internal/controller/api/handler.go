@@ -32,7 +32,8 @@ type Handler struct {
 	metrics        *ctrlmetrics.ControllerMetrics
 	buildInfo      BuildInfo
 
-	artifactSignatureKey string
+	artifactSignatureKey   string
+	artifactSignatureKeyID string
 }
 
 // BuildInfo is returned by /status.
@@ -69,6 +70,11 @@ func NewHandler(store backend.ZoneStore, signingService *service.SigningService,
 // SetArtifactSignatureKey configures HMAC signing for signed-zone artifact responses.
 func (h *Handler) SetArtifactSignatureKey(key string) {
 	h.artifactSignatureKey = strings.TrimSpace(key)
+}
+
+// SetArtifactSignatureKeyID configures the key identifier emitted with artifact signatures.
+func (h *Handler) SetArtifactSignatureKeyID(keyID string) {
+	h.artifactSignatureKeyID = strings.TrimSpace(keyID)
 }
 
 // Health handles GET /health on the controller listeners.
@@ -378,6 +384,16 @@ func signArtifact(body string, key string) string {
 	mac := hmac.New(sha256.New, []byte(key))
 	_, _ = mac.Write([]byte(body))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func (h *Handler) setArtifactSignatureHeaders(c *gin.Context, body string) {
+	if h.artifactSignatureKey == "" {
+		return
+	}
+	c.Header("X-Zone-Signature", signArtifact(body, h.artifactSignatureKey))
+	if h.artifactSignatureKeyID != "" {
+		c.Header("X-Zone-Signature-Key-ID", h.artifactSignatureKeyID)
+	}
 }
 
 // ListZones handles GET /api/v1/zones
@@ -1025,9 +1041,7 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 	c.Header("X-Zone-Serial", fmt.Sprintf("%d", signedZone.serial))
 	c.Header("X-Zone-Hash", hashHex)
 	c.Header("X-Zone-Hash8", hash8)
-	if h.artifactSignatureKey != "" {
-		c.Header("X-Zone-Signature", signArtifact(signedZone.zoneFile, h.artifactSignatureKey))
-	}
+	h.setArtifactSignatureHeaders(c, signedZone.zoneFile)
 
 	if match := c.GetHeader("If-None-Match"); match != "" && etagMatches(match, hashHex) {
 		c.Status(http.StatusNotModified)
@@ -1069,9 +1083,7 @@ func (h *Handler) HeadSignedZone(c *gin.Context) {
 	c.Header("X-Zone-Serial", fmt.Sprintf("%d", signedZone.serial))
 	c.Header("X-Zone-Hash", hashHex)
 	c.Header("X-Zone-Hash8", hash8)
-	if h.artifactSignatureKey != "" {
-		c.Header("X-Zone-Signature", signArtifact(signedZone.zoneFile, h.artifactSignatureKey))
-	}
+	h.setArtifactSignatureHeaders(c, signedZone.zoneFile)
 
 	if match := c.GetHeader("If-None-Match"); match != "" && etagMatches(match, hashHex) {
 		c.Status(http.StatusNotModified)

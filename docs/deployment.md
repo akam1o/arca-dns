@@ -84,6 +84,7 @@ Set the hash on the controller:
 api:
   # Generate with: openssl rand -base64 32
   artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  artifact_signature_key_id: "primary"
   auth:
     enabled: true
     api_keys:
@@ -103,8 +104,8 @@ controller:
 
 sync:
   verify_signatures: true
-  # Shared HMAC secret; must match api.artifact_signature_key.
-  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  controller_signature_keys:
+    primary: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 
 For env-only controller deployments, API keys can be supplied as:
