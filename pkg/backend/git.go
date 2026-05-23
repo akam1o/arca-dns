@@ -13,6 +13,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/akam1o/arca-dns/pkg/util"
@@ -163,6 +164,9 @@ func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitB
 	if options.AuthorEmail == "" {
 		options.AuthorEmail = "noreply@arca-dns"
 	}
+	if err := validateGitBackendOptions(options); err != nil {
+		return nil, err
+	}
 
 	// Initialize or open repository
 	repo, err := openOrInitRepo(absPath, options.Branch)
@@ -219,6 +223,76 @@ func validateGitRepositoryPath(repoPath string) error {
 	}
 	if !filepath.IsAbs(repoPath) {
 		return fmt.Errorf("git repository path must be an absolute path: %s", repoPath)
+	}
+	return nil
+}
+
+func validateGitBackendOptions(options GitBackendOptions) error {
+	if err := validateGitBranchName(options.Branch); err != nil {
+		return err
+	}
+	if err := validateGitAuthorName(options.AuthorName); err != nil {
+		return err
+	}
+	if err := validateGitAuthorEmail(options.AuthorEmail); err != nil {
+		return err
+	}
+	if options.RemoteURL != "" {
+		if err := validateGitRemoteURL(options.RemoteURL); err != nil {
+			return err
+		}
+	}
+	if options.PullInterval < 0 {
+		return fmt.Errorf("invalid git pull_interval: must be non-negative")
+	}
+	return nil
+}
+
+func validateGitBranchName(branch string) error {
+	if err := plumbing.NewBranchReferenceName(branch).Validate(); err != nil {
+		return fmt.Errorf("invalid git branch: %q", branch)
+	}
+	return nil
+}
+
+func validateGitAuthorName(name string) error {
+	if name == "" {
+		return fmt.Errorf("invalid git author: must not be empty")
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("invalid git author: must not have surrounding whitespace")
+	}
+	if strings.ContainsFunc(name, unsafeGitRepositoryPathChar) {
+		return fmt.Errorf("invalid git author: must not contain control characters")
+	}
+	if strings.ContainsAny(name, "<>") {
+		return fmt.Errorf("invalid git author: must not contain angle brackets")
+	}
+	return nil
+}
+
+func validateGitAuthorEmail(email string) error {
+	if email == "" {
+		return fmt.Errorf("invalid git email: must not be empty")
+	}
+	if strings.ContainsFunc(email, unicode.IsSpace) {
+		return fmt.Errorf("invalid git email: must not contain whitespace")
+	}
+	if strings.ContainsFunc(email, unsafeGitRepositoryPathChar) {
+		return fmt.Errorf("invalid git email: must not contain control characters")
+	}
+	if strings.ContainsAny(email, "<>") {
+		return fmt.Errorf("invalid git email: must not contain angle brackets")
+	}
+	return nil
+}
+
+func validateGitRemoteURL(remoteURL string) error {
+	if strings.TrimSpace(remoteURL) != remoteURL {
+		return fmt.Errorf("invalid git remote_url: must not have surrounding whitespace")
+	}
+	if strings.ContainsFunc(remoteURL, unsafeGitRepositoryPathChar) {
+		return fmt.Errorf("invalid git remote_url: must not contain control characters")
 	}
 	return nil
 }

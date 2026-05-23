@@ -75,6 +75,87 @@ func TestNewGitBackendRejectsUnsafeRepositoryPath(t *testing.T) {
 	}
 }
 
+func TestNewGitBackendWithOptionsRejectsInvalidOptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*GitBackendOptions)
+		want   string
+	}{
+		{
+			name: "invalid branch",
+			mutate: func(options *GitBackendOptions) {
+				options.Branch = "feature branch"
+			},
+			want: "branch",
+		},
+		{
+			name: "author control character",
+			mutate: func(options *GitBackendOptions) {
+				options.AuthorName = "test\nauthor"
+			},
+			want: "author",
+		},
+		{
+			name: "author angle bracket",
+			mutate: func(options *GitBackendOptions) {
+				options.AuthorName = "test <author>"
+			},
+			want: "author",
+		},
+		{
+			name: "email whitespace",
+			mutate: func(options *GitBackendOptions) {
+				options.AuthorEmail = "test user@example.com"
+			},
+			want: "email",
+		},
+		{
+			name: "email angle bracket",
+			mutate: func(options *GitBackendOptions) {
+				options.AuthorEmail = "<test@example.com>"
+			},
+			want: "email",
+		},
+		{
+			name: "remote url control character",
+			mutate: func(options *GitBackendOptions) {
+				options.RemoteURL = "https://example.com/arca-dns.git\nextra"
+			},
+			want: "remote_url",
+		},
+		{
+			name: "remote url surrounding whitespace",
+			mutate: func(options *GitBackendOptions) {
+				options.RemoteURL = " https://example.com/arca-dns.git "
+			},
+			want: "remote_url",
+		},
+		{
+			name: "negative pull interval",
+			mutate: func(options *GitBackendOptions) {
+				options.PullInterval = -time.Second
+			},
+			want: "pull_interval",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			options := GitBackendOptions{
+				Branch:      "main",
+				AuthorName:  "test-author",
+				AuthorEmail: "test@example.com",
+			}
+			tc.mutate(&options)
+
+			backend, err := NewGitBackendWithOptions(t.TempDir(), options)
+			require.Error(t, err)
+			require.Nil(t, backend)
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestNewGitBackendRejectsSymlinkedRepositoryPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetDir := filepath.Join(tmpDir, "target")
