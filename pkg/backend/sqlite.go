@@ -301,7 +301,11 @@ func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 		}
 		return fmt.Errorf("query zone: %w", err)
 	}
-	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	parsedCreatedAt, err := parseSQLiteTimeField("created_at", createdAt)
+	if err != nil {
+		return fmt.Errorf("query zone: %w", err)
+	}
+	zone.CreatedAt = parsedCreatedAt
 	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
 	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
 		return err
@@ -524,8 +528,9 @@ func (s *SQLiteBackend) scanZone(ctx context.Context, q querier, name string) (*
 		return nil, fmt.Errorf("query zone: %w", err)
 	}
 
-	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	zone.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	if err := applySQLiteZoneTimestamps(zone, createdAt, updatedAt); err != nil {
+		return nil, fmt.Errorf("query zone: %w", err)
+	}
 
 	if dnssecEnabled != 0 {
 		zone.DNSSEC = &model.DNSSECConfig{
@@ -537,11 +542,8 @@ func (s *SQLiteBackend) scanZone(ctx context.Context, q querier, name string) (*
 			NSEC3Iterations: uint16(dnssecNSEC3Iter.Int64),
 			NSEC3Salt:       dnssecSalt.String,
 		}
-		if dnssecSigExp.Valid && dnssecSigExp.String != "" {
-			t, err := time.Parse(time.RFC3339Nano, dnssecSigExp.String)
-			if err == nil {
-				zone.DNSSEC.SignatureExpiration = &t
-			}
+		if err := applySQLiteSignatureExpiration(zone.DNSSEC, dnssecSigExp); err != nil {
+			return nil, fmt.Errorf("query zone: %w", err)
 		}
 	}
 
@@ -570,8 +572,9 @@ func (s *SQLiteBackend) scanZoneRow(row scannable) (*model.Zone, error) {
 		return nil, fmt.Errorf("scan zone: %w", err)
 	}
 
-	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	zone.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	if err := applySQLiteZoneTimestamps(zone, createdAt, updatedAt); err != nil {
+		return nil, err
+	}
 
 	if dnssecEnabled != 0 {
 		zone.DNSSEC = &model.DNSSECConfig{
@@ -583,11 +586,8 @@ func (s *SQLiteBackend) scanZoneRow(row scannable) (*model.Zone, error) {
 			NSEC3Iterations: uint16(dnssecNSEC3Iter.Int64),
 			NSEC3Salt:       dnssecSalt.String,
 		}
-		if dnssecSigExp.Valid && dnssecSigExp.String != "" {
-			t, err := time.Parse(time.RFC3339Nano, dnssecSigExp.String)
-			if err == nil {
-				zone.DNSSEC.SignatureExpiration = &t
-			}
+		if err := applySQLiteSignatureExpiration(zone.DNSSEC, dnssecSigExp); err != nil {
+			return nil, err
 		}
 	}
 
@@ -624,6 +624,40 @@ func (s *SQLiteBackend) loadRecordsDB(ctx context.Context, q querier, zoneName s
 		records = append(records, rec)
 	}
 	return records, rows.Err()
+}
+
+func applySQLiteZoneTimestamps(zone *model.Zone, createdAt, updatedAt string) error {
+	parsedCreatedAt, err := parseSQLiteTimeField("created_at", createdAt)
+	if err != nil {
+		return err
+	}
+	parsedUpdatedAt, err := parseSQLiteTimeField("updated_at", updatedAt)
+	if err != nil {
+		return err
+	}
+	zone.CreatedAt = parsedCreatedAt
+	zone.UpdatedAt = parsedUpdatedAt
+	return nil
+}
+
+func applySQLiteSignatureExpiration(dnssec *model.DNSSECConfig, value sql.NullString) error {
+	if !value.Valid || value.String == "" {
+		return nil
+	}
+	parsed, err := parseSQLiteTimeField("dnssec_signature_expiration", value.String)
+	if err != nil {
+		return err
+	}
+	dnssec.SignatureExpiration = &parsed
+	return nil
+}
+
+func parseSQLiteTimeField(field string, value string) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse %s: %w", field, err)
+	}
+	return parsed, nil
 }
 
 func (s *SQLiteBackend) loadRecordsForZonesDB(ctx context.Context, q querier, zones []*model.Zone) error {
@@ -958,7 +992,11 @@ func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVer
 		}
 		return fmt.Errorf("query zone: %w", err)
 	}
-	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	parsedCreatedAt, err := parseSQLiteTimeField("created_at", createdAt)
+	if err != nil {
+		return fmt.Errorf("query zone: %w", err)
+	}
+	zone.CreatedAt = parsedCreatedAt
 	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
 	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
 		return err
