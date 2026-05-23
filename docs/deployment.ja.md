@@ -62,7 +62,7 @@ agent container image には `arca-dns-agent` のみが含まれ、既定では�
 
 ### API キー
 
-controller の既定は `api.auth.enabled: true` です。認証が有効な場合、`api.auth.api_keys` に `sha256:<64 hex>` 形式のハッシュが 1 つ以上必要です。
+controller の既定は `api.auth.enabled: true` です。認証が有効な場合、`api.auth.api_keys` に `sha256:<64 hex>` 形式のハッシュが 1 つ以上必要で、各 key には明示的な `api.auth.api_key_roles` entry が必要です。
 controller の observability listener は認証なしで、既定では `127.0.0.1:9053` に bind します。リモートアドレスに bind する場合は network control または認証付き proxy の背後に置いてください。
 
 ```bash
@@ -87,6 +87,7 @@ api:
   artifact_signature_key_id: "primary"
   auth:
     enabled: true
+    allow_implicit_admin_roles: false
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
       agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
@@ -537,7 +538,7 @@ birdc show route
 
 | 症状 | 主な原因 | 対応 |
 | --- | --- | --- |
-| controller が `api.auth.api_keys` で起動しない | placeholder のまま、または API キー未設定 | `sha256:<64 hex>` を設定する |
+| controller が `api.auth.api_keys` または `api.auth.api_key_roles` で起動しない | placeholder のまま、API キー未設定、または明示 role がない | `sha256:<64 hex>` と `api_key_roles.<name>` を設定する |
 | controller が master key エラーで起動しない | DNSSEC 有効だが master key がない | `ARCA_DNS_DNSSEC_MASTER_KEY_B64` または `/etc/arca-dns/master.key` を設定する |
 | MySQL/PostgreSQL で table not found | SQL スキーマ未適用 | `migrations/<backend>/` 配下の backend schema を、必要な `*.up.sql` も含めて番号順に適用してから起動する |
 | container が `/var/lib/arca-dns` に書けない | distroless nonroot image の UID と volume 権限が合っていない | volume を UID/GID `65532` で書けるようにする。Kubernetes base は `fsGroup: 65532` を設定済み |

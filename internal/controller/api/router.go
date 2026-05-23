@@ -50,9 +50,10 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 	var authMiddleware gin.HandlerFunc
 	if cfg != nil && cfg.Auth.Enabled {
 		authConfig := middleware.AuthConfig{
-			APIKeys:     cfg.Auth.APIKeys,
-			APIKeyRoles: cfg.Auth.APIKeyRoles,
-			HeaderName:  "X-API-Key",
+			APIKeys:                 cfg.Auth.APIKeys,
+			APIKeyRoles:             cfg.Auth.APIKeyRoles,
+			HeaderName:              "X-API-Key",
+			AllowImplicitAdminRoles: cfg.Auth.AllowImplicitAdminRoles,
 		}
 		authenticator := middleware.NewAuthenticator(authConfig)
 		authMiddleware = authenticator.Middleware()

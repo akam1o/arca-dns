@@ -202,6 +202,9 @@ func TestApplyServeFlagOverrides_RevalidatesOverlap(t *testing.T) {
 	cfg.API.Auth.APIKeys = map[string]string{
 		"admin": "sha256:" + strings.Repeat("a", 64),
 	}
+	cfg.API.Auth.APIKeyRoles = map[string]string{
+		"admin": "admin",
+	}
 
 	cmd := &cobra.Command{Use: "serve"}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":8080", "HTTP server listen address")

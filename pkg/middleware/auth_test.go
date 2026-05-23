@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAuthenticator_Middleware_ValidKey(t *testing.T) {
@@ -22,6 +23,9 @@ func TestAuthenticator_Middleware_ValidKey(t *testing.T) {
 	config := AuthConfig{
 		APIKeys: map[string]string{
 			"test_admin": hashStr,
+		},
+		APIKeyRoles: map[string]string{
+			"test_admin": AuthRoleAdmin,
 		},
 		HeaderName: "X-API-Key",
 	}
@@ -192,6 +196,9 @@ func TestAuthenticator_Middleware_NormalizesConfiguredHash(t *testing.T) {
 		APIKeys: map[string]string{
 			"test_admin": hashStr,
 		},
+		APIKeyRoles: map[string]string{
+			"test_admin": AuthRoleAdmin,
+		},
 	}
 
 	auth := NewAuthenticator(config)
@@ -243,6 +250,9 @@ func TestAuthenticator_Middleware_InvalidKey(t *testing.T) {
 		APIKeys: map[string]string{
 			"admin": hashStr,
 		},
+		APIKeyRoles: map[string]string{
+			"admin": AuthRoleAdmin,
+		},
 	}
 
 	auth := NewAuthenticator(config)
@@ -267,6 +277,9 @@ func TestAuthenticator_Middleware_MissingKey(t *testing.T) {
 	config := AuthConfig{
 		APIKeys: map[string]string{
 			"admin": "sha256:somehash",
+		},
+		APIKeyRoles: map[string]string{
+			"admin": AuthRoleAdmin,
 		},
 	}
 
@@ -296,6 +309,9 @@ func TestAuthenticator_Middleware_CustomHeader(t *testing.T) {
 		APIKeys: map[string]string{
 			"user": hashStr,
 		},
+		APIKeyRoles: map[string]string{
+			"user": AuthRoleAdmin,
+		},
 		HeaderName: "Authorization",
 	}
 
@@ -312,4 +328,64 @@ func TestAuthenticator_Middleware_CustomHeader(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, 200, w.Code)
+}
+
+func TestNewAuthenticator_DoesNotDefaultMissingRoleToAdmin(t *testing.T) {
+	testKey := "roleless-api-key-12345"
+	hash := sha256.Sum256([]byte(testKey))
+	hashStr := "sha256:" + hex.EncodeToString(hash[:])
+
+	auth := NewAuthenticator(AuthConfig{
+		APIKeys: map[string]string{
+			"roleless": hashStr,
+		},
+	})
+
+	require.Len(t, auth.credentials, 1)
+	assert.Equal(t, "roleless", auth.credentials[0].name)
+	assert.Empty(t, auth.credentials[0].role)
+}
+
+func TestNewAuthenticator_AllowsImplicitAdminRoleWhenOptedIn(t *testing.T) {
+	testKey := "legacy-admin-api-key-12345"
+	hash := sha256.Sum256([]byte(testKey))
+	hashStr := "sha256:" + hex.EncodeToString(hash[:])
+
+	auth := NewAuthenticator(AuthConfig{
+		APIKeys: map[string]string{
+			"legacy_admin": hashStr,
+		},
+		AllowImplicitAdminRoles: true,
+	})
+
+	require.Len(t, auth.credentials, 1)
+	assert.Equal(t, "legacy_admin", auth.credentials[0].name)
+	assert.Equal(t, AuthRoleAdmin, auth.credentials[0].role)
+}
+
+func TestAuthenticator_MissingRoleCannotManageZones(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	testKey := "roleless-api-key-12345"
+	hash := sha256.Sum256([]byte(testKey))
+	hashStr := "sha256:" + hex.EncodeToString(hash[:])
+
+	auth := NewAuthenticator(AuthConfig{
+		APIKeys: map[string]string{
+			"roleless": hashStr,
+		},
+	})
+	router := gin.New()
+	router.Use(auth.Middleware(), RequirePermission(AuthPermissionManageZones))
+	router.GET("/test", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("X-API-Key", testKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, 403, w.Code)
+	assert.JSONEq(t, `{"code":"FORBIDDEN","message":"API key role is not allowed for this endpoint"}`, w.Body.String())
 }

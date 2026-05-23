@@ -62,7 +62,7 @@ The agent container image contains only `arca-dns-agent` and defaults to sync-on
 
 ### API Key
 
-The controller default is `api.auth.enabled: true`. When auth is enabled, `api.auth.api_keys` must contain at least one `sha256:<64 hex>` hash.
+The controller default is `api.auth.enabled: true`. When auth is enabled, `api.auth.api_keys` must contain at least one `sha256:<64 hex>` hash and every key must have an explicit `api.auth.api_key_roles` entry.
 The controller observability listener is unauthenticated and binds to `127.0.0.1:9053` by default. Bind it to a remote address only behind network controls or an authenticated proxy.
 
 ```bash
@@ -87,6 +87,7 @@ api:
   artifact_signature_key_id: "primary"
   auth:
     enabled: true
+    allow_implicit_admin_roles: false
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
       agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
@@ -538,7 +539,7 @@ birdc show route
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| controller fails on `api.auth.api_keys` | placeholder hash or no API key configured | set a real `sha256:<64 hex>` value |
+| controller fails on `api.auth.api_keys` or `api.auth.api_key_roles` | placeholder hash, no API key configured, or missing explicit role | set a real `sha256:<64 hex>` value and `api_key_roles.<name>` |
 | controller fails on master key | DNSSEC enabled but no master key | set `ARCA_DNS_DNSSEC_MASTER_KEY_B64` or `/etc/arca-dns/master.key` |
 | MySQL/PostgreSQL reports missing tables | SQL schema was not applied | apply the backend schema under `migrations/<backend>/`, including required `*.up.sql` files in numeric order |
 | container cannot write `/var/lib/arca-dns` | distroless nonroot UID cannot write the volume | make the volume writable by UID/GID `65532`; Kubernetes base already sets `fsGroup: 65532` |

@@ -32,6 +32,9 @@ func TestAuditLogger_Middleware_LogsAuthenticatedPrincipal(t *testing.T) {
 		APIKeys: map[string]string{
 			"test_admin": hashStr,
 		},
+		APIKeyRoles: map[string]string{
+			"test_admin": AuthRoleAdmin,
+		},
 		HeaderName: "X-API-Key",
 	}).Middleware())
 	router.GET("/test", func(c *gin.Context) {

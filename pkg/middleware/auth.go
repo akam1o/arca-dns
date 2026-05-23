@@ -21,6 +21,9 @@ type AuthConfig struct {
 	APIKeyRoles map[string]string
 	// HeaderName is the HTTP header to check for the API key
 	HeaderName string
+	// AllowImplicitAdminRoles preserves legacy behavior where keys without an
+	// explicit role are granted admin. Prefer explicit roles.
+	AllowImplicitAdminRoles bool
 }
 
 const (
@@ -65,7 +68,7 @@ func NewAuthenticator(config AuthConfig) *Authenticator {
 		config.HeaderName = "X-API-Key"
 	}
 	config.APIKeys = normalizeConfiguredAPIKeys(config.APIKeys)
-	config.APIKeyRoles = normalizeConfiguredAPIKeyRoles(config.APIKeys, config.APIKeyRoles)
+	config.APIKeyRoles = normalizeConfiguredAPIKeyRoles(config.APIKeys, config.APIKeyRoles, config.AllowImplicitAdminRoles)
 	return &Authenticator{
 		config:      config,
 		credentials: buildAPIKeyCredentials(config.APIKeys, config.APIKeyRoles),
@@ -84,17 +87,21 @@ func normalizeConfiguredAPIKeys(apiKeys map[string]string) map[string]string {
 	return normalized
 }
 
-func normalizeConfiguredAPIKeyRoles(apiKeys, apiKeyRoles map[string]string) map[string]string {
+func normalizeConfiguredAPIKeyRoles(apiKeys, apiKeyRoles map[string]string, allowImplicitAdminRoles bool) map[string]string {
 	if len(apiKeys) == 0 {
 		return apiKeyRoles
 	}
 
 	normalized := make(map[string]string, len(apiKeys))
-	for name := range apiKeys {
-		normalized[name] = AuthRoleAdmin
-	}
 	for name, role := range apiKeyRoles {
 		normalized[name] = strings.ToLower(strings.TrimSpace(role))
+	}
+	if allowImplicitAdminRoles {
+		for name := range apiKeys {
+			if strings.TrimSpace(normalized[name]) == "" {
+				normalized[name] = AuthRoleAdmin
+			}
+		}
 	}
 	return normalized
 }
@@ -113,9 +120,6 @@ func buildAPIKeyCredentials(apiKeys, apiKeyRoles map[string]string) []apiKeyCred
 			continue
 		}
 		role := strings.TrimSpace(apiKeyRoles[name])
-		if role == "" {
-			role = AuthRoleAdmin
-		}
 		credentials = append(credentials, apiKeyCredential{
 			name: name,
 			role: role,
@@ -159,7 +163,7 @@ func (a *Authenticator) Middleware() gin.HandlerFunc {
 		// change the number of hash comparisons performed.
 		authenticated := false
 		var principal string
-		role := AuthRoleAdmin
+		var role string
 		for _, credential := range a.credentials {
 			if subtle.ConstantTimeCompare(hash[:], credential.hash[:]) == 1 {
 				if !authenticated {

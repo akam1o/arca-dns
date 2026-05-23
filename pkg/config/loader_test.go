@@ -24,6 +24,9 @@ func validControllerConfigForTest() *ControllerConfig {
 	cfg.API.Auth.APIKeys = map[string]string{
 		"admin": validTestAPIKeyHash,
 	}
+	cfg.API.Auth.APIKeyRoles = map[string]string{
+		"admin": "admin",
+	}
 	return cfg
 }
 
@@ -69,6 +72,7 @@ func TestLoadControllerConfig_AuthDisabledStillRequiresArtifactSignatureKey(t *t
 
 func TestLoadControllerConfig_APIKeysFromEnvAllowsDefaults(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", validTestAPIKeyHash)
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEY_ROLES_ADMIN", "admin")
 	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 
 	cfg, err := LoadControllerConfig("")
@@ -79,10 +83,14 @@ func TestLoadControllerConfig_APIKeysFromEnvAllowsDefaults(t *testing.T) {
 	assert.Equal(t, map[string]string{
 		"admin": validTestAPIKeyHash,
 	}, cfg.API.Auth.APIKeys)
+	assert.Equal(t, map[string]string{
+		"admin": "admin",
+	}, cfg.API.Auth.APIKeyRoles)
 }
 
 func TestLoadControllerConfig_APIKeysFromEnvRequireArtifactSignatureKey(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", validTestAPIKeyHash)
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEY_ROLES_ADMIN", "admin")
 
 	cfg, err := LoadControllerConfig("")
 	require.Error(t, err)
@@ -98,6 +106,7 @@ func TestDefaultControllerConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:9053", cfg.Observability.Listen)
 	assert.Empty(t, cfg.API.ArtifactSignatureKey)
 	assert.True(t, cfg.API.Auth.Enabled)
+	assert.False(t, cfg.API.Auth.AllowImplicitAdminRoles)
 	assert.Equal(t, "sqlite", cfg.Backend.Type)
 	assert.True(t, cfg.DNSSEC.Enabled)
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
@@ -128,6 +137,8 @@ api:
     enabled: true
     api_keys:
       admin: "` + validTestAPIKeyHash + `"
+    api_key_roles:
+      admin: "admin"
 observability:
   listen: "127.0.0.1:9053"
 backend:
@@ -153,6 +164,7 @@ logging:
 	assert.Equal(t, "127.0.0.1:9053", cfg.Observability.Listen)
 	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.API.ArtifactSignatureKey)
 	assert.Equal(t, "primary", cfg.API.ArtifactSignatureKeyID)
+	assert.Equal(t, "admin", cfg.API.Auth.APIKeyRoles["admin"])
 	assert.Equal(t, "mysql", cfg.Backend.Type)
 	assert.Equal(t, uint8(13), cfg.DNSSEC.Algorithm)
 	assert.Equal(t, "/tmp/keys", cfg.DNSSEC.KeyDirectory)
@@ -363,6 +375,7 @@ logging:
 
 func TestLoadControllerConfig_NestedEnvOverrides(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", validTestAPIKeyHash)
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEY_ROLES_ADMIN", "admin")
 	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 	t.Setenv("ARCA_DNS_OBSERVABILITY_LISTEN", "127.0.0.1:9053")
 	t.Setenv("ARCA_DNS_API_RATE_LIMIT_REQUESTS_PER_SECOND", "42")
@@ -395,6 +408,7 @@ func TestLoadControllerConfig_NestedEnvOverrides(t *testing.T) {
 
 func TestLoadControllerConfig_APIKeyEnvMergesAndOverridesYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", alternateValidTestAPIKeyHash)
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEY_ROLES_ADMIN", "admin")
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_EDGE_AGENT", validTestAPIKeyHash)
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEY_ROLES_EDGE_AGENT", "agent")
 	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
@@ -431,6 +445,7 @@ func TestLoadControllerConfig_NormalizesAPIKeyHashes(t *testing.T) {
 	upperHash := "sha256:" + strings.Repeat("A", 64)
 	expectedHash := "sha256:" + strings.Repeat("a", 64)
 	t.Setenv("ARCA_DNS_API_AUTH_API_KEYS_ADMIN", "  "+upperHash+"  ")
+	t.Setenv("ARCA_DNS_API_AUTH_API_KEY_ROLES_ADMIN", "admin")
 	t.Setenv("ARCA_DNS_API_ARTIFACT_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 
 	cfg, err := LoadControllerConfig("")
@@ -562,6 +577,9 @@ func TestValidateControllerConfig_AuthEnabledNormalizesAPIKeyHashes(t *testing.T
 	cfg.API.Auth.APIKeys = map[string]string{
 		"admin": "  sha256:" + strings.Repeat("B", 64) + "  ",
 	}
+	cfg.API.Auth.APIKeyRoles = map[string]string{
+		"admin": "admin",
+	}
 
 	err := ValidateControllerConfig(cfg)
 	require.NoError(t, err)
@@ -575,6 +593,7 @@ func TestValidateControllerConfig_AuthRoles(t *testing.T) {
 		cfg := validControllerConfigForTest()
 		cfg.API.Auth.APIKeys["agent"] = alternateValidTestAPIKeyHash
 		cfg.API.Auth.APIKeyRoles = map[string]string{
+			"admin": " admin ",
 			"agent": " agent ",
 		}
 
@@ -598,6 +617,7 @@ func TestValidateControllerConfig_AuthRoles(t *testing.T) {
 	t.Run("rejects role for unknown key", func(t *testing.T) {
 		cfg := validControllerConfigForTest()
 		cfg.API.Auth.APIKeyRoles = map[string]string{
+			"admin": "admin",
 			"agent": "agent",
 		}
 
@@ -615,6 +635,26 @@ func TestValidateControllerConfig_AuthRoles(t *testing.T) {
 		err := ValidateControllerConfig(cfg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "at least one admin")
+	})
+
+	t.Run("requires explicit role for every key", func(t *testing.T) {
+		cfg := validControllerConfigForTest()
+		cfg.API.Auth.APIKeyRoles = nil
+
+		err := ValidateControllerConfig(cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "missing explicit role")
+		assert.Contains(t, err.Error(), "api.auth.api_keys.admin")
+	})
+
+	t.Run("allows implicit admin roles only when explicitly enabled", func(t *testing.T) {
+		cfg := validControllerConfigForTest()
+		cfg.API.Auth.APIKeyRoles = nil
+		cfg.API.Auth.AllowImplicitAdminRoles = true
+
+		err := ValidateControllerConfig(cfg)
+		require.NoError(t, err)
+		assert.Equal(t, "admin", cfg.API.Auth.APIKeyRoles["admin"])
 	})
 }
 

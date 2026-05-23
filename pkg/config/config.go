@@ -139,8 +139,11 @@ type AuthConfig struct {
 	APIKeys map[string]string `mapstructure:"api_keys"`
 
 	// APIKeyRoles maps API key names to roles. Supported roles: admin, agent.
-	// Keys without an explicit role default to admin for backward compatibility.
 	APIKeyRoles map[string]string `mapstructure:"api_key_roles"`
+
+	// AllowImplicitAdminRoles preserves the legacy behavior where API keys
+	// without an explicit role are treated as admin. Prefer explicit roles.
+	AllowImplicitAdminRoles bool `mapstructure:"allow_implicit_admin_roles"`
 }
 
 // RateLimitConfig configures rate limiting.

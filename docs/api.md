@@ -17,7 +17,7 @@ If API auth is enabled in the controller config, include an API key header on *p
 X-API-Key: <api-key>
 ```
 
-API keys can be assigned roles with `api.auth.api_key_roles`. `admin` keys can access the management API; `agent` keys are limited to zone summary listing and signed artifact reads.
+API keys must be assigned explicit roles with `api.auth.api_key_roles`. `admin` keys can access the management API; `agent` keys are limited to zone summary listing and signed artifact reads. `api.auth.allow_implicit_admin_roles` exists only for legacy migration from configs that omitted roles.
 
 Health/readiness/status endpoints (`/health`, `/ready`, `/status`) and observability metrics (`/metrics`) do not require auth. Health/readiness/status are served on the API listener; metrics are served on the observability listener.
 

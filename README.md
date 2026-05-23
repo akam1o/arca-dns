@@ -149,6 +149,7 @@ api:
   # TLS is typically terminated by a reverse proxy / ingress.
   auth:
     enabled: true
+    allow_implicit_admin_roles: false
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
       agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"

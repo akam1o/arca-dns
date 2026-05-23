@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -749,9 +750,6 @@ func validateControllerAuthConfig(auth *AuthConfig) error {
 	}
 
 	normalizedRoles := make(map[string]string, len(auth.APIKeys))
-	for name := range auth.APIKeys {
-		normalizedRoles[name] = apiKeyRoleAdmin
-	}
 	for name, role := range auth.APIKeyRoles {
 		keyName := strings.TrimSpace(name)
 		if keyName == "" {
@@ -768,6 +766,22 @@ func validateControllerAuthConfig(auth *AuthConfig) error {
 		default:
 			return fmt.Errorf("invalid api.auth.api_key_roles.%s: must be one of: admin, agent", keyName)
 		}
+	}
+
+	missingRoleNames := make([]string, 0)
+	for name := range auth.APIKeys {
+		if _, ok := normalizedRoles[name]; ok {
+			continue
+		}
+		if auth.AllowImplicitAdminRoles {
+			normalizedRoles[name] = apiKeyRoleAdmin
+			continue
+		}
+		missingRoleNames = append(missingRoleNames, name)
+	}
+	if len(missingRoleNames) > 0 {
+		sort.Strings(missingRoleNames)
+		return fmt.Errorf("invalid api.auth.api_key_roles: missing explicit role for api.auth.api_keys.%s; set api.auth.api_key_roles.%s to admin or agent", missingRoleNames[0], missingRoleNames[0])
 	}
 
 	hasAdmin := false

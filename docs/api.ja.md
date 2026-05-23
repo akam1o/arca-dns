@@ -17,7 +17,7 @@ controller 設定で API 認証を有効にしている場合、*保護された
 X-API-Key: <api-key>
 ```
 
-API キーには `api.auth.api_key_roles` で role を割り当てられます。`admin` key は管理 API にアクセスでき、`agent` key は zone summary 一覧と signed artifact 読み取りに制限されます。
+API キーには `api.auth.api_key_roles` で明示的な role を割り当てる必要があります。`admin` key は管理 API にアクセスでき、`agent` key は zone summary 一覧と signed artifact 読み取りに制限されます。`api.auth.allow_implicit_admin_roles` は role を省略していた既存 config の移行時だけに使う互換設定です。
 
 Health/readiness/status endpoint（`/health`, `/ready`, `/status`）と observability metrics（`/metrics`）は認証不要です。Health/readiness/status は API listener、metrics は observability listener で提供されます。
 

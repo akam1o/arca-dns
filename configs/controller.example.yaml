@@ -14,6 +14,9 @@ api:
     # hash is required; otherwise the controller exits during config validation.
     # Set enabled: false only for intentionally unauthenticated local setups.
     enabled: true
+    # Keep false for new configs. Set true only while migrating legacy configs
+    # that relied on missing api_key_roles being treated as admin.
+    allow_implicit_admin_roles: false
     api_keys:
       # Generate: echo -n 'your-api-key' | sha256sum
       # Then prefix with "sha256:".
