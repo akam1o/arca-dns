@@ -21,7 +21,7 @@ import (
 //   - CreateZone, CreateZone_AlreadyExists
 //   - GetZone, GetZone_NotFound, GetZone_CaseInsensitive
 //   - UpdateZone, UpdateZone_OptimisticLocking, UpdateZone_OptionalVersionCheck, UpdateZone_NotFound
-//   - DeleteZone, DeleteZone_NotFound, DeleteZoneWithVersion_OptimisticLocking
+//   - DeleteZone, DeleteZone_NotFound, DeleteZoneWithVersion_NotFound, DeleteZoneWithVersion_OptimisticLocking
 //   - ListZones_Multiple, ListZones_Pagination
 //
 // Contract Invariants Tested:
@@ -290,6 +290,16 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 
 	t.Run("DeleteZone_NotFound", func(t *testing.T) {
 		err := store.DeleteZone(ctx, "nonexistent.example.com.")
+		assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	})
+
+	t.Run("DeleteZoneWithVersion_NotFound", func(t *testing.T) {
+		conditionalStore, ok := store.(ConditionalDeleteStore)
+		if !ok {
+			t.Skip("store does not implement ConditionalDeleteStore")
+		}
+
+		err := conditionalStore.DeleteZoneWithVersion(ctx, "conditional-delete-missing.example.com.", "v-missing")
 		assert.ErrorIs(t, err, model.ErrZoneNotFound)
 	})
 

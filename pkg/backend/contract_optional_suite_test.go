@@ -148,6 +148,43 @@ func RunTransactionalStoreSuite(t *testing.T, store ZoneStore) {
 		assert.Equal(t, original.Version, outsideAfter.Version)
 	})
 
+	t.Run("ConditionalDeleteWithVersion", func(t *testing.T) {
+		zone := newTestZone("tx-conditional-delete.example.com.")
+		require.NoError(t, store.CreateZone(ctx, zone))
+
+		current, err := store.GetZone(ctx, zone.Name)
+		require.NoError(t, err)
+
+		conflictTx, err := txStore.BeginTx(ctx)
+		require.NoError(t, err)
+		conditionalConflictTx, ok := conflictTx.(ConditionalDeleteStore)
+		if !ok {
+			_ = conflictTx.Rollback(ctx)
+			t.Skip("transaction does not implement ConditionalDeleteStore")
+		}
+		err = conditionalConflictTx.DeleteZoneWithVersion(ctx, zone.Name, "stale-version")
+		assert.ErrorIs(t, err, model.ErrConflict)
+		require.NoError(t, conflictTx.Rollback(ctx))
+
+		missingTx, err := txStore.BeginTx(ctx)
+		require.NoError(t, err)
+		conditionalMissingTx, ok := missingTx.(ConditionalDeleteStore)
+		require.True(t, ok, "transaction should keep ConditionalDeleteStore capability")
+		err = conditionalMissingTx.DeleteZoneWithVersion(ctx, "tx-conditional-delete-missing.example.com.", "v-missing")
+		assert.ErrorIs(t, err, model.ErrZoneNotFound)
+		require.NoError(t, missingTx.Rollback(ctx))
+
+		deleteTx, err := txStore.BeginTx(ctx)
+		require.NoError(t, err)
+		conditionalDeleteTx, ok := deleteTx.(ConditionalDeleteStore)
+		require.True(t, ok, "transaction should keep ConditionalDeleteStore capability")
+		require.NoError(t, conditionalDeleteTx.DeleteZoneWithVersion(ctx, zone.Name, current.Version))
+		require.NoError(t, deleteTx.Commit(ctx))
+
+		_, err = store.GetZone(ctx, zone.Name)
+		assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	})
+
 	t.Run("ListPaginationNormalizesNegativeOffset", func(t *testing.T) {
 		prefix := fmt.Sprintf("tx-page-%d", time.Now().UnixNano())
 		for i := 0; i < 3; i++ {

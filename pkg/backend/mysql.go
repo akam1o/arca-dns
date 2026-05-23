@@ -690,14 +690,35 @@ func (m *MySQLBackend) DeleteZoneWithVersion(ctx context.Context, name string, e
 func (m *MySQLBackend) deleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	name = normalizeZoneName(name)
 
-	query := "DELETE FROM zones WHERE name = ?"
-	args := []interface{}{name}
-	if expectedVersion != "" {
-		query += " AND version = ?"
-		args = append(args, expectedVersion)
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin delete zone transaction: %w", err)
 	}
 
-	result, err := m.db.ExecContext(ctx, query, args...)
+	if err := deleteMySQLZoneWithVersionTx(ctx, tx, name, expectedVersion); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit delete zone transaction: %w", err)
+	}
+	return nil
+}
+
+func deleteMySQLZoneWithVersionTx(ctx context.Context, tx *sql.Tx, name string, expectedVersion string) error {
+	var currentVersion string
+	if err := tx.QueryRowContext(ctx, "SELECT version FROM zones WHERE name = ? FOR UPDATE", name).Scan(&currentVersion); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ErrZoneNotFound
+		}
+		return fmt.Errorf("failed to check zone version: %w", err)
+	}
+
+	if expectedVersion != "" && currentVersion != expectedVersion {
+		return model.ErrConflict
+	}
+
+	result, err := tx.ExecContext(ctx, "DELETE FROM zones WHERE name = ?", name)
 	if err != nil {
 		return fmt.Errorf("failed to delete zone: %w", err)
 	}
@@ -706,18 +727,10 @@ func (m *MySQLBackend) deleteZoneWithVersion(ctx context.Context, name string, e
 	if err != nil {
 		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
-	if rowsAffected > 0 {
-		return nil
-	}
-
-	var exists bool
-	if err := m.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
-		return fmt.Errorf("failed to check zone existence: %w", err)
-	}
-	if exists {
+	if rowsAffected == 0 {
 		return model.ErrConflict
 	}
-	return model.ErrZoneNotFound
+	return nil
 }
 
 // Close releases resources held by the backend.
@@ -1173,35 +1186,7 @@ func (t *MySQLTx) DeleteZone(ctx context.Context, name string) error {
 
 func (t *MySQLTx) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	name = normalizeZoneName(name)
-
-	query := "DELETE FROM zones WHERE name = ?"
-	args := []interface{}{name}
-	if expectedVersion != "" {
-		query += " AND version = ?"
-		args = append(args, expectedVersion)
-	}
-
-	result, err := t.tx.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("failed to delete zone: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected > 0 {
-		return nil
-	}
-
-	var exists bool
-	if err := t.tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
-		return fmt.Errorf("failed to check zone existence: %w", err)
-	}
-	if exists {
-		return model.ErrConflict
-	}
-	return model.ErrZoneNotFound
+	return deleteMySQLZoneWithVersionTx(ctx, t.tx, name, expectedVersion)
 }
 
 // Close is a no-op for transactions (use Commit or Rollback instead).
