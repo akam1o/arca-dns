@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -40,7 +41,7 @@ func (h *Handler) ListRecords(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -395,7 +396,7 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -512,7 +513,7 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 	}
 
 	if err := h.store.UpdateZone(c.Request.Context(), zone, expectedVersion); err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -520,7 +521,7 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 			))
 			return nil, false
 		}
-		if err == model.ErrConflict {
+		if errors.Is(err, model.ErrConflict) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
 				"Zone version mismatch (optimistic lock failure)",

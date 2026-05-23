@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -132,6 +133,18 @@ func (s *zoneStoreWithoutConditionalDelete) DeleteZone(ctx context.Context, name
 
 func (s *zoneStoreWithoutConditionalDelete) Close() error {
 	return s.inner.Close()
+}
+
+type wrappingErrorStore struct {
+	*backend.MemoryBackend
+}
+
+func (s *wrappingErrorStore) GetZone(ctx context.Context, name string) (*model.Zone, error) {
+	zone, err := s.MemoryBackend.GetZone(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("wrapped backend error: %w", err)
+	}
+	return zone, nil
 }
 
 type singleZoneStore struct {
@@ -552,6 +565,17 @@ func TestGetZone_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+func TestGetZone_WrappedNotFound(t *testing.T) {
+	store := &wrappingErrorStore{MemoryBackend: backend.NewMemoryBackend()}
+	_, server := setupTestWithStore(t, store)
+
+	resp, err := http.Get(server.URL + "/api/v1/zones/nonexistent.com.")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
 func TestListZones(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
@@ -586,6 +610,35 @@ func TestListZones(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, result.Zones, 3)
 	assert.Equal(t, 3, result.Pagination.Count)
+}
+
+func TestListZones_FullFields(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	resp, err := http.Get(server.URL + "/api/v1/zones?fields=full")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Zones []*model.Zone `json:"zones"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	require.Len(t, result.Zones, 1)
+	assert.Equal(t, "example.com.", result.Zones[0].Name)
+	assert.Len(t, result.Zones[0].Records, 2)
 }
 
 func TestListZones_SummaryFields(t *testing.T) {
@@ -627,7 +680,6 @@ func TestListZones_InvalidFields(t *testing.T) {
 	defer server.Close()
 
 	tests := []string{
-		"full",
 		"summary,records",
 		"records",
 	}

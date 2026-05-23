@@ -954,7 +954,7 @@ func (g *GitBackend) readZone(zoneName string) (*model.Zone, error) {
 		if err == nil {
 			return zone, nil
 		}
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			continue
 		}
 		return nil, err
@@ -1325,7 +1325,7 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	if err == nil {
 		return model.ErrZoneAlreadyExists
 	}
-	if err != model.ErrZoneNotFound {
+	if !errors.Is(err, model.ErrZoneNotFound) {
 		return err
 	}
 
@@ -1367,7 +1367,7 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 	// Read current zone
 	currentZone, err := g.readZone(normalized)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			return model.ErrZoneNotFound
 		}
 		return err
@@ -1432,7 +1432,7 @@ func (g *GitBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string, 
 
 	zone, err := g.readZone(normalized)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			return model.ErrZoneNotFound
 		}
 		return err
@@ -1471,7 +1471,7 @@ func (g *GitBackend) DeleteZone(ctx context.Context, name string) error {
 	// Check if zone exists
 	_, err = g.readZone(normalized)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			return model.ErrZoneNotFound
 		}
 		return err
@@ -1498,7 +1498,7 @@ func (g *GitBackend) DeleteZoneWithVersion(ctx context.Context, name string, exp
 
 	zone, err := g.readZone(normalized)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			return model.ErrZoneNotFound
 		}
 		return err
@@ -1562,7 +1562,7 @@ func (g *GitBackend) GetRevision(ctx context.Context, zoneName, version string) 
 		if err == nil {
 			return zone, nil
 		}
-		if err == model.ErrVersionNotFound {
+		if errors.Is(err, model.ErrVersionNotFound) {
 			continue
 		}
 		return nil, err

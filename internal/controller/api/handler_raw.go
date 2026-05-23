@@ -192,7 +192,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 
 	// Create zone in backend (same pattern as CreateZone)
 	if err := h.store.CreateZone(c.Request.Context(), modelZone); err != nil {
-		if err == model.ErrZoneAlreadyExists {
+		if errors.Is(err, model.ErrZoneAlreadyExists) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeAlreadyExists,
 				fmt.Sprintf("zone %s already exists", modelZone.Name),

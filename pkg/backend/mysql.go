@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/mysql"
+	mysqlmigrate "github.com/golang-migrate/migrate/v4/database/mysql"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -82,7 +82,7 @@ func (m *MySQLBackend) RunMigrations(migrationsPath string) error {
 		return fmt.Errorf("failed to ping MySQL for migrations: %w", err)
 	}
 
-	driver, err := mysql.WithInstance(migrationDB, &mysql.Config{})
+	driver, err := mysqlmigrate.WithInstance(migrationDB, &mysqlmigrate.Config{})
 	if err != nil {
 		migrationDB.Close()
 		return fmt.Errorf("failed to create migration driver: %w", err)
@@ -1317,7 +1317,18 @@ func isMySQLDuplicateError(err error) bool {
 }
 
 func isMySQLDeadlock(err error) bool {
-	return strings.Contains(err.Error(), "Deadlock") || strings.Contains(err.Error(), "Error 1213")
+	var mysqlErr *gomysql.MySQLError
+	if errors.As(err, &mysqlErr) {
+		switch mysqlErr.Number {
+		case 1205, 1213:
+			return true
+		}
+	}
+	errText := err.Error()
+	return strings.Contains(errText, "Deadlock") ||
+		strings.Contains(errText, "Error 1213") ||
+		strings.Contains(errText, "Lock wait timeout") ||
+		strings.Contains(errText, "Error 1205")
 }
 
 func init() {

@@ -198,7 +198,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 
 	// Create zone in backend
 	if err := h.store.CreateZone(c.Request.Context(), &zone); err != nil {
-		if err == model.ErrZoneAlreadyExists {
+		if errors.Is(err, model.ErrZoneAlreadyExists) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeAlreadyExists,
 				"Zone already exists",
@@ -249,7 +249,7 @@ func (h *Handler) GetZone(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -285,7 +285,7 @@ func (h *Handler) HeadZone(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.Status(http.StatusNotFound)
 			return
 		}
@@ -466,7 +466,7 @@ func listZonesSummaryOnly(c *gin.Context) bool {
 func parseListZonesFields(c *gin.Context) (bool, bool) {
 	fields := strings.ToLower(strings.TrimSpace(c.Query("fields")))
 	switch fields {
-	case "":
+	case "", "full":
 		return false, true
 	case "summary", "summaries":
 		return true, true
@@ -476,7 +476,7 @@ func parseListZonesFields(c *gin.Context) (bool, bool) {
 			"Invalid fields parameter",
 			map[string]interface{}{
 				"field":   "fields",
-				"allowed": []string{"summary", "summaries"},
+				"allowed": []string{"full", "summary", "summaries"},
 			},
 		))
 		return false, false
@@ -527,7 +527,7 @@ func (h *Handler) ListZoneVersions(c *gin.Context) {
 	// Ensure zone exists (consistent 404 for all backends)
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -604,7 +604,7 @@ func (h *Handler) GetZoneRevision(c *gin.Context) {
 	// Ensure zone exists (consistent 404 for all backends)
 	_, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -633,7 +633,7 @@ func (h *Handler) GetZoneRevision(c *gin.Context) {
 
 	rev, err := revisionStore.GetRevision(c.Request.Context(), name, version)
 	if err != nil {
-		if err == model.ErrVersionNotFound {
+		if errors.Is(err, model.ErrVersionNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone version not found",
@@ -754,7 +754,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	var current *model.Zone
 	current, err := h.store.GetZone(c.Request.Context(), zone.Name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -836,7 +836,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 
 	// Update zone in backend
 	if err := h.store.UpdateZone(c.Request.Context(), &zone, expectedVersion); err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -844,7 +844,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 			))
 			return
 		}
-		if err == model.ErrConflict {
+		if errors.Is(err, model.ErrConflict) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
 				"Zone version mismatch (optimistic lock failure)",
@@ -916,7 +916,7 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 
 	current, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			if cleanupErr := h.cleanupDeletedZone(c.Request.Context(), name); cleanupErr != nil {
 				h.logger.Warn("Failed to clean up DNSSEC state for missing zone", zap.String("zone", name), zap.Error(cleanupErr))
 			}
@@ -947,7 +947,7 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 
 	err = h.deleteZoneWithVersion(c.Request.Context(), name, current.Version)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -963,7 +963,7 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 			))
 			return
 		}
-		if err == model.ErrConflict {
+		if errors.Is(err, model.ErrConflict) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
 				"Zone version mismatch (optimistic lock failure)",
@@ -1011,7 +1011,7 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -1061,7 +1061,7 @@ func (h *Handler) HeadSignedZone(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.Status(http.StatusNotFound)
 			return
 		}
@@ -1103,7 +1103,7 @@ func (h *Handler) GetSignedZoneMetadata(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -1244,7 +1244,7 @@ func (h *Handler) ensureZoneAbsentBeforeSigning(c *gin.Context, name string) boo
 			map[string]interface{}{"zone": name},
 		))
 		return false
-	} else if err != model.ErrZoneNotFound {
+	} else if !errors.Is(err, model.ErrZoneNotFound) {
 		h.logger.Error("Failed to check zone before signing",
 			zap.String("zone", name),
 			zap.Error(err))
@@ -1360,7 +1360,7 @@ func (h *Handler) GetDSRecords(c *gin.Context) {
 	// Check if zone exists
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
