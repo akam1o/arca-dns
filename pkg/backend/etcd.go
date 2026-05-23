@@ -341,10 +341,20 @@ func (e *EtcdBackend) UpdateZone(ctx context.Context, zone *model.Zone, expected
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	// Get current zone for CreatedAt and existence check
-	currentZone, err := e.GetZone(ctx, normalized)
+	// Get current zone for CreatedAt, existence check, and ModRevision compare.
+	zoneKey := e.zoneKey(normalized)
+	resp, err := e.client.Get(ctx, zoneKey)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get zone: %w", err)
+	}
+	if resp.Count == 0 {
+		return model.ErrZoneNotFound
+	}
+	modRevision := resp.Kvs[0].ModRevision
+
+	var currentZone model.Zone
+	if err := json.Unmarshal(resp.Kvs[0].Value, &currentZone); err != nil {
+		return fmt.Errorf("failed to unmarshal zone: %w", err)
 	}
 
 	// Check version (optimistic locking) only if expectedVersion is provided
@@ -384,29 +394,27 @@ func (e *EtcdBackend) UpdateZone(ctx context.Context, zone *model.Zone, expected
 	}
 
 	// Transaction: update zone + version metadata + history snapshot
-	zoneKey := e.zoneKey(normalized)
 	historyKey := e.historyKey(normalized, zone.Version)
 
-	txn := e.client.Txn(ctx)
-
-	// Only add version check if expectedVersion was provided (already checked above for mismatch)
+	cmps := []clientv3.Cmp{
+		clientv3.Compare(clientv3.ModRevision(zoneKey), "=", modRevision),
+	}
 	if expectedVersion != "" {
-		txn = txn.If(clientv3.Compare(clientv3.Value(versionKey), "=", expectedVersion))
+		cmps = append(cmps, clientv3.Compare(clientv3.Value(versionKey), "=", expectedVersion))
 	}
 
-	txn = txn.Then(
+	txn := e.client.Txn(ctx).If(cmps...).Then(
 		clientv3.OpPut(zoneKey, string(zoneData)),
 		clientv3.OpPut(versionKey, zone.Version),
 		clientv3.OpPut(historyKey, string(zoneData)),
 	)
 
-	resp, err := txn.Commit()
+	txnResp, err := txn.Commit()
 	if err != nil {
 		return fmt.Errorf("failed to update zone: %w", err)
 	}
 
-	if !resp.Succeeded {
-		// If transaction failed with version check, it's a conflict
+	if !txnResp.Succeeded {
 		return model.ErrConflict
 	}
 
@@ -492,19 +500,31 @@ func (e *EtcdBackend) DeleteZone(ctx context.Context, name string) error {
 	if resp.Count == 0 {
 		return model.ErrZoneNotFound
 	}
+	modRevision := resp.Kvs[0].ModRevision
 
 	// Delete zone + version metadata (history is kept for audit)
 	versionKey := e.versionKey(normalized)
 
 	txn := e.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(zoneKey), "=", modRevision)).
 		Then(
 			clientv3.OpDelete(zoneKey),
 			clientv3.OpDelete(versionKey),
 		)
 
-	_, err = txn.Commit()
+	txnResp, err := txn.Commit()
 	if err != nil {
 		return fmt.Errorf("failed to delete zone: %w", err)
+	}
+	if !txnResp.Succeeded {
+		existsResp, err := e.client.Get(ctx, zoneKey)
+		if err != nil {
+			return fmt.Errorf("check zone existence after delete conflict: %w", err)
+		}
+		if existsResp.Count == 0 {
+			return model.ErrZoneNotFound
+		}
+		return model.ErrConflict
 	}
 
 	// Watch events will be triggered by etcd's watch mechanism
@@ -531,12 +551,16 @@ func (e *EtcdBackend) DeleteZoneWithVersion(ctx context.Context, name string, ex
 	if resp.Count == 0 {
 		return model.ErrZoneNotFound
 	}
+	modRevision := resp.Kvs[0].ModRevision
 
-	txn := e.client.Txn(ctx)
-	if expectedVersion != "" {
-		txn = txn.If(clientv3.Compare(clientv3.Value(versionKey), "=", expectedVersion))
+	cmps := []clientv3.Cmp{
+		clientv3.Compare(clientv3.ModRevision(zoneKey), "=", modRevision),
 	}
-	txn = txn.Then(
+	if expectedVersion != "" {
+		cmps = append(cmps, clientv3.Compare(clientv3.Value(versionKey), "=", expectedVersion))
+	}
+
+	txn := e.client.Txn(ctx).If(cmps...).Then(
 		clientv3.OpDelete(zoneKey),
 		clientv3.OpDelete(versionKey),
 	)
