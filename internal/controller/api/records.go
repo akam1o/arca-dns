@@ -71,7 +71,7 @@ func (h *Handler) CreateRecord(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Invalid request body",
-			map[string]interface{}{"error": "internal error"},
+			invalidRequestBodyDetails(err),
 		))
 		return
 	}
@@ -116,7 +116,7 @@ func (h *Handler) BulkRecords(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Invalid request body",
-			map[string]interface{}{"error": "internal error"},
+			invalidRequestBodyDetails(err),
 		))
 		return
 	}
@@ -186,7 +186,7 @@ func (h *Handler) UpdateRecord(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Invalid request body",
-			map[string]interface{}{"error": "internal error"},
+			invalidRequestBodyDetails(err),
 		))
 		return
 	}
@@ -426,7 +426,7 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("zone.records", err),
 		))
 		return nil, "", "", false
 	}
@@ -439,7 +439,7 @@ func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record 
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Record validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("record", err),
 		))
 		return false
 	}
@@ -447,7 +447,7 @@ func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record 
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Record validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("record", err),
 		))
 		return false
 	}
@@ -455,7 +455,7 @@ func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record 
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Record validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("record.name", err),
 		))
 		return false
 	}
@@ -463,7 +463,7 @@ func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record 
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Record validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("record.value", err),
 		))
 		return false
 	}
@@ -476,7 +476,7 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("zone", err),
 		))
 		return nil, false
 	}

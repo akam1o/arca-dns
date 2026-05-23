@@ -132,7 +132,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Invalid request body",
-			map[string]interface{}{"error": "internal error"},
+			invalidRequestBodyDetails(err),
 		))
 		return
 	}
@@ -151,7 +151,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": "internal error"},
+			validationFailureDetails("zone.records", err),
 		))
 		return
 	}
@@ -162,7 +162,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": "internal error"},
+			validationFailureDetails("zone", err),
 		))
 		return
 	}
@@ -699,7 +699,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Invalid request body",
-			map[string]interface{}{"error": "internal error"},
+			invalidRequestBodyDetails(err),
 		))
 		return
 	}
@@ -773,7 +773,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": "internal error"},
+			validationFailureDetails("zone.records", err),
 		))
 		return
 	}
@@ -784,7 +784,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": "internal error"},
+			validationFailureDetails("zone", err),
 		))
 		return
 	}

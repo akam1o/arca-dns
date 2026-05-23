@@ -270,8 +270,31 @@ func TestCreateZone_RejectsUnknownJSONFields(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Invalid request body", apiErr.Message)
+	assert.Equal(t, "invalid_request_body", apiErr.Details["reason"])
+	assert.Equal(t, "body", apiErr.Details["field"])
+	assert.Contains(t, apiErr.Details["error"], "unknown field")
 	_, err = store.GetZone(context.Background(), "unknown.example.")
 	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+}
+
+func TestCreateZone_RejectsMalformedJSONWithSafeDetails(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", strings.NewReader(`{"name":`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Invalid request body", apiErr.Message)
+	assert.Equal(t, "invalid_request_body", apiErr.Details["reason"])
+	assert.Equal(t, "body", apiErr.Details["field"])
+	assert.NotEqual(t, "internal error", apiErr.Details["error"])
 }
 
 func TestCreateZone_IgnoresClientManagedRecordIDs(t *testing.T) {
@@ -484,6 +507,12 @@ func TestCreateZone_RejectsDuplicateRecords(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Zone validation failed", apiErr.Message)
+	assert.Equal(t, "validation_failed", apiErr.Details["reason"])
+	assert.Equal(t, "zone", apiErr.Details["field"])
+	assert.Contains(t, apiErr.Details["error"], "duplicate record")
 }
 
 func TestGetZone(t *testing.T) {
@@ -1025,6 +1054,12 @@ func TestCreateRecord_RejectsUnknownJSONFields(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Invalid request body", apiErr.Message)
+	assert.Equal(t, "invalid_request_body", apiErr.Details["reason"])
+	assert.Equal(t, "body", apiErr.Details["field"])
+	assert.Contains(t, apiErr.Details["error"], "unknown field")
 	unchanged, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
 	assert.Len(t, unchanged.Records, 1)
@@ -1159,6 +1194,12 @@ func TestCreateRecord_RejectsPriorityMismatch(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Record validation failed", apiErr.Message)
+	assert.Equal(t, "validation_failed", apiErr.Details["reason"])
+	assert.Equal(t, "record", apiErr.Details["field"])
+	assert.Contains(t, apiErr.Details["error"], "priority 20 does not match value priority 10")
 
 	unchanged, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
