@@ -365,6 +365,54 @@ func TestNewClient_RejectsSymlinkedTLSClientKeyFile(t *testing.T) {
 	}
 }
 
+func TestReadRegularTLSFileRejectsOversizedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	caPath := filepath.Join(tmpDir, "ca.crt")
+	file, err := os.OpenFile(caPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		t.Fatalf("create oversized CA file: %v", err)
+	}
+	if err := file.Truncate(maxTLSFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("size oversized CA file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close oversized CA file: %v", err)
+	}
+
+	_, err = readRegularTLSFile(caPath, "CA certificate file")
+	if err == nil {
+		t.Fatal("Expected oversized CA certificate file to fail")
+	}
+	if !strings.Contains(err.Error(), "CA certificate") || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("Expected oversized CA certificate error, got %v", err)
+	}
+}
+
+func TestReadRegularTLSPrivateKeyFileRejectsOversizedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "client.key")
+	file, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		t.Fatalf("create oversized key file: %v", err)
+	}
+	if err := file.Truncate(maxTLSFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("size oversized key file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close oversized key file: %v", err)
+	}
+
+	_, err = readRegularTLSPrivateKeyFile(keyPath)
+	if err == nil {
+		t.Fatal("Expected oversized client key file to fail")
+	}
+	if !strings.Contains(err.Error(), "client key") || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("Expected oversized client key error, got %v", err)
+	}
+}
+
 func TestNewClient_RejectsWorldReadableTLSClientKeyFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	certPath := filepath.Join(tmpDir, "client.crt")

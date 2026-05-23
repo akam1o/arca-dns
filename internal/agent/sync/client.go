@@ -26,6 +26,7 @@ import (
 const (
 	listZonesPageLimit       = 1000
 	maxErrorResponseBodySize = 4 * 1024
+	maxTLSFileSize           = 4 * 1024 * 1024
 )
 
 // Client is an HTTP client for communicating with the arca-dns controller.
@@ -208,6 +209,9 @@ func readRegularTLSFileValidated(path string, label string, validate func(os.Fil
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s must be a regular file: %s", label, path)
 	}
+	if info.Size() > maxTLSFileSize {
+		return nil, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxTLSFileSize, path)
+	}
 	if validate != nil {
 		if err := validate(info); err != nil {
 			return nil, err
@@ -230,13 +234,23 @@ func readRegularTLSFileValidated(path string, label string, validate func(os.Fil
 	if !openedInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s must be a regular file: %s", label, path)
 	}
+	if openedInfo.Size() > maxTLSFileSize {
+		return nil, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxTLSFileSize, path)
+	}
 	if validate != nil {
 		if err := validate(openedInfo); err != nil {
 			return nil, err
 		}
 	}
 
-	return io.ReadAll(file)
+	data, err := io.ReadAll(io.LimitReader(file, maxTLSFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxTLSFileSize {
+		return nil, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxTLSFileSize, path)
+	}
+	return data, nil
 }
 
 func sameOrigin(a *url.URL, b *url.URL) bool {
