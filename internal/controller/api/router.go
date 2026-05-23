@@ -14,6 +14,12 @@ import (
 	"go.uber.org/zap"
 )
 
+func init() {
+	// Gin's JSON decoder strictness is process-global. Configure it once for
+	// this API package so router construction does not repeatedly mutate it.
+	binding.EnableDecoderDisallowUnknownFields = true
+}
+
 // SetupRouter configures status endpoints and authenticated management API routes.
 func SetupRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger) *gin.Engine {
 	return SetupAPIRouter(handler, cfg, logger)
@@ -127,8 +133,6 @@ func SetupObservabilityRouterWithConfig(handler *Handler, cfg *config.APIConfig,
 }
 
 func newControllerRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger, includeMetrics bool) *gin.Engine {
-	binding.EnableDecoderDisallowUnknownFields = true
-
 	router := gin.New()
 
 	router.Use(gin.Recovery())

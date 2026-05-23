@@ -14,6 +14,7 @@ import (
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/middleware"
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/gin-gonic/gin/binding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -48,6 +49,10 @@ func TestSetupRouter_AuthEnabledWithoutKeysStillProtectsRoutes(t *testing.T) {
 
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	assert.Contains(t, w.Body.String(), "API key required")
+}
+
+func TestStrictJSONBindingConfiguredAtPackageInit(t *testing.T) {
+	assert.True(t, binding.EnableDecoderDisallowUnknownFields)
 }
 
 func TestSetupRouter_AuthRejectsBeforeReadingBody(t *testing.T) {
