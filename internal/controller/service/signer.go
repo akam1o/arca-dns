@@ -32,7 +32,10 @@ var (
 	ErrSignedArtifactExpired = errors.New("signed zone artifact expired")
 )
 
-const maxArtifactVersionFilenameLength = 200
+const (
+	maxArtifactVersionFilenameLength = 200
+	maxSignedArtifactFileSize        = 64 * 1024 * 1024
+)
 
 // SigningService handles DNSSEC signing operations and signed zone storage.
 type SigningService struct {
@@ -1233,6 +1236,9 @@ func readRegularArtifactFile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("artifact file must be a regular file: %s", path)
 	}
+	if info.Size() > maxSignedArtifactFileSize {
+		return nil, fmt.Errorf("artifact file exceeds maximum size of %d bytes: %s", maxSignedArtifactFileSize, path)
+	}
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -1250,6 +1256,16 @@ func readRegularArtifactFile(path string) ([]byte, error) {
 	if !openedInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("artifact file must be a regular file: %s", path)
 	}
+	if openedInfo.Size() > maxSignedArtifactFileSize {
+		return nil, fmt.Errorf("artifact file exceeds maximum size of %d bytes: %s", maxSignedArtifactFileSize, path)
+	}
 
-	return io.ReadAll(file)
+	data, err := io.ReadAll(io.LimitReader(file, maxSignedArtifactFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxSignedArtifactFileSize {
+		return nil, fmt.Errorf("artifact file exceeds maximum size of %d bytes: %s", maxSignedArtifactFileSize, path)
+	}
+	return data, nil
 }

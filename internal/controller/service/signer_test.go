@@ -304,6 +304,38 @@ func TestSigningService_LoadArtifactRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestSigningService_LoadArtifactRejectsOversizedFile(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zoneName := "example.com."
+	version := "oversized"
+	targetPath := service.artifactPath(zoneName, version)
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		t.Fatalf("failed to create artifact directory: %v", err)
+	}
+
+	file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		t.Fatalf("failed to create oversized artifact: %v", err)
+	}
+	if err := file.Truncate(maxSignedArtifactFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("failed to truncate oversized artifact: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("failed to close oversized artifact: %v", err)
+	}
+
+	data, err := service.loadArtifact(zoneName, version)
+	if err == nil {
+		t.Fatalf("loadArtifact returned oversized artifact with %d bytes", len(data))
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("loadArtifact error = %v, want size limit rejection", err)
+	}
+}
+
 func TestSigningService_LoadArtifactRejectsSymlinkedArtifactZoneDirectory(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
