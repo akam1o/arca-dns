@@ -484,6 +484,32 @@ func TestValidateControllerConfig_Valid(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestValidateControllerAPIConfigSectionNormalizesFields(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.API.Listen = " 127.0.0.1:8080 "
+	cfg.API.TrustedProxies = []string{" 10.0.0.1 ", "\t2001:db8::/32\n"}
+	cfg.API.ArtifactSignatureKeyID = "Primary-Key"
+	cfg.Observability.Listen = " 127.0.0.1:9053 "
+
+	err := validateControllerAPIConfig(&cfg.API, &cfg.Observability)
+	require.NoError(t, err)
+
+	assert.Equal(t, "127.0.0.1:8080", cfg.API.Listen)
+	assert.Equal(t, "127.0.0.1:9053", cfg.Observability.Listen)
+	assert.Equal(t, []string{"10.0.0.1", "2001:db8::/32"}, cfg.API.TrustedProxies)
+	assert.Equal(t, "primary-key", cfg.API.ArtifactSignatureKeyID)
+}
+
+func TestValidateControllerDNSSECConfigSectionRejectsInvalidScheduler(t *testing.T) {
+	cfg := validControllerConfigForTest()
+	cfg.DNSSEC.SchedulerEnabled = true
+	cfg.DNSSEC.SchedulerCheckInterval = 0
+
+	err := validateControllerDNSSECConfig(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dnssec.scheduler_check_interval")
+}
+
 func TestValidateControllerConfig_TrustedProxies(t *testing.T) {
 	cfg := validControllerConfigForTest()
 	cfg.API.TrustedProxies = []string{" 127.0.0.1 ", "10.0.0.0/8", "\t2001:db8::/32\n"}
@@ -1699,6 +1725,26 @@ func TestValidateAgentConfig_Valid(t *testing.T) {
 	cfg := validAgentConfigForTest()
 	err := ValidateAgentConfig(cfg)
 	assert.NoError(t, err)
+}
+
+func TestValidateAgentControllerConfigSectionNormalizesURL(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Controller.URL = " https://controller.example.com/base/ "
+
+	err := validateAgentControllerConfig(&cfg.Controller)
+	require.NoError(t, err)
+
+	assert.Equal(t, "https://controller.example.com/base", cfg.Controller.URL)
+}
+
+func TestValidateAgentSyncConfigSectionRejectsStalenessBelowInterval(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Sync.SyncInterval = time.Minute
+	cfg.Sync.MaxStaleness = time.Minute - time.Second
+
+	err := validateAgentSyncConfig(&cfg.Sync)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync.max_staleness")
 }
 
 func TestValidateAgentConfig_EmptyControllerURL(t *testing.T) {

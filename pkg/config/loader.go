@@ -186,58 +186,9 @@ func LoadAgentConfig(path string) (*AgentConfig, error) {
 
 // ValidateControllerConfig validates the controller configuration.
 func ValidateControllerConfig(cfg *ControllerConfig) error {
-	cfg.API.Listen = strings.TrimSpace(cfg.API.Listen)
-	if cfg.API.Listen == "" {
-		return fmt.Errorf("invalid api.listen: empty")
-	}
-	if strings.TrimSpace(cfg.Observability.Listen) == "" {
-		return fmt.Errorf("invalid observability.listen: empty")
-	}
-	cfg.Observability.Listen = strings.TrimSpace(cfg.Observability.Listen)
-	if err := validateListenAddress("api.listen", cfg.API.Listen); err != nil {
+	if err := validateControllerAPIConfig(&cfg.API, &cfg.Observability); err != nil {
 		return err
 	}
-	if err := validateListenAddress("observability.listen", cfg.Observability.Listen); err != nil {
-		return err
-	}
-	if err := validateObservabilityAuthConfig(&cfg.Observability); err != nil {
-		return err
-	}
-	if listenEndpointsOverlap(cfg.API.Listen, cfg.Observability.Listen) {
-		return fmt.Errorf("invalid observability.listen: must not overlap api.listen")
-	}
-
-	trustedProxies, err := normalizeTrustedProxies(cfg.API.TrustedProxies)
-	if err != nil {
-		return err
-	}
-	cfg.API.TrustedProxies = trustedProxies
-
-	if err := validateControllerAuthConfig(&cfg.API.Auth); err != nil {
-		return err
-	}
-
-	if err := validateArtifactSignatureKey("api.artifact_signature_key", cfg.API.ArtifactSignatureKey, true); err != nil {
-		return err
-	}
-	keyID, err := normalizeArtifactSignatureKeyID("api.artifact_signature_key_id", cfg.API.ArtifactSignatureKeyID)
-	if err != nil {
-		return err
-	}
-	cfg.API.ArtifactSignatureKeyID = keyID
-	if err := validateControllerAuthExposure(cfg.API.Listen, cfg.API.Auth); err != nil {
-		return err
-	}
-
-	if cfg.API.RateLimit.Enabled {
-		if cfg.API.RateLimit.RequestsPerSecond <= 0 {
-			return fmt.Errorf("invalid api.rate_limit.requests_per_second: must be positive when rate limiting is enabled")
-		}
-		if cfg.API.RateLimit.Burst <= 0 {
-			return fmt.Errorf("invalid api.rate_limit.burst: must be positive when rate limiting is enabled")
-		}
-	}
-
 	if err := ValidateControllerBackendConfig(&cfg.Backend); err != nil {
 		return err
 	}
@@ -247,87 +198,144 @@ func ValidateControllerConfig(cfg *ControllerConfig) error {
 
 	applyControllerKeyDirectoryAlias(cfg)
 
-	if err := validateAbsoluteLocalPath("storage.artifact_directory", cfg.Storage.ArtifactDirectory); err != nil {
+	if err := validateControllerStorageConfig(&cfg.Storage); err != nil {
 		return err
 	}
-	if strings.TrimSpace(cfg.Storage.KeyDirectory) != "" {
-		if err := validateAbsoluteLocalPath("storage.key_directory", cfg.Storage.KeyDirectory); err != nil {
+	if err := validateControllerDNSSECConfig(cfg); err != nil {
+		return err
+	}
+	if err := validateControllerStorageRetentionConfig(&cfg.Storage); err != nil {
+		return err
+	}
+	if err := validateLoggingConfig(&cfg.Logging); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateControllerAPIConfig(api *APIConfig, observability *ObservabilityConfig) error {
+	api.Listen = strings.TrimSpace(api.Listen)
+	if api.Listen == "" {
+		return fmt.Errorf("invalid api.listen: empty")
+	}
+	if strings.TrimSpace(observability.Listen) == "" {
+		return fmt.Errorf("invalid observability.listen: empty")
+	}
+	observability.Listen = strings.TrimSpace(observability.Listen)
+	if err := validateListenAddress("api.listen", api.Listen); err != nil {
+		return err
+	}
+	if err := validateListenAddress("observability.listen", observability.Listen); err != nil {
+		return err
+	}
+	if err := validateObservabilityAuthConfig(observability); err != nil {
+		return err
+	}
+	if listenEndpointsOverlap(api.Listen, observability.Listen) {
+		return fmt.Errorf("invalid observability.listen: must not overlap api.listen")
+	}
+
+	trustedProxies, err := normalizeTrustedProxies(api.TrustedProxies)
+	if err != nil {
+		return err
+	}
+	api.TrustedProxies = trustedProxies
+
+	if err := validateControllerAuthConfig(&api.Auth); err != nil {
+		return err
+	}
+	if err := validateArtifactSignatureKey("api.artifact_signature_key", api.ArtifactSignatureKey, true); err != nil {
+		return err
+	}
+	keyID, err := normalizeArtifactSignatureKeyID("api.artifact_signature_key_id", api.ArtifactSignatureKeyID)
+	if err != nil {
+		return err
+	}
+	api.ArtifactSignatureKeyID = keyID
+	if err := validateControllerAuthExposure(api.Listen, api.Auth); err != nil {
+		return err
+	}
+	return validateControllerRateLimitConfig(&api.RateLimit)
+}
+
+func validateControllerRateLimitConfig(cfg *RateLimitConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if cfg.RequestsPerSecond <= 0 {
+		return fmt.Errorf("invalid api.rate_limit.requests_per_second: must be positive when rate limiting is enabled")
+	}
+	if cfg.Burst <= 0 {
+		return fmt.Errorf("invalid api.rate_limit.burst: must be positive when rate limiting is enabled")
+	}
+	return nil
+}
+
+func validateControllerStorageConfig(cfg *StorageConfig) error {
+	if err := validateAbsoluteLocalPath("storage.artifact_directory", cfg.ArtifactDirectory); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.KeyDirectory) != "" {
+		if err := validateAbsoluteLocalPath("storage.key_directory", cfg.KeyDirectory); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+func validateControllerStorageRetentionConfig(cfg *StorageConfig) error {
+	if cfg.MaxVersionsPerZone < 1 {
+		return fmt.Errorf("invalid storage.max_versions_per_zone: must be positive")
+	}
+	return nil
+}
+
+func validateControllerDNSSECConfig(cfg *ControllerConfig) error {
 	if strings.TrimSpace(cfg.DNSSEC.KeyDirectory) != "" {
 		if err := validateAbsoluteLocalPath("dnssec.key_directory", cfg.DNSSEC.KeyDirectory); err != nil {
 			return err
 		}
 	}
 
-	if cfg.DNSSEC.Enabled {
-		if cfg.DNSSECKeyDirectory() == "" {
-			return fmt.Errorf("invalid dnssec.key_directory: empty when DNSSEC is enabled and storage.key_directory is not set")
-		}
-
-		validAlgorithms := map[uint8]bool{
-			8:  true, // RSA-SHA256
-			13: true, // ECDSA-P256
-		}
-		if !validAlgorithms[cfg.DNSSEC.Algorithm] {
-			return fmt.Errorf("invalid dnssec.algorithm: %d (must be 8 or 13)", cfg.DNSSEC.Algorithm)
-		}
-		if cfg.DNSSEC.KSKKeySize < 0 {
-			return fmt.Errorf("invalid dnssec.ksk_key_size: must be non-negative")
-		}
-		if cfg.DNSSEC.ZSKKeySize < 0 {
-			return fmt.Errorf("invalid dnssec.zsk_key_size: must be non-negative")
-		}
-
-		if cfg.DNSSEC.SignatureValidity <= 0 {
-			return fmt.Errorf("invalid dnssec.signature_validity: must be positive")
-		}
-
-		if cfg.DNSSEC.SignatureInception < 0 {
-			return fmt.Errorf("invalid dnssec.signature_inception: must be non-negative")
-		}
-
-		if cfg.DNSSEC.ResignThreshold <= 0 {
-			return fmt.Errorf("invalid dnssec.resign_threshold: must be positive")
-		}
-
-		if cfg.DNSSEC.ResignThreshold >= cfg.DNSSEC.SignatureValidity {
-			return fmt.Errorf("invalid dnssec.resign_threshold: must be less than signature_validity")
-		}
-
-		if cfg.DNSSEC.NSEC3SaltLength < 0 {
-			return fmt.Errorf("invalid dnssec.nsec3_salt_length: must be non-negative")
-		}
-
-		// Validate scheduler configuration if enabled
-		if cfg.DNSSEC.SchedulerEnabled {
-			if cfg.DNSSEC.SchedulerCheckInterval <= 0 {
-				return fmt.Errorf("invalid dnssec.scheduler_check_interval: must be positive when scheduler is enabled")
-			}
-		}
+	if !cfg.DNSSEC.Enabled {
+		return nil
+	}
+	if cfg.DNSSECKeyDirectory() == "" {
+		return fmt.Errorf("invalid dnssec.key_directory: empty when DNSSEC is enabled and storage.key_directory is not set")
 	}
 
-	if cfg.Storage.MaxVersionsPerZone < 1 {
-		return fmt.Errorf("invalid storage.max_versions_per_zone: must be positive")
+	validAlgorithms := map[uint8]bool{
+		8:  true, // RSA-SHA256
+		13: true, // ECDSA-P256
 	}
-
-	validLogLevels := map[string]bool{
-		"debug": true,
-		"info":  true,
-		"warn":  true,
-		"error": true,
+	if !validAlgorithms[cfg.DNSSEC.Algorithm] {
+		return fmt.Errorf("invalid dnssec.algorithm: %d (must be 8 or 13)", cfg.DNSSEC.Algorithm)
 	}
-	if !validLogLevels[cfg.Logging.Level] {
-		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
+	if cfg.DNSSEC.KSKKeySize < 0 {
+		return fmt.Errorf("invalid dnssec.ksk_key_size: must be non-negative")
 	}
-	if err := validateLoggingFormat("logging.format", cfg.Logging.Format); err != nil {
-		return err
+	if cfg.DNSSEC.ZSKKeySize < 0 {
+		return fmt.Errorf("invalid dnssec.zsk_key_size: must be non-negative")
 	}
-	if err := validateLoggingOutputPath("logging.output", cfg.Logging.Output); err != nil {
-		return err
+	if cfg.DNSSEC.SignatureValidity <= 0 {
+		return fmt.Errorf("invalid dnssec.signature_validity: must be positive")
 	}
-
+	if cfg.DNSSEC.SignatureInception < 0 {
+		return fmt.Errorf("invalid dnssec.signature_inception: must be non-negative")
+	}
+	if cfg.DNSSEC.ResignThreshold <= 0 {
+		return fmt.Errorf("invalid dnssec.resign_threshold: must be positive")
+	}
+	if cfg.DNSSEC.ResignThreshold >= cfg.DNSSEC.SignatureValidity {
+		return fmt.Errorf("invalid dnssec.resign_threshold: must be less than signature_validity")
+	}
+	if cfg.DNSSEC.NSEC3SaltLength < 0 {
+		return fmt.Errorf("invalid dnssec.nsec3_salt_length: must be non-negative")
+	}
+	if cfg.DNSSEC.SchedulerEnabled && cfg.DNSSEC.SchedulerCheckInterval <= 0 {
+		return fmt.Errorf("invalid dnssec.scheduler_check_interval: must be positive when scheduler is enabled")
+	}
 	return nil
 }
 
@@ -883,36 +891,71 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return err
 	}
 
-	controllerURL, err := normalizeControllerURL(cfg.Controller.URL)
-	if err != nil {
+	if err := validateAgentControllerConfig(&cfg.Controller); err != nil {
 		return err
 	}
-	cfg.Controller.URL = controllerURL
-	if cfg.Controller.Timeout <= 0 {
-		return fmt.Errorf("invalid controller.timeout: must be greater than 0")
-	}
-	if cfg.Controller.RetryAttempts < 0 {
-		return fmt.Errorf("invalid controller.retry_attempts: must be >= 0")
-	}
-	if cfg.Controller.RetryDelay < 0 {
-		return fmt.Errorf("invalid controller.retry_delay: must be >= 0")
-	}
-	if cfg.Controller.RetryAttempts > 0 && cfg.Controller.RetryDelay == 0 {
-		return fmt.Errorf("invalid controller.retry_delay: must be greater than 0 when controller.retry_attempts is greater than 0")
-	}
-	if cfg.Controller.MaxResponseBytes <= 0 {
-		return fmt.Errorf("invalid controller.max_response_bytes: must be positive")
-	}
-	if err := validateAgentControllerAPIKey(cfg.Controller.APIKey); err != nil {
+	if err := validateAgentAuthoritativeConfig(cfg); err != nil {
 		return err
 	}
-	if err := validateAgentControllerAPIKeyTransport(cfg.Controller); err != nil {
+	if err := validateAgentNSDConfig(&cfg.NSD); err != nil {
 		return err
 	}
-	if err := validateAgentControllerTLSConfig(cfg.Controller); err != nil {
+	if err := validateAgentUnboundConfig(&cfg.Unbound); err != nil {
+		return err
+	}
+	if err := validateAgentBIRDConfig(&cfg.BIRD); err != nil {
+		return err
+	}
+	if err := validateAgentSyncConfig(&cfg.Sync); err != nil {
+		return err
+	}
+	if err := validateAgentDNSTapConfig(&cfg.DNSTap); err != nil {
+		return err
+	}
+	if err := validateAgentMetricsConfig(&cfg.Metrics); err != nil {
+		return err
+	}
+	if err := validateAgentHealthConfig(&cfg.Health, cfg.NSD.Enabled, cfg.Unbound.Enabled, cfg.BIRD.Enabled); err != nil {
+		return err
+	}
+	if err := validateLoggingConfig(&cfg.Logging); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+func validateAgentControllerConfig(cfg *ControllerClientConfig) error {
+	controllerURL, err := normalizeControllerURL(cfg.URL)
+	if err != nil {
+		return err
+	}
+	cfg.URL = controllerURL
+	if cfg.Timeout <= 0 {
+		return fmt.Errorf("invalid controller.timeout: must be greater than 0")
+	}
+	if cfg.RetryAttempts < 0 {
+		return fmt.Errorf("invalid controller.retry_attempts: must be >= 0")
+	}
+	if cfg.RetryDelay < 0 {
+		return fmt.Errorf("invalid controller.retry_delay: must be >= 0")
+	}
+	if cfg.RetryAttempts > 0 && cfg.RetryDelay == 0 {
+		return fmt.Errorf("invalid controller.retry_delay: must be greater than 0 when controller.retry_attempts is greater than 0")
+	}
+	if cfg.MaxResponseBytes <= 0 {
+		return fmt.Errorf("invalid controller.max_response_bytes: must be positive")
+	}
+	if err := validateAgentControllerAPIKey(cfg.APIKey); err != nil {
+		return err
+	}
+	if err := validateAgentControllerAPIKeyTransport(*cfg); err != nil {
+		return err
+	}
+	return validateAgentControllerTLSConfig(*cfg)
+}
+
+func validateAgentAuthoritativeConfig(cfg *AgentConfig) error {
 	cfg.Authoritative = strings.ToLower(strings.TrimSpace(cfg.Authoritative))
 	if cfg.Authoritative == "" {
 		return fmt.Errorf("invalid authoritative: empty")
@@ -920,246 +963,236 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 	if cfg.Authoritative != "nsd" {
 		return fmt.Errorf("invalid authoritative: %s (supported: nsd)", cfg.Authoritative)
 	}
+	return nil
+}
 
-	if err := ValidateNSDRenderedConfigPath("nsd.zone_directory", cfg.NSD.ZoneDirectory); err != nil {
+func validateAgentNSDConfig(cfg *NSDConfig) error {
+	if err := ValidateNSDRenderedConfigPath("nsd.zone_directory", cfg.ZoneDirectory); err != nil {
 		return fmt.Errorf("%w; required for zone sync storage", err)
 	}
-	if cfg.NSD.Enabled {
-		if err := ValidateNSDRenderedConfigPath("nsd.config_path", cfg.NSD.ConfigPath); err != nil {
-			return fmt.Errorf("%w when NSD is enabled", err)
+	if !cfg.Enabled {
+		return nil
+	}
+	if err := ValidateNSDRenderedConfigPath("nsd.config_path", cfg.ConfigPath); err != nil {
+		return fmt.Errorf("%w when NSD is enabled", err)
+	}
+	if cfg.ZoneConfigPath != "" {
+		if err := ValidateNSDRenderedConfigPath("nsd.zone_config_path", cfg.ZoneConfigPath); err != nil {
+			return err
 		}
-		if cfg.NSD.ZoneConfigPath != "" {
-			if err := ValidateNSDRenderedConfigPath("nsd.zone_config_path", cfg.NSD.ZoneConfigPath); err != nil {
+	}
+	if err := validateExecutablePath("nsd.control_path", cfg.ControlPath); err != nil {
+		return fmt.Errorf("%w when NSD is enabled", err)
+	}
+	if err := validateExecutablePath("nsd.checkzone_path", cfg.CheckzonePath); err != nil {
+		return fmt.Errorf("%w when NSD is enabled", err)
+	}
+	if cfg.ReloadTimeout <= 0 {
+		return fmt.Errorf("invalid nsd.reload_timeout: must be positive when NSD is enabled")
+	}
+	return nil
+}
+
+func validateAgentUnboundConfig(cfg *UnboundConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if err := validateAbsoluteLocalPath("unbound.config_path", cfg.ConfigPath); err != nil {
+		return fmt.Errorf("%w when Unbound is enabled", err)
+	}
+	if err := validateExecutablePath("unbound.control_path", cfg.ControlPath); err != nil {
+		return fmt.Errorf("%w when Unbound is enabled", err)
+	}
+	if err := validateExecutablePath("unbound.checkconf_path", cfg.CheckconfPath); err != nil {
+		return fmt.Errorf("%w when Unbound is enabled", err)
+	}
+	if err := cfg.StubZoneConfig.Validate(); err != nil {
+		return err
+	}
+	if cfg.EDNSBufferSize != 1232 {
+		return fmt.Errorf("invalid unbound.edns_buffer_size: must be 1232 for ECMP-safe DNSSEC responses")
+	}
+	if cfg.ReloadTimeout <= 0 {
+		return fmt.Errorf("invalid unbound.reload_timeout: must be positive when Unbound is enabled")
+	}
+	return nil
+}
+
+func validateAgentBIRDConfig(cfg *BIRDConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if err := validateAbsoluteLocalPath("bird.socket_path", cfg.SocketPath); err != nil {
+		return fmt.Errorf("%w when BIRD is enabled", err)
+	}
+	if len(cfg.Protocols) == 0 && cfg.ProtocolName == "" && len(cfg.ProtocolNames) == 0 {
+		return fmt.Errorf("invalid bird.protocols: empty when BIRD is enabled (or set bird.protocol_names/protocol_name)")
+	}
+	if err := validateBIRDProtocolIdentifiers(cfg); err != nil {
+		return err
+	}
+	if cfg.CommandTimeout <= 0 {
+		return fmt.Errorf("invalid bird.command_timeout: must be positive when BIRD is enabled")
+	}
+	if cfg.StateMachine.FailureThreshold < 1 {
+		return fmt.Errorf("invalid bird.state_machine.failure_threshold: must be >= 1")
+	}
+	if cfg.StateMachine.RecoveryThreshold < 1 {
+		return fmt.Errorf("invalid bird.state_machine.recovery_threshold: must be >= 1")
+	}
+	if cfg.StateMachine.MinStateDuration < 0 {
+		return fmt.Errorf("invalid bird.state_machine.min_state_duration: must be >= 0")
+	}
+	if cfg.ConfigureOnStart.Enabled {
+		return validateAgentBIRDStartupConfig(cfg)
+	}
+	return nil
+}
+
+func validateAgentBIRDStartupConfig(cfg *BIRDConfig) error {
+	if err := validateAbsoluteLocalPath("bird.config.path", cfg.ConfigureOnStart.Path); err != nil {
+		return fmt.Errorf("%w when bird.config.enabled is true", err)
+	}
+	if err := validateBIRDIPAddress("bird.config.router_id", cfg.ConfigureOnStart.RouterID); err != nil {
+		return fmt.Errorf("%w when bird.config.enabled is true", err)
+	}
+	if cfg.ConfigureOnStart.LocalAS == 0 {
+		return fmt.Errorf("invalid bird.config.local_as: must be > 0 when bird.config.enabled is true")
+	}
+	if err := validateBIRDIPAddress("bird.config.source_ip", cfg.ConfigureOnStart.SourceIP); err != nil {
+		return fmt.Errorf("%w when bird.config.enabled is true", err)
+	}
+	if err := validateBIRDAnycastPrefixes(cfg.AnycastPrefixes); err != nil {
+		return fmt.Errorf("%w when bird.config.enabled is true", err)
+	}
+	if len(cfg.Protocols) == 0 && len(cfg.ConfigureOnStart.Neighbors) == 0 {
+		return fmt.Errorf("invalid bird.protocols: must be non-empty when bird.config.enabled is true (or set bird.config.neighbors for legacy config)")
+	}
+	for i, p := range cfg.Protocols {
+		if err := validateBIRDIPAddress(fmt.Sprintf("bird.protocols[%d].neighbor_address", i), p.NeighborAddress); err != nil {
+			return err
+		}
+		if p.NeighborASN == 0 {
+			return fmt.Errorf("invalid bird.protocols[%d].neighbor_asn: must be > 0", i)
+		}
+	}
+	if len(cfg.Protocols) == 0 {
+		for i, neighbor := range cfg.ConfigureOnStart.Neighbors {
+			if err := validateBIRDIPAddress(fmt.Sprintf("bird.config.neighbors[%d].address", i), neighbor.Address); err != nil {
 				return err
 			}
-		}
-		if err := validateExecutablePath("nsd.control_path", cfg.NSD.ControlPath); err != nil {
-			return fmt.Errorf("%w when NSD is enabled", err)
-		}
-		if err := validateExecutablePath("nsd.checkzone_path", cfg.NSD.CheckzonePath); err != nil {
-			return fmt.Errorf("%w when NSD is enabled", err)
-		}
-		if cfg.NSD.ReloadTimeout <= 0 {
-			return fmt.Errorf("invalid nsd.reload_timeout: must be positive when NSD is enabled")
-		}
-	}
-
-	if cfg.Unbound.Enabled {
-		if err := validateAbsoluteLocalPath("unbound.config_path", cfg.Unbound.ConfigPath); err != nil {
-			return fmt.Errorf("%w when Unbound is enabled", err)
-		}
-		if err := validateExecutablePath("unbound.control_path", cfg.Unbound.ControlPath); err != nil {
-			return fmt.Errorf("%w when Unbound is enabled", err)
-		}
-		if err := validateExecutablePath("unbound.checkconf_path", cfg.Unbound.CheckconfPath); err != nil {
-			return fmt.Errorf("%w when Unbound is enabled", err)
-		}
-		if err := cfg.Unbound.StubZoneConfig.Validate(); err != nil {
-			return err
-		}
-		if cfg.Unbound.EDNSBufferSize != 1232 {
-			return fmt.Errorf("invalid unbound.edns_buffer_size: must be 1232 for ECMP-safe DNSSEC responses")
-		}
-		if cfg.Unbound.ReloadTimeout <= 0 {
-			return fmt.Errorf("invalid unbound.reload_timeout: must be positive when Unbound is enabled")
-		}
-	}
-
-	if cfg.BIRD.Enabled {
-		if err := validateAbsoluteLocalPath("bird.socket_path", cfg.BIRD.SocketPath); err != nil {
-			return fmt.Errorf("%w when BIRD is enabled", err)
-		}
-		if len(cfg.BIRD.Protocols) == 0 && cfg.BIRD.ProtocolName == "" && len(cfg.BIRD.ProtocolNames) == 0 {
-			return fmt.Errorf("invalid bird.protocols: empty when BIRD is enabled (or set bird.protocol_names/protocol_name)")
-		}
-		if err := validateBIRDProtocolIdentifiers(&cfg.BIRD); err != nil {
-			return err
-		}
-		if cfg.BIRD.CommandTimeout <= 0 {
-			return fmt.Errorf("invalid bird.command_timeout: must be positive when BIRD is enabled")
-		}
-		// Note: AnycastPrefixes is optional - current implementation manages routes
-		// via protocol enable/disable. Individual prefix management would require
-		// more complex BIRD command generation.
-
-		if cfg.BIRD.StateMachine.FailureThreshold < 1 {
-			return fmt.Errorf("invalid bird.state_machine.failure_threshold: must be >= 1")
-		}
-		if cfg.BIRD.StateMachine.RecoveryThreshold < 1 {
-			return fmt.Errorf("invalid bird.state_machine.recovery_threshold: must be >= 1")
-		}
-		if cfg.BIRD.StateMachine.MinStateDuration < 0 {
-			return fmt.Errorf("invalid bird.state_machine.min_state_duration: must be >= 0")
-		}
-
-		if cfg.BIRD.ConfigureOnStart.Enabled {
-			if err := validateAbsoluteLocalPath("bird.config.path", cfg.BIRD.ConfigureOnStart.Path); err != nil {
-				return fmt.Errorf("%w when bird.config.enabled is true", err)
-			}
-			if err := validateBIRDIPAddress("bird.config.router_id", cfg.BIRD.ConfigureOnStart.RouterID); err != nil {
-				return fmt.Errorf("%w when bird.config.enabled is true", err)
-			}
-			if cfg.BIRD.ConfigureOnStart.LocalAS == 0 {
-				return fmt.Errorf("invalid bird.config.local_as: must be > 0 when bird.config.enabled is true")
-			}
-			if err := validateBIRDIPAddress("bird.config.source_ip", cfg.BIRD.ConfigureOnStart.SourceIP); err != nil {
-				return fmt.Errorf("%w when bird.config.enabled is true", err)
-			}
-			if err := validateBIRDAnycastPrefixes(cfg.BIRD.AnycastPrefixes); err != nil {
-				return fmt.Errorf("%w when bird.config.enabled is true", err)
-			}
-			if len(cfg.BIRD.Protocols) == 0 && len(cfg.BIRD.ConfigureOnStart.Neighbors) == 0 {
-				return fmt.Errorf("invalid bird.protocols: must be non-empty when bird.config.enabled is true (or set bird.config.neighbors for legacy config)")
-			}
-			for i, p := range cfg.BIRD.Protocols {
-				if err := validateBIRDIPAddress(fmt.Sprintf("bird.protocols[%d].neighbor_address", i), p.NeighborAddress); err != nil {
-					return err
-				}
-				if p.NeighborASN == 0 {
-					return fmt.Errorf("invalid bird.protocols[%d].neighbor_asn: must be > 0", i)
-				}
-			}
-			if len(cfg.BIRD.Protocols) == 0 {
-				for i, neighbor := range cfg.BIRD.ConfigureOnStart.Neighbors {
-					if err := validateBIRDIPAddress(fmt.Sprintf("bird.config.neighbors[%d].address", i), neighbor.Address); err != nil {
-						return err
-					}
-					if neighbor.ASN == 0 {
-						return fmt.Errorf("invalid bird.config.neighbors[%d].asn: must be > 0", i)
-					}
-				}
-			}
-			if cfg.BIRD.ConfigureOnStart.BFD.Enabled {
-				if cfg.BIRD.ConfigureOnStart.BFD.Multiplier < 1 {
-					return fmt.Errorf("invalid bird.config.bfd.multiplier: must be >= 1")
-				}
+			if neighbor.ASN == 0 {
+				return fmt.Errorf("invalid bird.config.neighbors[%d].asn: must be > 0", i)
 			}
 		}
 	}
+	if cfg.ConfigureOnStart.BFD.Enabled && cfg.ConfigureOnStart.BFD.Multiplier < 1 {
+		return fmt.Errorf("invalid bird.config.bfd.multiplier: must be >= 1")
+	}
+	return nil
+}
 
-	if cfg.Sync.SyncInterval <= 0 {
+func validateAgentSyncConfig(cfg *SyncConfig) error {
+	if cfg.SyncInterval <= 0 {
 		return fmt.Errorf("invalid sync.sync_interval: must be positive")
 	}
-
-	if cfg.Sync.MaxStaleness <= 0 {
+	if cfg.MaxStaleness <= 0 {
 		return fmt.Errorf("invalid sync.max_staleness: must be positive")
 	}
-
-	if cfg.Sync.MaxStaleness < cfg.Sync.SyncInterval {
+	if cfg.MaxStaleness < cfg.SyncInterval {
 		return fmt.Errorf("invalid sync.max_staleness: must be greater than or equal to sync.sync_interval")
 	}
-
-	if cfg.Sync.Jitter < 0 {
+	if cfg.Jitter < 0 {
 		return fmt.Errorf("invalid sync.jitter: must be non-negative")
 	}
-
-	if cfg.Sync.BackupVersions < 0 {
+	if cfg.BackupVersions < 0 {
 		return fmt.Errorf("invalid sync.backup_versions: must be non-negative")
 	}
-
-	if cfg.Sync.MinFreeBytes < 0 {
+	if cfg.MinFreeBytes < 0 {
 		return fmt.Errorf("invalid sync.min_free_bytes: must be non-negative")
 	}
-
-	if cfg.Sync.VerifySignatures {
-		if cfg.Sync.ControllerSignatureKey == "" && len(cfg.Sync.ControllerSignatureKeys) == 0 {
-			return fmt.Errorf("invalid sync.controller_signature_key: required when sync.verify_signatures is true; set sync.controller_signature_key or sync.controller_signature_keys")
-		}
-		if err := validateArtifactSignatureKey("sync.controller_signature_key", cfg.Sync.ControllerSignatureKey, cfg.Sync.ControllerSignatureKey != ""); err != nil {
-			return err
-		}
-		for keyID, key := range cfg.Sync.ControllerSignatureKeys {
-			if err := validateArtifactSignatureKey("sync.controller_signature_keys."+keyID, key, true); err != nil {
-				return err
-			}
-		}
+	if !cfg.VerifySignatures {
+		return nil
 	}
-
-	if cfg.DNSTap.Enabled {
-		if err := ValidateDNSTapSocketPath(cfg.DNSTap.SocketPath); err != nil {
-			return fmt.Errorf("invalid dnstap.socket_path: %w", err)
-		}
-		if cfg.DNSTap.LogFile != "" {
-			if err := validateAbsoluteLocalPath("dnstap.log_file", cfg.DNSTap.LogFile); err != nil {
-				return err
-			}
-			if err := validateDNSTapLogRotationConfig(cfg.DNSTap.LogRotation); err != nil {
-				return err
-			}
-		}
-		if _, err := cfg.DNSTap.SocketFileMode(); err != nil {
-			return fmt.Errorf("invalid dnstap.socket_mode: %w", err)
-		}
-		if cfg.DNSTap.SampleRate <= 0 {
-			return fmt.Errorf("invalid dnstap.sample_rate: must be positive when DNSTap is enabled")
-		}
-		if cfg.DNSTap.BufferSize <= 0 {
-			return fmt.Errorf("invalid dnstap.buffer_size: must be positive when DNSTap is enabled")
-		}
+	if cfg.ControllerSignatureKey == "" && len(cfg.ControllerSignatureKeys) == 0 {
+		return fmt.Errorf("invalid sync.controller_signature_key: required when sync.verify_signatures is true; set sync.controller_signature_key or sync.controller_signature_keys")
 	}
-
-	if err := validateAgentMetricsConfig(&cfg.Metrics); err != nil {
+	if err := validateArtifactSignatureKey("sync.controller_signature_key", cfg.ControllerSignatureKey, cfg.ControllerSignatureKey != ""); err != nil {
 		return err
 	}
+	for keyID, key := range cfg.ControllerSignatureKeys {
+		if err := validateArtifactSignatureKey("sync.controller_signature_keys."+keyID, key, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	if cfg.Health.CheckInterval <= 0 {
+func validateAgentDNSTapConfig(cfg *DNSTapConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if err := ValidateDNSTapSocketPath(cfg.SocketPath); err != nil {
+		return fmt.Errorf("invalid dnstap.socket_path: %w", err)
+	}
+	if cfg.LogFile != "" {
+		if err := validateAbsoluteLocalPath("dnstap.log_file", cfg.LogFile); err != nil {
+			return err
+		}
+		if err := validateDNSTapLogRotationConfig(cfg.LogRotation); err != nil {
+			return err
+		}
+	}
+	if _, err := cfg.SocketFileMode(); err != nil {
+		return fmt.Errorf("invalid dnstap.socket_mode: %w", err)
+	}
+	if cfg.SampleRate <= 0 {
+		return fmt.Errorf("invalid dnstap.sample_rate: must be positive when DNSTap is enabled")
+	}
+	if cfg.BufferSize <= 0 {
+		return fmt.Errorf("invalid dnstap.buffer_size: must be positive when DNSTap is enabled")
+	}
+	return nil
+}
+
+func validateAgentHealthConfig(cfg *HealthConfig, nsdEnabled bool, unboundEnabled bool, birdEnabled bool) error {
+	if cfg.CheckInterval <= 0 {
 		return fmt.Errorf("invalid health.check_interval: must be positive")
 	}
-
-	if cfg.Health.QueryTimeout <= 0 {
+	if cfg.QueryTimeout <= 0 {
 		return fmt.Errorf("invalid health.query_timeout: must be positive")
 	}
-
-	if cfg.Health.LatencyThreshold <= 0 {
+	if cfg.LatencyThreshold <= 0 {
 		return fmt.Errorf("invalid health.latency_threshold: must be positive")
 	}
-
-	if cfg.Health.FailureThreshold <= 0 {
+	if cfg.FailureThreshold <= 0 {
 		return fmt.Errorf("invalid health.failure_threshold: must be positive")
 	}
-
-	if cfg.Health.RecoveryThreshold <= 0 {
+	if cfg.RecoveryThreshold <= 0 {
 		return fmt.Errorf("invalid health.recovery_threshold: must be positive")
 	}
-	if cfg.NSD.Enabled {
-		if err := validateHealthServerAddress("health.nsd_server", cfg.Health.NSDServer); err != nil {
+	if nsdEnabled {
+		if err := validateHealthServerAddress("health.nsd_server", cfg.NSDServer); err != nil {
 			return err
 		}
 	}
-	if cfg.Unbound.Enabled {
-		if err := validateHealthServerAddress("health.unbound_server", cfg.Health.UnboundServer); err != nil {
+	if unboundEnabled {
+		if err := validateHealthServerAddress("health.unbound_server", cfg.UnboundServer); err != nil {
 			return err
 		}
 	}
-
-	if cfg.BIRD.Enabled {
-		if !cfg.NSD.Enabled && !cfg.Unbound.Enabled {
-			return fmt.Errorf("invalid bird.enabled: requires nsd.enabled or unbound.enabled for DNS health checks")
-		}
-		if strings.TrimSpace(cfg.Health.TestRecord) == "" {
-			return fmt.Errorf("invalid health.test_record: required when BIRD is enabled")
-		}
-		if healthTestRecordNeedsZone(cfg.Health.TestRecord) && strings.TrimSpace(cfg.Health.TestZone) == "" {
-			return fmt.Errorf("invalid health.test_zone: required when health.test_record is relative and BIRD is enabled")
-		}
+	if !birdEnabled {
+		return nil
 	}
-
-	validLogLevels := map[string]bool{
-		"debug": true,
-		"info":  true,
-		"warn":  true,
-		"error": true,
+	if !nsdEnabled && !unboundEnabled {
+		return fmt.Errorf("invalid bird.enabled: requires nsd.enabled or unbound.enabled for DNS health checks")
 	}
-	if !validLogLevels[cfg.Logging.Level] {
-		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Logging.Level)
+	if strings.TrimSpace(cfg.TestRecord) == "" {
+		return fmt.Errorf("invalid health.test_record: required when BIRD is enabled")
 	}
-	if err := validateLoggingFormat("logging.format", cfg.Logging.Format); err != nil {
-		return err
+	if healthTestRecordNeedsZone(cfg.TestRecord) && strings.TrimSpace(cfg.TestZone) == "" {
+		return fmt.Errorf("invalid health.test_zone: required when health.test_record is relative and BIRD is enabled")
 	}
-	if err := validateLoggingOutputPath("logging.output", cfg.Logging.Output); err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -1288,6 +1321,22 @@ func isBIRDIdentifierFirstChar(r rune) bool {
 
 func isBIRDIdentifierChar(r rune) bool {
 	return isBIRDIdentifierFirstChar(r) || r >= '0' && r <= '9'
+}
+
+func validateLoggingConfig(cfg *LoggingConfig) error {
+	validLogLevels := map[string]bool{
+		"debug": true,
+		"info":  true,
+		"warn":  true,
+		"error": true,
+	}
+	if !validLogLevels[cfg.Level] {
+		return fmt.Errorf("invalid logging.level: %s (must be one of: debug, info, warn, error)", cfg.Level)
+	}
+	if err := validateLoggingFormat("logging.format", cfg.Format); err != nil {
+		return err
+	}
+	return validateLoggingOutputPath("logging.output", cfg.Output)
 }
 
 func validateLoggingFormat(field string, format string) error {
