@@ -13,6 +13,7 @@ var (
 	dnsNameRegex     = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.?$`)
 	recordLabelRegex = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_-]*$`)
 	controlOrSpaceRe = regexp.MustCompile(`[\x00-\x20\x7f]`)
+	caaTagRegex      = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 )
 
 const (
@@ -654,7 +655,7 @@ func ValidateCAAValue(value string) error {
 
 	// Tag should be alphanumeric
 	tag := parts[1]
-	if !regexp.MustCompile(`^[a-zA-Z0-9]+$`).MatchString(tag) {
+	if !caaTagRegex.MatchString(tag) {
 		return fmt.Errorf("invalid CAA tag: %s", tag)
 	}
 
