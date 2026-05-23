@@ -553,6 +553,17 @@ func (h *Handler) ListZoneVersions(c *gin.Context) {
 func (h *Handler) GetZoneRevision(c *gin.Context) {
 	name := c.Param("name")
 	version := c.Param("version")
+	if !isValidZoneVersionParam(version) {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Invalid zone version",
+			map[string]interface{}{
+				"field":  "version",
+				"format": "v<ULID> or v<serial>-<hash8>",
+			},
+		))
+		return
+	}
 
 	// Ensure zone exists (consistent 404 for all backends)
 	_, err := h.store.GetZone(c.Request.Context(), name)
@@ -605,6 +616,57 @@ func (h *Handler) GetZoneRevision(c *gin.Context) {
 
 	c.Header("ETag", formatETag(rev.Version))
 	c.JSON(http.StatusOK, rev)
+}
+
+func isValidZoneVersionParam(version string) bool {
+	return isControllerZoneVersion(version) || isLegacyZoneVersion(version)
+}
+
+func isControllerZoneVersion(version string) bool {
+	const controllerZoneVersionLength = 27
+	if len(version) != controllerZoneVersionLength || version[0] != 'v' {
+		return false
+	}
+	for _, r := range version[1:] {
+		if !isCrockfordBase32Upper(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isLegacyZoneVersion(version string) bool {
+	if len(version) < len("v1-00000000") || version[0] != 'v' {
+		return false
+	}
+	serial, hash8, ok := strings.Cut(version[1:], "-")
+	if !ok || serial == "" || len(hash8) != 8 {
+		return false
+	}
+	for _, r := range serial {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	for _, r := range hash8 {
+		if !isLowerHex(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isCrockfordBase32Upper(r rune) bool {
+	return (r >= '0' && r <= '9') ||
+		(r >= 'A' && r <= 'H') ||
+		(r >= 'J' && r <= 'K') ||
+		(r >= 'M' && r <= 'N') ||
+		(r >= 'P' && r <= 'T') ||
+		(r >= 'V' && r <= 'Z')
+}
+
+func isLowerHex(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
 }
 
 // UpdateZone handles PUT /api/v1/zones/:name

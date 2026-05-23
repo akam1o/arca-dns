@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
@@ -153,6 +154,28 @@ func TestZoneVersions_GitBackend(t *testing.T) {
 	var rev model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&rev))
 	assert.Equal(t, oldest, rev.Version)
+}
+
+func TestGetZoneRevision_InvalidVersion(t *testing.T) {
+	store := backend.NewMemoryBackend()
+	_, server := setupTestWithStore(t, store)
+
+	tests := []string{
+		"not-a-valid-version",
+		"v01ARZ3NDEKTSV4RRFFQ69G5FAV-extra",
+		"v2024122801-zzzzzzzz",
+		"v2024122801-123456789",
+	}
+
+	for _, version := range tests {
+		t.Run(version, func(t *testing.T) {
+			resp, err := http.Get(server.URL + "/api/v1/zones/example.com./versions/" + url.PathEscape(version))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
 }
 
 func TestZoneVersions_InvalidPagination(t *testing.T) {
