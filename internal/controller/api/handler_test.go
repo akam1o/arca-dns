@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -550,6 +551,27 @@ func TestListZones_SummaryFields(t *testing.T) {
 	assert.NotEmpty(t, result.Zones[0]["version"])
 	assert.NotContains(t, result.Zones[0], "records")
 	assert.Equal(t, 1, result.Pagination.Count)
+}
+
+func TestListZones_InvalidFields(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	tests := []string{
+		"full",
+		"summary,records",
+		"records",
+	}
+
+	for _, fields := range tests {
+		t.Run(fields, func(t *testing.T) {
+			resp, err := http.Get(server.URL + "/api/v1/zones?fields=" + url.QueryEscape(fields))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
 }
 
 func TestListZones_Pagination(t *testing.T) {

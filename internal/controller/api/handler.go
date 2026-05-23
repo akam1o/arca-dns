@@ -366,8 +366,12 @@ func (h *Handler) ListZones(c *gin.Context) {
 	if !ok {
 		return
 	}
+	summaryOnly, ok := parseListZonesFields(c)
+	if !ok {
+		return
+	}
 
-	if listZonesSummaryOnly(c) {
+	if summaryOnly {
 		summaries, err := backend.ListZoneSummaries(c.Request.Context(), h.store, backend.ListOptions{
 			Offset: offset,
 			Limit:  limit,
@@ -421,6 +425,26 @@ func (h *Handler) ListZones(c *gin.Context) {
 func listZonesSummaryOnly(c *gin.Context) bool {
 	fields := strings.ToLower(strings.TrimSpace(c.Query("fields")))
 	return fields == "summary" || fields == "summaries"
+}
+
+func parseListZonesFields(c *gin.Context) (bool, bool) {
+	fields := strings.ToLower(strings.TrimSpace(c.Query("fields")))
+	switch fields {
+	case "":
+		return false, true
+	case "summary", "summaries":
+		return true, true
+	default:
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Invalid fields parameter",
+			map[string]interface{}{
+				"field":   "fields",
+				"allowed": []string{"summary", "summaries"},
+			},
+		))
+		return false, false
+	}
 }
 
 func parsePagination(c *gin.Context, defaultLimit int) (int, int, bool) {
