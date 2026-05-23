@@ -1256,6 +1256,48 @@ func TestGitBackend_ListRevisions(t *testing.T) {
 	}
 }
 
+func TestGitBackend_ListRevisions_ReturnsErrorForMalformedHistoricalZone(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zoneName := "example.com."
+	zone := &model.Zone{
+		Name: zoneName,
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: testZoneRecords(zoneName),
+	}
+	require.NoError(t, backend.CreateZone(ctx, zone))
+
+	relPath, err := backend.zoneFilePath(zoneName)
+	require.NoError(t, err)
+	absPath := filepath.Join(backend.repoPath, relPath)
+	require.NoError(t, os.WriteFile(absPath, []byte("{"), 0644))
+	_, err = backend.worktree.Add(relPath)
+	require.NoError(t, err)
+	_, err = backend.worktree.Commit("add malformed revision\n\nVersion: malformed-version", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "test-author",
+			Email: "test@example.com",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
+	revisions, err := backend.ListRevisions(ctx, zoneName, ListOptions{Limit: 100})
+	require.Error(t, err)
+	assert.Nil(t, revisions)
+	assert.Contains(t, err.Error(), "failed to parse zone JSON for revision malformed-version")
+}
+
 func TestGitBackend_UpdateDNSSECMetadataDoesNotAddRevision(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()

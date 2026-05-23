@@ -1705,22 +1705,22 @@ func (g *GitBackend) listRevisionsForPath(filePath string) ([]*model.ZoneVersion
 		// Get zone data at this commit
 		tree, err := c.Tree()
 		if err != nil {
-			return nil // Skip on error
+			return fmt.Errorf("failed to get commit tree for revision %s: %w", version, err)
 		}
 
 		file, err := tree.File(filePath)
 		if err != nil {
-			return nil // Skip on error
+			return fmt.Errorf("failed to get zone file %q for revision %s: %w", filePath, version, err)
 		}
 
 		contents, err := readGitObjectZoneFile(file)
 		if err != nil {
-			return nil // Skip on error
+			return fmt.Errorf("failed to read zone file %q for revision %s: %w", filePath, version, err)
 		}
 
 		var zone model.Zone
 		if err := json.Unmarshal(contents, &zone); err != nil {
-			return nil // Skip on error
+			return fmt.Errorf("failed to parse zone JSON for revision %s: %w", version, err)
 		}
 
 		hashHex, err := ComputeZoneHash(&zone)
