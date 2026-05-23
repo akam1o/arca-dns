@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -566,6 +567,71 @@ func TestListZones_Paginates(t *testing.T) {
 
 	if zones[1000].Name != "zone-1000.example.com." {
 		t.Errorf("Expected final zone name zone-1000.example.com., got %s", zones[1000].Name)
+	}
+}
+
+func TestListZonesRejectsInvalidPagination(t *testing.T) {
+	requireTCPListener(t)
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "offset mismatch",
+			body: `{"zones":[],"pagination":{"offset":1,"limit":1000,"count":0}}`,
+			want: "pagination offset",
+		},
+		{
+			name: "limit mismatch",
+			body: `{"zones":[],"pagination":{"offset":0,"limit":999,"count":0}}`,
+			want: "pagination limit",
+		},
+		{
+			name: "negative count",
+			body: `{"zones":[],"pagination":{"offset":0,"limit":1000,"count":-1}}`,
+			want: "pagination count",
+		},
+		{
+			name: "count mismatch",
+			body: `{"zones":[],"pagination":{"offset":0,"limit":1000,"count":1000}}`,
+			want: "pagination count",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&requests, 1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+
+			client, err := NewClient(config.ControllerClientConfig{
+				URL:           server.URL,
+				Timeout:       5 * time.Second,
+				RetryAttempts: 0,
+			})
+			if err != nil {
+				t.Fatalf("NewClient failed: %v", err)
+			}
+			defer client.Close()
+
+			_, err = client.ListZones(context.Background())
+			if err == nil {
+				t.Fatal("expected ListZones to reject invalid pagination")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+			if got := atomic.LoadInt32(&requests); got != 1 {
+				t.Fatalf("expected invalid pagination to stop after one request, got %d", got)
+			}
+		})
 	}
 }
 

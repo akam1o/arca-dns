@@ -426,15 +426,12 @@ func (c *Client) ListZones(ctx context.Context) ([]ZoneInfo, error) {
 			return zones, nil
 		}
 
-		count := result.Pagination.Count
-		if count == 0 {
-			count = len(result.Zones)
+		if err := validateListZonesPagination(result, offset, listZonesPageLimit); err != nil {
+			return nil, err
 		}
 
+		count := result.Pagination.Count
 		limit := result.Pagination.Limit
-		if limit <= 0 {
-			limit = listZonesPageLimit
-		}
 
 		if count == 0 || count < limit {
 			break
@@ -444,6 +441,25 @@ func (c *Client) ListZones(ctx context.Context) ([]ZoneInfo, error) {
 	}
 
 	return zones, nil
+}
+
+func validateListZonesPagination(result *listZonesResponse, expectedOffset, expectedLimit int) error {
+	if result.Pagination.Offset != expectedOffset {
+		return fmt.Errorf("invalid zones pagination offset: got %d, want %d", result.Pagination.Offset, expectedOffset)
+	}
+	if result.Pagination.Limit != expectedLimit {
+		return fmt.Errorf("invalid zones pagination limit: got %d, want %d", result.Pagination.Limit, expectedLimit)
+	}
+	if result.Pagination.Count < 0 {
+		return fmt.Errorf("invalid zones pagination count: must be non-negative")
+	}
+	if result.Pagination.Count != len(result.Zones) {
+		return fmt.Errorf("invalid zones pagination count: got %d, decoded %d zones", result.Pagination.Count, len(result.Zones))
+	}
+	if result.Pagination.Count > result.Pagination.Limit {
+		return fmt.Errorf("invalid zones pagination count: got %d, exceeds limit %d", result.Pagination.Count, result.Pagination.Limit)
+	}
+	return nil
 }
 
 func (c *Client) listZonesPage(ctx context.Context, offset, limit int) (*listZonesResponse, error) {
