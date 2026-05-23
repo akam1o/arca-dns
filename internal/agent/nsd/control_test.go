@@ -274,6 +274,30 @@ func TestReadManagedZoneConfigRejectsSymlinkedConfigFile(t *testing.T) {
 	}
 }
 
+func TestReadManagedZoneConfigRejectsOversizedConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "managed.conf")
+	file, err := os.OpenFile(configPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		t.Fatalf("failed to create oversized managed config: %v", err)
+	}
+	if err := file.Truncate(maxManagedZoneConfigFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("failed to size oversized managed config: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("failed to close oversized managed config: %v", err)
+	}
+
+	_, _, err = readManagedZoneConfig(configPath)
+	if err == nil {
+		t.Fatal("readManagedZoneConfig should reject oversized config file")
+	}
+	if !strings.Contains(err.Error(), "NSD managed zone config") || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("readManagedZoneConfig error=%v, want oversized config file error", err)
+	}
+}
+
 func TestWriteFileAtomicCleansTempFileWhenRenameFails(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetPath := filepath.Join(tmpDir, "managed.conf")

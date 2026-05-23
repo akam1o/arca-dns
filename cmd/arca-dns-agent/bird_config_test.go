@@ -215,6 +215,35 @@ func TestApplyBIRDConfigOnStartRejectsSymlinkedConfigFile(t *testing.T) {
 	}
 }
 
+func TestApplyBIRDConfigOnStartRejectsOversizedConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "arca-dns.conf")
+	file, err := os.OpenFile(configPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatalf("create oversized config: %v", err)
+	}
+	if err := file.Truncate(maxBIRDConfigFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("size oversized config: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close oversized config: %v", err)
+	}
+
+	client := &fakeBIRDClient{}
+	result := applyBIRDConfigOnStart(testBIRDConfig(configPath), client, zap.NewNop())
+
+	if result.Status.Status != birdConfigStatusUsingExisting {
+		t.Fatalf("status=%s, want %s", result.Status.Status, birdConfigStatusUsingExisting)
+	}
+	if !strings.Contains(result.Status.Error, "BIRD config file") || !strings.Contains(result.Status.Error, "exceeds maximum size") {
+		t.Fatalf("status error=%q, want oversized BIRD config file error", result.Status.Error)
+	}
+	if len(client.commands) != 0 {
+		t.Fatalf("configure should not be called, commands=%v", client.commands)
+	}
+}
+
 func TestWriteFileAtomicCreatesConfigDirectoryAndCleansTemp(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "missing", "nested", "arca-dns.conf")

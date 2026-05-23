@@ -26,6 +26,8 @@ type Controller struct {
 	logger *zap.Logger
 }
 
+const maxManagedZoneConfigFileSize = 4 * 1024 * 1024
+
 // NewController creates a new NSD controller.
 func NewController(cfg config.NSDConfig, logger *zap.Logger) *Controller {
 	return &Controller{
@@ -375,6 +377,9 @@ func readRegularManagedZoneConfigFile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("NSD managed zone config must be a regular file: %s", path)
 	}
+	if info.Size() > maxManagedZoneConfigFileSize {
+		return nil, fmt.Errorf("NSD managed zone config exceeds maximum size of %d bytes: %s", maxManagedZoneConfigFileSize, path)
+	}
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -392,8 +397,18 @@ func readRegularManagedZoneConfigFile(path string) ([]byte, error) {
 	if !openedInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("NSD managed zone config must be a regular file: %s", path)
 	}
+	if openedInfo.Size() > maxManagedZoneConfigFileSize {
+		return nil, fmt.Errorf("NSD managed zone config exceeds maximum size of %d bytes: %s", maxManagedZoneConfigFileSize, path)
+	}
 
-	return io.ReadAll(file)
+	data, err := io.ReadAll(io.LimitReader(file, maxManagedZoneConfigFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxManagedZoneConfigFileSize {
+		return nil, fmt.Errorf("NSD managed zone config exceeds maximum size of %d bytes: %s", maxManagedZoneConfigFileSize, path)
+	}
+	return data, nil
 }
 
 func normalizeZoneName(zoneName string) (string, error) {

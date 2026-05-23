@@ -20,6 +20,7 @@ const (
 	birdConfigStatusDisabled      = "disabled"
 	birdConfigStatusApplied       = "applied"
 	birdConfigStatusUsingExisting = "using_existing"
+	maxBIRDConfigFileSize         = 4 * 1024 * 1024
 )
 
 type birdConfigRuntimeStatus struct {
@@ -165,6 +166,9 @@ func readRegularBIRDConfigFile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("BIRD config file must be a regular file: %s", path)
 	}
+	if info.Size() > maxBIRDConfigFileSize {
+		return nil, fmt.Errorf("BIRD config file exceeds maximum size of %d bytes: %s", maxBIRDConfigFileSize, path)
+	}
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -182,8 +186,18 @@ func readRegularBIRDConfigFile(path string) ([]byte, error) {
 	if !openedInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("BIRD config file must be a regular file: %s", path)
 	}
+	if openedInfo.Size() > maxBIRDConfigFileSize {
+		return nil, fmt.Errorf("BIRD config file exceeds maximum size of %d bytes: %s", maxBIRDConfigFileSize, path)
+	}
 
-	return io.ReadAll(file)
+	data, err := io.ReadAll(io.LimitReader(file, maxBIRDConfigFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxBIRDConfigFileSize {
+		return nil, fmt.Errorf("BIRD config file exceeds maximum size of %d bytes: %s", maxBIRDConfigFileSize, path)
+	}
+	return data, nil
 }
 
 func restoreBIRDConfig(path string, previousConfig []byte, hadPreviousConfig bool) error {
