@@ -14,10 +14,12 @@ import (
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/middleware"
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type trackingReadCloser struct {
@@ -91,6 +93,42 @@ func TestSetupRouter_ProtectedRoutesStillLimitBodySize(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+}
+
+func TestControllerRecoveryLogsStructuredContext(t *testing.T) {
+	core, logs := observer.New(zap.ErrorLevel)
+	logger := zap.New(core)
+	router := newControllerRouter(nil, nil, logger, false)
+	router.Use(func(c *gin.Context) {
+		c.Set("request_id", "req-123")
+		c.Set("auth_principal", "admin")
+		c.Set("auth_role", middleware.AuthRoleAdmin)
+		c.Next()
+	})
+	router.GET("/panic", func(c *gin.Context) {
+		panic("boom")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/panic?api_key=secret", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	apiErr := decodeAPIError(t, w.Body)
+	assert.Equal(t, model.ErrorCodeInternal, apiErr.Code)
+
+	entries := logs.FilterMessage("request_panic_recovered").All()
+	require.Len(t, entries, 1)
+	fields := entries[0].ContextMap()
+	assert.Equal(t, "boom", fields["panic"])
+	assert.Equal(t, http.MethodGet, fields["method"])
+	assert.Equal(t, "/panic", fields["path"])
+	assert.Equal(t, "req-123", fields["request_id"])
+	assert.Equal(t, "admin", fields["auth_principal"])
+	assert.Equal(t, middleware.AuthRoleAdmin, fields["auth_role"])
+	assert.NotEmpty(t, fields["stack"])
+	assert.NotContains(t, fields, "query")
+	assert.NotContains(t, fields, "authorization")
 }
 
 func TestSetupRouter_StatusRouteRequiresManagementAuth(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"net/http"
+	"runtime/debug"
 	"strings"
 
 	"github.com/akam1o/arca-dns/pkg/config"
@@ -135,7 +136,7 @@ func SetupObservabilityRouterWithConfig(handler *Handler, cfg *config.APIConfig,
 func newControllerRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger, includeMetrics bool) *gin.Engine {
 	router := gin.New()
 
-	router.Use(gin.Recovery())
+	router.Use(controllerRecovery(logger))
 	if includeMetrics && handler != nil && handler.metrics != nil {
 		router.Use(handler.metrics.Middleware())
 	}
@@ -151,6 +152,45 @@ func newControllerRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Lo
 	}
 
 	return router
+}
+
+func controllerRecovery(logger *zap.Logger) gin.HandlerFunc {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	return func(c *gin.Context) {
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+
+			logger.Error("request_panic_recovered",
+				zap.Any("panic", recovered),
+				zap.String("method", c.Request.Method),
+				zap.String("path", c.Request.URL.Path),
+				zap.String("request_id", c.GetString("request_id")),
+				zap.String("client_ip", c.ClientIP()),
+				zap.String("auth_principal", c.GetString("auth_principal")),
+				zap.String("auth_role", c.GetString("auth_role")),
+				zap.ByteString("stack", debug.Stack()),
+			)
+
+			if c.Writer.Written() {
+				c.Abort()
+				return
+			}
+
+			c.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
+				model.ErrorCodeInternal,
+				"Internal server error",
+				map[string]interface{}{"error": "internal error"},
+			))
+		}()
+
+		c.Next()
+	}
 }
 
 type routeGroup interface {
