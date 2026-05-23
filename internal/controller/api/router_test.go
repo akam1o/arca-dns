@@ -255,6 +255,18 @@ func TestSetupRouter_AgentRoleCanOnlyReadSyncArtifacts(t *testing.T) {
 	router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/zones/example.com./signed/metadata", nil)
+	req.Header.Set("X-API-Key", agentKey)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/zones/example.com./ds", nil)
+	req.Header.Set("X-API-Key", agentKey)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusForbidden, w.Code)
+
 	body := &trackingReadCloser{}
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/zones", body)
 	req.Body = body
@@ -266,6 +278,12 @@ func TestSetupRouter_AgentRoleCanOnlyReadSyncArtifacts(t *testing.T) {
 	assert.False(t, body.read, "unauthorized roles must not read the body")
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/zones", nil)
+	req.Header.Set("X-API-Key", adminKey)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/zones/example.com./signed", nil)
 	req.Header.Set("X-API-Key", adminKey)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)

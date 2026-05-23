@@ -70,33 +70,33 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 	}
 
 	authEnabled := cfg != nil && cfg.Auth.Enabled
-	adminOnly := protected.Group("")
-	adminOnly.Use(roleGuard(authEnabled, middleware.AuthRoleAdmin), requestValidator.Middleware())
-	agentReadable := protected.Group("")
-	agentReadable.Use(roleGuard(authEnabled, middleware.AuthRoleAgent), requestValidator.Middleware())
+	zoneManagement := protected.Group("")
+	zoneManagement.Use(permissionGuard(authEnabled, middleware.AuthPermissionManageZones), requestValidator.Middleware())
+	syncArtifacts := protected.Group("")
+	syncArtifacts.Use(permissionGuard(authEnabled, middleware.AuthPermissionReadSyncArtifacts), requestValidator.Middleware())
 	{
 		// Zone management
-		adminOnly.POST("/zones", handler.CreateZone)
-		adminOnly.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
-		agentReadable.GET("/zones", requireSummaryListForAgent(), handler.ListZones)
-		adminOnly.HEAD("/zones/:name", handler.HeadZone)
-		adminOnly.GET("/zones/:name", handler.GetZone)
-		adminOnly.GET("/zones/:name/versions", handler.ListZoneVersions)
-		adminOnly.GET("/zones/:name/versions/:version", handler.GetZoneRevision)
-		adminOnly.PUT("/zones/:name", handler.UpdateZone)
-		adminOnly.DELETE("/zones/:name", handler.DeleteZone)
-		adminOnly.GET("/zones/:name/records", handler.ListRecords)
-		adminOnly.POST("/zones/:name/records", handler.CreateRecord)
-		adminOnly.POST("/zones/:name/records/batch", handler.BulkRecords)
-		adminOnly.PUT("/zones/:name/records/:id", handler.UpdateRecord)
-		adminOnly.DELETE("/zones/:name/records/:id", handler.DeleteRecord)
+		zoneManagement.POST("/zones", handler.CreateZone)
+		zoneManagement.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
+		syncArtifacts.GET("/zones", requireSummaryListForAgent(), handler.ListZones)
+		zoneManagement.HEAD("/zones/:name", handler.HeadZone)
+		zoneManagement.GET("/zones/:name", handler.GetZone)
+		zoneManagement.GET("/zones/:name/versions", handler.ListZoneVersions)
+		zoneManagement.GET("/zones/:name/versions/:version", handler.GetZoneRevision)
+		zoneManagement.PUT("/zones/:name", handler.UpdateZone)
+		zoneManagement.DELETE("/zones/:name", handler.DeleteZone)
+		zoneManagement.GET("/zones/:name/records", handler.ListRecords)
+		zoneManagement.POST("/zones/:name/records", handler.CreateRecord)
+		zoneManagement.POST("/zones/:name/records/batch", handler.BulkRecords)
+		zoneManagement.PUT("/zones/:name/records/:id", handler.UpdateRecord)
+		zoneManagement.DELETE("/zones/:name/records/:id", handler.DeleteRecord)
 
 		// Zone file download (for agents)
-		agentReadable.HEAD("/zones/:name/signed", handler.HeadSignedZone)
-		agentReadable.GET("/zones/:name/signed", handler.GetSignedZone)
-		agentReadable.GET("/zones/:name/signed/metadata", handler.GetSignedZoneMetadata)
-		adminOnly.GET("/zones/:name/ds", handler.GetDSRecords)
-		adminOnly.GET("/zones/:name/dnssec/ds", handler.GetDSRecords)
+		syncArtifacts.HEAD("/zones/:name/signed", handler.HeadSignedZone)
+		syncArtifacts.GET("/zones/:name/signed", handler.GetSignedZone)
+		syncArtifacts.GET("/zones/:name/signed/metadata", handler.GetSignedZoneMetadata)
+		zoneManagement.GET("/zones/:name/ds", handler.GetDSRecords)
+		zoneManagement.GET("/zones/:name/dnssec/ds", handler.GetDSRecords)
 	}
 
 	return router
@@ -205,13 +205,13 @@ func observabilityAuthTokenMatches(authHeader string, expected string) bool {
 	return subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1
 }
 
-func roleGuard(authEnabled bool, allowedRoles ...string) gin.HandlerFunc {
+func permissionGuard(authEnabled bool, requiredPermissions ...string) gin.HandlerFunc {
 	if !authEnabled {
 		return func(c *gin.Context) {
 			c.Next()
 		}
 	}
-	return middleware.RequireRole(allowedRoles...)
+	return middleware.RequirePermission(requiredPermissions...)
 }
 
 func requireSummaryListForAgent() gin.HandlerFunc {

@@ -116,6 +116,71 @@ func TestRequireRole_RejectsAgentForAdminEndpoint(t *testing.T) {
 	assert.JSONEq(t, `{"code":"FORBIDDEN","message":"API key role is not allowed for this endpoint"}`, w.Body.String())
 }
 
+func TestRequirePermission_UsesRolePolicy(t *testing.T) {
+	tests := []struct {
+		name       string
+		role       string
+		permission string
+		want       int
+	}{
+		{
+			name:       "admin can manage zones",
+			role:       AuthRoleAdmin,
+			permission: AuthPermissionManageZones,
+			want:       200,
+		},
+		{
+			name:       "admin can read sync artifacts",
+			role:       AuthRoleAdmin,
+			permission: AuthPermissionReadSyncArtifacts,
+			want:       200,
+		},
+		{
+			name:       "agent can read sync artifacts",
+			role:       AuthRoleAgent,
+			permission: AuthPermissionReadSyncArtifacts,
+			want:       200,
+		},
+		{
+			name:       "agent cannot manage zones",
+			role:       AuthRoleAgent,
+			permission: AuthPermissionManageZones,
+			want:       403,
+		},
+		{
+			name:       "unknown role is denied",
+			role:       "viewer",
+			permission: AuthPermissionReadSyncArtifacts,
+			want:       403,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+
+			router := gin.New()
+			router.Use(func(c *gin.Context) {
+				c.Set("auth_role", tt.role)
+				c.Next()
+			})
+			router.Use(RequirePermission(tt.permission))
+			router.GET("/test", func(c *gin.Context) {
+				c.JSON(200, gin.H{"status": "ok"})
+			})
+
+			req := httptest.NewRequest("GET", "/test", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, tt.want, w.Code)
+			if tt.want == 403 {
+				assert.JSONEq(t, `{"code":"FORBIDDEN","message":"API key role is not allowed for this endpoint"}`, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestAuthenticator_Middleware_NormalizesConfiguredHash(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

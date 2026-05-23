@@ -30,6 +30,23 @@ const (
 	AuthRoleAgent = "agent"
 )
 
+const (
+	// AuthPermissionManageZones permits controller zone management operations.
+	AuthPermissionManageZones = "zones:manage"
+	// AuthPermissionReadSyncArtifacts permits reading synchronization artifacts.
+	AuthPermissionReadSyncArtifacts = "sync_artifacts:read"
+)
+
+var rolePermissionPolicy = map[string]map[string]struct{}{
+	AuthRoleAdmin: {
+		AuthPermissionManageZones:       {},
+		AuthPermissionReadSyncArtifacts: {},
+	},
+	AuthRoleAgent: {
+		AuthPermissionReadSyncArtifacts: {},
+	},
+}
+
 // Authenticator provides API key authentication middleware.
 type Authenticator struct {
 	config      AuthConfig
@@ -188,4 +205,38 @@ func RequireRole(allowedRoles ...string) gin.HandlerFunc {
 		c.JSON(http.StatusForbidden, model.NewAPIError(model.ErrorCodeForbidden, "API key role is not allowed for this endpoint"))
 		c.Abort()
 	}
+}
+
+// RequirePermission returns a Gin middleware that authorizes authenticated
+// requests by permissions granted through the configured role policy.
+func RequirePermission(requiredPermissions ...string) gin.HandlerFunc {
+	required := make([]string, 0, len(requiredPermissions))
+	for _, permission := range requiredPermissions {
+		permission = strings.ToLower(strings.TrimSpace(permission))
+		if permission != "" {
+			required = append(required, permission)
+		}
+	}
+
+	return func(c *gin.Context) {
+		role := strings.ToLower(strings.TrimSpace(c.GetString("auth_role")))
+		for _, permission := range required {
+			if !roleHasPermission(role, permission) {
+				c.JSON(http.StatusForbidden, model.NewAPIError(model.ErrorCodeForbidden, "API key role is not allowed for this endpoint"))
+				c.Abort()
+				return
+			}
+		}
+
+		c.Next()
+	}
+}
+
+func roleHasPermission(role string, permission string) bool {
+	permissions, ok := rolePermissionPolicy[role]
+	if !ok {
+		return false
+	}
+	_, ok = permissions[permission]
+	return ok
 }
