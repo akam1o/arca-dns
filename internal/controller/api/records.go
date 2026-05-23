@@ -13,6 +13,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const maxBulkRecordOperations = 1000
+
 type bulkRecordRequest struct {
 	Create []model.Record       `json:"create"`
 	Update []bulkRecordUpdate   `json:"update"`
@@ -129,6 +131,19 @@ func (h *Handler) BulkRecords(c *gin.Context) {
 
 	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
 	if !ok {
+		return
+	}
+
+	operationCount := len(req.Create) + len(req.Update) + len(req.Delete)
+	if operationCount > maxBulkRecordOperations {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Bulk request includes too many operations",
+			map[string]interface{}{
+				"operations":     operationCount,
+				"max_operations": maxBulkRecordOperations,
+			},
+		))
 		return
 	}
 

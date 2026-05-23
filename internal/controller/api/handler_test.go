@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1474,6 +1475,51 @@ func TestBulkRecords_RejectsEmptyOperationSet(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestBulkRecords_RejectsTooManyOperations(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	records := make([]model.Record, maxBulkRecordOperations+1)
+	for i := range records {
+		records[i] = model.Record{Name: "bulk-" + strconv.Itoa(i), Type: "A", TTL: 300, Value: "192.0.2.1"}
+	}
+	body, err := json.Marshal(map[string]interface{}{
+		"create": records,
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records/batch", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var apiErr model.APIError
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&apiErr))
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Bulk request includes too many operations", apiErr.Message)
+	assert.Equal(t, float64(maxBulkRecordOperations+1), apiErr.Details["operations"])
+	assert.Equal(t, float64(maxBulkRecordOperations), apiErr.Details["max_operations"])
+
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, current.Version, unchanged.Version)
+	assert.Len(t, unchanged.Records, 1)
 }
 
 func TestCreateRecord_RequiresIfMatch(t *testing.T) {
