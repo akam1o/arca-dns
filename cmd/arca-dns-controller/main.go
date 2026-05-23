@@ -312,7 +312,7 @@ func validateControllerStoreCapabilities(store backend.ZoneStore) error {
 	if store == nil {
 		return fmt.Errorf("backend store is nil")
 	}
-	if _, ok := store.(backend.ConditionalDeleteStore); !ok {
+	if _, ok := store.(backend.ControllerStore); !ok {
 		return fmt.Errorf("backend missing required capability: %s", backend.CapabilityConditionalDeleteStore)
 	}
 	return nil

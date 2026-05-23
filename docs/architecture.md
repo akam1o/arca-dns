@@ -66,6 +66,7 @@ arca-dns is a BGP Anycast DNS system with split control/data plane architecture 
 3. **Backend Storage** (`pkg/backend/`)
    - Pluggable storage: SQLite (default), PostgreSQL, MySQL, Git, etcd
    - Capability-based interfaces (ZoneStore, TransactionalStore, RevisionStore, WatchableStore)
+   - Controller runtime requires the stricter `ControllerStore` contract (`ZoneStore` + optimistic conditional delete)
    - Transaction support (SQLite, PostgreSQL, MySQL), versioning (Git), watch (etcd)
    - Runtime controller configuration uses file-backed SQLite; `:memory:` remains for disposable local tests and migration helpers
 
