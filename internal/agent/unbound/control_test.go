@@ -75,6 +75,94 @@ func TestController_Disabled(t *testing.T) {
 	}
 }
 
+func TestController_RejectsUnsafeCommandPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	validConfig := func() config.UnboundConfig {
+		return config.UnboundConfig{
+			Enabled:       true,
+			ConfigPath:    filepath.Join(tmpDir, "unbound.conf"),
+			ControlPath:   filepath.Join(tmpDir, "unbound-control"),
+			CheckconfPath: filepath.Join(tmpDir, "unbound-checkconf"),
+			ReloadTimeout: time.Second,
+		}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*config.UnboundConfig)
+		call   func(*Controller) error
+		want   string
+	}{
+		{
+			name: "reload rejects relative control path",
+			mutate: func(cfg *config.UnboundConfig) {
+				cfg.ControlPath = "unbound-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.Reload()
+			},
+			want: "invalid unbound.control_path: must be an absolute path",
+		},
+		{
+			name: "status rejects relative control path",
+			mutate: func(cfg *config.UnboundConfig) {
+				cfg.ControlPath = "unbound-control"
+			},
+			call: func(ctrl *Controller) error {
+				_, err := ctrl.Status()
+				return err
+			},
+			want: "invalid unbound.control_path: must be an absolute path",
+		},
+		{
+			name: "flush zone rejects relative control path",
+			mutate: func(cfg *config.UnboundConfig) {
+				cfg.ControlPath = "unbound-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.FlushZone("example.com.")
+			},
+			want: "invalid unbound.control_path: must be an absolute path",
+		},
+		{
+			name: "check config rejects relative checkconf path",
+			mutate: func(cfg *config.UnboundConfig) {
+				cfg.CheckconfPath = "unbound-checkconf"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.CheckConfig()
+			},
+			want: "invalid unbound.checkconf_path: must be an absolute path",
+		},
+		{
+			name: "check config rejects control characters in checkconf path",
+			mutate: func(cfg *config.UnboundConfig) {
+				cfg.CheckconfPath = filepath.Join(tmpDir, "unbound\ncheckconf")
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.CheckConfig()
+			},
+			want: "invalid unbound.checkconf_path: contains control characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.mutate(&cfg)
+			ctrl := NewController(cfg, zap.NewNop())
+
+			err := tt.call(ctrl)
+			if err == nil {
+				t.Fatal("controller command should reject unsafe command path")
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("unexpected error: got %q want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestController_GenerateStubZoneConfig(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cfg := config.UnboundConfig{

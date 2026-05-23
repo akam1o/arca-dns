@@ -14,6 +14,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/akam1o/arca-dns/internal/agent/commandpath"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/akam1o/arca-dns/pkg/util"
@@ -34,6 +35,20 @@ func NewController(cfg config.UnboundConfig, logger *zap.Logger) *Controller {
 	}
 }
 
+func (c *Controller) validatedControlPath() (string, error) {
+	if err := commandpath.Validate("unbound.control_path", c.config.ControlPath); err != nil {
+		return "", err
+	}
+	return c.config.ControlPath, nil
+}
+
+func (c *Controller) validatedCheckconfPath() (string, error) {
+	if err := commandpath.Validate("unbound.checkconf_path", c.config.CheckconfPath); err != nil {
+		return "", err
+	}
+	return c.config.CheckconfPath, nil
+}
+
 // Reload reloads Unbound configuration.
 func (c *Controller) Reload() error {
 	if !c.config.Enabled {
@@ -43,10 +58,15 @@ func (c *Controller) Reload() error {
 
 	c.logger.Info("Reloading Unbound configuration")
 
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.ReloadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "reload")
+	cmd := exec.CommandContext(ctx, controlPath, "reload")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -72,11 +92,16 @@ func (c *Controller) CheckConfig() error {
 	c.logger.Debug("Validating Unbound configuration",
 		zap.String("config", c.config.ConfigPath))
 
+	checkconfPath, err := c.validatedCheckconfPath()
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Pass the config file path to unbound-checkconf
-	cmd := exec.CommandContext(ctx, c.config.CheckconfPath, c.config.ConfigPath)
+	cmd := exec.CommandContext(ctx, checkconfPath, c.config.ConfigPath)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -99,10 +124,15 @@ func (c *Controller) Status() (string, error) {
 		return "disabled", nil
 	}
 
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return "", err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "status")
+	cmd := exec.CommandContext(ctx, controlPath, "status")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -121,10 +151,16 @@ func (c *Controller) IsRunning() bool {
 		return false
 	}
 
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		c.logger.Debug("Invalid Unbound control path", zap.Error(err))
+		return false
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "status")
+	cmd := exec.CommandContext(ctx, controlPath, "status")
 
 	if err := cmd.Run(); err != nil {
 		c.logger.Debug("Unbound is not running or not responsive",
@@ -288,11 +324,15 @@ func (c *Controller) FlushZone(zoneName string) error {
 	if err != nil {
 		return err
 	}
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "flush_zone", normalized)
+	cmd := exec.CommandContext(ctx, controlPath, "flush_zone", normalized)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

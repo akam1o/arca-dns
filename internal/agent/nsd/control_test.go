@@ -78,6 +78,113 @@ func TestController_Disabled(t *testing.T) {
 	}
 }
 
+func TestController_RejectsUnsafeCommandPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	validConfig := func() config.NSDConfig {
+		return config.NSDConfig{
+			Enabled:       true,
+			ControlPath:   filepath.Join(tmpDir, "nsd-control"),
+			CheckzonePath: filepath.Join(tmpDir, "nsd-checkzone"),
+			ReloadTimeout: time.Second,
+		}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*config.NSDConfig)
+		call   func(*Controller) error
+		want   string
+	}{
+		{
+			name: "reload zone rejects relative control path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.ControlPath = "nsd-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.ReloadZone("example.com.")
+			},
+			want: "invalid nsd.control_path: must be an absolute path",
+		},
+		{
+			name: "reconfig rejects relative control path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.ControlPath = "nsd-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.Reconfig()
+			},
+			want: "invalid nsd.control_path: must be an absolute path",
+		},
+		{
+			name: "notify rejects relative control path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.ControlPath = "nsd-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.NotifyZone("example.com.")
+			},
+			want: "invalid nsd.control_path: must be an absolute path",
+		},
+		{
+			name: "reload rejects relative control path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.ControlPath = "nsd-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.Reload()
+			},
+			want: "invalid nsd.control_path: must be an absolute path",
+		},
+		{
+			name: "status rejects relative control path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.ControlPath = "nsd-control"
+			},
+			call: func(ctrl *Controller) error {
+				_, err := ctrl.Status()
+				return err
+			},
+			want: "invalid nsd.control_path: must be an absolute path",
+		},
+		{
+			name: "check zone rejects relative checkzone path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.CheckzonePath = "nsd-checkzone"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.CheckZone("example.com.", filepath.Join(tmpDir, "example.com.zone"))
+			},
+			want: "invalid nsd.checkzone_path: must be an absolute path",
+		},
+		{
+			name: "check zone rejects control characters in checkzone path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.CheckzonePath = filepath.Join(tmpDir, "nsd\ncheckzone")
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.CheckZone("example.com.", filepath.Join(tmpDir, "example.com.zone"))
+			},
+			want: "invalid nsd.checkzone_path: contains control characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.mutate(&cfg)
+			ctrl := NewController(cfg, zap.NewNop())
+
+			err := tt.call(ctrl)
+			if err == nil {
+				t.Fatal("controller command should reject unsafe command path")
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("unexpected error: got %q want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestController_EnsureZoneConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	commandLog := filepath.Join(tmpDir, "commands.log")

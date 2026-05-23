@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akam1o/arca-dns/internal/agent/commandpath"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/akam1o/arca-dns/pkg/util"
@@ -34,6 +35,20 @@ func NewController(cfg config.NSDConfig, logger *zap.Logger) *Controller {
 		config: cfg,
 		logger: logger,
 	}
+}
+
+func (c *Controller) validatedControlPath() (string, error) {
+	if err := commandpath.Validate("nsd.control_path", c.config.ControlPath); err != nil {
+		return "", err
+	}
+	return c.config.ControlPath, nil
+}
+
+func (c *Controller) validatedCheckzonePath() (string, error) {
+	if err := commandpath.Validate("nsd.checkzone_path", c.config.CheckzonePath); err != nil {
+		return "", err
+	}
+	return c.config.CheckzonePath, nil
 }
 
 // EnsureZone ensures a managed NSD zone stanza exists, then reconfigures NSD if needed.
@@ -105,11 +120,15 @@ func (c *Controller) ReloadZone(zoneName string) error {
 	if err != nil {
 		return err
 	}
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.ReloadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "reload", normalized)
+	cmd := exec.CommandContext(ctx, controlPath, "reload", normalized)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -135,10 +154,15 @@ func (c *Controller) Reconfig() error {
 
 	c.logger.Info("Reconfiguring NSD")
 
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.ReloadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "reconfig")
+	cmd := exec.CommandContext(ctx, controlPath, "reconfig")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -168,11 +192,15 @@ func (c *Controller) NotifyZone(zoneName string) error {
 	if err != nil {
 		return err
 	}
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.ReloadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "notify", normalized)
+	cmd := exec.CommandContext(ctx, controlPath, "notify", normalized)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -198,10 +226,15 @@ func (c *Controller) Reload() error {
 
 	c.logger.Info("Reloading all zones in NSD")
 
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.ReloadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "reload")
+	cmd := exec.CommandContext(ctx, controlPath, "reload")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -233,11 +266,15 @@ func (c *Controller) CheckZone(zoneName string, zoneFile string) error {
 	if err != nil {
 		return err
 	}
+	checkzonePath, err := c.validatedCheckzonePath()
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.CheckzonePath, normalized, zoneFile)
+	cmd := exec.CommandContext(ctx, checkzonePath, normalized, zoneFile)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -261,10 +298,15 @@ func (c *Controller) Status() (string, error) {
 		return "disabled", nil
 	}
 
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return "", err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "status")
+	cmd := exec.CommandContext(ctx, controlPath, "status")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -283,10 +325,16 @@ func (c *Controller) IsRunning() bool {
 		return false
 	}
 
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		c.logger.Debug("Invalid NSD control path", zap.Error(err))
+		return false
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "status")
+	cmd := exec.CommandContext(ctx, controlPath, "status")
 
 	if err := cmd.Run(); err != nil {
 		c.logger.Debug("NSD is not running or not responsive",
