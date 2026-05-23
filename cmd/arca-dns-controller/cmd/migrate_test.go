@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
@@ -57,6 +58,31 @@ func (s *failingRecreateStore) CreateZone(ctx context.Context, zone *model.Zone)
 
 type migrateZoneStoreWithoutConditionalDelete struct {
 	backend.ZoneStore
+}
+
+func TestNewMigrateCmdWiresSubcommands(t *testing.T) {
+	cmd := NewMigrateCmd()
+
+	require.Equal(t, "migrate", cmd.Use)
+
+	names := make(map[string]struct{})
+	for _, subcommand := range cmd.Commands() {
+		names[subcommand.Name()] = struct{}{}
+	}
+	require.Contains(t, names, "export")
+	require.Contains(t, names, "import")
+	require.Contains(t, names, "copy")
+}
+
+func TestMigrateCopyCommandRequiresBackends(t *testing.T) {
+	cmd := newCopyCmd()
+	cmd.SetArgs(nil)
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "required flag")
+	require.Contains(t, err.Error(), "from-backend")
+	require.Contains(t, err.Error(), "to-backend")
 }
 
 // TestMigrateExportMemory tests exporting zones from memory backend to JSON files.
@@ -609,6 +635,50 @@ func TestMigrateCopy(t *testing.T) {
 	require.NoError(t, err)
 	_, err = destStore.GetZone(ctx, "source2.com.")
 	require.NoError(t, err)
+}
+
+func TestSameDNSSECConfig(t *testing.T) {
+	expiration := time.Unix(1700000000, 0).UTC()
+	laterExpiration := expiration.Add(time.Hour)
+
+	base := &model.DNSSECConfig{
+		Enabled:             true,
+		Algorithm:           13,
+		KSKKeyTag:           1001,
+		ZSKKeyTag:           1002,
+		NSEC3Enabled:        true,
+		NSEC3Iterations:     10,
+		NSEC3Salt:           "abcd",
+		SignatureExpiration: &expiration,
+	}
+	same := *base
+	differentAlgorithm := *base
+	differentAlgorithm.Algorithm = 8
+	missingExpiration := *base
+	missingExpiration.SignatureExpiration = nil
+	differentExpiration := *base
+	differentExpiration.SignatureExpiration = &laterExpiration
+
+	tests := []struct {
+		name string
+		a    *model.DNSSECConfig
+		b    *model.DNSSECConfig
+		want bool
+	}{
+		{name: "both nil", want: true},
+		{name: "left nil", b: base},
+		{name: "right nil", a: base},
+		{name: "same values", a: base, b: &same, want: true},
+		{name: "different algorithm", a: base, b: &differentAlgorithm},
+		{name: "missing expiration", a: base, b: &missingExpiration},
+		{name: "different expiration", a: base, b: &differentExpiration},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sameDNSSECConfig(tt.a, tt.b))
+		})
+	}
 }
 
 func TestCreateBackendDefaultsToSQLite(t *testing.T) {
