@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/akam1o/arca-dns/pkg/parser"
+	"github.com/akam1o/arca-dns/pkg/util"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -1015,7 +1017,7 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone.signed", strings.TrimSuffix(signedZone.zoneName, ".")))
+	c.Header("Content-Disposition", signedZoneContentDisposition(signedZone.zoneName))
 
 	h.logger.Info("Signed zone file served", zap.String("zone", name), zap.String("version", signedZone.version))
 	c.String(http.StatusOK, signedZone.zoneFile)
@@ -1059,7 +1061,7 @@ func (h *Handler) HeadSignedZone(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone.signed", strings.TrimSuffix(signedZone.zoneName, ".")))
+	c.Header("Content-Disposition", signedZoneContentDisposition(signedZone.zoneName))
 	c.Header("Content-Length", strconv.Itoa(len(signedZone.zoneFile)))
 	c.Status(http.StatusOK)
 }
@@ -1121,6 +1123,11 @@ type signedZoneResult struct {
 	serial       uint32
 	zoneFile     string
 	dnssecConfig *model.DNSSECConfig
+}
+
+func signedZoneContentDisposition(zoneName string) string {
+	filename := util.SafeZoneFilename(zoneName) + ".zone.signed"
+	return mime.FormatMediaType("attachment", map[string]string{"filename": filename})
 }
 
 func (h *Handler) signedZoneFile(ctx context.Context, name string, zone *model.Zone) (*signedZoneResult, error) {

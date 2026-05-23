@@ -381,6 +381,7 @@ func TestHeadSignedZoneReturnsArtifactHeadersWithoutBody(t *testing.T) {
 	assert.NotEmpty(t, etag)
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash"))
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash8"))
+	assert.Equal(t, "attachment; filename=example.com.zone.signed", resp.Header.Get("Content-Disposition"))
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Empty(t, body)
@@ -1842,6 +1843,7 @@ func TestGetSignedZone(t *testing.T) {
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Serial"))
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash"))
 	assert.Equal(t, "text/plain; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "attachment; filename=example.com.zone.signed", resp.Header.Get("Content-Disposition"))
 
 	// Verify zone file content
 	body, _ := io.ReadAll(resp.Body)
@@ -1849,6 +1851,15 @@ func TestGetSignedZone(t *testing.T) {
 	assert.Contains(t, zoneFile, "$ORIGIN example.com.")
 	assert.Contains(t, zoneFile, "192.0.2.1")
 	assert.Contains(t, zoneFile, "ns1.example.com.")
+}
+
+func TestSignedZoneContentDispositionUsesSafeFilename(t *testing.T) {
+	header := signedZoneContentDisposition("../Bad Zone\r\nX-Injected: yes.")
+
+	assert.Equal(t, "attachment; filename=__bad_zone__x-injected__yes.zone.signed", header)
+	assert.NotContains(t, header, "\r")
+	assert.NotContains(t, header, "\n")
+	assert.NotContains(t, header, "/")
 }
 
 func TestGetSignedZone_WithArtifactSignature(t *testing.T) {
