@@ -1013,6 +1013,10 @@ func ValidateAgentConfig(cfg *AgentConfig) error {
 		return fmt.Errorf("invalid sync.backup_versions: must be non-negative")
 	}
 
+	if cfg.Sync.MinFreeBytes < 0 {
+		return fmt.Errorf("invalid sync.min_free_bytes: must be non-negative")
+	}
+
 	if cfg.Sync.VerifySignatures {
 		if err := validateArtifactSignatureKey("sync.controller_signature_key", cfg.Sync.ControllerSignatureKey, true); err != nil {
 			return err

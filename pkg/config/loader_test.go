@@ -1476,6 +1476,7 @@ func TestLoadAgentConfig_Defaults(t *testing.T) {
 	assert.Equal(t, DefaultDNSTapSocketModeString, cfg.DNSTap.SocketMode)
 	assert.Empty(t, cfg.DNSTap.SocketGroup)
 	assert.True(t, cfg.Sync.VerifySignatures)
+	assert.Equal(t, DefaultAgentSyncMinFreeBytes, cfg.Sync.MinFreeBytes)
 	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, validTestArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
 	assert.Equal(t, "info", cfg.Logging.Level)
@@ -1499,6 +1500,7 @@ dnstap:
   socket_mode: "0600"
   socket_group: "nsd"
 sync:
+  min_free_bytes: 123456789
   controller_signature_key: "` + validYAMLArtifactSignatureKey + `"
 metrics:
   auth_token: "` + validStatusAuthToken + `"
@@ -1519,6 +1521,7 @@ logging:
 	assert.Equal(t, "0600", cfg.DNSTap.SocketMode)
 	assert.Equal(t, "nsd", cfg.DNSTap.SocketGroup)
 	assert.True(t, cfg.Sync.VerifySignatures)
+	assert.Equal(t, int64(123456789), cfg.Sync.MinFreeBytes)
 	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, validYAMLArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
 	assert.Equal(t, validStatusAuthToken, cfg.Metrics.AuthToken)
@@ -1534,6 +1537,7 @@ func TestLoadAgentConfig_EnvOverrideWithYAML(t *testing.T) {
 	t.Setenv("ARCA_DNS_NSD_ENABLED", "false")
 	t.Setenv("ARCA_DNS_UNBOUND_STUB_ZONE_NSD_PORT", "5533")
 	t.Setenv("ARCA_DNS_SYNC_VERIFY_CHECKSUMS", "false")
+	t.Setenv("ARCA_DNS_SYNC_MIN_FREE_BYTES", "20971520")
 	t.Setenv("ARCA_DNS_SYNC_CONTROLLER_SIGNATURE_KEY", validEnvArtifactSignatureKey)
 	t.Setenv("ARCA_DNS_HEALTH_QUERY_TIMEOUT", "2s")
 	t.Setenv("ARCA_DNS_METRICS_PATH", "/env-metrics")
@@ -1583,6 +1587,7 @@ logging:
 	assert.False(t, cfg.NSD.Enabled)
 	assert.Equal(t, 5533, cfg.Unbound.StubZoneConfig.NSDPort)
 	assert.False(t, cfg.Sync.VerifyChecksums)
+	assert.Equal(t, int64(20971520), cfg.Sync.MinFreeBytes)
 	assert.Equal(t, validEnvArtifactSignatureKey, cfg.Sync.ControllerPublicKey)
 	assert.Equal(t, validEnvArtifactSignatureKey, cfg.Sync.ControllerSignatureKey)
 	assert.Equal(t, 2*time.Second, cfg.Health.QueryTimeout)
@@ -2764,6 +2769,14 @@ func TestValidateAgentConfig_InvalidBackupVersions(t *testing.T) {
 	err := ValidateAgentConfig(cfg)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "sync.backup_versions")
+}
+
+func TestValidateAgentConfig_InvalidMinFreeBytes(t *testing.T) {
+	cfg := validAgentConfigForTest()
+	cfg.Sync.MinFreeBytes = -1
+	err := ValidateAgentConfig(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "sync.min_free_bytes")
 }
 
 func TestValidateAgentConfig_RequiresECMPSafeEDNSBufferSize(t *testing.T) {

@@ -130,7 +130,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	logger.Info("Controller client initialized", zap.String("url", cfg.Controller.URL))
 
 	// Create file manager
-	fileMgr := zonesync.NewFileManager(cfg.NSD.ZoneDirectory, cfg.Sync.BackupVersions, logger)
+	fileMgr := zonesync.NewFileManagerWithMinFreeBytes(cfg.NSD.ZoneDirectory, cfg.Sync.BackupVersions, cfg.Sync.MinFreeBytes, logger)
 	if err := fileMgr.EnsureDirectory(); err != nil {
 		return fmt.Errorf("failed to ensure zone directory: %w", err)
 	}

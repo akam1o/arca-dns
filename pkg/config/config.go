@@ -13,6 +13,7 @@ import (
 const DefaultDNSTapSocketMode = os.FileMode(0o660)
 const DefaultDNSTapSocketModeString = "0660"
 const DefaultControllerClientMaxResponseBytes int64 = 64 * 1024 * 1024
+const DefaultAgentSyncMinFreeBytes int64 = 100 * 1024 * 1024
 
 // ControllerConfig is the configuration for the arca-dns-controller.
 type ControllerConfig struct {
@@ -709,6 +710,10 @@ type SyncConfig struct {
 	// BackupVersions is the number of old zone versions to keep
 	BackupVersions int `mapstructure:"backup_versions"`
 
+	// MinFreeBytes is the minimum free disk space required before writing zone files.
+	// Set to 0 to disable the free-space guard.
+	MinFreeBytes int64 `mapstructure:"min_free_bytes"`
+
 	// VerifyChecksums enables SHA256 checksum verification
 	VerifyChecksums bool `mapstructure:"verify_checksums"`
 
@@ -932,6 +937,7 @@ func DefaultAgentConfig() *AgentConfig {
 			Jitter:           5 * time.Second,
 			MaxStaleness:     5 * time.Minute,
 			BackupVersions:   3,
+			MinFreeBytes:     DefaultAgentSyncMinFreeBytes,
 			VerifyChecksums:  true,
 			VerifySignatures: true,
 		},

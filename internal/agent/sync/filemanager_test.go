@@ -58,6 +58,23 @@ func TestFileManager_WriteZoneFile(t *testing.T) {
 	}
 }
 
+func TestFileManager_WriteZoneFileUsesConfiguredMinFreeBytes(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManagerWithMinFreeBytes(tmpDir, 3, 1<<62, logger)
+
+	err := fm.WriteZoneFile("example.com.", "$ORIGIN example.com.\n")
+	if err == nil {
+		t.Fatal("WriteZoneFile should fail when configured free-space threshold is unavailable")
+	}
+	if !strings.Contains(err.Error(), "insufficient disk space") {
+		t.Fatalf("expected insufficient disk space error, got %v", err)
+	}
+	if fm.ZoneExists("example.com.") {
+		t.Fatal("zone file should not be published after disk-space failure")
+	}
+}
+
 func TestFileManager_WriteZoneFileDoesNotFollowPredictableTempSymlink(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
 	if err != nil {

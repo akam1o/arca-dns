@@ -20,6 +20,7 @@ import (
 type FileManager struct {
 	zoneDir        string
 	backupVersions int
+	minFreeBytes   uint64
 	logger         *zap.Logger
 }
 
@@ -45,12 +46,22 @@ type managedZoneRef struct {
 
 // NewFileManager creates a new file manager.
 func NewFileManager(zoneDir string, backupVersions int, logger *zap.Logger) *FileManager {
+	return NewFileManagerWithMinFreeBytes(zoneDir, backupVersions, config.DefaultAgentSyncMinFreeBytes, logger)
+}
+
+// NewFileManagerWithMinFreeBytes creates a new file manager with a configured
+// free-space guard. A zero threshold disables the guard.
+func NewFileManagerWithMinFreeBytes(zoneDir string, backupVersions int, minFreeBytes int64, logger *zap.Logger) *FileManager {
 	if backupVersions < 0 {
 		backupVersions = 0
+	}
+	if minFreeBytes < 0 {
+		minFreeBytes = 0
 	}
 	return &FileManager{
 		zoneDir:        zoneDir,
 		backupVersions: backupVersions,
+		minFreeBytes:   uint64(minFreeBytes),
 		logger:         logger,
 	}
 }
@@ -86,9 +97,10 @@ func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, conte
 
 	targetPath := fm.GetZonePath(zoneName) // Use safe path with GetZonePath
 
-	// Check disk space (require at least 100MB free)
-	if err := fm.checkDiskSpace(100 * 1024 * 1024); err != nil {
-		return nil, fmt.Errorf("insufficient disk space: %w", err)
+	if fm.minFreeBytes > 0 {
+		if err := fm.checkDiskSpace(fm.minFreeBytes); err != nil {
+			return nil, fmt.Errorf("insufficient disk space: %w", err)
+		}
 	}
 
 	snapshot, err := snapshotZoneFile(targetPath)
