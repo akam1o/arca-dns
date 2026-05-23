@@ -455,6 +455,12 @@ curl http://localhost:8080/ready
 
 Ingress example: `deployments/kubernetes/controller/examples/ingress.yaml`. Terminate TLS at the ingress controller or external load balancer.
 
+### 6. Add Ingress Rate Limiting
+
+`api.rate_limit` is process-local inside each controller process. When you run more than one controller replica, keep the controller limit enabled as defense in depth, but enforce the external API quota at the ingress controller, load balancer, or another shared reverse proxy in front of all replicas.
+
+The NGINX ingress example includes rate-limit annotations that return HTTP `429` before requests are sent to the controller service. Tune `nginx.ingress.kubernetes.io/limit-rps` and `nginx.ingress.kubernetes.io/limit-burst-multiplier` for your expected API traffic and automation clients.
+
 ## Agent Deployment Details
 
 The agent uses these controller APIs:

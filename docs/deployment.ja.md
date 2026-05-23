@@ -454,6 +454,12 @@ curl http://localhost:8080/ready
 
 Ingress 例は `deployments/kubernetes/controller/examples/ingress.yaml` にあります。TLS は ingress controller または外部 LB で終端してください。
 
+### 6. Ingress rate limiting を追加する
+
+`api.rate_limit` は各 controller process 内の process-local な制限です。controller replica を複数動かす場合は、controller 側の制限を defense in depth として残しつつ、全 replica の手前にある ingress controller、load balancer、または共有 reverse proxy で外部 API quota を適用してください。
+
+NGINX ingress 例には、controller service に転送する前に HTTP `429` を返す rate-limit annotation を入れています。想定する API traffic と automation client に合わせて `nginx.ingress.kubernetes.io/limit-rps` と `nginx.ingress.kubernetes.io/limit-burst-multiplier` を調整してください。
+
 ## Agent のデプロイ詳細
 
 agent は controller から次の API を利用します。
