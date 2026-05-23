@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -10,8 +11,9 @@ import (
 )
 
 const (
-	rateLimiterCleanupInterval = 5 * time.Minute
-	rateLimiterClientTTL       = 10 * time.Minute
+	rateLimiterCleanupInterval   = 5 * time.Minute
+	rateLimiterClientTTL         = 10 * time.Minute
+	defaultRateLimiterMaxClients = 10000
 )
 
 // RateLimiterConfig configures rate limiting.
@@ -22,14 +24,17 @@ type RateLimiterConfig struct {
 	WriteRPS int
 	// Burst is the maximum burst size
 	Burst int
+	// MaxClients is the maximum number of client limiter entries to retain
+	MaxClients int
 }
 
 // DefaultRateLimiterConfig returns default rate limiter configuration.
 func DefaultRateLimiterConfig() RateLimiterConfig {
 	return RateLimiterConfig{
-		ReadRPS:  100, // 100 reads/sec per client
-		WriteRPS: 10,  // 10 writes/sec per client
-		Burst:    20,  // Allow burst of 20 requests
+		ReadRPS:    100, // 100 reads/sec per client
+		WriteRPS:   10,  // 10 writes/sec per client
+		Burst:      20,  // Allow burst of 20 requests
+		MaxClients: defaultRateLimiterMaxClients,
 	}
 }
 
@@ -50,6 +55,10 @@ type RateLimiter struct {
 
 // NewRateLimiter creates a new rate limiter with the given configuration.
 func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
+	if config.MaxClients <= 0 {
+		config.MaxClients = defaultRateLimiterMaxClients
+	}
+
 	return &RateLimiter{
 		config:      config,
 		clients:     make(map[string]*clientLimiter),
@@ -60,8 +69,7 @@ func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
 // Middleware returns a Gin middleware that enforces rate limiting.
 func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get client IP (support X-Forwarded-For for proxied requests)
-		clientIP := c.ClientIP()
+		clientKey := rateLimitClientKey(c)
 
 		// Determine if this is a read or write operation
 		isWrite := c.Request.Method == http.MethodPost ||
@@ -70,7 +78,7 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 			c.Request.Method == http.MethodPatch
 
 		// Get or create limiter for this client
-		limiter := rl.getLimiter(clientIP, isWrite)
+		limiter := rl.getLimiter(clientKey, isWrite)
 
 		// Check if request is allowed
 		if !limiter.Allow() {
@@ -88,7 +96,7 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 }
 
 // getLimiter returns the appropriate rate limiter for the client.
-func (rl *RateLimiter) getLimiter(clientIP string, isWrite bool) *rate.Limiter {
+func (rl *RateLimiter) getLimiter(clientKey string, isWrite bool) *rate.Limiter {
 	now := time.Now()
 
 	rl.mu.Lock()
@@ -99,14 +107,15 @@ func (rl *RateLimiter) getLimiter(clientIP string, isWrite bool) *rate.Limiter {
 		rl.lastCleanup = now
 	}
 
-	cl, exists := rl.clients[clientIP]
+	cl, exists := rl.clients[clientKey]
 	if !exists {
+		rl.evictClientsLocked(now)
 		cl = &clientLimiter{
 			readLimiter:  rate.NewLimiter(rate.Limit(rl.config.ReadRPS), rl.config.Burst),
 			writeLimiter: rate.NewLimiter(rate.Limit(rl.config.WriteRPS), rl.config.Burst),
 			lastSeen:     now,
 		}
-		rl.clients[clientIP] = cl
+		rl.clients[clientKey] = cl
 	}
 
 	// Update last seen
@@ -118,11 +127,38 @@ func (rl *RateLimiter) getLimiter(clientIP string, isWrite bool) *rate.Limiter {
 	return cl.readLimiter
 }
 
+func rateLimitClientKey(c *gin.Context) string {
+	clientIP := c.ClientIP()
+	principal := strings.TrimSpace(c.GetString("auth_principal"))
+	if principal == "" {
+		return "ip:" + clientIP
+	}
+	return "principal:" + principal + "|ip:" + clientIP
+}
+
 // cleanupStaleClientsLocked removes clients that haven't been seen recently.
 func (rl *RateLimiter) cleanupStaleClientsLocked(now time.Time) {
 	for ip, cl := range rl.clients {
 		if now.Sub(cl.lastSeen) > rateLimiterClientTTL {
 			delete(rl.clients, ip)
 		}
+	}
+}
+
+func (rl *RateLimiter) evictClientsLocked(now time.Time) {
+	rl.cleanupStaleClientsLocked(now)
+	for rl.config.MaxClients > 0 && len(rl.clients) >= rl.config.MaxClients {
+		oldestKey := ""
+		var oldestSeen time.Time
+		for key, cl := range rl.clients {
+			if oldestKey == "" || cl.lastSeen.Before(oldestSeen) {
+				oldestKey = key
+				oldestSeen = cl.lastSeen
+			}
+		}
+		if oldestKey == "" {
+			return
+		}
+		delete(rl.clients, oldestKey)
 	}
 }
