@@ -28,7 +28,10 @@ import (
 	"github.com/gofrs/flock"
 )
 
-const maxLegacyZoneFilenameLength = 255
+const (
+	maxLegacyZoneFilenameLength = 255
+	maxGitZoneFileSize          = 10 * 1024 * 1024
+)
 
 func init() {
 	RegisterBackend("git", func(cfg map[string]interface{}) (ZoneStore, error) {
@@ -1020,11 +1023,36 @@ func readRegularZoneFile(path string) ([]byte, os.FileMode, error) {
 		return nil, 0, fmt.Errorf("zone file must be a regular file: %s", path)
 	}
 
-	data, err := io.ReadAll(file)
+	data, err := readLimitedGitZoneContent(file)
 	if err != nil {
 		return nil, 0, err
 	}
 	return data, openedInfo.Mode(), nil
+}
+
+func readLimitedGitZoneContent(reader io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxGitZoneFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxGitZoneFileSize {
+		return nil, fmt.Errorf("zone file exceeds maximum size of %d bytes", maxGitZoneFileSize)
+	}
+	return data, nil
+}
+
+func readGitObjectZoneFile(file *object.File) ([]byte, error) {
+	if file.Size > maxGitZoneFileSize {
+		return nil, fmt.Errorf("zone file exceeds maximum size of %d bytes", maxGitZoneFileSize)
+	}
+
+	reader, err := file.Reader()
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	return readLimitedGitZoneContent(reader)
 }
 
 // writeZone writes a zone to JSON file atomically
@@ -1582,13 +1610,13 @@ func (g *GitBackend) getRevisionFromPath(filePath, version string) (*model.Zone,
 		return nil, fmt.Errorf("failed to get file from tree: %w", err)
 	}
 
-	contents, err := file.Contents()
+	contents, err := readGitObjectZoneFile(file)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file contents: %w", err)
 	}
 
 	var zone model.Zone
-	if err := json.Unmarshal([]byte(contents), &zone); err != nil {
+	if err := json.Unmarshal(contents, &zone); err != nil {
 		return nil, fmt.Errorf("failed to parse zone JSON: %w", err)
 	}
 
@@ -1685,13 +1713,13 @@ func (g *GitBackend) listRevisionsForPath(filePath string) ([]*model.ZoneVersion
 			return nil // Skip on error
 		}
 
-		contents, err := file.Contents()
+		contents, err := readGitObjectZoneFile(file)
 		if err != nil {
 			return nil // Skip on error
 		}
 
 		var zone model.Zone
-		if err := json.Unmarshal([]byte(contents), &zone); err != nil {
+		if err := json.Unmarshal(contents, &zone); err != nil {
 			return nil // Skip on error
 		}
 

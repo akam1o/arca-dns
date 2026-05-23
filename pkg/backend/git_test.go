@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,7 +13,9 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1105,6 +1108,44 @@ func TestGitBackend_ListZones_ReturnsErrorForMalformedZoneFile(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, zones)
 	assert.Contains(t, err.Error(), "bad.example.com.")
+}
+
+func TestGitBackendRejectsOversizedZoneFile(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zoneName := "oversized.example.com."
+	relPath, err := backend.zoneFilePath(zoneName)
+	require.NoError(t, err)
+
+	zonePath := filepath.Join(backend.repoPath, relPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(zonePath), 0755))
+	require.NoError(t, os.WriteFile(zonePath, bytes.Repeat([]byte("A"), maxGitZoneFileSize+1), 0644))
+
+	_, err = backend.worktree.Add(relPath)
+	require.NoError(t, err)
+	_, err = backend.worktree.Commit("add oversized zone\n\nVersion: oversized-version", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "test-author",
+			Email: "test@example.com",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = backend.GetZone(ctx, zoneName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+
+	zones, err := backend.ListZones(ctx, ListOptions{})
+	require.Error(t, err)
+	assert.Nil(t, zones)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+
+	_, err = backend.GetRevision(ctx, zoneName, "oversized-version")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
 }
 
 func TestGitBackend_GetRevision(t *testing.T) {
