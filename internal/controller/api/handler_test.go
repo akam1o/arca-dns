@@ -717,11 +717,36 @@ func TestListZones_Pagination(t *testing.T) {
 	var result struct {
 		Zones      []*model.Zone `json:"zones"`
 		Pagination struct {
-			Count int `json:"count"`
+			Offset     int  `json:"offset"`
+			Limit      int  `json:"limit"`
+			Count      int  `json:"count"`
+			NextOffset *int `json:"next_offset"`
 		} `json:"pagination"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
 	assert.Equal(t, 2, result.Pagination.Count)
+	assert.Equal(t, 0, result.Pagination.Offset)
+	assert.Equal(t, 2, result.Pagination.Limit)
+	require.NotNil(t, result.Pagination.NextOffset)
+	assert.Equal(t, 2, *result.Pagination.NextOffset)
+
+	resp, err = http.Get(server.URL + "/api/v1/zones?limit=2&offset=4")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	result = struct {
+		Zones      []*model.Zone `json:"zones"`
+		Pagination struct {
+			Offset     int  `json:"offset"`
+			Limit      int  `json:"limit"`
+			Count      int  `json:"count"`
+			NextOffset *int `json:"next_offset"`
+		} `json:"pagination"`
+	}{}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	assert.Equal(t, 1, result.Pagination.Count)
+	assert.Equal(t, 4, result.Pagination.Offset)
+	assert.Nil(t, result.Pagination.NextOffset)
 }
 
 func TestListZones_InvalidPagination(t *testing.T) {

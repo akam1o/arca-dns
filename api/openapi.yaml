@@ -1496,6 +1496,9 @@ components:
         count:
           type: integer
           description: Number of items returned in this page
+        next_offset:
+          type: integer
+          description: Offset to request the next page when another page may exist. Omitted when the current page is shorter than the requested limit.
 
     Error:
       type: object

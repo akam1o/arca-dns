@@ -423,12 +423,8 @@ func (h *Handler) ListZones(c *gin.Context) {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"zones": summaries,
-			"pagination": gin.H{
-				"offset": offset,
-				"limit":  limit,
-				"count":  len(summaries),
-			},
+			"zones":      summaries,
+			"pagination": paginationMetadata(offset, limit, len(summaries)),
 		})
 		return
 	}
@@ -449,13 +445,21 @@ func (h *Handler) ListZones(c *gin.Context) {
 
 	// Return zones with pagination metadata
 	c.JSON(http.StatusOK, gin.H{
-		"zones": zones,
-		"pagination": gin.H{
-			"offset": offset,
-			"limit":  limit,
-			"count":  len(zones),
-		},
+		"zones":      zones,
+		"pagination": paginationMetadata(offset, limit, len(zones)),
 	})
+}
+
+func paginationMetadata(offset, limit, count int) gin.H {
+	metadata := gin.H{
+		"offset": offset,
+		"limit":  limit,
+		"count":  count,
+	}
+	if count == limit {
+		metadata["next_offset"] = offset + count
+	}
+	return metadata
 }
 
 func listZonesSummaryOnly(c *gin.Context) bool {
@@ -575,12 +579,8 @@ func (h *Handler) ListZoneVersions(c *gin.Context) {
 
 	c.Header("ETag", formatETag(zone.Version))
 	c.JSON(http.StatusOK, gin.H{
-		"versions": versions,
-		"pagination": gin.H{
-			"offset": offset,
-			"limit":  limit,
-			"count":  len(versions),
-		},
+		"versions":   versions,
+		"pagination": paginationMetadata(offset, limit, len(versions)),
 	})
 }
 
