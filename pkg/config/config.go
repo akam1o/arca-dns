@@ -108,7 +108,7 @@ type ObservabilityConfig struct {
 	// Listen address for health, readiness, status, and Prometheus metrics.
 	Listen string `mapstructure:"listen"`
 
-	// AuthToken protects /status and /metrics when set.
+	// AuthToken protects controller observability metrics when set.
 	AuthToken string `mapstructure:"auth_token"`
 }
 

@@ -102,3 +102,10 @@ func TestOpenAPIMetricsDocumentsOptionalBearerAuth(t *testing.T) {
 	assert.Contains(t, metrics.Security[0], "ObservabilityBearerAuth")
 	assert.Empty(t, metrics.Security[1])
 }
+
+func TestOpenAPIStatusDocumentsNoAuth(t *testing.T) {
+	doc := loadOpenAPIContract(t)
+	status := doc.Paths["/status"].Get
+
+	require.Len(t, status.Security, 0)
+}

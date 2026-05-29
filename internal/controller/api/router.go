@@ -43,6 +43,7 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 	v1 := router.Group("/api/v1")
 
 	requestValidator := middleware.NewRequestValidator()
+	router.GET("/status", requestValidator.Middleware(), handler.Status)
 
 	var authMiddleware gin.HandlerFunc
 	var authFailureRateLimitMiddleware gin.HandlerFunc
@@ -71,18 +72,6 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 	if authenticator != nil && rateLimiter != nil {
 		authFailureRateLimitMiddleware = authenticator.FailureRateLimitMiddleware(rateLimiter)
 	}
-
-	statusProtected := router.Group("")
-	if authFailureRateLimitMiddleware != nil {
-		statusProtected.Use(authFailureRateLimitMiddleware)
-	}
-	if authMiddleware != nil {
-		statusProtected.Use(authMiddleware)
-	}
-	if rateLimitMiddleware != nil {
-		statusProtected.Use(rateLimitMiddleware)
-	}
-	statusProtected.GET("/status", requestValidator.Middleware(), handler.Status)
 
 	protected := v1.Group("")
 	if authFailureRateLimitMiddleware != nil {
@@ -141,12 +130,12 @@ func SetupObservabilityRouterWithConfig(handler *Handler, cfg *config.APIConfig,
 	gin.SetMode(gin.ReleaseMode)
 
 	router := newControllerRouter(handler, cfg, logger, false)
-	statusAuth := observabilityAuthMiddleware(observabilityAuthToken(observability))
-	registerObservabilityRoutes(router, handler, statusAuth)
+	metricsAuth := observabilityAuthMiddleware(observabilityAuthToken(observability))
+	registerObservabilityRoutes(router, handler, metricsAuth)
 
 	// Keep the historical /api/v1 aliases on the observability listener only.
 	v1 := router.Group("/api/v1")
-	registerObservabilityRoutes(v1, handler, statusAuth)
+	registerObservabilityRoutes(v1, handler, metricsAuth)
 
 	return router
 }
@@ -215,11 +204,11 @@ type routeGroup interface {
 	GET(string, ...gin.HandlerFunc) gin.IRoutes
 }
 
-func registerObservabilityRoutes(routes routeGroup, handler *Handler, statusAuth gin.HandlerFunc) {
+func registerObservabilityRoutes(routes routeGroup, handler *Handler, metricsAuth gin.HandlerFunc) {
 	routes.GET("/health", handler.Health)
 	routes.GET("/ready", handler.Ready)
-	routes.GET("/status", statusAuth, handler.Status)
-	routes.GET("/metrics", statusAuth, handler.Metrics)
+	routes.GET("/status", handler.Status)
+	routes.GET("/metrics", metricsAuth, handler.Metrics)
 }
 
 func registerHealthRoutes(routes routeGroup, handler *Handler) {

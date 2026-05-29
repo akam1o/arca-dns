@@ -1195,7 +1195,7 @@ paths:
     get:
       tags: [health]
       summary: Detailed status information
-      description: Returns detailed status information about the controller from the API listener
+      description: Returns low-sensitivity status information about the controller from the API listener. Authentication is not required.
       operationId: getStatus
       servers:
         - url: http://localhost:8080

@@ -63,7 +63,7 @@ The agent container image contains only `arca-dns-agent` and defaults to sync-on
 ### API Key
 
 The controller default is `api.auth.enabled: true`. When auth is enabled, `api.auth.api_keys` must contain at least one `sha256:<64 hex>` hash and every key must have an explicit `api.auth.api_key_roles` entry.
-The controller observability listener is unauthenticated and binds to `127.0.0.1:9053` by default. Bind it to a remote address only behind network controls or an authenticated proxy.
+The controller observability listener binds to `127.0.0.1:9053` by default. Health/readiness/status aliases are unauthenticated. Metrics use `observability.auth_token` when configured, and non-loopback observability listeners require that token during config validation.
 
 ```bash
 ADMIN_API_KEY="$(openssl rand -hex 32)"
@@ -494,7 +494,8 @@ Controller health/readiness/status endpoints listen on the API address
 listen on the separate `observability.listen` address. The built-in default is
 `127.0.0.1:9053`; the Kubernetes examples keep this loopback-only and do not
 publish the observability port through the base Service. If you expose it for
-Service scraping, protect it with cluster network controls.
+Service scraping, configure `observability.auth_token` and protect it with
+cluster network controls.
 
 By default the agent status server listens on `127.0.0.1:9090`. Set
 `metrics.listen` to a remote address only when the endpoint is protected by

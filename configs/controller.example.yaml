@@ -35,7 +35,7 @@ observability:
   # Health/readiness/status endpoints are served on the API listener.
   # Bind to 0.0.0.0 only behind network controls and with auth_token set.
   listen: "127.0.0.1:9053"
-  # Required when listen is not loopback. Protects /status and /metrics.
+  # Required when listen is not loopback. Protects /metrics.
   # Generate with: openssl rand -base64 32
   auth_token: ""
 

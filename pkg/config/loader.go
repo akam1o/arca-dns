@@ -701,7 +701,7 @@ func validateObservabilityAuthConfig(observability *ObservabilityConfig) error {
 	observability.AuthToken = strings.TrimSpace(observability.AuthToken)
 	if observability.AuthToken != "" {
 		if isPlaceholderSecret(observability.AuthToken) {
-			return fmt.Errorf("invalid observability.auth_token: replace placeholder value with a generated status token")
+			return fmt.Errorf("invalid observability.auth_token: replace placeholder value with a generated observability token")
 		}
 		if len([]byte(observability.AuthToken)) < minStatusAuthTokenBytes {
 			return fmt.Errorf("invalid observability.auth_token: must be at least %d bytes", minStatusAuthTokenBytes)

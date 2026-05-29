@@ -30,7 +30,7 @@ services:
     image: ghcr.io/akam1o/arca-dns-controller:latest
     ports:
       - "8080:8080"
-      # Metrics and status aliases require ARCA_DNS_OBSERVABILITY_AUTH_TOKEN.
+      # Metrics require ARCA_DNS_OBSERVABILITY_AUTH_TOKEN.
       - "127.0.0.1:9053:9053"
     environment:
       # Set before running:

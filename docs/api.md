@@ -7,7 +7,7 @@ The source of truth for the Controller API is `api/openapi.yaml` (OpenAPI 3.0). 
 ## Base URL
 
 - API base: `http://<controller-host>:8080/api/v1`; unauthenticated health/readiness/status endpoints are on `http://<controller-host>:8080`
-- Observability base: `http://<controller-host>:9053` for Prometheus metrics and historical health/readiness/status aliases
+- Observability base: `http://<controller-host>:9053` for Prometheus metrics and historical health/readiness/status aliases. Metrics require `Authorization: Bearer <observability.auth_token>` when `observability.auth_token` is configured.
 
 ## Authentication
 
@@ -19,7 +19,7 @@ X-API-Key: <api-key>
 
 API keys must be assigned explicit roles with `api.auth.api_key_roles`. `admin` keys can access the management API; `agent` keys are limited to zone summary listing and signed artifact reads. `api.auth.allow_implicit_admin_roles` exists only for legacy migration from configs that omitted roles.
 
-Health/readiness/status endpoints (`/health`, `/ready`, `/status`) and observability metrics (`/metrics`) do not require auth. Health/readiness/status are served on the API listener; metrics are served on the observability listener.
+Health/readiness/status endpoints (`/health`, `/ready`, `/status`) do not require auth. Health/readiness/status are served on the API listener. Metrics are served on the observability listener and require `Authorization: Bearer <observability.auth_token>` when `observability.auth_token` is configured.
 
 ## Data Model (Zone)
 
@@ -64,11 +64,11 @@ For signed artifacts:
 
 ## Endpoints
 
-### Health / Status / Metrics (no auth)
+### Health / Status / Metrics
 
-- API listener (`:8080`): `GET /health`, `GET /ready`, and `GET /status`
-- Observability listener (`:9053`): `GET /metrics`
-- The observability listener also keeps historical `/health`, `/ready`, `/status`, and `/api/v1/*` aliases for compatibility.
+- API listener (`:8080`): `GET /health`, `GET /ready`, and `GET /status` do not require auth.
+- Observability listener (`:9053`): `GET /metrics` requires `Authorization: Bearer <observability.auth_token>` when `observability.auth_token` is configured.
+- The observability listener also keeps historical `/health`, `/ready`, `/status`, and `/api/v1/*` aliases for compatibility. The health/readiness/status aliases do not require auth; metrics aliases follow the same observability token behavior.
 
 ### Zones (JSON mode)
 

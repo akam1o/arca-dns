@@ -159,7 +159,7 @@ api:
 
 observability:
   # Prometheus /metrics endpoint. /health, /ready, and /status are on the API listener.
-  # Bind to 0.0.0.0 only behind network controls or an authenticated proxy.
+  # Bind to 0.0.0.0 only with observability.auth_token and network controls.
   listen: "127.0.0.1:9053"
 
 backend:

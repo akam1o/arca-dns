@@ -152,7 +152,7 @@ func TestControllerRecoveryLogsStructuredContext(t *testing.T) {
 	assert.NotContains(t, fields, "authorization")
 }
 
-func TestSetupRouter_StatusRouteRequiresManagementAuth(t *testing.T) {
+func TestSetupRouter_StatusRouteRemainsOpen(t *testing.T) {
 	const adminKey = "admin-key"
 	logger := zap.NewNop()
 	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
@@ -172,8 +172,8 @@ func TestSetupRouter_StatusRouteRequiresManagementAuth(t *testing.T) {
 	}{
 		{name: "health remains open", path: "/health", want: http.StatusOK},
 		{name: "ready remains open", path: "/ready", want: http.StatusOK},
-		{name: "status without api key", path: "/status", want: http.StatusUnauthorized},
-		{name: "status with invalid api key", path: "/status", key: "wrong-key", want: http.StatusUnauthorized},
+		{name: "status without api key", path: "/status", want: http.StatusOK},
+		{name: "status with invalid api key", path: "/status", key: "wrong-key", want: http.StatusOK},
 		{name: "status with api key", path: "/status", key: adminKey, want: http.StatusOK},
 		{name: "metrics stays separate", path: "/metrics", want: http.StatusNotFound},
 	}
@@ -301,7 +301,7 @@ func TestSetupObservabilityRouter_RoutesBypassAuth(t *testing.T) {
 	}
 }
 
-func TestSetupObservabilityRouterWithConfig_ProtectsStatusAndMetrics(t *testing.T) {
+func TestSetupObservabilityRouterWithConfig_ProtectsMetricsOnly(t *testing.T) {
 	const token = "controller-status-token-32-byte-secret"
 	logger := zap.NewNop()
 	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
@@ -321,12 +321,12 @@ func TestSetupObservabilityRouterWithConfig_ProtectsStatusAndMetrics(t *testing.
 	}{
 		{name: "health remains open", path: "/health", want: http.StatusOK},
 		{name: "ready remains open", path: "/ready", want: http.StatusOK},
-		{name: "status without token", path: "/status", want: http.StatusUnauthorized},
-		{name: "status wrong token", path: "/status", header: "Bearer wrong-token", want: http.StatusUnauthorized},
+		{name: "status without token", path: "/status", want: http.StatusOK},
+		{name: "status wrong token", path: "/status", header: "Bearer wrong-token", want: http.StatusOK},
 		{name: "status with token", path: "/status", header: "Bearer " + token, want: http.StatusOK},
 		{name: "metrics without token", path: "/metrics", want: http.StatusUnauthorized},
 		{name: "metrics with token", path: "/metrics", header: "Bearer " + token, want: http.StatusNotImplemented},
-		{name: "api alias status without token", path: "/api/v1/status", want: http.StatusUnauthorized},
+		{name: "api alias status without token", path: "/api/v1/status", want: http.StatusOK},
 		{name: "api alias status with token", path: "/api/v1/status", header: "Bearer " + token, want: http.StatusOK},
 		{name: "api alias metrics without token", path: "/api/v1/metrics", want: http.StatusUnauthorized},
 		{name: "api alias metrics with token", path: "/api/v1/metrics", header: "Bearer " + token, want: http.StatusNotImplemented},

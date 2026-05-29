@@ -63,7 +63,7 @@ agent container image には `arca-dns-agent` のみが含まれ、既定では�
 ### API キー
 
 controller の既定は `api.auth.enabled: true` です。認証が有効な場合、`api.auth.api_keys` に `sha256:<64 hex>` 形式のハッシュが 1 つ以上必要で、各 key には明示的な `api.auth.api_key_roles` entry が必要です。
-controller の observability listener は認証なしで、既定では `127.0.0.1:9053` に bind します。リモートアドレスに bind する場合は network control または認証付き proxy の背後に置いてください。
+controller の observability listener は既定で `127.0.0.1:9053` に bind します。health/readiness/status alias は認証不要です。metrics は `observability.auth_token` を設定している場合に token を使い、loopback 以外の observability listener では config validation でこの token が必須です。
 
 ```bash
 ADMIN_API_KEY="$(openssl rand -hex 32)"
@@ -493,7 +493,8 @@ controller の health/readiness/status endpoint は API address
 分離された `observability.listen` で listen します。組み込みの既定は
 `127.0.0.1:9053` です。Kubernetes 例も loopback 限定のままにし、
 base Service では observability port を公開しません。Service scraping 用に
-公開する場合は、cluster network control で保護してください。
+公開する場合は、`observability.auth_token` を設定し、cluster network control
+で保護してください。
 
 agent の status server はデフォルトで `127.0.0.1:9090` を listen します。
 `metrics.listen` をリモートアドレスに変更する場合は、network control

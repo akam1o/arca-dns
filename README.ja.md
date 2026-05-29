@@ -155,7 +155,7 @@ api:
 
 observability:
   # Prometheus /metrics endpoint です。/health, /ready, /status は API listener で提供されます。
-  # 0.0.0.0 に bind する場合は network control または認証付き proxy の背後に置いてください。
+  # 0.0.0.0 に bind する場合は observability.auth_token と network control を使ってください。
   listen: "127.0.0.1:9053"
 
 backend:

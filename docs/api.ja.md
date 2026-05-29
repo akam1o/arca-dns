@@ -7,7 +7,7 @@ Controller API の source of truth は `api/openapi.yaml`（OpenAPI 3.0）です
 ## Base URL
 
 - API base: `http://<controller-host>:8080/api/v1`。認証不要の health/readiness/status endpoint は `http://<controller-host>:8080`
-- Observability base: `http://<controller-host>:9053`。Prometheus metrics と過去互換の health/readiness/status alias を提供します。
+- Observability base: `http://<controller-host>:9053`。Prometheus metrics と過去互換の health/readiness/status alias を提供します。`observability.auth_token` を設定している場合、metrics には `Authorization: Bearer <observability.auth_token>` が必要です。
 
 ## 認証
 
@@ -19,7 +19,7 @@ X-API-Key: <api-key>
 
 API キーには `api.auth.api_key_roles` で明示的な role を割り当てる必要があります。`admin` key は管理 API にアクセスでき、`agent` key は zone summary 一覧と signed artifact 読み取りに制限されます。`api.auth.allow_implicit_admin_roles` は role を省略していた既存 config の移行時だけに使う互換設定です。
 
-Health/readiness/status endpoint（`/health`, `/ready`, `/status`）と observability metrics（`/metrics`）は認証不要です。Health/readiness/status は API listener、metrics は observability listener で提供されます。
+Health/readiness/status endpoint（`/health`, `/ready`, `/status`）は認証不要です。Health/readiness/status は API listener で提供されます。metrics は observability listener で提供され、`observability.auth_token` を設定している場合は `Authorization: Bearer <observability.auth_token>` が必要です。
 
 ## データモデル（Zone）
 
@@ -64,11 +64,11 @@ Health/readiness/status endpoint（`/health`, `/ready`, `/status`）と observab
 
 ## エンドポイント
 
-### Health / Status / Metrics（認証不要）
+### Health / Status / Metrics
 
-- API listener（`:8080`）: `GET /health`, `GET /ready`, `GET /status`
-- Observability listener（`:9053`）: `GET /metrics`
-- Observability listener には過去互換の `/health`, `/ready`, `/status`, `/api/v1/*` alias も残しています。
+- API listener（`:8080`）: `GET /health`, `GET /ready`, `GET /status` は認証不要
+- Observability listener（`:9053`）: `GET /metrics` は `observability.auth_token` を設定している場合、`Authorization: Bearer <observability.auth_token>` が必要
+- Observability listener には過去互換の `/health`, `/ready`, `/status`, `/api/v1/*` alias も残しています。health/readiness/status alias は認証不要で、metrics alias は同じ observability token の挙動に従います。
 
 ### Zones（JSON モード）
 
