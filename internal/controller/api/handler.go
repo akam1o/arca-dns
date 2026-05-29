@@ -135,11 +135,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 	var req createZoneRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Invalid request body", zap.Error(err))
-		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInvalidInput,
-			"Invalid request body",
-			invalidRequestBodyDetails(err),
-		))
+		writeInvalidRequestBody(c, err)
 		return
 	}
 
@@ -712,11 +708,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	var req updateZoneRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Invalid request body", zap.Error(err))
-		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInvalidInput,
-			"Invalid request body",
-			invalidRequestBodyDetails(err),
-		))
+		writeInvalidRequestBody(c, err)
 		return
 	}
 

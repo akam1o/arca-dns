@@ -1,11 +1,47 @@
 package api
 
-import "strings"
+import (
+	"errors"
+	"net/http"
+	"strings"
+
+	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/gin-gonic/gin"
+)
 
 const maxValidationDetailLength = 512
 
 func invalidRequestBodyDetails(err error) map[string]interface{} {
 	return validationErrorDetails("invalid_request_body", "body", err)
+}
+
+func writeInvalidRequestBody(c *gin.Context, err error) {
+	if maxBytesErr := requestBodyTooLargeError(err); maxBytesErr != nil {
+		c.JSON(http.StatusRequestEntityTooLarge, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Request body exceeds maximum size limit",
+			map[string]interface{}{
+				"reason":   "request_too_large",
+				"field":    "body",
+				"max_size": maxBytesErr.Limit,
+			},
+		))
+		return
+	}
+
+	c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+		model.ErrorCodeInvalidInput,
+		"Invalid request body",
+		invalidRequestBodyDetails(err),
+	))
+}
+
+func requestBodyTooLargeError(err error) *http.MaxBytesError {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		return maxBytesErr
+	}
+	return nil
 }
 
 func validationFailureDetails(field string, err error) map[string]interface{} {

@@ -95,6 +95,27 @@ func TestSetupRouter_ProtectedRoutesStillLimitBodySize(t *testing.T) {
 	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 }
 
+func TestSetupRouter_UnknownLengthJSONBodyTooLargeReturns413(t *testing.T) {
+	logger := zap.NewNop()
+	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = false
+	apiCfg.RateLimit.Enabled = false
+
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/zones", strings.NewReader(strings.Repeat(" ", int(middleware.MaxRequestBodySize)+1)))
+	req.ContentLength = -1
+	req.TransferEncoding = []string{"chunked"}
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	apiErr := decodeAPIError(t, w.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Request body exceeds maximum size limit", apiErr.Message)
+}
+
 func TestControllerRecoveryLogsStructuredContext(t *testing.T) {
 	core, logs := observer.New(zap.ErrorLevel)
 	logger := zap.New(core)

@@ -69,11 +69,7 @@ func (h *Handler) CreateRecord(c *gin.Context) {
 	var record model.Record
 	if err := c.ShouldBindJSON(&record); err != nil {
 		h.logger.Warn("Invalid record request body", zap.Error(err))
-		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInvalidInput,
-			"Invalid request body",
-			invalidRequestBodyDetails(err),
-		))
+		writeInvalidRequestBody(c, err)
 		return
 	}
 	record.ID = ""
@@ -114,11 +110,7 @@ func (h *Handler) BulkRecords(c *gin.Context) {
 	var req bulkRecordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Invalid bulk record request body", zap.Error(err))
-		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInvalidInput,
-			"Invalid request body",
-			invalidRequestBodyDetails(err),
-		))
+		writeInvalidRequestBody(c, err)
 		return
 	}
 	if len(req.Create) == 0 && len(req.Update) == 0 && len(req.Delete) == 0 {
@@ -184,11 +176,7 @@ func (h *Handler) UpdateRecord(c *gin.Context) {
 	var record model.Record
 	if err := c.ShouldBindJSON(&record); err != nil {
 		h.logger.Warn("Invalid record request body", zap.Error(err))
-		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInvalidInput,
-			"Invalid request body",
-			invalidRequestBodyDetails(err),
-		))
+		writeInvalidRequestBody(c, err)
 		return
 	}
 	zone, expectedVersion, providedETag, ok := h.loadZoneForRecordMutation(c, name)
