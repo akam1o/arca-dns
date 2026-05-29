@@ -43,6 +43,7 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 	v1 := router.Group("/api/v1")
 
 	requestValidator := middleware.NewRequestValidator()
+	rawZoneRequestValidator := middleware.NewRequestValidatorWithMaxSize(rawZoneMaxRequestBodySize)
 	router.GET("/status", requestValidator.Middleware(), handler.Status)
 
 	var authMiddleware gin.HandlerFunc
@@ -87,12 +88,14 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 	authEnabled := cfg != nil && cfg.Auth.Enabled
 	zoneManagement := protected.Group("")
 	zoneManagement.Use(permissionGuard(authEnabled, middleware.AuthPermissionManageZones), requestValidator.Middleware())
+	rawZoneManagement := protected.Group("")
+	rawZoneManagement.Use(permissionGuard(authEnabled, middleware.AuthPermissionManageZones), rawZoneRequestValidator.Middleware())
 	syncArtifacts := protected.Group("")
 	syncArtifacts.Use(permissionGuard(authEnabled, middleware.AuthPermissionReadSyncArtifacts), requestValidator.Middleware())
 	{
 		// Zone management
 		zoneManagement.POST("/zones", handler.CreateZone)
-		zoneManagement.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
+		rawZoneManagement.POST("/zones/raw", handler.CreateZoneRaw) // Raw BIND format
 		syncArtifacts.GET("/zones", requireSummaryListForAgent(), handler.ListZones)
 		zoneManagement.HEAD("/zones/:name", handler.HeadZone)
 		zoneManagement.GET("/zones/:name", handler.GetZone)

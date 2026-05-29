@@ -13,7 +13,10 @@ import (
 	"go.uber.org/zap"
 )
 
-const rawZoneMultipartOverheadBytes int64 = 1 << 20
+const (
+	rawZoneMultipartOverheadBytes int64 = 1 << 20
+	rawZoneMaxRequestBodySize           = parser.DefaultMaxZoneFileSize + rawZoneMultipartOverheadBytes
+)
 
 var errRawZoneTooLarge = errors.New("zone file exceeds maximum size")
 
@@ -28,7 +31,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 
 	// Handle different content types
 	if strings.HasPrefix(contentType, "multipart/form-data") {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, parser.DefaultMaxZoneFileSize+rawZoneMultipartOverheadBytes)
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, rawZoneMaxRequestBodySize)
 
 		// Parse multipart form
 		file, header, err := c.Request.FormFile("zonefile")

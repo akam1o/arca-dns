@@ -16,6 +16,7 @@ import (
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/dnssec"
+	"github.com/akam1o/arca-dns/pkg/middleware"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/akam1o/arca-dns/pkg/parser"
 	"github.com/stretchr/testify/assert"
@@ -57,6 +58,34 @@ func setupRawTestWithSigning(t *testing.T) (*backend.MemoryBackend, *httptest.Se
 	server.Start()
 
 	return store, server
+}
+
+func padZoneFileForTest(t *testing.T, zoneFile string, size int64) []byte {
+	t.Helper()
+
+	require.LessOrEqual(t, int64(len(zoneFile)), size)
+
+	var padded bytes.Buffer
+	_, err := padded.WriteString(zoneFile)
+	require.NoError(t, err)
+
+	paddingLine := []byte("; " + strings.Repeat("x", 1021) + "\n")
+	for int64(padded.Len()) < size {
+		remaining := int(size) - padded.Len()
+		if remaining >= len(paddingLine) {
+			_, err = padded.Write(paddingLine)
+			require.NoError(t, err)
+			continue
+		}
+
+		require.NoError(t, padded.WriteByte(';'))
+		if remaining > 1 {
+			_, err = padded.Write(bytes.Repeat([]byte("x"), remaining-1))
+			require.NoError(t, err)
+		}
+	}
+
+	return padded.Bytes()
 }
 
 func TestCreateZoneRaw_TextPlain(t *testing.T) {
@@ -374,6 +403,46 @@ func TestCreateZoneRaw_MultipartRejectsOversizedZoneFile(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+}
+
+func TestCreateZoneRaw_MultipartAllowsMaxZoneFileWithFormOverhead(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	zoneFile := `$TTL 3600
+maxsize.com. IN SOA ns1.maxsize.com. admin.maxsize.com. (
+    2024010101 ; serial
+    3600       ; refresh
+    1800       ; retry
+    604800     ; expire
+    86400      ; minimum
+)
+maxsize.com. IN NS ns1.maxsize.com.
+ns1.maxsize.com. IN A 192.0.2.1
+`
+	paddedZoneFile := padZoneFileForTest(t, zoneFile, parser.DefaultMaxZoneFileSize)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("zonefile", "maxsize.com.zone")
+	require.NoError(t, err)
+	_, err = part.Write(paddedZoneFile)
+	require.NoError(t, err)
+	require.NoError(t, writer.WriteField("origin", "maxsize.com."))
+	require.NoError(t, writer.Close())
+
+	require.Greater(t, int64(body.Len()), int64(middleware.MaxRequestBodySize))
+	require.LessOrEqual(t, int64(body.Len()), int64(rawZoneMaxRequestBodySize))
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw", &body)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 }
 
 func TestCreateZoneRaw_UnsupportedContentType(t *testing.T) {
