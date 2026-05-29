@@ -927,10 +927,6 @@ func (s *SigningService) GetEarliestExpiration(ctx context.Context, zoneName str
 		return artifact.Metadata.Expiration, nil
 	}
 
-	if persistedExpiration != 0 {
-		return persistedExpiration, nil
-	}
-
 	return 0, fmt.Errorf("%w for zone %s: %v", dnssec.ErrSignatureExpirationUnavailable, zoneName, err)
 }
 

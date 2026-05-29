@@ -1475,6 +1475,34 @@ func TestSigningService_GetEarliestExpiration_UsesEarlierCachedArtifactOverPersi
 	}
 }
 
+func TestSigningService_GetEarliestExpiration_MissingArtifactIgnoresPersistedMetadata(t *testing.T) {
+	service, cleanup := setupSigningService(t)
+	defer cleanup()
+
+	zone := createTestZone()
+	ctx := context.Background()
+
+	artifact, err := service.SignZone(ctx, zone)
+	if err != nil {
+		t.Fatalf("SignZone failed: %v", err)
+	}
+	zone.DNSSEC = artifact.DNSSEC
+	if zone.DNSSEC == nil || zone.DNSSEC.SignatureExpiration == nil || zone.DNSSEC.SignatureExpiration.IsZero() {
+		t.Fatal("test setup expected persisted signature expiration metadata")
+	}
+	if err := service.store.CreateZone(ctx, zone); err != nil {
+		t.Fatalf("failed to create zone: %v", err)
+	}
+
+	expiration, err := service.GetEarliestExpiration(ctx, zone.Name)
+	if !errors.Is(err, dnssec.ErrSignatureExpirationUnavailable) {
+		t.Fatalf("GetEarliestExpiration error = %v, want ErrSignatureExpirationUnavailable", err)
+	}
+	if expiration != 0 {
+		t.Fatalf("Expiration = %d, want 0 when signed artifact is missing", expiration)
+	}
+}
+
 func TestSigningService_GetEarliestExpiration_UsesCachedArtifactWithoutResigning(t *testing.T) {
 	service, cleanup := setupSigningService(t)
 	defer cleanup()
