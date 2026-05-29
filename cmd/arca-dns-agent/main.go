@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net"
@@ -25,6 +27,7 @@ import (
 	"github.com/akam1o/arca-dns/internal/agent/unbound"
 	applogging "github.com/akam1o/arca-dns/internal/logging"
 	"github.com/akam1o/arca-dns/pkg/config"
+	"github.com/akam1o/arca-dns/pkg/metrics/promtext"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -62,7 +65,9 @@ manages NSD/Unbound, controls BGP routes via BIRD, and provides observability.`,
 
 Provide a configuration file, or provide all required settings via environment
 variables. For example, signature verification requires
-sync.controller_signature_key or ARCA_DNS_SYNC_CONTROLLER_SIGNATURE_KEY.`,
+sync.controller_signature_key, sync.controller_signature_keys, or the matching
+ARCA_DNS_SYNC_CONTROLLER_SIGNATURE_KEY or ARCA_DNS_SYNC_CONTROLLER_SIGNATURE_KEYS_<ID>
+environment variables.`,
 		RunE: runDaemon,
 	}
 
@@ -128,7 +133,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	logger.Info("Controller client initialized", zap.String("url", cfg.Controller.URL))
 
 	// Create file manager
-	fileMgr := zonesync.NewFileManager(cfg.NSD.ZoneDirectory, cfg.Sync.BackupVersions, logger)
+	fileMgr := zonesync.NewFileManagerWithMinFreeBytes(cfg.NSD.ZoneDirectory, cfg.Sync.BackupVersions, cfg.Sync.MinFreeBytes, logger)
 	if err := fileMgr.EnsureDirectory(); err != nil {
 		return fmt.Errorf("failed to ensure zone directory: %w", err)
 	}
@@ -367,7 +372,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			},
 			PrometheusEnabled: cfg.Metrics.Enabled,
 		}
-		dnstapProcessor = dnstap.NewProcessor(processorConfig, logger)
+		dnstapProcessor, err = dnstap.NewProcessor(processorConfig, logger)
+		if err != nil {
+			return fmt.Errorf("initialize dnstap processor: %w", err)
+		}
 		logger.Info("DNSTap processor initialized",
 			zap.String("socket", cfg.DNSTap.SocketPath),
 			zap.String("log_file", cfg.DNSTap.LogFile),
@@ -756,11 +764,12 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
+	statusAuth := statusAuthMiddleware(cfg.Metrics.AuthToken)
 	birdConfigStatus = birdConfigStatus.normalized()
 	bgpStatus := bgpControlStatus(cfg, routeCtrl, birdConfigStatus)
 
 	// Status endpoint
-	router.GET("/status", func(c *gin.Context) {
+	router.GET("/status", statusAuth, func(c *gin.Context) {
 		zoneStates := syncer.GetAllZoneStates()
 		healthStatus := checker.CheckHealth(c.Request.Context())
 
@@ -842,7 +851,7 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 	}
 
 	// Metrics endpoint (Prometheus format)
-	router.GET(metricPath(cfg.Metrics.Path), func(c *gin.Context) {
+	router.GET(metricPath(cfg.Metrics.Path), statusAuth, func(c *gin.Context) {
 		var sb strings.Builder
 
 		sb.WriteString("# arca-dns agent metrics\n")
@@ -881,13 +890,15 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 		sort.Strings(checkTypes)
 		for _, checkType := range checkTypes {
 			result := healthStatus.Checks[health.CheckType(checkType)]
-			sb.WriteString(fmt.Sprintf("arca_dns_agent_health_check_status{type=%q} %d\n", checkType, boolToInt(result.Success)))
+			labelSet := promtext.FormatLabels(promtext.Label{Name: "type", Value: checkType})
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_health_check_status{%s} %d\n", labelSet, boolToInt(result.Success)))
 		}
 
 		sb.WriteString("\n# HELP arca_dns_agent_bgp_control_status BGP control status (1 for the current status, 0 otherwise).\n")
 		sb.WriteString("# TYPE arca_dns_agent_bgp_control_status gauge\n")
 		for _, status := range []string{bgpControlStatusActive, bgpControlStatusDisabled, bgpControlStatusUnknown} {
-			sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_control_status{status=%q} %d\n", status, boolToInt(bgpStatus == status)))
+			labelSet := promtext.FormatLabels(promtext.Label{Name: "status", Value: status})
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_bgp_control_status{%s} %d\n", labelSet, boolToInt(bgpStatus == status)))
 		}
 
 		if routeCtrl != nil {
@@ -921,7 +932,8 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 		sb.WriteString("\n# HELP arca_dns_agent_bird_config_status BIRD generated config status (1 for the current status, 0 otherwise).\n")
 		sb.WriteString("# TYPE arca_dns_agent_bird_config_status gauge\n")
 		for _, status := range []string{birdConfigStatusDisabled, birdConfigStatusApplied, birdConfigStatusUsingExisting} {
-			sb.WriteString(fmt.Sprintf("arca_dns_agent_bird_config_status{status=%q} %d\n", status, boolToInt(birdConfigStatus.Status == status)))
+			labelSet := promtext.FormatLabels(promtext.Label{Name: "status", Value: status})
+			sb.WriteString(fmt.Sprintf("arca_dns_agent_bird_config_status{%s} %d\n", labelSet, boolToInt(birdConfigStatus.Status == status)))
 		}
 
 		sb.WriteString("\n# HELP arca_dns_agent_bird_config_last_attempt_timestamp_seconds Unix timestamp of the last generated BIRD config apply attempt (0 if none).\n")
@@ -959,6 +971,40 @@ func newStatusRouter(cfg *config.AgentConfig, syncer *zonesync.Syncer, checker *
 	})
 
 	return router
+}
+
+func statusAuthMiddleware(token string) gin.HandlerFunc {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return func(c *gin.Context) {
+			c.Next()
+		}
+	}
+
+	return func(c *gin.Context) {
+		if statusAuthTokenMatches(c.GetHeader("Authorization"), token) {
+			c.Next()
+			return
+		}
+
+		c.Header("WWW-Authenticate", `Bearer realm="arca-dns-agent-status"`)
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	}
+}
+
+func statusAuthTokenMatches(authHeader string, expected string) bool {
+	const bearerPrefix = "bearer "
+	value := strings.TrimSpace(authHeader)
+	if len(value) < len(bearerPrefix) || !strings.EqualFold(value[:len(bearerPrefix)], bearerPrefix) {
+		return false
+	}
+	provided := strings.TrimSpace(value[len(bearerPrefix):])
+	if provided == "" {
+		return false
+	}
+	providedHash := sha256.Sum256([]byte(provided))
+	expectedHash := sha256.Sum256([]byte(expected))
+	return subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1
 }
 
 func bgpControlStatus(cfg *config.AgentConfig, routeCtrl plugin.RouteController, birdConfigStatus birdConfigRuntimeStatus) string {

@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,6 +150,49 @@ func TestRateLimiter_Middleware_PerClientIP(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w2.Code, "Different client should not be affected")
 }
 
+func TestRateLimiter_Middleware_UsesPrincipalAndIPWhenAvailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	config := RateLimiterConfig{
+		ReadRPS:    1,
+		WriteRPS:   1,
+		Burst:      1,
+		MaxClients: 10,
+	}
+	rl := NewRateLimiter(config)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("auth_principal", c.GetHeader("X-Test-Principal"))
+		c.Next()
+	})
+	router.Use(rl.Middleware())
+	router.GET("/test", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.Header.Set("X-Test-Principal", "alice")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	req = httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.Header.Set("X-Test-Principal", "alice")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+
+	req = httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.Header.Set("X-Test-Principal", "bob")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code, "different principal on same IP should get a separate limiter")
+}
+
 func TestRateLimiter_Middleware_RecoveryAfterWait(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -195,22 +239,74 @@ func TestRateLimiter_CleansStaleClientsOnRequest(t *testing.T) {
 	}
 	rl := NewRateLimiter(config)
 
-	rl.getLimiter("192.0.2.1", false)
+	rl.getLimiter("ip:192.0.2.1", false)
 
 	rl.mu.Lock()
-	rl.clients["192.0.2.1"].lastSeen = time.Now().Add(-(rateLimiterClientTTL + time.Second))
+	rl.clients["ip:192.0.2.1"].lastSeen = time.Now().Add(-(rateLimiterClientTTL + time.Second))
 	rl.lastCleanup = time.Now().Add(-(rateLimiterCleanupInterval + time.Second))
 	rl.mu.Unlock()
 
-	rl.getLimiter("192.0.2.2", false)
+	rl.getLimiter("ip:192.0.2.2", false)
 
 	rl.mu.RLock()
-	_, staleExists := rl.clients["192.0.2.1"]
-	_, currentExists := rl.clients["192.0.2.2"]
+	_, staleExists := rl.clients["ip:192.0.2.1"]
+	_, currentExists := rl.clients["ip:192.0.2.2"]
 	rl.mu.RUnlock()
 
 	assert.False(t, staleExists)
 	assert.True(t, currentExists)
+}
+
+func TestRateLimiter_EvictsOldestClientWhenMaxClientsExceeded(t *testing.T) {
+	config := RateLimiterConfig{
+		ReadRPS:    10,
+		WriteRPS:   10,
+		Burst:      1,
+		MaxClients: 2,
+	}
+	rl := NewRateLimiter(config)
+
+	rl.getLimiter("ip:192.0.2.1", false)
+	rl.getLimiter("ip:192.0.2.2", false)
+
+	rl.mu.Lock()
+	rl.clients["ip:192.0.2.1"].lastSeen = time.Now().Add(-2 * time.Minute)
+	rl.clients["ip:192.0.2.2"].lastSeen = time.Now().Add(-time.Minute)
+	rl.mu.Unlock()
+
+	rl.getLimiter("ip:192.0.2.3", false)
+
+	rl.mu.RLock()
+	_, oldestExists := rl.clients["ip:192.0.2.1"]
+	_, secondExists := rl.clients["ip:192.0.2.2"]
+	_, newestExists := rl.clients["ip:192.0.2.3"]
+	clientCount := len(rl.clients)
+	rl.mu.RUnlock()
+
+	assert.False(t, oldestExists)
+	assert.True(t, secondExists)
+	assert.True(t, newestExists)
+	assert.Equal(t, 2, clientCount)
+}
+
+func TestRateLimiter_AllowsConcurrentAccess(t *testing.T) {
+	config := RateLimiterConfig{
+		ReadRPS:    1000,
+		WriteRPS:   1000,
+		Burst:      1000,
+		MaxClients: 100,
+	}
+	rl := NewRateLimiter(config)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = rl.getLimiter("ip:192.0.2.1", false).Allow()
+		}()
+	}
+	wg.Wait()
 }
 
 func TestDefaultRateLimiterConfig(t *testing.T) {
@@ -218,4 +314,5 @@ func TestDefaultRateLimiterConfig(t *testing.T) {
 	assert.Equal(t, 100, config.ReadRPS)
 	assert.Equal(t, 10, config.WriteRPS)
 	assert.Equal(t, 20, config.Burst)
+	assert.Equal(t, defaultRateLimiterMaxClients, config.MaxClients)
 }

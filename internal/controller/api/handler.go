@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/akam1o/arca-dns/pkg/parser"
+	"github.com/akam1o/arca-dns/pkg/util"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -30,7 +32,8 @@ type Handler struct {
 	metrics        *ctrlmetrics.ControllerMetrics
 	buildInfo      BuildInfo
 
-	artifactSignatureKey string
+	artifactSignatureKey   string
+	artifactSignatureKeyID string
 }
 
 // BuildInfo is returned by /status.
@@ -67,6 +70,11 @@ func NewHandler(store backend.ZoneStore, signingService *service.SigningService,
 // SetArtifactSignatureKey configures HMAC signing for signed-zone artifact responses.
 func (h *Handler) SetArtifactSignatureKey(key string) {
 	h.artifactSignatureKey = strings.TrimSpace(key)
+}
+
+// SetArtifactSignatureKeyID configures the key identifier emitted with artifact signatures.
+func (h *Handler) SetArtifactSignatureKeyID(keyID string) {
+	h.artifactSignatureKeyID = strings.TrimSpace(keyID)
 }
 
 // Health handles GET /health on the controller listeners.
@@ -127,11 +135,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 	var req createZoneRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Invalid request body", zap.Error(err))
-		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInvalidInput,
-			"Invalid request body",
-			map[string]interface{}{"error": "internal error"},
-		))
+		writeInvalidRequestBody(c, err)
 		return
 	}
 
@@ -149,7 +153,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": "internal error"},
+			validationFailureDetails("zone.records", err),
 		))
 		return
 	}
@@ -160,7 +164,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": "internal error"},
+			validationFailureDetails("zone", err),
 		))
 		return
 	}
@@ -190,7 +194,7 @@ func (h *Handler) CreateZone(c *gin.Context) {
 
 	// Create zone in backend
 	if err := h.store.CreateZone(c.Request.Context(), &zone); err != nil {
-		if err == model.ErrZoneAlreadyExists {
+		if errors.Is(err, model.ErrZoneAlreadyExists) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeAlreadyExists,
 				"Zone already exists",
@@ -241,7 +245,7 @@ func (h *Handler) GetZone(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -277,7 +281,7 @@ func (h *Handler) HeadZone(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.Status(http.StatusNotFound)
 			return
 		}
@@ -345,6 +349,24 @@ func rejectWildcardIfMatch(c *gin.Context, operation string) bool {
 	return true
 }
 
+func etagMismatchDetails(providedETag, currentVersion string) map[string]interface{} {
+	return map[string]interface{}{
+		"provided_etag":   providedETag,
+		"current_version": currentVersion,
+	}
+}
+
+func concurrentVersionConflictDetails(ctx context.Context, store backend.ZoneStore, zoneName, providedETag, matchedVersion string) map[string]interface{} {
+	details := map[string]interface{}{
+		"provided_etag":   providedETag,
+		"matched_version": matchedVersion,
+	}
+	if current, err := store.GetZone(ctx, zoneName); err == nil && current != nil {
+		details["current_version"] = current.Version
+	}
+	return details
+}
+
 func sha256HexAndHash8(s string) (string, string) {
 	sum := sha256.Sum256([]byte(s))
 	hexSum := hex.EncodeToString(sum[:])
@@ -360,25 +382,28 @@ func signArtifact(body string, key string) string {
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
+func (h *Handler) setArtifactSignatureHeaders(c *gin.Context, body string) {
+	if h.artifactSignatureKey == "" {
+		return
+	}
+	c.Header("X-Zone-Signature", signArtifact(body, h.artifactSignatureKey))
+	if h.artifactSignatureKeyID != "" {
+		c.Header("X-Zone-Signature-Key-ID", h.artifactSignatureKeyID)
+	}
+}
+
 // ListZones handles GET /api/v1/zones
 func (h *Handler) ListZones(c *gin.Context) {
-	// Parse pagination parameters
-	offset := 0
-	limit := 100 // Default limit
-
-	if offsetStr := c.Query("offset"); offsetStr != "" {
-		if val, err := strconv.Atoi(offsetStr); err == nil && val >= 0 {
-			offset = val
-		}
+	offset, limit, ok := parsePagination(c, 100)
+	if !ok {
+		return
+	}
+	summaryOnly, ok := parseListZonesFields(c)
+	if !ok {
+		return
 	}
 
-	if limitStr := c.Query("limit"); limitStr != "" {
-		if val, err := strconv.Atoi(limitStr); err == nil && val > 0 && val <= 1000 {
-			limit = val
-		}
-	}
-
-	if listZonesSummaryOnly(c) {
+	if summaryOnly {
 		summaries, err := backend.ListZoneSummaries(c.Request.Context(), h.store, backend.ListOptions{
 			Offset: offset,
 			Limit:  limit,
@@ -394,12 +419,8 @@ func (h *Handler) ListZones(c *gin.Context) {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"zones": summaries,
-			"pagination": gin.H{
-				"offset": offset,
-				"limit":  limit,
-				"count":  len(summaries),
-			},
+			"zones":      summaries,
+			"pagination": paginationMetadata(offset, limit, len(summaries)),
 		})
 		return
 	}
@@ -420,18 +441,82 @@ func (h *Handler) ListZones(c *gin.Context) {
 
 	// Return zones with pagination metadata
 	c.JSON(http.StatusOK, gin.H{
-		"zones": zones,
-		"pagination": gin.H{
-			"offset": offset,
-			"limit":  limit,
-			"count":  len(zones),
-		},
+		"zones":      zones,
+		"pagination": paginationMetadata(offset, limit, len(zones)),
 	})
+}
+
+func paginationMetadata(offset, limit, count int) gin.H {
+	metadata := gin.H{
+		"offset": offset,
+		"limit":  limit,
+		"count":  count,
+	}
+	if count == limit {
+		metadata["next_offset"] = offset + count
+	}
+	return metadata
 }
 
 func listZonesSummaryOnly(c *gin.Context) bool {
 	fields := strings.ToLower(strings.TrimSpace(c.Query("fields")))
 	return fields == "summary" || fields == "summaries"
+}
+
+func parseListZonesFields(c *gin.Context) (bool, bool) {
+	fields := strings.ToLower(strings.TrimSpace(c.Query("fields")))
+	switch fields {
+	case "", "full":
+		return false, true
+	case "summary", "summaries":
+		return true, true
+	default:
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Invalid fields parameter",
+			map[string]interface{}{
+				"field":   "fields",
+				"allowed": []string{"full", "summary", "summaries"},
+			},
+		))
+		return false, false
+	}
+}
+
+func parsePagination(c *gin.Context, defaultLimit int) (int, int, bool) {
+	offset := 0
+	limit := defaultLimit
+
+	if offsetStr := c.Query("offset"); offsetStr != "" {
+		val, err := strconv.Atoi(offsetStr)
+		if err != nil || val < 0 {
+			writeInvalidPagination(c, "offset", "must be a non-negative integer")
+			return 0, 0, false
+		}
+		offset = val
+	}
+
+	if limitStr := c.Query("limit"); limitStr != "" {
+		val, err := strconv.Atoi(limitStr)
+		if err != nil || val <= 0 || val > 1000 {
+			writeInvalidPagination(c, "limit", "must be an integer between 1 and 1000")
+			return 0, 0, false
+		}
+		limit = val
+	}
+
+	return offset, limit, true
+}
+
+func writeInvalidPagination(c *gin.Context, field string, reason string) {
+	c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+		model.ErrorCodeInvalidInput,
+		"Invalid pagination parameter",
+		map[string]interface{}{
+			"field":  field,
+			"reason": reason,
+		},
+	))
 }
 
 // ListZoneVersions handles GET /api/v1/zones/:name/versions
@@ -442,7 +527,7 @@ func (h *Handler) ListZoneVersions(c *gin.Context) {
 	// Ensure zone exists (consistent 404 for all backends)
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -469,20 +554,9 @@ func (h *Handler) ListZoneVersions(c *gin.Context) {
 		return
 	}
 
-	// Parse pagination parameters
-	offset := 0
-	limit := 10 // Default limit (matches OpenAPI)
-
-	if offsetStr := c.Query("offset"); offsetStr != "" {
-		if val, convErr := strconv.Atoi(offsetStr); convErr == nil && val >= 0 {
-			offset = val
-		}
-	}
-
-	if limitStr := c.Query("limit"); limitStr != "" {
-		if val, convErr := strconv.Atoi(limitStr); convErr == nil && val > 0 && val <= 1000 {
-			limit = val
-		}
+	offset, limit, paginationOK := parsePagination(c, 10)
+	if !paginationOK {
+		return
 	}
 
 	versions, err := revisionStore.ListRevisions(c.Request.Context(), name, backend.ListOptions{
@@ -501,12 +575,8 @@ func (h *Handler) ListZoneVersions(c *gin.Context) {
 
 	c.Header("ETag", formatETag(zone.Version))
 	c.JSON(http.StatusOK, gin.H{
-		"versions": versions,
-		"pagination": gin.H{
-			"offset": offset,
-			"limit":  limit,
-			"count":  len(versions),
-		},
+		"versions":   versions,
+		"pagination": paginationMetadata(offset, limit, len(versions)),
 	})
 }
 
@@ -515,11 +585,22 @@ func (h *Handler) ListZoneVersions(c *gin.Context) {
 func (h *Handler) GetZoneRevision(c *gin.Context) {
 	name := c.Param("name")
 	version := c.Param("version")
+	if !isValidZoneVersionParam(version) {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Invalid zone version",
+			map[string]interface{}{
+				"field":  "version",
+				"format": "v<ULID> or v<serial>-<hash8>",
+			},
+		))
+		return
+	}
 
 	// Ensure zone exists (consistent 404 for all backends)
 	_, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -548,7 +629,7 @@ func (h *Handler) GetZoneRevision(c *gin.Context) {
 
 	rev, err := revisionStore.GetRevision(c.Request.Context(), name, version)
 	if err != nil {
-		if err == model.ErrVersionNotFound {
+		if errors.Is(err, model.ErrVersionNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone version not found",
@@ -569,6 +650,57 @@ func (h *Handler) GetZoneRevision(c *gin.Context) {
 	c.JSON(http.StatusOK, rev)
 }
 
+func isValidZoneVersionParam(version string) bool {
+	return isControllerZoneVersion(version) || isLegacyZoneVersion(version)
+}
+
+func isControllerZoneVersion(version string) bool {
+	const controllerZoneVersionLength = 27
+	if len(version) != controllerZoneVersionLength || version[0] != 'v' {
+		return false
+	}
+	for _, r := range version[1:] {
+		if !isCrockfordBase32Upper(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isLegacyZoneVersion(version string) bool {
+	if len(version) < len("v1-00000000") || version[0] != 'v' {
+		return false
+	}
+	serial, hash8, ok := strings.Cut(version[1:], "-")
+	if !ok || serial == "" || len(hash8) != 8 {
+		return false
+	}
+	for _, r := range serial {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	for _, r := range hash8 {
+		if !isLowerHex(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isCrockfordBase32Upper(r rune) bool {
+	return (r >= '0' && r <= '9') ||
+		(r >= 'A' && r <= 'H') ||
+		(r >= 'J' && r <= 'K') ||
+		(r >= 'M' && r <= 'N') ||
+		(r >= 'P' && r <= 'T') ||
+		(r >= 'V' && r <= 'Z')
+}
+
+func isLowerHex(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+}
+
 // UpdateZone handles PUT /api/v1/zones/:name
 func (h *Handler) UpdateZone(c *gin.Context) {
 	name := model.NormalizeZoneName(c.Param("name"))
@@ -576,11 +708,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	var req updateZoneRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Invalid request body", zap.Error(err))
-		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInvalidInput,
-			"Invalid request body",
-			map[string]interface{}{"error": "internal error"},
-		))
+		writeInvalidRequestBody(c, err)
 		return
 	}
 
@@ -618,7 +746,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 	var current *model.Zone
 	current, err := h.store.GetZone(c.Request.Context(), zone.Name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -639,7 +767,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",
-			map[string]interface{}{"expected_version": ifMatch},
+			etagMismatchDetails(ifMatch, current.Version),
 		))
 		return
 	}
@@ -653,7 +781,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": "internal error"},
+			validationFailureDetails("zone.records", err),
 		))
 		return
 	}
@@ -664,7 +792,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": "internal error"},
+			validationFailureDetails("zone", err),
 		))
 		return
 	}
@@ -700,7 +828,7 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 
 	// Update zone in backend
 	if err := h.store.UpdateZone(c.Request.Context(), &zone, expectedVersion); err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -708,11 +836,11 @@ func (h *Handler) UpdateZone(c *gin.Context) {
 			))
 			return
 		}
-		if err == model.ErrConflict {
+		if errors.Is(err, model.ErrConflict) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
 				"Zone version mismatch (optimistic lock failure)",
-				map[string]interface{}{"expected_version": ifMatch},
+				concurrentVersionConflictDetails(c.Request.Context(), h.store, zone.Name, ifMatch, expectedVersion),
 			))
 			return
 		}
@@ -780,15 +908,9 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 
 	current, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			if cleanupErr := h.cleanupDeletedZone(c.Request.Context(), name); cleanupErr != nil {
-				h.logger.Error("Failed to clean up DNSSEC state for missing zone", zap.String("zone", name), zap.Error(cleanupErr))
-				c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-					model.ErrorCodeInternal,
-					"Failed to delete zone",
-					map[string]interface{}{"error": "internal error"},
-				))
-				return
+				h.logger.Warn("Failed to clean up DNSSEC state for missing zone", zap.String("zone", name), zap.Error(cleanupErr))
 			}
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
@@ -810,14 +932,14 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",
-			map[string]interface{}{"expected_version": ifMatch},
+			etagMismatchDetails(ifMatch, current.Version),
 		))
 		return
 	}
 
 	err = h.deleteZoneWithVersion(c.Request.Context(), name, current.Version)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -833,11 +955,11 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 			))
 			return
 		}
-		if err == model.ErrConflict {
+		if errors.Is(err, model.ErrConflict) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
 				"Zone version mismatch (optimistic lock failure)",
-				map[string]interface{}{"expected_version": ifMatch},
+				concurrentVersionConflictDetails(c.Request.Context(), h.store, normalizedName, ifMatch, current.Version),
 			))
 			return
 		}
@@ -851,13 +973,7 @@ func (h *Handler) DeleteZone(c *gin.Context) {
 	}
 
 	if cleanupErr := h.cleanupDeletedZone(c.Request.Context(), name); cleanupErr != nil {
-		h.logger.Error("Failed to clean up DNSSEC state for deleted zone", zap.String("zone", name), zap.Error(cleanupErr))
-		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInternal,
-			"Failed to delete zone",
-			map[string]interface{}{"error": "internal error"},
-		))
-		return
+		h.logger.Warn("Failed to clean up DNSSEC state for deleted zone", zap.String("zone", name), zap.Error(cleanupErr))
 	}
 
 	h.logger.Info("Zone deleted", zap.String("zone", name))
@@ -887,7 +1003,7 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -906,12 +1022,7 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 
 	signedZone, err := h.signedZoneFile(c.Request.Context(), name, zone)
 	if err != nil {
-		h.logger.Error("Failed to get signed zone", zap.String("zone", name), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInternal,
-			"Failed to retrieve signed zone",
-			map[string]interface{}{"error": "signing failed"},
-		))
+		h.writeSignedZoneError(c, name, "Failed to retrieve signed zone", err)
 		return
 	}
 
@@ -922,9 +1033,7 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 	c.Header("X-Zone-Serial", fmt.Sprintf("%d", signedZone.serial))
 	c.Header("X-Zone-Hash", hashHex)
 	c.Header("X-Zone-Hash8", hash8)
-	if h.artifactSignatureKey != "" {
-		c.Header("X-Zone-Signature", signArtifact(signedZone.zoneFile, h.artifactSignatureKey))
-	}
+	h.setArtifactSignatureHeaders(c, signedZone.zoneFile)
 
 	if match := c.GetHeader("If-None-Match"); match != "" && etagMatches(match, hashHex) {
 		c.Status(http.StatusNotModified)
@@ -932,7 +1041,7 @@ func (h *Handler) GetSignedZone(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone.signed", strings.TrimSuffix(signedZone.zoneName, ".")))
+	c.Header("Content-Disposition", signedZoneContentDisposition(signedZone.zoneName))
 
 	h.logger.Info("Signed zone file served", zap.String("zone", name), zap.String("version", signedZone.version))
 	c.String(http.StatusOK, signedZone.zoneFile)
@@ -944,7 +1053,7 @@ func (h *Handler) HeadSignedZone(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.Status(http.StatusNotFound)
 			return
 		}
@@ -956,7 +1065,7 @@ func (h *Handler) HeadSignedZone(c *gin.Context) {
 	signedZone, err := h.signedZoneFile(c.Request.Context(), name, zone)
 	if err != nil {
 		h.logger.Error("Failed to get signed zone", zap.String("zone", name), zap.Error(err))
-		c.Status(http.StatusInternalServerError)
+		c.Status(signedZoneErrorStatus(err))
 		return
 	}
 
@@ -966,9 +1075,7 @@ func (h *Handler) HeadSignedZone(c *gin.Context) {
 	c.Header("X-Zone-Serial", fmt.Sprintf("%d", signedZone.serial))
 	c.Header("X-Zone-Hash", hashHex)
 	c.Header("X-Zone-Hash8", hash8)
-	if h.artifactSignatureKey != "" {
-		c.Header("X-Zone-Signature", signArtifact(signedZone.zoneFile, h.artifactSignatureKey))
-	}
+	h.setArtifactSignatureHeaders(c, signedZone.zoneFile)
 
 	if match := c.GetHeader("If-None-Match"); match != "" && etagMatches(match, hashHex) {
 		c.Status(http.StatusNotModified)
@@ -976,7 +1083,7 @@ func (h *Handler) HeadSignedZone(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zone.signed", strings.TrimSuffix(signedZone.zoneName, ".")))
+	c.Header("Content-Disposition", signedZoneContentDisposition(signedZone.zoneName))
 	c.Header("Content-Length", strconv.Itoa(len(signedZone.zoneFile)))
 	c.Status(http.StatusOK)
 }
@@ -988,7 +1095,7 @@ func (h *Handler) GetSignedZoneMetadata(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -1007,12 +1114,7 @@ func (h *Handler) GetSignedZoneMetadata(c *gin.Context) {
 
 	signedZone, err := h.signedZoneFile(c.Request.Context(), name, zone)
 	if err != nil {
-		h.logger.Error("Failed to get signed zone for metadata", zap.String("zone", name), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInternal,
-			"Failed to retrieve signed zone metadata",
-			map[string]interface{}{"error": "signing failed"},
-		))
+		h.writeSignedZoneError(c, name, "Failed to retrieve signed zone metadata", err)
 		return
 	}
 
@@ -1045,9 +1147,14 @@ type signedZoneResult struct {
 	dnssecConfig *model.DNSSECConfig
 }
 
+func signedZoneContentDisposition(zoneName string) string {
+	filename := util.SafeZoneFilename(zoneName) + ".zone.signed"
+	return mime.FormatMediaType("attachment", map[string]string{"filename": filename})
+}
+
 func (h *Handler) signedZoneFile(ctx context.Context, name string, zone *model.Zone) (*signedZoneResult, error) {
 	if h.signingService != nil {
-		artifact, err := h.signingService.GetSignedZone(ctx, name)
+		artifact, err := h.signingService.GetPublishedSignedZone(ctx, name)
 		if err != nil {
 			return nil, err
 		}
@@ -1073,6 +1180,40 @@ func (h *Handler) signedZoneFile(ctx context.Context, name string, zone *model.Z
 	}, nil
 }
 
+func (h *Handler) writeSignedZoneError(c *gin.Context, name string, message string, err error) {
+	status := signedZoneErrorStatus(err)
+	if status == http.StatusServiceUnavailable {
+		h.logger.Warn("Signed zone artifact is unavailable", zap.String("zone", name), zap.Error(err))
+		c.JSON(status, model.NewAPIErrorWithDetails(
+			model.ErrorCodeUnavailable,
+			message,
+			map[string]interface{}{"error": signedZoneErrorDetail(err)},
+		))
+		return
+	}
+
+	h.logger.Error(message, zap.String("zone", name), zap.Error(err))
+	c.JSON(status, model.NewAPIErrorWithDetails(
+		model.ErrorCodeInternal,
+		message,
+		map[string]interface{}{"error": "signing failed"},
+	))
+}
+
+func signedZoneErrorStatus(err error) int {
+	if errors.Is(err, service.ErrSignedArtifactUnavailable) || errors.Is(err, service.ErrSignedArtifactExpired) {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusInternalServerError
+}
+
+func signedZoneErrorDetail(err error) string {
+	if errors.Is(err, service.ErrSignedArtifactExpired) {
+		return "signed artifact expired"
+	}
+	return "signed artifact unavailable"
+}
+
 func (h *Handler) prepareSignedZoneCreate(c *gin.Context, zone *model.Zone, operation string) (*service.SignedZoneWrite, bool) {
 	if h.signingService == nil {
 		return nil, true
@@ -1095,7 +1236,7 @@ func (h *Handler) ensureZoneAbsentBeforeSigning(c *gin.Context, name string) boo
 			map[string]interface{}{"zone": name},
 		))
 		return false
-	} else if err != model.ErrZoneNotFound {
+	} else if !errors.Is(err, model.ErrZoneNotFound) {
 		h.logger.Error("Failed to check zone before signing",
 			zap.String("zone", name),
 			zap.Error(err))
@@ -1211,7 +1352,7 @@ func (h *Handler) GetDSRecords(c *gin.Context) {
 	// Check if zone exists
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",

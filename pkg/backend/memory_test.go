@@ -69,6 +69,46 @@ func TestMemoryBackend_GetZone_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrZoneNotFound)
 }
 
+func TestMemoryBackend_HealthCheck(t *testing.T) {
+	backend := NewMemoryBackend()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	assert.NoError(t, backend.HealthCheck(ctx))
+
+	cancel()
+	assert.ErrorIs(t, backend.HealthCheck(ctx), context.Canceled)
+}
+
+func TestMemoryBackend_CountZones(t *testing.T) {
+	backend := NewMemoryBackend()
+	ctx := context.Background()
+
+	count, err := backend.CountZones(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+
+	require.NoError(t, backend.CreateZone(ctx, &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: testZoneRecords("example.com."),
+	}))
+	require.NoError(t, backend.CreateZone(ctx, &model.Zone{
+		Name:    "example.net.",
+		SOA:     model.DefaultSOA("ns1.example.net.", "admin.example.net."),
+		Records: testZoneRecords("example.net."),
+	}))
+
+	count, err = backend.CountZones(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	count, err = backend.CountZones(cancelCtx)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 0, count)
+}
+
 func TestMemoryBackend_GetZoneCopiesRecordPriority(t *testing.T) {
 	backend := NewMemoryBackend()
 	ctx := context.Background()
@@ -92,6 +132,48 @@ func TestMemoryBackend_GetZoneCopiesRecordPriority(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, retrievedAgain.Records[1].Priority)
 	assert.Equal(t, uint16(10), *retrievedAgain.Records[1].Priority)
+}
+
+func TestMemoryBackend_UpdateDNSSECMetadata(t *testing.T) {
+	backend := NewMemoryBackend()
+	ctx := context.Background()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: testZoneRecords("example.com."),
+	}
+	require.NoError(t, backend.CreateZone(ctx, zone))
+	created, err := backend.GetZone(ctx, zone.Name)
+	require.NoError(t, err)
+
+	expiration := time.Now().UTC().Add(time.Hour)
+	dnssec := &model.DNSSECConfig{
+		Enabled:             true,
+		Algorithm:           13,
+		KSKKeyTag:           12345,
+		ZSKKeyTag:           54321,
+		SignatureExpiration: &expiration,
+	}
+
+	require.NoError(t, backend.UpdateDNSSECMetadata(ctx, zone.Name, dnssec))
+	dnssec.KSKKeyTag = 999
+	expiration = expiration.Add(time.Hour)
+
+	updated, err := backend.GetZone(ctx, zone.Name)
+	require.NoError(t, err)
+	require.NotNil(t, updated.DNSSEC)
+	require.NotNil(t, updated.DNSSEC.SignatureExpiration)
+	assert.Equal(t, uint16(12345), updated.DNSSEC.KSKKeyTag)
+	assert.False(t, updated.UpdatedAt.Before(created.UpdatedAt))
+	assert.False(t, updated.DNSSEC.SignatureExpiration.Equal(expiration))
+}
+
+func TestMemoryBackend_UpdateDNSSECMetadata_NotFound(t *testing.T) {
+	backend := NewMemoryBackend()
+
+	err := backend.UpdateDNSSECMetadata(context.Background(), "missing.example.com.", &model.DNSSECConfig{Enabled: true})
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
 }
 
 func TestMemoryBackend_UpdateZone(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -57,6 +58,197 @@ func TestFileManager_WriteZoneFile(t *testing.T) {
 	}
 }
 
+func TestFileManager_WriteZoneFileUsesConfiguredMinFreeBytes(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManagerWithMinFreeBytes(tmpDir, 3, 1<<62, logger)
+
+	err := fm.WriteZoneFile("example.com.", "$ORIGIN example.com.\n")
+	if err == nil {
+		t.Fatal("WriteZoneFile should fail when configured free-space threshold is unavailable")
+	}
+	if !strings.Contains(err.Error(), "insufficient disk space") {
+		t.Fatalf("expected insufficient disk space error, got %v", err)
+	}
+	if fm.ZoneExists("example.com.") {
+		t.Fatal("zone file should not be published after disk-space failure")
+	}
+}
+
+func TestFileManager_WriteZoneFileDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	targetPath := fm.GetZonePath(zoneName)
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath+".tmp"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	content := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	if err := fm.WriteZoneFile(zoneName, content); err != nil {
+		t.Fatalf("WriteZoneFile failed: %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(targetPath + ".tmp")
+	if err != nil {
+		t.Fatalf("predictable temp symlink should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+}
+
+func TestFileManager_ReadZoneFileRejectsSymlinkedZoneFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	targetPath := fm.GetZonePath(zoneName)
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	if err := os.WriteFile(sentinelPath, []byte("secret"), 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err = fm.ReadZoneFile(zoneName)
+	if err == nil {
+		t.Fatal("ReadZoneFile should reject symlinked zone file")
+	}
+	if !strings.Contains(err.Error(), "zone file") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink zone file error, got %v", err)
+	}
+	if fm.ZoneExists(zoneName) {
+		t.Fatal("ZoneExists should not treat symlinked zone file as an active zone")
+	}
+}
+
+func TestFileManager_ReadZoneFileRejectsOversizedZoneFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	file, err := os.OpenFile(fm.GetZonePath(zoneName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		t.Fatalf("failed to create oversized zone file: %v", err)
+	}
+	if err := file.Truncate(maxSyncFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("failed to size oversized zone file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("failed to close oversized zone file: %v", err)
+	}
+
+	_, err = fm.ReadZoneFile(zoneName)
+	if err == nil {
+		t.Fatal("ReadZoneFile should reject oversized zone file")
+	}
+	if !strings.Contains(err.Error(), "zone file") || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("expected oversized zone file error, got %v", err)
+	}
+}
+
+func TestFileManager_WriteZoneFileRejectsSymlinkedExistingZoneFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	targetPath := fm.GetZonePath(zoneName)
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("secret")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	content := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	err = fm.WriteZoneFile(zoneName, content)
+	if err == nil {
+		t.Fatal("WriteZoneFile should reject symlinked existing zone file")
+	}
+	if !strings.Contains(err.Error(), "active zone file") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink active zone file error, got %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(targetPath)
+	if err != nil {
+		t.Fatalf("symlinked target should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected target path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+
+	backups, err := filepath.Glob(ZoneBackupPattern(tmpDir, zoneName))
+	if err != nil {
+		t.Fatalf("backup glob failed: %v", err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("symlinked zone file should not be backed up, got %v", backups)
+	}
+}
+
 func TestFileManager_WriteZoneFileManagedIndexFailureDoesNotPublish(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
 	if err != nil {
@@ -85,6 +277,190 @@ func TestFileManager_WriteZoneFileManagedIndexFailureDoesNotPublish(t *testing.T
 	}
 	if _, err := os.Stat(fm.GetZonePath(zoneName) + ".tmp"); !os.IsNotExist(err) {
 		t.Fatalf("temporary zone file should be removed, stat err=%v", err)
+	}
+	tempPattern := filepath.Join(tmpDir, "."+filepath.Base(fm.GetZonePath(zoneName))+".*.tmp")
+	matches, globErr := filepath.Glob(tempPattern)
+	if globErr != nil {
+		t.Fatalf("temporary zone glob failed: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary zone files should be removed, got %v", matches)
+	}
+}
+
+func TestFileManager_WriteZoneFileDoesNotFollowManagedIndexTempSymlink(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	indexPath := fm.managedZonesIndexPath()
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, indexPath+".tmp"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	zoneName := "example.com."
+	content := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	if err := fm.WriteZoneFile(zoneName, content); err != nil {
+		t.Fatalf("WriteZoneFile failed: %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(indexPath + ".tmp")
+	if err != nil {
+		t.Fatalf("predictable managed index temp symlink should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable managed index temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+}
+
+func TestFileManager_ReadManagedZonesRejectsSymlinkedIndex(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	realIndexPath := filepath.Join(tmpDir, "managed-zones.real.json")
+	if err := os.WriteFile(realIndexPath, []byte(`{"entries":[{"name":"example.com.","file":"example.com"}]}`), 0600); err != nil {
+		t.Fatalf("failed to write real managed index: %v", err)
+	}
+	if err := os.Symlink(realIndexPath, fm.managedZonesIndexPath()); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err = fm.readManagedZones()
+	if err == nil {
+		t.Fatal("readManagedZones should reject symlinked managed zone index")
+	}
+	if !strings.Contains(err.Error(), "managed zone index") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink managed zone index error, got %v", err)
+	}
+}
+
+func TestFileManager_ReadManagedZonesRejectsOversizedIndex(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	file, err := os.OpenFile(fm.managedZonesIndexPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		t.Fatalf("failed to create oversized managed index: %v", err)
+	}
+	if err := file.Truncate(maxSyncFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("failed to size oversized managed index: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("failed to close oversized managed index: %v", err)
+	}
+
+	_, err = fm.readManagedZones()
+	if err == nil {
+		t.Fatal("readManagedZones should reject oversized managed zone index")
+	}
+	if !strings.Contains(err.Error(), "managed zone index") || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("expected oversized managed zone index error, got %v", err)
+	}
+}
+
+func TestFileManager_WriteZoneFileRollbackDoesNotFollowPredictableSymlink(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	original := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	replacement := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122802 3600 1800 604800 86400`
+	if err := fm.WriteZoneFile(zoneName, original); err != nil {
+		t.Fatalf("WriteZoneFile failed: %v", err)
+	}
+
+	targetPath := fm.GetZonePath(zoneName)
+	sentinelPath := filepath.Join(tmpDir, "rollback-sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath+".rollback"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := os.Remove(fm.managedZonesIndexPath()); err != nil {
+		t.Fatalf("failed to remove managed index: %v", err)
+	}
+	if err := os.Mkdir(fm.managedZonesIndexPath(), 0755); err != nil {
+		t.Fatalf("failed to block managed index path: %v", err)
+	}
+
+	if err := fm.WriteZoneFile(zoneName, replacement); err == nil {
+		t.Fatal("WriteZoneFile should fail when managed index read is blocked")
+	}
+
+	current, err := fm.ReadZoneFile(zoneName)
+	if err != nil {
+		t.Fatalf("ReadZoneFile failed: %v", err)
+	}
+	if current != original {
+		t.Fatalf("current zone file changed after rollback failure path")
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(targetPath + ".rollback")
+	if err != nil {
+		t.Fatalf("predictable rollback symlink should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable rollback path to remain a symlink, mode=%v", linkInfo.Mode())
 	}
 }
 
@@ -135,6 +511,69 @@ func TestFileManager_Backup(t *testing.T) {
 
 	if currentContent != content2 {
 		t.Errorf("Current content should be content2")
+	}
+}
+
+func TestFileManager_BackupDoesNotFollowPredictableSymlink(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	zoneName := "example.com."
+	content := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	if err := fm.WriteZoneFile(zoneName, content); err != nil {
+		t.Fatalf("WriteZoneFile failed: %v", err)
+	}
+
+	zonePath := fm.GetZonePath(zoneName)
+	sentinelPath := filepath.Join(tmpDir, "backup-sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	predictableBackupPath := zonePath + ".backup.123456789"
+	if err := os.Symlink(sentinelPath, predictableBackupPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	backupPath, err := fm.backupFile(zonePath)
+	if err != nil {
+		t.Fatalf("backupFile failed: %v", err)
+	}
+	if backupPath == predictableBackupPath {
+		t.Fatalf("backup path used predictable symlink path")
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(predictableBackupPath)
+	if err != nil {
+		t.Fatalf("predictable backup symlink should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable backup path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+
+	backupContent, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("failed to read backup: %v", err)
+	}
+	if string(backupContent) != content {
+		t.Fatalf("backup content changed")
 	}
 }
 
@@ -367,5 +806,144 @@ func TestFileManager_EnsureDirectory(t *testing.T) {
 	testFile := filepath.Join(subDir, "test.txt")
 	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
 		t.Errorf("Directory should be writable: %v", err)
+	}
+}
+
+func TestFileManager_EnsureDirectoryRejectsSymlinkedZoneDirectory(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	targetDir := filepath.Join(tmpDir, "target")
+	zoneDir := filepath.Join(tmpDir, "zones")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("Failed to create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, zoneDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(zoneDir, 3, logger)
+	err = fm.EnsureDirectory()
+	if err == nil {
+		t.Fatal("EnsureDirectory should reject symlinked zone directory")
+	}
+	if !strings.Contains(err.Error(), "zone directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("EnsureDirectory error = %v, want symlinked zone directory error", err)
+	}
+
+	matches, globErr := filepath.Glob(filepath.Join(targetDir, ".write_test-*"))
+	if globErr != nil {
+		t.Fatalf("Failed to inspect target dir: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("write test should not run inside symlink target, got %v", matches)
+	}
+}
+
+func TestFileManager_WriteZoneFileRejectsSymlinkedZoneDirectory(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	targetDir := filepath.Join(tmpDir, "target")
+	zoneDir := filepath.Join(tmpDir, "zones")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("Failed to create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, zoneDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(zoneDir, 3, logger)
+	err = fm.WriteZoneFile("example.com.", "$ORIGIN example.com.\n")
+	if err == nil {
+		t.Fatal("WriteZoneFile should reject symlinked zone directory")
+	}
+	if !strings.Contains(err.Error(), "zone directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("WriteZoneFile error = %v, want symlinked zone directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "example.com.zone")); !os.IsNotExist(statErr) {
+		t.Fatalf("zone file should not be written inside symlink target, stat err=%v", statErr)
+	}
+}
+
+func TestFileManager_DeleteZoneFileRejectsSymlinkedZoneDirectory(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	targetDir := filepath.Join(tmpDir, "target")
+	zoneDir := filepath.Join(tmpDir, "zones")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("Failed to create target dir: %v", err)
+	}
+	targetZonePath := filepath.Join(targetDir, "example.com.zone")
+	if err := os.WriteFile(targetZonePath, []byte("keep"), 0644); err != nil {
+		t.Fatalf("Failed to write target zone file: %v", err)
+	}
+	if err := os.Symlink(targetDir, zoneDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(zoneDir, 3, logger)
+	err = fm.DeleteZoneFile("example.com.")
+	if err == nil {
+		t.Fatal("DeleteZoneFile should reject symlinked zone directory")
+	}
+	if !strings.Contains(err.Error(), "zone directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("DeleteZoneFile error = %v, want symlinked zone directory error", err)
+	}
+	if _, statErr := os.Stat(targetZonePath); statErr != nil {
+		t.Fatalf("zone file in symlink target should remain, stat err=%v", statErr)
+	}
+}
+
+func TestFileManager_EnsureDirectoryDoesNotFollowWriteTestSymlink(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "arca-dns-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	if err := os.WriteFile(sentinelPath, []byte("unchanged"), 0600); err != nil {
+		t.Fatalf("Failed to write sentinel: %v", err)
+	}
+
+	writeTestPath := filepath.Join(tmpDir, ".write_test")
+	if err := os.Symlink(sentinelPath, writeTestPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	fm := NewFileManager(tmpDir, 3, logger)
+	if err := fm.EnsureDirectory(); err != nil {
+		t.Fatalf("EnsureDirectory failed: %v", err)
+	}
+
+	sentinelData, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("Failed to read sentinel: %v", err)
+	}
+	if string(sentinelData) != "unchanged" {
+		t.Fatalf("sentinel was modified: %q", string(sentinelData))
+	}
+
+	info, err := os.Lstat(writeTestPath)
+	if err != nil {
+		t.Fatalf("write test symlink should remain: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("write test path should remain a symlink")
 	}
 }

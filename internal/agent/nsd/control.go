@@ -3,14 +3,18 @@ package nsd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/akam1o/arca-dns/internal/agent/commandpath"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/akam1o/arca-dns/pkg/util"
@@ -23,12 +27,28 @@ type Controller struct {
 	logger *zap.Logger
 }
 
+const maxManagedZoneConfigFileSize = 4 * 1024 * 1024
+
 // NewController creates a new NSD controller.
 func NewController(cfg config.NSDConfig, logger *zap.Logger) *Controller {
 	return &Controller{
 		config: cfg,
 		logger: logger,
 	}
+}
+
+func (c *Controller) validatedControlPath() (string, error) {
+	if err := commandpath.Validate("nsd.control_path", c.config.ControlPath); err != nil {
+		return "", err
+	}
+	return c.config.ControlPath, nil
+}
+
+func (c *Controller) validatedCheckzonePath() (string, error) {
+	if err := commandpath.Validate("nsd.checkzone_path", c.config.CheckzonePath); err != nil {
+		return "", err
+	}
+	return c.config.CheckzonePath, nil
 }
 
 // EnsureZone ensures a managed NSD zone stanza exists, then reconfigures NSD if needed.
@@ -38,7 +58,10 @@ func (c *Controller) EnsureZone(zoneName string) error {
 		return nil
 	}
 
-	normalized := model.NormalizeZoneName(zoneName)
+	normalized, err := normalizeZoneName(zoneName)
+	if err != nil {
+		return err
+	}
 	changed, err := c.updateManagedZoneConfig(func(zones map[string]struct{}) {
 		zones[normalized] = struct{}{}
 	})
@@ -62,7 +85,10 @@ func (c *Controller) DeleteZone(zoneName string) error {
 		return nil
 	}
 
-	normalized := model.NormalizeZoneName(zoneName)
+	normalized, err := normalizeZoneName(zoneName)
+	if err != nil {
+		return err
+	}
 	changed, err := c.updateManagedZoneConfig(func(zones map[string]struct{}) {
 		delete(zones, normalized)
 	})
@@ -90,10 +116,19 @@ func (c *Controller) ReloadZone(zoneName string) error {
 	c.logger.Info("Reloading zone in NSD",
 		zap.String("zone", zoneName))
 
+	normalized, err := normalizeZoneName(zoneName)
+	if err != nil {
+		return err
+	}
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.ReloadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "reload", zoneName)
+	cmd := exec.CommandContext(ctx, controlPath, "reload", normalized)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -104,7 +139,7 @@ func (c *Controller) ReloadZone(zoneName string) error {
 	}
 
 	c.logger.Info("Zone reloaded successfully in NSD",
-		zap.String("zone", zoneName),
+		zap.String("zone", normalized),
 		zap.String("output", stdout.String()))
 
 	return nil
@@ -119,10 +154,15 @@ func (c *Controller) Reconfig() error {
 
 	c.logger.Info("Reconfiguring NSD")
 
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.ReloadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "reconfig")
+	cmd := exec.CommandContext(ctx, controlPath, "reconfig")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -148,10 +188,19 @@ func (c *Controller) NotifyZone(zoneName string) error {
 	c.logger.Info("Sending NOTIFY for zone",
 		zap.String("zone", zoneName))
 
+	normalized, err := normalizeZoneName(zoneName)
+	if err != nil {
+		return err
+	}
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.ReloadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "notify", zoneName)
+	cmd := exec.CommandContext(ctx, controlPath, "notify", normalized)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -162,7 +211,7 @@ func (c *Controller) NotifyZone(zoneName string) error {
 	}
 
 	c.logger.Info("NOTIFY sent successfully",
-		zap.String("zone", zoneName),
+		zap.String("zone", normalized),
 		zap.String("output", stdout.String()))
 
 	return nil
@@ -177,10 +226,15 @@ func (c *Controller) Reload() error {
 
 	c.logger.Info("Reloading all zones in NSD")
 
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.ReloadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "reload")
+	cmd := exec.CommandContext(ctx, controlPath, "reload")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -208,10 +262,19 @@ func (c *Controller) CheckZone(zoneName string, zoneFile string) error {
 		zap.String("zone", zoneName),
 		zap.String("file", zoneFile))
 
+	normalized, err := normalizeZoneName(zoneName)
+	if err != nil {
+		return err
+	}
+	checkzonePath, err := c.validatedCheckzonePath()
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.CheckzonePath, zoneName, zoneFile)
+	cmd := exec.CommandContext(ctx, checkzonePath, normalized, zoneFile)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -223,7 +286,7 @@ func (c *Controller) CheckZone(zoneName string, zoneFile string) error {
 	}
 
 	c.logger.Debug("Zone file is valid",
-		zap.String("zone", zoneName),
+		zap.String("zone", normalized),
 		zap.String("output", stdout.String()))
 
 	return nil
@@ -235,10 +298,15 @@ func (c *Controller) Status() (string, error) {
 		return "disabled", nil
 	}
 
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		return "", err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "status")
+	cmd := exec.CommandContext(ctx, controlPath, "status")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -257,10 +325,16 @@ func (c *Controller) IsRunning() bool {
 		return false
 	}
 
+	controlPath, err := c.validatedControlPath()
+	if err != nil {
+		c.logger.Debug("Invalid NSD control path", zap.Error(err))
+		return false
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.ControlPath, "status")
+	cmd := exec.CommandContext(ctx, controlPath, "status")
 
 	if err := cmd.Run(); err != nil {
 		c.logger.Debug("NSD is not running or not responsive",
@@ -273,6 +347,13 @@ func (c *Controller) IsRunning() bool {
 
 func (c *Controller) updateManagedZoneConfig(mutator func(map[string]struct{})) (bool, error) {
 	path := c.zoneConfigPath()
+	if err := config.ValidateNSDRenderedConfigPath("nsd.zone_config_path", path); err != nil {
+		return false, err
+	}
+	if err := config.ValidateNSDRenderedConfigPath("nsd.zone_directory", c.config.ZoneDirectory); err != nil {
+		return false, err
+	}
+
 	existing, zones, err := readManagedZoneConfig(path)
 	if err != nil {
 		return false, err
@@ -300,7 +381,11 @@ func (c *Controller) zoneConfigPath() string {
 func readManagedZoneConfig(path string) (string, map[string]struct{}, error) {
 	zones := make(map[string]struct{})
 
-	data, err := os.ReadFile(path)
+	if err := validateConfigDirectoryIfExistsForPath(path); err != nil {
+		return "", nil, err
+	}
+
+	data, err := readRegularManagedZoneConfigFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", zones, nil
@@ -319,10 +404,67 @@ func readManagedZoneConfig(path string) (string, map[string]struct{}, error) {
 		if zoneName == "" {
 			continue
 		}
-		zones[model.NormalizeZoneName(zoneName)] = struct{}{}
+		normalized, err := normalizeZoneName(zoneName)
+		if err != nil {
+			return "", nil, fmt.Errorf("invalid NSD managed zone marker: %w", err)
+		}
+		zones[normalized] = struct{}{}
 	}
 
 	return existing, zones, nil
+}
+
+func readRegularManagedZoneConfigFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("NSD managed zone config must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("NSD managed zone config must be a regular file: %s", path)
+	}
+	if info.Size() > maxManagedZoneConfigFileSize {
+		return nil, fmt.Errorf("NSD managed zone config exceeds maximum size of %d bytes: %s", maxManagedZoneConfigFileSize, path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("NSD managed zone config changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("NSD managed zone config must be a regular file: %s", path)
+	}
+	if openedInfo.Size() > maxManagedZoneConfigFileSize {
+		return nil, fmt.Errorf("NSD managed zone config exceeds maximum size of %d bytes: %s", maxManagedZoneConfigFileSize, path)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxManagedZoneConfigFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxManagedZoneConfigFileSize {
+		return nil, fmt.Errorf("NSD managed zone config exceeds maximum size of %d bytes: %s", maxManagedZoneConfigFileSize, path)
+	}
+	return data, nil
+}
+
+func normalizeZoneName(zoneName string) (string, error) {
+	normalized := model.NormalizeZoneName(zoneName)
+	if err := model.ValidateZoneName(normalized); err != nil {
+		return "", fmt.Errorf("invalid zone name %q: %w", zoneName, err)
+	}
+	return normalized, nil
 }
 
 func renderManagedZoneConfig(configPath, zoneDir string, zones map[string]struct{}) string {
@@ -349,17 +491,119 @@ func renderManagedZoneConfig(configPath, zoneDir string, zones map[string]struct
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
+	dirPath := filepath.Dir(path)
+	if err := ensureConfigDirectoryForPath(path); err != nil {
+		return err
 	}
 
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, perm); err != nil {
+	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
+	tmpPath := tmp.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
 		return err
+	}
+	if n, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	} else if n != len(data) {
+		_ = tmp.Close()
+		return io.ErrShortWrite
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	cleanupTmp = false
+	if err := syncDir(dirPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureConfigDirectoryForPath(path string) error {
+	dirPath := filepath.Dir(path)
+	existed := true
+	if err := validateExistingConfigDirectory(dirPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat config directory: %w", err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := validateExistingConfigDirectory(dirPath); err != nil {
+		return fmt.Errorf("stat config directory: %w", err)
+	}
+	if !existed {
+		if err := syncDir(filepath.Dir(dirPath)); err != nil {
+			return fmt.Errorf("fsync config directory parent: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func validateConfigDirectoryIfExistsForPath(path string) error {
+	dirPath := filepath.Dir(path)
+	if err := validateExistingConfigDirectory(dirPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat config directory: %w", err)
+	}
+	return nil
+}
+
+func validateExistingConfigDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("config directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("config path must be a directory: %s", path)
+	}
+	return nil
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
+			syncErr = nil
+		}
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	if closeErr != nil {
+		return closeErr
 	}
 	return nil
 }

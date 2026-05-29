@@ -11,6 +11,31 @@ import (
 	"go.uber.org/zap"
 )
 
+func TestMain(m *testing.M) {
+	if os.Getenv("ARCA_DNS_NSD_CONTROL_HELPER") == "1" {
+		runNSDControlHelper()
+		return
+	}
+	os.Exit(m.Run())
+}
+
+func runNSDControlHelper() {
+	logPath := os.Getenv("ARCA_DNS_NSD_CONTROL_LOG")
+	if logPath != "" {
+		file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			_, _ = os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(2)
+		}
+		_, writeErr := file.WriteString(strings.Join(os.Args[1:], " ") + "\n")
+		closeErr := file.Close()
+		if writeErr != nil || closeErr != nil {
+			os.Exit(2)
+		}
+	}
+	os.Exit(0)
+}
+
 func TestNewController(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cfg := config.NSDConfig{
@@ -78,14 +103,122 @@ func TestController_Disabled(t *testing.T) {
 	}
 }
 
+func TestController_RejectsUnsafeCommandPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	validConfig := func() config.NSDConfig {
+		return config.NSDConfig{
+			Enabled:       true,
+			ControlPath:   filepath.Join(tmpDir, "nsd-control"),
+			CheckzonePath: filepath.Join(tmpDir, "nsd-checkzone"),
+			ReloadTimeout: time.Second,
+		}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*config.NSDConfig)
+		call   func(*Controller) error
+		want   string
+	}{
+		{
+			name: "reload zone rejects relative control path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.ControlPath = "nsd-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.ReloadZone("example.com.")
+			},
+			want: "invalid nsd.control_path: must be an absolute path",
+		},
+		{
+			name: "reconfig rejects relative control path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.ControlPath = "nsd-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.Reconfig()
+			},
+			want: "invalid nsd.control_path: must be an absolute path",
+		},
+		{
+			name: "notify rejects relative control path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.ControlPath = "nsd-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.NotifyZone("example.com.")
+			},
+			want: "invalid nsd.control_path: must be an absolute path",
+		},
+		{
+			name: "reload rejects relative control path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.ControlPath = "nsd-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.Reload()
+			},
+			want: "invalid nsd.control_path: must be an absolute path",
+		},
+		{
+			name: "status rejects relative control path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.ControlPath = "nsd-control"
+			},
+			call: func(ctrl *Controller) error {
+				_, err := ctrl.Status()
+				return err
+			},
+			want: "invalid nsd.control_path: must be an absolute path",
+		},
+		{
+			name: "check zone rejects relative checkzone path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.CheckzonePath = "nsd-checkzone"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.CheckZone("example.com.", filepath.Join(tmpDir, "example.com.zone"))
+			},
+			want: "invalid nsd.checkzone_path: must be an absolute path",
+		},
+		{
+			name: "check zone rejects control characters in checkzone path",
+			mutate: func(cfg *config.NSDConfig) {
+				cfg.CheckzonePath = filepath.Join(tmpDir, "nsd\ncheckzone")
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.CheckZone("example.com.", filepath.Join(tmpDir, "example.com.zone"))
+			},
+			want: "invalid nsd.checkzone_path: contains control characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.mutate(&cfg)
+			ctrl := NewController(cfg, zap.NewNop())
+
+			err := tt.call(ctrl)
+			if err == nil {
+				t.Fatal("controller command should reject unsafe command path")
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("unexpected error: got %q want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestController_EnsureZoneConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	commandLog := filepath.Join(tmpDir, "commands.log")
-	controlPath := filepath.Join(tmpDir, "nsd-control")
-	controlScript := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + commandLog + "\"\n"
-	if err := os.WriteFile(controlPath, []byte(controlScript), 0755); err != nil {
-		t.Fatalf("Failed to write fake nsd-control: %v", err)
+	controlPath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("Failed to resolve test executable: %v", err)
 	}
+	t.Setenv("ARCA_DNS_NSD_CONTROL_HELPER", "1")
+	t.Setenv("ARCA_DNS_NSD_CONTROL_LOG", commandLog)
 
 	zoneDir := filepath.Join(tmpDir, "zones")
 	zoneConfigPath := filepath.Join(tmpDir, "arca-dns-zones.conf")
@@ -140,6 +273,251 @@ func TestController_EnsureZoneConfig(t *testing.T) {
 	}
 	if strings.Contains(string(configData), "# arca-dns-zone: example.com.") {
 		t.Fatalf("Generated config still contains deleted zone:\n%s", string(configData))
+	}
+}
+
+func TestController_RejectsInvalidManagedZoneName(t *testing.T) {
+	tmpDir := t.TempDir()
+	zoneConfigPath := filepath.Join(tmpDir, "arca-dns-zones.conf")
+
+	ctrl := NewController(config.NSDConfig{
+		Enabled:        true,
+		ConfigPath:     filepath.Join(tmpDir, "nsd.conf"),
+		ZoneConfigPath: zoneConfigPath,
+		ControlPath:    filepath.Join(tmpDir, "nsd-control"),
+		ZoneDirectory:  filepath.Join(tmpDir, "zones"),
+		ReloadTimeout:  2 * time.Second,
+	}, zap.NewNop())
+
+	err := ctrl.EnsureZone("bad.com\"\ninclude: \"/tmp/pwn\"")
+	if err == nil {
+		t.Fatal("EnsureZone should reject invalid zone names")
+	}
+	if !strings.Contains(err.Error(), "invalid zone name") {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(zoneConfigPath); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid zone name should not create config file, got err=%v", statErr)
+	}
+}
+
+func TestController_RejectsUnsafeManagedConfigPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	tests := []struct {
+		name   string
+		cfg    config.NSDConfig
+		want   string
+		target string
+	}{
+		{
+			name: "zone directory with newline",
+			cfg: config.NSDConfig{
+				Enabled:        true,
+				ConfigPath:     filepath.Join(tmpDir, "nsd.conf"),
+				ZoneConfigPath: filepath.Join(tmpDir, "zone-dir-newline.conf"),
+				ControlPath:    filepath.Join(tmpDir, "nsd-control"),
+				ZoneDirectory:  filepath.Join(tmpDir, "zones") + "\ninclude: \"/tmp/pwn\"",
+				ReloadTimeout:  2 * time.Second,
+			},
+			want:   "nsd.zone_directory",
+			target: filepath.Join(tmpDir, "zone-dir-newline.conf"),
+		},
+		{
+			name: "zone directory with quote",
+			cfg: config.NSDConfig{
+				Enabled:        true,
+				ConfigPath:     filepath.Join(tmpDir, "nsd.conf"),
+				ZoneConfigPath: filepath.Join(tmpDir, "zone-dir-quote.conf"),
+				ControlPath:    filepath.Join(tmpDir, "nsd-control"),
+				ZoneDirectory:  filepath.Join(tmpDir, `zones"`),
+				ReloadTimeout:  2 * time.Second,
+			},
+			want:   "nsd.zone_directory",
+			target: filepath.Join(tmpDir, "zone-dir-quote.conf"),
+		},
+		{
+			name: "zone config path with newline",
+			cfg: config.NSDConfig{
+				Enabled:        true,
+				ConfigPath:     filepath.Join(tmpDir, "nsd.conf"),
+				ZoneConfigPath: filepath.Join(tmpDir, "managed\n.conf"),
+				ControlPath:    filepath.Join(tmpDir, "nsd-control"),
+				ZoneDirectory:  filepath.Join(tmpDir, "zones"),
+				ReloadTimeout:  2 * time.Second,
+			},
+			want:   "nsd.zone_config_path",
+			target: filepath.Join(tmpDir, "managed\n.conf"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := NewController(tt.cfg, zap.NewNop())
+			err := ctrl.EnsureZone("example.com.")
+			if err == nil {
+				t.Fatal("EnsureZone should reject unsafe managed config paths")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if _, statErr := os.Stat(tt.target); !os.IsNotExist(statErr) {
+				t.Fatalf("unsafe managed config path should not create config file, got err=%v", statErr)
+			}
+		})
+	}
+}
+
+func TestReadManagedZoneConfigRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "nsd.d")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, _, err := readManagedZoneConfig(filepath.Join(configDir, "managed.conf"))
+	if err == nil {
+		t.Fatal("readManagedZoneConfig should reject symlinked config directory")
+	}
+	if !strings.Contains(err.Error(), "config directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("readManagedZoneConfig error=%v, want symlinked config directory error", err)
+	}
+}
+
+func TestReadManagedZoneConfigRejectsSymlinkedConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "managed.conf")
+	sentinelPath := filepath.Join(tmpDir, "sentinel.conf")
+	if err := os.WriteFile(sentinelPath, []byte("# arca-dns-zone: example.com.\n"), 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, configPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, _, err := readManagedZoneConfig(configPath)
+	if err == nil {
+		t.Fatal("readManagedZoneConfig should reject symlinked config file")
+	}
+	if !strings.Contains(err.Error(), "NSD managed zone config") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("readManagedZoneConfig error=%v, want symlinked config file error", err)
+	}
+}
+
+func TestReadManagedZoneConfigRejectsOversizedConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "managed.conf")
+	file, err := os.OpenFile(configPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		t.Fatalf("failed to create oversized managed config: %v", err)
+	}
+	if err := file.Truncate(maxManagedZoneConfigFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("failed to size oversized managed config: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("failed to close oversized managed config: %v", err)
+	}
+
+	_, _, err = readManagedZoneConfig(configPath)
+	if err == nil {
+		t.Fatal("readManagedZoneConfig should reject oversized config file")
+	}
+	if !strings.Contains(err.Error(), "NSD managed zone config") || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("readManagedZoneConfig error=%v, want oversized config file error", err)
+	}
+}
+
+func TestWriteFileAtomicCleansTempFileWhenRenameFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "managed.conf")
+	if err := os.Mkdir(targetPath, 0755); err != nil {
+		t.Fatalf("Failed to create rename-blocking directory: %v", err)
+	}
+
+	err := writeFileAtomic(targetPath, []byte("zone config"), 0644)
+	if err == nil {
+		t.Fatal("writeFileAtomic should fail when target path is a directory")
+	}
+
+	if _, statErr := os.Stat(targetPath + ".tmp"); !os.IsNotExist(statErr) {
+		t.Fatalf("expected temp config file to be removed, got err=%v", statErr)
+	}
+	tempPattern := filepath.Join(tmpDir, "."+filepath.Base(targetPath)+".*.tmp")
+	matches, globErr := filepath.Glob(tempPattern)
+	if globErr != nil {
+		t.Fatalf("temp config glob failed: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected temp config files to be removed, got %v", matches)
+	}
+}
+
+func TestWriteFileAtomicRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "nsd.d")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	targetPath := filepath.Join(configDir, "managed.conf")
+	err := writeFileAtomic(targetPath, []byte("zone config"), 0644)
+	if err == nil {
+		t.Fatal("writeFileAtomic should reject symlinked config directory")
+	}
+	if !strings.Contains(err.Error(), "config directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("writeFileAtomic error=%v, want symlinked config directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "managed.conf")); !os.IsNotExist(statErr) {
+		t.Fatalf("config should not be written through symlink, stat err=%v", statErr)
+	}
+}
+
+func TestWriteFileAtomicDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "managed.conf")
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, targetPath+".tmp"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := writeFileAtomic(targetPath, []byte("zone config"), 0644); err != nil {
+		t.Fatalf("writeFileAtomic failed: %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(targetPath + ".tmp")
+	if err != nil {
+		t.Fatalf("expected predictable temp symlink to remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+
+	written, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("failed to read target config: %v", err)
+	}
+	if string(written) != "zone config" {
+		t.Fatalf("target config = %q, want zone config", written)
 	}
 }
 

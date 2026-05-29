@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -77,25 +78,35 @@ func LoadMasterKey(opts MasterKeyOptions) (key []byte, src MasterKeySource, err 
 	if fileName == "" {
 		fileName = MasterKeyFileName
 	}
-	keyPath := MasterKeyPath(opts.KeyDirectory, fileName)
+	if err := validateKeyStorageFileName("master key filename", fileName); err != nil {
+		return nil, "", err
+	}
+	if err := validateKeyStorageDirectoryPath("master key directory", opts.KeyDirectory); err != nil {
+		return nil, "", err
+	}
+	keyPath := MasterKeyPath(filepath.Clean(opts.KeyDirectory), fileName)
+	keyDir := filepath.Dir(keyPath)
 
-	if _, err := os.Stat(keyPath); err == nil {
-		// File exists, read it
-		data, err := os.ReadFile(keyPath)
-		if err != nil {
-			return nil, "", fmt.Errorf("read master key file: %w", err)
-		}
-
+	if err := validateExistingKeyDirectory(keyDir); err != nil && !os.IsNotExist(err) {
+		return nil, "", fmt.Errorf("stat master key directory: %w", err)
+	}
+	if data, err := readRestrictedKeyFile(keyPath); err == nil {
 		key, err := ParseMasterKey(string(data))
 		if err != nil {
 			return nil, "", fmt.Errorf("parse master key from file: %w", err)
 		}
 		return key, MasterKeySourceFile, nil
+	} else if !os.IsNotExist(err) {
+		return nil, "", fmt.Errorf("read master key file: %w", err)
 	}
 
 	// Priority 3: Legacy file path (for operational parity)
-	if _, err := os.Stat(LegacyMasterKeyFilePath); err == nil {
-		data, err := os.ReadFile(LegacyMasterKeyFilePath)
+	if _, err := os.Lstat(LegacyMasterKeyFilePath); err == nil {
+		legacyKeyDir := filepath.Dir(LegacyMasterKeyFilePath)
+		if err := validateExistingKeyDirectory(legacyKeyDir); err != nil {
+			return nil, "", fmt.Errorf("stat legacy master key directory: %w", err)
+		}
+		data, err := readRestrictedKeyFile(LegacyMasterKeyFilePath)
 		if err != nil {
 			return nil, "", fmt.Errorf("read legacy master key file: %w", err)
 		}
@@ -104,6 +115,8 @@ func LoadMasterKey(opts MasterKeyOptions) (key []byte, src MasterKeySource, err 
 			return nil, "", fmt.Errorf("parse master key from legacy file: %w", err)
 		}
 		return key, MasterKeySourceFile, nil
+	} else if !os.IsNotExist(err) {
+		return nil, "", fmt.Errorf("stat legacy master key file: %w", err)
 	}
 
 	// Priority 4: Auto-generate (dev only)
@@ -183,28 +196,83 @@ func SaveMasterKey(path string, key []byte) error {
 	if len(key) != MasterKeySize {
 		return fmt.Errorf("%w: expected %d bytes, got %d", ErrInvalidMasterKey, MasterKeySize, len(key))
 	}
+	if err := validateKeyStorageFilePath("master key file", path); err != nil {
+		return err
+	}
+	path = filepath.Clean(path)
 
 	// Ensure directory exists
 	dir := filepath.Dir(path)
+	if err := validateKeyStorageDirectoryIfExists(dir, "key directory"); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create key directory: %w", err)
+	}
+	if err := validateExistingKeyDirectory(dir); err != nil {
+		return fmt.Errorf("stat key directory: %w", err)
 	}
 
 	// Encode to base64
 	encoded := base64.StdEncoding.EncodeToString(key)
 
-	// Write atomically (tmp + rename)
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(encoded), 0600); err != nil {
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create master key temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	closed := false
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			if !closed {
+				_ = tmp.Close()
+			}
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(0600); err != nil {
+		return fmt.Errorf("chmod master key temp file: %w", err)
+	}
+	if err := writeAll(tmp, []byte(encoded)); err != nil {
 		return fmt.Errorf("write master key file: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync master key file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		closed = true
+		return fmt.Errorf("close master key file: %w", err)
+	}
+	closed = true
 
 	// Rename atomically
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath) // Clean up on failure
 		return fmt.Errorf("rename master key file: %w", err)
 	}
+	removeTemp = false
 
+	if err := syncMasterKeyDir(dir); err != nil {
+		return fmt.Errorf("sync master key directory: %w", err)
+	}
+
+	return nil
+}
+
+func syncMasterKeyDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := f.Sync(); err != nil {
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 

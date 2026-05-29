@@ -22,6 +22,7 @@ See the full deployment guide:
 - Enable agent host integrations in containers only when mounting the required host binaries, sockets, configs, and writable data paths. For production edge nodes, DEB/RPM + systemd is usually the better fit.
 - MySQL and PostgreSQL backends require schema creation before controller startup. SQLite creates its schema automatically.
 - SQL schema files live in the repository under `migrations/`; DEB/RPM packages install them under `/usr/share/arca-dns/migrations/`.
+- The controller `api.rate_limit` setting is process-local; for multi-replica controller APIs, enforce the shared external quota at an ingress or load balancer.
 
 ## Docker Compose: Controller + MySQL
 
@@ -66,4 +67,4 @@ Before applying, replace:
 
 Ingress example:
 
-- `deployments/kubernetes/controller/examples/ingress.yaml`
+- `deployments/kubernetes/controller/examples/ingress.yaml` includes NGINX ingress rate-limit annotations for multi-replica controller APIs.

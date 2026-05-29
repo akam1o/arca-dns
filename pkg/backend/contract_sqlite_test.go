@@ -38,6 +38,38 @@ func TestSQLiteDSNWithDefaultPragmas_AddsMissingPragmas(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(dsn, "journal_mode"))
 }
 
+func TestSQLiteBackend_HealthCheckAndCountZones(t *testing.T) {
+	store, err := NewSQLiteBackend(":memory:")
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.InitSchema())
+
+	ctx := context.Background()
+	require.NoError(t, store.HealthCheck(ctx))
+
+	count, err := store.CountZones(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+
+	zone := &model.Zone{
+		Name: "count.example.com.",
+		SOA:  model.DefaultSOA("ns1.count.example.com.", "admin.count.example.com."),
+		Records: testZoneRecords("count.example.com.",
+			model.Record{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		),
+	}
+	require.NoError(t, store.CreateZone(ctx, zone))
+
+	count, err = store.CountZones(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+
+	require.NoError(t, store.Close())
+	err = store.HealthCheck(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sqlite health check failed")
+}
+
 func TestSQLiteBackend_PartialPragmaDSNEnablesCascadeDelete(t *testing.T) {
 	dsn := "file:" + filepath.Join(t.TempDir(), "arca.db") + "?_pragma=journal_mode(wal)"
 	store, err := NewSQLiteBackend(dsn)
@@ -122,6 +154,70 @@ func TestSQLiteBackend_IgnoresClientRecordIDsOnCreate(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, created.Records, 2)
 	assert.NotEqual(t, "1", created.Records[1].ID)
+}
+
+func TestSQLiteBackend_ReturnsTimestampParseError(t *testing.T) {
+	store, err := NewSQLiteBackend(":memory:")
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.InitSchema())
+
+	ctx := context.Background()
+	zone := &model.Zone{
+		Name: "bad-timestamp.example.com.",
+		SOA:  model.DefaultSOA("ns1.bad-timestamp.example.com.", "admin.bad-timestamp.example.com."),
+		Records: testZoneRecords("bad-timestamp.example.com.",
+			model.Record{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		),
+	}
+	require.NoError(t, store.CreateZone(ctx, zone))
+	_, err = store.db.ExecContext(ctx, "UPDATE zones SET created_at = ? WHERE name = ?", "not-rfc3339", zone.Name)
+	require.NoError(t, err)
+
+	_, err = store.GetZone(ctx, zone.Name)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "created_at")
+
+	_, err = store.ListZones(ctx, ListOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "created_at")
+
+	err = store.UpdateZone(ctx, zone, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "created_at")
+}
+
+func TestSQLiteBackend_ReturnsSignatureExpirationParseError(t *testing.T) {
+	store, err := NewSQLiteBackend(":memory:")
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.InitSchema())
+
+	ctx := context.Background()
+	zone := &model.Zone{
+		Name: "bad-signature-expiration.example.com.",
+		SOA:  model.DefaultSOA("ns1.bad-signature-expiration.example.com.", "admin.bad-signature-expiration.example.com."),
+		Records: testZoneRecords("bad-signature-expiration.example.com.",
+			model.Record{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.1"},
+		),
+	}
+	require.NoError(t, store.CreateZone(ctx, zone))
+	_, err = store.db.ExecContext(ctx, `
+		UPDATE zones SET
+			dnssec_enabled = 1,
+			dnssec_algorithm = 13,
+			dnssec_ksk_key_tag = 1,
+			dnssec_zsk_key_tag = 2,
+			dnssec_nsec3_enabled = 0,
+			dnssec_nsec3_iterations = 0,
+			dnssec_signature_expiration = ?
+		WHERE name = ?
+	`, "not-rfc3339", zone.Name)
+	require.NoError(t, err)
+
+	_, err = store.GetZone(ctx, zone.Name)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dnssec_signature_expiration")
 }
 
 func TestSQLiteBackend_PreservesZeroRecordPriority(t *testing.T) {

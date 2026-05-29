@@ -3,13 +3,17 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/akam1o/arca-dns/pkg/model"
 	"github.com/akam1o/arca-dns/pkg/util"
@@ -24,7 +28,10 @@ import (
 	"github.com/gofrs/flock"
 )
 
-const maxLegacyZoneFilenameLength = 255
+const (
+	maxLegacyZoneFilenameLength = 255
+	maxGitZoneFileSize          = 10 * 1024 * 1024
+)
 
 func init() {
 	RegisterBackend("git", func(cfg map[string]interface{}) (ZoneStore, error) {
@@ -146,10 +153,10 @@ func NewGitBackend(repoPath, branch, authorName, authorEmail string, autoSync bo
 
 // NewGitBackendWithOptions creates a new Git backend with explicit options.
 func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitBackend, error) {
-	absPath, err := filepath.Abs(repoPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve repository path: %w", err)
+	if err := validateGitRepositoryPath(repoPath); err != nil {
+		return nil, err
 	}
+	absPath := filepath.Clean(repoPath)
 
 	if options.Branch == "" {
 		options.Branch = "main"
@@ -159,6 +166,9 @@ func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitB
 	}
 	if options.AuthorEmail == "" {
 		options.AuthorEmail = "noreply@arca-dns"
+	}
+	if err := validateGitBackendOptions(options); err != nil {
+		return nil, err
 	}
 
 	// Initialize or open repository
@@ -179,8 +189,7 @@ func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitB
 	}
 
 	// Create zones directory if it doesn't exist
-	zonesDir := filepath.Join(absPath, "zones")
-	if err := os.MkdirAll(zonesDir, 0755); err != nil {
+	if err := ensureGitZonesDirectory(absPath); err != nil {
 		return nil, fmt.Errorf("failed to create zones directory: %w", err)
 	}
 
@@ -204,6 +213,121 @@ func NewGitBackendWithOptions(repoPath string, options GitBackendOptions) (*GitB
 	}, nil
 }
 
+func validateGitRepositoryPath(repoPath string) error {
+	trimmed := strings.TrimSpace(repoPath)
+	if trimmed == "" {
+		return fmt.Errorf("git repository path is empty")
+	}
+	if trimmed != repoPath {
+		return fmt.Errorf("git repository path must not contain surrounding whitespace: %q", repoPath)
+	}
+	if strings.ContainsFunc(repoPath, unsafeGitRepositoryPathChar) {
+		return fmt.Errorf("git repository path contains control characters: %q", repoPath)
+	}
+	if !filepath.IsAbs(repoPath) {
+		return fmt.Errorf("git repository path must be an absolute path: %s", repoPath)
+	}
+	return nil
+}
+
+func validateGitBackendOptions(options GitBackendOptions) error {
+	if err := validateGitBranchName(options.Branch); err != nil {
+		return err
+	}
+	if err := validateGitAuthorName(options.AuthorName); err != nil {
+		return err
+	}
+	if err := validateGitAuthorEmail(options.AuthorEmail); err != nil {
+		return err
+	}
+	if options.RemoteURL != "" {
+		if err := validateGitRemoteURL(options.RemoteURL); err != nil {
+			return err
+		}
+	}
+	if options.PullInterval < 0 {
+		return fmt.Errorf("invalid git pull_interval: must be non-negative")
+	}
+	return nil
+}
+
+func validateGitBranchName(branch string) error {
+	if err := plumbing.NewBranchReferenceName(branch).Validate(); err != nil {
+		return fmt.Errorf("invalid git branch: %q", branch)
+	}
+	return nil
+}
+
+func validateGitAuthorName(name string) error {
+	if name == "" {
+		return fmt.Errorf("invalid git author: must not be empty")
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("invalid git author: must not have surrounding whitespace")
+	}
+	if strings.ContainsFunc(name, unsafeGitRepositoryPathChar) {
+		return fmt.Errorf("invalid git author: must not contain control characters")
+	}
+	if strings.ContainsAny(name, "<>") {
+		return fmt.Errorf("invalid git author: must not contain angle brackets")
+	}
+	return nil
+}
+
+func validateGitAuthorEmail(email string) error {
+	if email == "" {
+		return fmt.Errorf("invalid git email: must not be empty")
+	}
+	if strings.ContainsFunc(email, unicode.IsSpace) {
+		return fmt.Errorf("invalid git email: must not contain whitespace")
+	}
+	if strings.ContainsFunc(email, unsafeGitRepositoryPathChar) {
+		return fmt.Errorf("invalid git email: must not contain control characters")
+	}
+	if strings.ContainsAny(email, "<>") {
+		return fmt.Errorf("invalid git email: must not contain angle brackets")
+	}
+	return nil
+}
+
+func validateGitRemoteURL(remoteURL string) error {
+	if strings.TrimSpace(remoteURL) != remoteURL {
+		return fmt.Errorf("invalid git remote_url: must not have surrounding whitespace")
+	}
+	if strings.ContainsFunc(remoteURL, unsafeGitRepositoryPathChar) {
+		return fmt.Errorf("invalid git remote_url: must not contain control characters")
+	}
+	return nil
+}
+
+func validateGitRepositoryDirectoryIfExists(path string) error {
+	if err := validateExistingGitRepositoryDirectory(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat repository directory: %w", err)
+	}
+	return nil
+}
+
+func validateExistingGitRepositoryDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("repository directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("repository path must be a directory: %s", path)
+	}
+	return nil
+}
+
+func unsafeGitRepositoryPathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
+}
+
 // HealthCheck verifies that the local Git repository is usable without loading
 // zone contents or contacting the remote.
 func (g *GitBackend) HealthCheck(ctx context.Context) error {
@@ -212,15 +336,14 @@ func (g *GitBackend) HealthCheck(ctx context.Context) error {
 	}
 	defer g.releaseFileLock()
 
-	if _, err := os.Stat(g.repoPath); err != nil {
+	if err := validateExistingGitRepositoryDirectory(g.repoPath); err != nil {
 		return fmt.Errorf("git repository path unavailable: %w", err)
 	}
 	if _, err := g.repo.Head(); err != nil && err != plumbing.ErrReferenceNotFound {
 		return fmt.Errorf("git repository head unavailable: %w", err)
 	}
 
-	zonesDir := filepath.Join(g.repoPath, "zones")
-	if _, err := os.Stat(zonesDir); err != nil && !os.IsNotExist(err) {
+	if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
 		return fmt.Errorf("git zones directory unavailable: %w", err)
 	}
 	return nil
@@ -228,6 +351,10 @@ func (g *GitBackend) HealthCheck(ctx context.Context) error {
 
 // openOrInitRepo opens an existing repository or initializes a new one
 func openOrInitRepo(path, branch string) (*git.Repository, error) {
+	if err := validateGitRepositoryDirectoryIfExists(path); err != nil {
+		return nil, err
+	}
+
 	// Try to open existing repository
 	repo, err := git.PlainOpen(path)
 	if err == nil {
@@ -279,6 +406,9 @@ func openOrInitRepo(path, branch string) (*git.Repository, error) {
 	// Repository doesn't exist, initialize new one
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create repository directory: %w", err)
+	}
+	if err := validateExistingGitRepositoryDirectory(path); err != nil {
+		return nil, fmt.Errorf("stat repository directory: %w", err)
 	}
 
 	fs := osfs.New(path)
@@ -334,6 +464,10 @@ func (g *GitBackend) releaseRepoLock() {
 func (g *GitBackend) acquireFileLock(ctx context.Context) error {
 	if err := g.acquireRepoLock(ctx); err != nil {
 		return err
+	}
+	if err := validateExistingGitRepositoryDirectory(g.repoPath); err != nil {
+		g.releaseRepoLock()
+		return fmt.Errorf("git repository directory unavailable: %w", err)
 	}
 
 	locked := false
@@ -426,13 +560,17 @@ func (g *GitBackend) zoneFilePathCandidates(zoneName string) ([]string, error) {
 }
 
 func (g *GitBackend) existingZoneFilePath(zoneName string) (string, error) {
+	if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+		return "", err
+	}
+
 	paths, err := g.zoneFilePathCandidates(zoneName)
 	if err != nil {
 		return "", err
 	}
 
 	for _, relPath := range paths {
-		if _, err := os.Stat(filepath.Join(g.repoPath, relPath)); err == nil {
+		if _, err := statRegularZoneFile(filepath.Join(g.repoPath, relPath)); err == nil {
 			return relPath, nil
 		} else if !os.IsNotExist(err) {
 			return "", fmt.Errorf("failed to stat zone file: %w", err)
@@ -521,7 +659,7 @@ func (g *GitBackend) snapshotExistingZoneFiles(zoneName string) (*gitRollbackPoi
 
 	existingPaths := make([]string, 0, len(paths))
 	for _, relPath := range paths {
-		_, err := os.Stat(filepath.Join(g.repoPath, relPath))
+		_, err := statRegularZoneFile(filepath.Join(g.repoPath, relPath))
 		if err == nil {
 			existingPaths = append(existingPaths, relPath)
 			continue
@@ -538,6 +676,10 @@ func (g *GitBackend) snapshotExistingZoneFiles(zoneName string) (*gitRollbackPoi
 }
 
 func (g *GitBackend) snapshotZoneFilePaths(relPaths []string) (*gitRollbackPoint, error) {
+	if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+		return nil, err
+	}
+
 	point := &gitRollbackPoint{
 		files: make([]gitRollbackFile, 0, len(relPaths)),
 	}
@@ -553,16 +695,13 @@ func (g *GitBackend) snapshotZoneFilePaths(relPaths []string) (*gitRollbackPoint
 			absPath: filepath.Join(g.repoPath, relPath),
 		}
 
-		info, err := os.Stat(file.absPath)
+		data, mode, err := readRegularZoneFile(file.absPath)
 		if err == nil {
 			file.fileExists = true
-			file.fileMode = info.Mode()
-			file.fileData, err = os.ReadFile(file.absPath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to snapshot zone file: %w", err)
-			}
+			file.fileMode = mode
+			file.fileData = data
 		} else if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("failed to stat zone file: %w", err)
+			return nil, fmt.Errorf("failed to snapshot zone file: %w", err)
 		}
 
 		if _, err := idx.Entry(relPath); err == nil {
@@ -595,16 +734,23 @@ func (g *GitBackend) snapshotZoneFilePaths(relPaths []string) (*gitRollbackPoint
 func (g *GitBackend) restoreZoneFile(point *gitRollbackPoint) error {
 	for _, file := range point.files {
 		if file.fileExists {
-			if err := os.MkdirAll(filepath.Dir(file.absPath), 0755); err != nil {
+			if err := ensureGitZonesDirectory(g.repoPath); err != nil {
 				return fmt.Errorf("failed to recreate zone directory: %w", err)
 			}
-			if err := os.WriteFile(file.absPath, file.fileData, file.fileMode.Perm()); err != nil {
+			if err := writeFileAtomicSynced(file.absPath, file.fileData, file.fileMode.Perm()); err != nil {
 				return fmt.Errorf("failed to restore zone file: %w", err)
 			}
 			continue
 		}
 
-		if err := os.Remove(file.absPath); err != nil && !os.IsNotExist(err) {
+		if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+			return fmt.Errorf("failed to validate zone directory before rollback remove: %w", err)
+		}
+		if err := os.Remove(file.absPath); err == nil {
+			if err := syncDir(filepath.Dir(file.absPath)); err != nil {
+				return fmt.Errorf("failed to sync rolled back zone directory: %w", err)
+			}
+		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("failed to remove rolled back zone file: %w", err)
 		}
 	}
@@ -748,6 +894,9 @@ func (g *GitBackend) removeAndCommit(ctx context.Context, zoneName, summary stri
 
 	trackedRemovals := 0
 	for _, file := range rollback.files {
+		if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+			return g.wrapWithRollback(rollback, fmt.Errorf("failed to validate zone directory before remove: %w", err))
+		}
 		if file.indexTracked {
 			if _, err := g.worktree.Remove(file.relPath); err != nil {
 				return g.wrapWithRollback(rollback, fmt.Errorf("failed to remove file from git: %w", err))
@@ -805,7 +954,7 @@ func (g *GitBackend) readZone(zoneName string) (*model.Zone, error) {
 		if err == nil {
 			return zone, nil
 		}
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			continue
 		}
 		return nil, err
@@ -815,9 +964,13 @@ func (g *GitBackend) readZone(zoneName string) (*model.Zone, error) {
 }
 
 func (g *GitBackend) readZoneFile(relPath string) (*model.Zone, error) {
+	if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+		return nil, fmt.Errorf("failed to validate zones directory: %w", err)
+	}
+
 	filePath := filepath.Join(g.repoPath, relPath)
 
-	data, err := os.ReadFile(filePath)
+	data, _, err := readRegularZoneFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, model.ErrZoneNotFound
@@ -833,6 +986,75 @@ func (g *GitBackend) readZoneFile(relPath string) (*model.Zone, error) {
 	return &zone, nil
 }
 
+func statRegularZoneFile(path string) (os.FileInfo, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("zone file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("zone file must be a regular file: %s", path)
+	}
+	return info, nil
+}
+
+func readRegularZoneFile(path string) ([]byte, os.FileMode, error) {
+	info, err := statRegularZoneFile(path)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, 0, fmt.Errorf("zone file changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("zone file must be a regular file: %s", path)
+	}
+
+	data, err := readLimitedGitZoneContent(file)
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, openedInfo.Mode(), nil
+}
+
+func readLimitedGitZoneContent(reader io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxGitZoneFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxGitZoneFileSize {
+		return nil, fmt.Errorf("zone file exceeds maximum size of %d bytes", maxGitZoneFileSize)
+	}
+	return data, nil
+}
+
+func readGitObjectZoneFile(file *object.File) ([]byte, error) {
+	if file.Size > maxGitZoneFileSize {
+		return nil, fmt.Errorf("zone file exceeds maximum size of %d bytes", maxGitZoneFileSize)
+	}
+
+	reader, err := file.Reader()
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	return readLimitedGitZoneContent(reader)
+}
+
 // writeZone writes a zone to JSON file atomically
 func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 	relPath, err := g.existingZoneFilePath(zoneName)
@@ -843,7 +1065,7 @@ func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 	filePath := filepath.Join(g.repoPath, relPath)
 
 	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+	if err := ensureGitZonesDirectory(g.repoPath); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -853,33 +1075,129 @@ func (g *GitBackend) writeZone(zoneName string, zone *model.Zone) error {
 		return fmt.Errorf("failed to marshal zone to JSON: %w", err)
 	}
 
-	// Atomic write: write to .tmp, fsync, rename
-	tmpPath := filePath + ".tmp"
-	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err := writeFileAtomicSynced(filePath, data, 0644); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeFileAtomicSynced(path string, data []byte, perm os.FileMode) error {
+	dirPath := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
+	tmpPath := tmp.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
-	_, err = f.Write(data)
-	if err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("failed to write temp file: %w", err)
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to chmod temp file: %w", err)
 	}
-
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
+	if n, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to write temp file: %w", err)
+	} else if n != len(data) {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to write temp file: %w", io.ErrShortWrite)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("failed to sync temp file: %w", err)
 	}
-
-	f.Close()
-
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("failed to rename temp file: %w", err)
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
 	}
 
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+	cleanupTmp = false
+	if err := syncDir(dirPath); err != nil {
+		return fmt.Errorf("failed to sync file directory: %w", err)
+	}
+
+	return nil
+}
+
+func ensureGitZonesDirectory(repoPath string) error {
+	zonesDir := gitZonesDirectory(repoPath)
+	existed := true
+	if err := validateExistingGitZonesDirectory(zonesDir); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat zones directory: %w", err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(zonesDir, 0755); err != nil {
+		return fmt.Errorf("create zones directory: %w", err)
+	}
+	if err := validateExistingGitZonesDirectory(zonesDir); err != nil {
+		return fmt.Errorf("stat zones directory: %w", err)
+	}
+	if !existed {
+		if err := syncDir(filepath.Dir(zonesDir)); err != nil {
+			return fmt.Errorf("sync zones directory parent: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func validateGitZonesDirectoryIfExists(repoPath string) error {
+	zonesDir := gitZonesDirectory(repoPath)
+	if err := validateExistingGitZonesDirectory(zonesDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat zones directory: %w", err)
+	}
+	return nil
+}
+
+func validateExistingGitZonesDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("zones directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("zones path must be a directory: %s", path)
+	}
+	return nil
+}
+
+func gitZonesDirectory(repoPath string) string {
+	return filepath.Join(repoPath, "zones")
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
+			syncErr = nil
+		}
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
 	return nil
 }
 
@@ -911,7 +1229,11 @@ func (g *GitBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.
 		return nil, err
 	}
 
-	zonesDir := filepath.Join(g.repoPath, "zones")
+	if err := validateGitZonesDirectoryIfExists(g.repoPath); err != nil {
+		return nil, fmt.Errorf("failed to validate zones directory: %w", err)
+	}
+
+	zonesDir := gitZonesDirectory(g.repoPath)
 	entries, err := os.ReadDir(zonesDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1003,7 +1325,7 @@ func (g *GitBackend) CreateZone(ctx context.Context, zone *model.Zone) error {
 	if err == nil {
 		return model.ErrZoneAlreadyExists
 	}
-	if err != model.ErrZoneNotFound {
+	if !errors.Is(err, model.ErrZoneNotFound) {
 		return err
 	}
 
@@ -1045,7 +1367,7 @@ func (g *GitBackend) UpdateZone(ctx context.Context, zone *model.Zone, expectedV
 	// Read current zone
 	currentZone, err := g.readZone(normalized)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			return model.ErrZoneNotFound
 		}
 		return err
@@ -1110,7 +1432,7 @@ func (g *GitBackend) UpdateDNSSECMetadata(ctx context.Context, zoneName string, 
 
 	zone, err := g.readZone(normalized)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			return model.ErrZoneNotFound
 		}
 		return err
@@ -1149,7 +1471,7 @@ func (g *GitBackend) DeleteZone(ctx context.Context, name string) error {
 	// Check if zone exists
 	_, err = g.readZone(normalized)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			return model.ErrZoneNotFound
 		}
 		return err
@@ -1176,7 +1498,7 @@ func (g *GitBackend) DeleteZoneWithVersion(ctx context.Context, name string, exp
 
 	zone, err := g.readZone(normalized)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			return model.ErrZoneNotFound
 		}
 		return err
@@ -1240,7 +1562,7 @@ func (g *GitBackend) GetRevision(ctx context.Context, zoneName, version string) 
 		if err == nil {
 			return zone, nil
 		}
-		if err == model.ErrVersionNotFound {
+		if errors.Is(err, model.ErrVersionNotFound) {
 			continue
 		}
 		return nil, err
@@ -1288,13 +1610,13 @@ func (g *GitBackend) getRevisionFromPath(filePath, version string) (*model.Zone,
 		return nil, fmt.Errorf("failed to get file from tree: %w", err)
 	}
 
-	contents, err := file.Contents()
+	contents, err := readGitObjectZoneFile(file)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file contents: %w", err)
 	}
 
 	var zone model.Zone
-	if err := json.Unmarshal([]byte(contents), &zone); err != nil {
+	if err := json.Unmarshal(contents, &zone); err != nil {
 		return nil, fmt.Errorf("failed to parse zone JSON: %w", err)
 	}
 
@@ -1383,22 +1705,22 @@ func (g *GitBackend) listRevisionsForPath(filePath string) ([]*model.ZoneVersion
 		// Get zone data at this commit
 		tree, err := c.Tree()
 		if err != nil {
-			return nil // Skip on error
+			return fmt.Errorf("failed to get commit tree for revision %s: %w", version, err)
 		}
 
 		file, err := tree.File(filePath)
 		if err != nil {
-			return nil // Skip on error
+			return fmt.Errorf("failed to get zone file %q for revision %s: %w", filePath, version, err)
 		}
 
-		contents, err := file.Contents()
+		contents, err := readGitObjectZoneFile(file)
 		if err != nil {
-			return nil // Skip on error
+			return fmt.Errorf("failed to read zone file %q for revision %s: %w", filePath, version, err)
 		}
 
 		var zone model.Zone
-		if err := json.Unmarshal([]byte(contents), &zone); err != nil {
-			return nil // Skip on error
+		if err := json.Unmarshal(contents, &zone); err != nil {
+			return fmt.Errorf("failed to parse zone JSON for revision %s: %w", version, err)
 		}
 
 		hashHex, err := ComputeZoneHash(&zone)

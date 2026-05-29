@@ -146,6 +146,47 @@ func TestSyncer_SyncZoneRejectsOlderSignedSerial(t *testing.T) {
 	assert.Equal(t, localZoneContent, content)
 }
 
+func TestSyncer_SyncAllRejectsInvalidControllerZoneNameBeforeChanges(t *testing.T) {
+	requireTCPListener(t)
+
+	invalidZoneName := "bad.com\"\ninclude: \"/tmp/pwn\""
+	signedRequested := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/zones":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"zones":[{"name":%q,"version":"v1-bad"}]}`, invalidZoneName)
+		default:
+			signedRequested = true
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 0,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	defer client.Close()
+
+	zoneDir := filepath.Join(t.TempDir(), "zones")
+	fileMgr := NewFileManager(zoneDir, 3, zap.NewNop())
+	require.NoError(t, fileMgr.EnsureDirectory())
+	require.NoError(t, fileMgr.WriteZoneFile("example.com.", "$ORIGIN example.com.\n"))
+
+	syncer := NewSyncer(client, fileMgr, config.SyncConfig{VerifyChecksums: true}, zap.NewNop())
+
+	err = syncer.SyncAll(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid zone name from controller")
+	assert.False(t, signedRequested, "invalid controller zone names must not be fetched")
+	assert.True(t, fileMgr.ZoneExists("example.com."), "existing zones must not be deleted after an invalid controller list")
+}
+
 func TestSyncer_DeleteRemovedZonesUsesCanonicalManagedZoneName(t *testing.T) {
 	zoneDir := filepath.Join(t.TempDir(), "zones")
 	fileMgr := NewFileManager(zoneDir, 3, zap.NewNop())
@@ -400,13 +441,13 @@ func TestSyncer_SyncAll_SignedConditionalFetch(t *testing.T) {
 	require.NoError(t, fileMgr.EnsureDirectory())
 
 	syncer := NewSyncer(client, fileMgr, config.SyncConfig{
-		SyncInterval:        30 * time.Second,
-		Jitter:              5 * time.Second,
-		MaxStaleness:        5 * time.Minute,
-		BackupVersions:      3,
-		VerifyChecksums:     true,
-		VerifySignatures:    true,
-		ControllerPublicKey: signatureKey,
+		SyncInterval:           30 * time.Second,
+		Jitter:                 5 * time.Second,
+		MaxStaleness:           5 * time.Minute,
+		BackupVersions:         3,
+		VerifyChecksums:        true,
+		VerifySignatures:       true,
+		ControllerSignatureKey: signatureKey,
 	}, logger)
 
 	ctx := context.Background()
@@ -1005,15 +1046,17 @@ func TestSyncer_IsStale(t *testing.T) {
 func TestNewSyncer_AppliesSignatureVerification(t *testing.T) {
 	client := &Client{}
 	syncer := NewSyncer(client, nil, config.SyncConfig{
-		VerifyChecksums:     true,
-		VerifySignatures:    true,
-		ControllerPublicKey: "test-signature-key",
+		VerifyChecksums:  true,
+		VerifySignatures: true,
+		ControllerSignatureKeys: map[string]string{
+			"primary": "test-signature-key",
+		},
 	}, zap.NewNop())
 
 	require.NotNil(t, syncer)
 	assert.True(t, client.verifyChecksums)
 	assert.True(t, client.verifySignatures)
-	assert.Equal(t, "test-signature-key", client.signatureKey)
+	assert.Equal(t, map[string]string{"primary": "test-signature-key"}, client.signatureKeys)
 }
 
 func TestSyncer_GetAllZoneStates(t *testing.T) {

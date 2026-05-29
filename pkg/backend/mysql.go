@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/mysql"
+	mysqlmigrate "github.com/golang-migrate/migrate/v4/database/mysql"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -22,6 +22,10 @@ import (
 type MySQLBackend struct {
 	db  *sql.DB
 	dsn string
+}
+
+type mysqlQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 }
 
 // NewMySQLBackend creates a new MySQL backend.
@@ -62,6 +66,15 @@ func (m *MySQLBackend) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// CountZones returns the number of zones without loading zone records.
+func (m *MySQLBackend) CountZones(ctx context.Context) (int, error) {
+	var count int
+	if err := m.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM zones").Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count zones: %w", err)
+	}
+	return count, nil
+}
+
 // RunMigrations applies database migrations.
 func (m *MySQLBackend) RunMigrations(migrationsPath string) error {
 	migrationDB, err := sql.Open("mysql", m.dsn)
@@ -78,7 +91,7 @@ func (m *MySQLBackend) RunMigrations(migrationsPath string) error {
 		return fmt.Errorf("failed to ping MySQL for migrations: %w", err)
 	}
 
-	driver, err := mysql.WithInstance(migrationDB, &mysql.Config{})
+	driver, err := mysqlmigrate.WithInstance(migrationDB, &mysqlmigrate.Config{})
 	if err != nil {
 		migrationDB.Close()
 		return fmt.Errorf("failed to create migration driver: %w", err)
@@ -212,6 +225,55 @@ func (m *MySQLBackend) loadRecords(ctx context.Context, zoneName string) ([]mode
 	return records, nil
 }
 
+func (m *MySQLBackend) loadRecordsForZones(ctx context.Context, q mysqlQuerier, zones []*model.Zone) error {
+	if len(zones) == 0 {
+		return nil
+	}
+
+	recordsByZone := make(map[string][]model.Record, len(zones))
+	for start := 0; start < len(zones); {
+		end := sqlBatchEnd(start, len(zones))
+		query := fmt.Sprintf(`
+			SELECT z.name, r.id, r.name, r.type, r.ttl, r.value, r.priority
+			FROM records r
+			JOIN zones z ON r.zone_id = z.id
+			WHERE z.name IN (%s)
+			ORDER BY z.name, r.name, r.type, r.id
+		`, sqlQuestionPlaceholders(end-start))
+
+		rows, err := q.QueryContext(ctx, query, sqlZoneNameArgs(zones, start, end)...)
+		if err != nil {
+			return fmt.Errorf("failed to query records for zones: %w", err)
+		}
+
+		for rows.Next() {
+			var zoneName string
+			var rec model.Record
+			var id int64
+			var priority sql.NullInt64
+			if err := rows.Scan(&zoneName, &id, &rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
+				rows.Close()
+				return fmt.Errorf("failed to scan record: %w", err)
+			}
+			rec.ID = formatSQLRecordID(id)
+			if priority.Valid {
+				p := uint16(priority.Int64)
+				rec.Priority = &p
+			}
+			recordsByZone[zoneName] = append(recordsByZone[zoneName], rec)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("error iterating records for zones: %w", err)
+		}
+		rows.Close()
+		start = end
+	}
+
+	assignZoneRecords(zones, recordsByZone)
+	return nil
+}
+
 // ListZones returns all zones, optionally paginated.
 func (m *MySQLBackend) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, error) {
 	offset := normalizeListOffset(opts.Offset)
@@ -288,13 +350,8 @@ func (m *MySQLBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mode
 		return nil, fmt.Errorf("error iterating zones: %w", err)
 	}
 
-	// Load records for each zone (not optimal, but simple)
-	for _, zone := range zones {
-		records, err := m.loadRecords(ctx, zone.Name)
-		if err != nil {
-			return nil, err
-		}
-		zone.Records = records
+	if err := m.loadRecordsForZones(ctx, m.db, zones); err != nil {
+		return nil, err
 	}
 
 	return zones, nil
@@ -642,14 +699,35 @@ func (m *MySQLBackend) DeleteZoneWithVersion(ctx context.Context, name string, e
 func (m *MySQLBackend) deleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	name = normalizeZoneName(name)
 
-	query := "DELETE FROM zones WHERE name = ?"
-	args := []interface{}{name}
-	if expectedVersion != "" {
-		query += " AND version = ?"
-		args = append(args, expectedVersion)
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin delete zone transaction: %w", err)
 	}
 
-	result, err := m.db.ExecContext(ctx, query, args...)
+	if err := deleteMySQLZoneWithVersionTx(ctx, tx, name, expectedVersion); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit delete zone transaction: %w", err)
+	}
+	return nil
+}
+
+func deleteMySQLZoneWithVersionTx(ctx context.Context, tx *sql.Tx, name string, expectedVersion string) error {
+	var currentVersion string
+	if err := tx.QueryRowContext(ctx, "SELECT version FROM zones WHERE name = ? FOR UPDATE", name).Scan(&currentVersion); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ErrZoneNotFound
+		}
+		return fmt.Errorf("failed to check zone version: %w", err)
+	}
+
+	if expectedVersion != "" && currentVersion != expectedVersion {
+		return model.ErrConflict
+	}
+
+	result, err := tx.ExecContext(ctx, "DELETE FROM zones WHERE name = ?", name)
 	if err != nil {
 		return fmt.Errorf("failed to delete zone: %w", err)
 	}
@@ -658,18 +736,10 @@ func (m *MySQLBackend) deleteZoneWithVersion(ctx context.Context, name string, e
 	if err != nil {
 		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
-	if rowsAffected > 0 {
-		return nil
-	}
-
-	var exists bool
-	if err := m.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
-		return fmt.Errorf("failed to check zone existence: %w", err)
-	}
-	if exists {
+	if rowsAffected == 0 {
 		return model.ErrConflict
 	}
-	return model.ErrZoneNotFound
+	return nil
 }
 
 // Close releases resources held by the backend.
@@ -684,6 +754,7 @@ func (m *MySQLBackend) Info() BackendInfo {
 		Capabilities: []string{
 			CapabilityZoneStore,
 			CapabilityZoneSummaryStore,
+			CapabilityZoneCountStore,
 			CapabilityHealthStore,
 			CapabilityTransactionalStore,
 			CapabilityDNSSECMetadataStore,
@@ -923,13 +994,8 @@ func (t *MySQLTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zon
 		return nil, fmt.Errorf("error iterating zones: %w", err)
 	}
 
-	// Load records for each zone
-	for _, zone := range zones {
-		records, err := t.loadRecords(ctx, zone.Name)
-		if err != nil {
-			return nil, err
-		}
-		zone.Records = records
+	if err := t.backend.loadRecordsForZones(ctx, t.tx, zones); err != nil {
+		return nil, err
 	}
 
 	return zones, nil
@@ -1130,35 +1196,7 @@ func (t *MySQLTx) DeleteZone(ctx context.Context, name string) error {
 
 func (t *MySQLTx) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	name = normalizeZoneName(name)
-
-	query := "DELETE FROM zones WHERE name = ?"
-	args := []interface{}{name}
-	if expectedVersion != "" {
-		query += " AND version = ?"
-		args = append(args, expectedVersion)
-	}
-
-	result, err := t.tx.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("failed to delete zone: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected > 0 {
-		return nil
-	}
-
-	var exists bool
-	if err := t.tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
-		return fmt.Errorf("failed to check zone existence: %w", err)
-	}
-	if exists {
-		return model.ErrConflict
-	}
-	return model.ErrZoneNotFound
+	return deleteMySQLZoneWithVersionTx(ctx, t.tx, name, expectedVersion)
 }
 
 // Close is a no-op for transactions (use Commit or Rollback instead).
@@ -1274,7 +1312,18 @@ func isMySQLDuplicateError(err error) bool {
 }
 
 func isMySQLDeadlock(err error) bool {
-	return strings.Contains(err.Error(), "Deadlock") || strings.Contains(err.Error(), "Error 1213")
+	var mysqlErr *gomysql.MySQLError
+	if errors.As(err, &mysqlErr) {
+		switch mysqlErr.Number {
+		case 1205, 1213:
+			return true
+		}
+	}
+	errText := err.Error()
+	return strings.Contains(errText, "Deadlock") ||
+		strings.Contains(errText, "Error 1213") ||
+		strings.Contains(errText, "Lock wait timeout") ||
+		strings.Contains(errText, "Error 1205")
 }
 
 func init() {

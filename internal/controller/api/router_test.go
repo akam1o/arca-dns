@@ -14,9 +14,12 @@ import (
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/middleware"
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type trackingReadCloser struct {
@@ -48,6 +51,10 @@ func TestSetupRouter_AuthEnabledWithoutKeysStillProtectsRoutes(t *testing.T) {
 
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	assert.Contains(t, w.Body.String(), "API key required")
+}
+
+func TestStrictJSONBindingConfiguredAtPackageInit(t *testing.T) {
+	assert.True(t, binding.EnableDecoderDisallowUnknownFields)
 }
 
 func TestSetupRouter_AuthRejectsBeforeReadingBody(t *testing.T) {
@@ -88,33 +95,173 @@ func TestSetupRouter_ProtectedRoutesStillLimitBodySize(t *testing.T) {
 	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 }
 
-func TestSetupRouter_StatusRoutesBypassAuthAndMetricsStaysSeparate(t *testing.T) {
+func TestSetupRouter_UnknownLengthJSONBodyTooLargeReturns413(t *testing.T) {
+	logger := zap.NewNop()
+	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = false
+	apiCfg.RateLimit.Enabled = false
+
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/zones", strings.NewReader(strings.Repeat(" ", int(middleware.MaxRequestBodySize)+1)))
+	req.ContentLength = -1
+	req.TransferEncoding = []string{"chunked"}
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	apiErr := decodeAPIError(t, w.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Request body exceeds maximum size limit", apiErr.Message)
+}
+
+func TestControllerRecoveryLogsStructuredContext(t *testing.T) {
+	core, logs := observer.New(zap.ErrorLevel)
+	logger := zap.New(core)
+	router := newControllerRouter(nil, nil, logger, false)
+	router.Use(func(c *gin.Context) {
+		c.Set("request_id", "req-123")
+		c.Set("auth_principal", "admin")
+		c.Set("auth_role", middleware.AuthRoleAdmin)
+		c.Next()
+	})
+	router.GET("/panic", func(c *gin.Context) {
+		panic("boom")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/panic?api_key=secret", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	apiErr := decodeAPIError(t, w.Body)
+	assert.Equal(t, model.ErrorCodeInternal, apiErr.Code)
+
+	entries := logs.FilterMessage("request_panic_recovered").All()
+	require.Len(t, entries, 1)
+	fields := entries[0].ContextMap()
+	assert.Equal(t, "boom", fields["panic"])
+	assert.Equal(t, http.MethodGet, fields["method"])
+	assert.Equal(t, "/panic", fields["path"])
+	assert.Equal(t, "req-123", fields["request_id"])
+	assert.Equal(t, "admin", fields["auth_principal"])
+	assert.Equal(t, middleware.AuthRoleAdmin, fields["auth_role"])
+	assert.NotEmpty(t, fields["stack"])
+	assert.NotContains(t, fields, "query")
+	assert.NotContains(t, fields, "authorization")
+}
+
+func TestSetupRouter_StatusRouteRemainsOpen(t *testing.T) {
+	const adminKey = "admin-key"
 	logger := zap.NewNop()
 	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
 	apiCfg := config.DefaultControllerConfig().API
 	apiCfg.Auth.Enabled = true
-	apiCfg.Auth.APIKeys = nil
+	apiCfg.Auth.APIKeys = map[string]string{"admin": routerTestAPIKeyHash(adminKey)}
+	apiCfg.Auth.APIKeyRoles = map[string]string{"admin": middleware.AuthRoleAdmin}
 	apiCfg.RateLimit.Enabled = false
 
 	router := SetupRouter(handler, &apiCfg, logger)
 
 	tests := []struct {
+		name string
 		path string
+		key  string
 		want int
 	}{
-		{path: "/health", want: http.StatusOK},
-		{path: "/ready", want: http.StatusOK},
-		{path: "/status", want: http.StatusOK},
-		{path: "/metrics", want: http.StatusNotFound},
+		{name: "health remains open", path: "/health", want: http.StatusOK},
+		{name: "ready remains open", path: "/ready", want: http.StatusOK},
+		{name: "status without api key", path: "/status", want: http.StatusOK},
+		{name: "status with invalid api key", path: "/status", key: "wrong-key", want: http.StatusOK},
+		{name: "status with api key", path: "/status", key: adminKey, want: http.StatusOK},
+		{name: "metrics stays separate", path: "/metrics", want: http.StatusNotFound},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.key != "" {
+				req.Header.Set("X-API-Key", tt.key)
+			}
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
 
 			require.Equal(t, tt.want, w.Code)
+		})
+	}
+}
+
+func TestSetupRouter_RateLimitUsesAuthenticatedPrincipal(t *testing.T) {
+	const adminKey = "admin-key"
+	const secondAdminKey = "second-admin-key"
+	logger := zap.NewNop()
+	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = true
+	apiCfg.Auth.APIKeys = map[string]string{
+		"admin":        routerTestAPIKeyHash(adminKey),
+		"second-admin": routerTestAPIKeyHash(secondAdminKey),
+	}
+	apiCfg.Auth.APIKeyRoles = map[string]string{
+		"admin":        middleware.AuthRoleAdmin,
+		"second-admin": middleware.AuthRoleAdmin,
+	}
+	apiCfg.RateLimit.Enabled = true
+	apiCfg.RateLimit.RequestsPerSecond = 1
+	apiCfg.RateLimit.Burst = 1
+
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	perform := func(key string) int {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/zones", nil)
+		req.Header.Set("X-API-Key", key)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	require.Equal(t, http.StatusOK, perform(adminKey))
+	require.Equal(t, http.StatusOK, perform(secondAdminKey))
+	require.Equal(t, http.StatusTooManyRequests, perform(adminKey))
+}
+
+func TestSetupRouter_RateLimitAppliesToAuthFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "missing api key"},
+		{name: "invalid api key", key: "wrong-key"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const adminKey = "admin-key"
+			logger := zap.NewNop()
+			handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+			apiCfg := config.DefaultControllerConfig().API
+			apiCfg.Auth.Enabled = true
+			apiCfg.Auth.APIKeys = map[string]string{"admin": routerTestAPIKeyHash(adminKey)}
+			apiCfg.Auth.APIKeyRoles = map[string]string{"admin": middleware.AuthRoleAdmin}
+			apiCfg.RateLimit.Enabled = true
+			apiCfg.RateLimit.RequestsPerSecond = 1
+			apiCfg.RateLimit.Burst = 1
+
+			router := SetupRouter(handler, &apiCfg, logger)
+
+			perform := func() int {
+				req := httptest.NewRequest(http.MethodGet, "/api/v1/zones", nil)
+				if tt.key != "" {
+					req.Header.Set("X-API-Key", tt.key)
+				}
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				return w.Code
+			}
+
+			require.Equal(t, http.StatusUnauthorized, perform())
+			require.Equal(t, http.StatusTooManyRequests, perform())
 		})
 	}
 }
@@ -146,6 +293,51 @@ func TestSetupObservabilityRouter_RoutesBypassAuth(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			require.Equal(t, tt.want, w.Code)
+		})
+	}
+}
+
+func TestSetupObservabilityRouterWithConfig_ProtectsMetricsOnly(t *testing.T) {
+	const token = "controller-status-token-32-byte-secret"
+	logger := zap.NewNop()
+	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = true
+	apiCfg.Auth.APIKeys = nil
+	apiCfg.RateLimit.Enabled = false
+	observabilityCfg := config.ObservabilityConfig{AuthToken: token}
+
+	router := SetupObservabilityRouterWithConfig(handler, &apiCfg, &observabilityCfg, logger)
+
+	tests := []struct {
+		name   string
+		path   string
+		header string
+		want   int
+	}{
+		{name: "health remains open", path: "/health", want: http.StatusOK},
+		{name: "ready remains open", path: "/ready", want: http.StatusOK},
+		{name: "status without token", path: "/status", want: http.StatusOK},
+		{name: "status wrong token", path: "/status", header: "Bearer wrong-token", want: http.StatusOK},
+		{name: "status with token", path: "/status", header: "Bearer " + token, want: http.StatusOK},
+		{name: "metrics without token", path: "/metrics", want: http.StatusUnauthorized},
+		{name: "metrics with token", path: "/metrics", header: "Bearer " + token, want: http.StatusNotImplemented},
+		{name: "api alias status without token", path: "/api/v1/status", want: http.StatusOK},
+		{name: "api alias status with token", path: "/api/v1/status", header: "Bearer " + token, want: http.StatusOK},
+		{name: "api alias metrics without token", path: "/api/v1/metrics", want: http.StatusUnauthorized},
+		{name: "api alias metrics with token", path: "/api/v1/metrics", header: "Bearer " + token, want: http.StatusNotImplemented},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
+			}
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
 
@@ -201,6 +393,18 @@ func TestSetupRouter_AgentRoleCanOnlyReadSyncArtifacts(t *testing.T) {
 	router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/zones/example.com./signed/metadata", nil)
+	req.Header.Set("X-API-Key", agentKey)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/zones/example.com./ds", nil)
+	req.Header.Set("X-API-Key", agentKey)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusForbidden, w.Code)
+
 	body := &trackingReadCloser{}
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/zones", body)
 	req.Body = body
@@ -212,6 +416,12 @@ func TestSetupRouter_AgentRoleCanOnlyReadSyncArtifacts(t *testing.T) {
 	assert.False(t, body.read, "unauthorized roles must not read the body")
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/zones", nil)
+	req.Header.Set("X-API-Key", adminKey)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/zones/example.com./signed", nil)
 	req.Header.Set("X-API-Key", adminKey)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)

@@ -4,15 +4,19 @@ api:
   listen: "0.0.0.0:8080"
   # HMAC key for X-Zone-Signature on signed zone artifacts.
   # Required when api.auth.enabled is true. Agents that enable
-  # sync.verify_signatures must use the same shared secret in sync.controller_signature_key.
+  # sync.verify_signatures must include this key in sync.controller_signature_keys.
   # Generate with: openssl rand -base64 32
   artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
-  trusted_proxies: [] # e.g. ["10.0.0.0/8", "192.168.0.0/16"]
+  artifact_signature_key_id: "primary"
+  trusted_proxies: [] # e.g. ["10.0.0.0/8", "192.168.0.0/16"]; do not use 0.0.0.0/0 or ::/0
   auth:
     # The built-in default is true. When enabled, at least one valid API key
     # hash is required; otherwise the controller exits during config validation.
     # Set enabled: false only for intentionally unauthenticated local setups.
     enabled: true
+    # Keep false for new configs. Set true only while migrating legacy configs
+    # that relied on missing api_key_roles being treated as admin.
+    allow_implicit_admin_roles: false
     api_keys:
       # Generate: echo -n 'your-api-key' | sha256sum
       # Then prefix with "sha256:".
@@ -29,13 +33,16 @@ api:
 observability:
   # Prometheus metrics are served here, separate from the API listener.
   # Health/readiness/status endpoints are served on the API listener.
-  # Bind to 0.0.0.0 only behind network controls or an authenticated proxy.
+  # Bind to 0.0.0.0 only behind network controls and with auth_token set.
   listen: "127.0.0.1:9053"
+  # Required when listen is not loopback. Protects /metrics.
+  # Generate with: openssl rand -base64 32
+  auth_token: ""
 
 backend:
   type: "sqlite" # sqlite|postgres|mysql|git|etcd
   sqlite:
-    dsn: "file:/var/lib/arca-dns/arca-dns.db" # persistent path or ":memory:" for testing
+    dsn: "file:/var/lib/arca-dns/arca-dns.db" # controller config must use a file-backed database
   postgres:
     dsn: "postgres://user:pass@localhost:5432/arca_dns?sslmode=disable"
     max_open_conns: 25
@@ -63,7 +70,7 @@ backend:
 
 storage:
   artifact_directory: "/var/lib/arca-dns/artifacts"
-  key_directory: "/var/lib/arca-dns/keys"
+  # storage.key_directory is a deprecated alias; use dnssec.key_directory.
   max_versions_per_zone: 10
 
 dnssec:

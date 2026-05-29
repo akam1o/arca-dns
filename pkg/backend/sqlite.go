@@ -62,6 +62,15 @@ func (s *SQLiteBackend) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// CountZones returns the number of zones without loading zone records.
+func (s *SQLiteBackend) CountZones(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM zones").Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count zones: %w", err)
+	}
+	return count, nil
+}
+
 func sqliteDSNWithDefaultPragmas(dsn string) string {
 	defaults := []struct {
 		name  string
@@ -102,9 +111,7 @@ func sqliteDSNQuerySeparator(dsn string) string {
 	return "?"
 }
 
-// InitSchema creates the database schema inline (for in-memory or first-run usage).
-func (s *SQLiteBackend) InitSchema() error {
-	schema := `
+const sqliteSchemaSQL = `
 	CREATE TABLE IF NOT EXISTS zones (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT UNIQUE NOT NULL,
@@ -144,7 +151,10 @@ func (s *SQLiteBackend) InitSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_records_name_type ON records(zone_id, name, type);
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_records_unique ON records(zone_id, name, type, ttl, value_hash);
 	`
-	_, err := s.db.Exec(schema)
+
+// InitSchema creates the database schema inline (for in-memory or first-run usage).
+func (s *SQLiteBackend) InitSchema() error {
+	_, err := s.db.Exec(sqliteSchemaSQL)
 	return err
 }
 
@@ -206,12 +216,8 @@ func (s *SQLiteBackend) ListZones(ctx context.Context, opts ListOptions) ([]*mod
 		return nil, fmt.Errorf("error iterating zones: %w", err)
 	}
 
-	for _, zone := range zones {
-		records, err := s.loadRecordsDB(ctx, s.db, zone.Name)
-		if err != nil {
-			return nil, err
-		}
-		zone.Records = records
+	if err := s.loadRecordsForZonesDB(ctx, s.db, zones); err != nil {
+		return nil, err
 	}
 
 	return zones, nil
@@ -305,7 +311,11 @@ func (s *SQLiteBackend) UpdateZone(ctx context.Context, zone *model.Zone, expect
 		}
 		return fmt.Errorf("query zone: %w", err)
 	}
-	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	parsedCreatedAt, err := parseSQLiteTimeField("created_at", createdAt)
+	if err != nil {
+		return fmt.Errorf("query zone: %w", err)
+	}
+	zone.CreatedAt = parsedCreatedAt
 	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
 	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
 		return err
@@ -427,34 +437,46 @@ func (s *SQLiteBackend) DeleteZone(ctx context.Context, name string) error {
 func (s *SQLiteBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	name = normalizeZoneName(name)
 
-	query := "DELETE FROM zones WHERE name = ?"
-	args := []interface{}{name}
-	if expectedVersion != "" {
-		query += " AND version = ?"
-		args = append(args, expectedVersion)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete zone transaction: %w", err)
 	}
 
-	result, err := s.db.ExecContext(ctx, query, args...)
+	if err := deleteSQLiteZoneWithVersionTx(ctx, tx, name, expectedVersion); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete zone transaction: %w", err)
+	}
+	return nil
+}
+
+func deleteSQLiteZoneWithVersionTx(ctx context.Context, tx *sql.Tx, name string, expectedVersion string) error {
+	var currentVersion string
+	if err := tx.QueryRowContext(ctx, "SELECT version FROM zones WHERE name = ?", name).Scan(&currentVersion); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ErrZoneNotFound
+		}
+		return fmt.Errorf("check zone version: %w", err)
+	}
+
+	if expectedVersion != "" && currentVersion != expectedVersion {
+		return model.ErrConflict
+	}
+
+	result, err := tx.ExecContext(ctx, "DELETE FROM zones WHERE name = ?", name)
 	if err != nil {
 		return fmt.Errorf("delete zone: %w", err)
 	}
-
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}
-	if rows > 0 {
-		return nil
-	}
-
-	var exists bool
-	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
-		return fmt.Errorf("check zone existence: %w", err)
-	}
-	if exists {
+	if rows == 0 {
 		return model.ErrConflict
 	}
-	return model.ErrZoneNotFound
+	return nil
 }
 
 // Close releases resources.
@@ -469,6 +491,7 @@ func (s *SQLiteBackend) Info() BackendInfo {
 		Capabilities: []string{
 			CapabilityZoneStore,
 			CapabilityZoneSummaryStore,
+			CapabilityZoneCountStore,
 			CapabilityHealthStore,
 			CapabilityTransactionalStore,
 			CapabilityDNSSECMetadataStore,
@@ -528,8 +551,9 @@ func (s *SQLiteBackend) scanZone(ctx context.Context, q querier, name string) (*
 		return nil, fmt.Errorf("query zone: %w", err)
 	}
 
-	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	zone.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	if err := applySQLiteZoneTimestamps(zone, createdAt, updatedAt); err != nil {
+		return nil, fmt.Errorf("query zone: %w", err)
+	}
 
 	if dnssecEnabled != 0 {
 		zone.DNSSEC = &model.DNSSECConfig{
@@ -541,11 +565,8 @@ func (s *SQLiteBackend) scanZone(ctx context.Context, q querier, name string) (*
 			NSEC3Iterations: uint16(dnssecNSEC3Iter.Int64),
 			NSEC3Salt:       dnssecSalt.String,
 		}
-		if dnssecSigExp.Valid && dnssecSigExp.String != "" {
-			t, err := time.Parse(time.RFC3339Nano, dnssecSigExp.String)
-			if err == nil {
-				zone.DNSSEC.SignatureExpiration = &t
-			}
+		if err := applySQLiteSignatureExpiration(zone.DNSSEC, dnssecSigExp); err != nil {
+			return nil, fmt.Errorf("query zone: %w", err)
 		}
 	}
 
@@ -574,8 +595,9 @@ func (s *SQLiteBackend) scanZoneRow(row scannable) (*model.Zone, error) {
 		return nil, fmt.Errorf("scan zone: %w", err)
 	}
 
-	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	zone.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	if err := applySQLiteZoneTimestamps(zone, createdAt, updatedAt); err != nil {
+		return nil, err
+	}
 
 	if dnssecEnabled != 0 {
 		zone.DNSSEC = &model.DNSSECConfig{
@@ -587,11 +609,8 @@ func (s *SQLiteBackend) scanZoneRow(row scannable) (*model.Zone, error) {
 			NSEC3Iterations: uint16(dnssecNSEC3Iter.Int64),
 			NSEC3Salt:       dnssecSalt.String,
 		}
-		if dnssecSigExp.Valid && dnssecSigExp.String != "" {
-			t, err := time.Parse(time.RFC3339Nano, dnssecSigExp.String)
-			if err == nil {
-				zone.DNSSEC.SignatureExpiration = &t
-			}
+		if err := applySQLiteSignatureExpiration(zone.DNSSEC, dnssecSigExp); err != nil {
+			return nil, err
 		}
 	}
 
@@ -628,6 +647,89 @@ func (s *SQLiteBackend) loadRecordsDB(ctx context.Context, q querier, zoneName s
 		records = append(records, rec)
 	}
 	return records, rows.Err()
+}
+
+func applySQLiteZoneTimestamps(zone *model.Zone, createdAt, updatedAt string) error {
+	parsedCreatedAt, err := parseSQLiteTimeField("created_at", createdAt)
+	if err != nil {
+		return err
+	}
+	parsedUpdatedAt, err := parseSQLiteTimeField("updated_at", updatedAt)
+	if err != nil {
+		return err
+	}
+	zone.CreatedAt = parsedCreatedAt
+	zone.UpdatedAt = parsedUpdatedAt
+	return nil
+}
+
+func applySQLiteSignatureExpiration(dnssec *model.DNSSECConfig, value sql.NullString) error {
+	if !value.Valid || value.String == "" {
+		return nil
+	}
+	parsed, err := parseSQLiteTimeField("dnssec_signature_expiration", value.String)
+	if err != nil {
+		return err
+	}
+	dnssec.SignatureExpiration = &parsed
+	return nil
+}
+
+func parseSQLiteTimeField(field string, value string) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse %s: %w", field, err)
+	}
+	return parsed, nil
+}
+
+func (s *SQLiteBackend) loadRecordsForZonesDB(ctx context.Context, q querier, zones []*model.Zone) error {
+	if len(zones) == 0 {
+		return nil
+	}
+
+	recordsByZone := make(map[string][]model.Record, len(zones))
+	for start := 0; start < len(zones); {
+		end := sqlBatchEnd(start, len(zones))
+		query := fmt.Sprintf(`
+			SELECT z.name, r.id, r.name, r.type, r.ttl, r.value, r.priority
+			FROM records r
+			JOIN zones z ON r.zone_id = z.id
+			WHERE z.name IN (%s)
+			ORDER BY z.name, r.name, r.type, r.id
+		`, sqlQuestionPlaceholders(end-start))
+
+		rows, err := q.QueryContext(ctx, query, sqlZoneNameArgs(zones, start, end)...)
+		if err != nil {
+			return fmt.Errorf("query records for zones: %w", err)
+		}
+
+		for rows.Next() {
+			var zoneName string
+			var rec model.Record
+			var id int64
+			var priority sql.NullInt64
+			if err := rows.Scan(&zoneName, &id, &rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan record: %w", err)
+			}
+			rec.ID = formatSQLRecordID(id)
+			if priority.Valid {
+				p := uint16(priority.Int64)
+				rec.Priority = &p
+			}
+			recordsByZone[zoneName] = append(recordsByZone[zoneName], rec)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("iterate records for zones: %w", err)
+		}
+		rows.Close()
+		start = end
+	}
+
+	assignZoneRecords(zones, recordsByZone)
+	return nil
 }
 
 func (s *SQLiteBackend) insertZoneTx(ctx context.Context, tx *sql.Tx, zone *model.Zone) (int64, error) {
@@ -840,12 +942,8 @@ func (t *sqliteTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zo
 		return nil, fmt.Errorf("iterate zones: %w", err)
 	}
 
-	for _, zone := range zones {
-		records, err := t.backend.loadRecordsDB(ctx, t.tx, zone.Name)
-		if err != nil {
-			return nil, err
-		}
-		zone.Records = records
+	if err := t.backend.loadRecordsForZonesDB(ctx, t.tx, zones); err != nil {
+		return nil, err
 	}
 	return zones, nil
 }
@@ -917,7 +1015,11 @@ func (t *sqliteTx) UpdateZone(ctx context.Context, zone *model.Zone, expectedVer
 		}
 		return fmt.Errorf("query zone: %w", err)
 	}
-	zone.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	parsedCreatedAt, err := parseSQLiteTimeField("created_at", createdAt)
+	if err != nil {
+		return fmt.Errorf("query zone: %w", err)
+	}
+	zone.CreatedAt = parsedCreatedAt
 	zone.SOA.Serial = updateSOASerial(currentSerial, zone.SOA.Serial)
 	if err := ensureZoneUpdateVersion(zone, currentVersion); err != nil {
 		return err
@@ -989,34 +1091,7 @@ func (t *sqliteTx) DeleteZone(ctx context.Context, name string) error {
 
 func (t *sqliteTx) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	name = normalizeZoneName(name)
-
-	query := "DELETE FROM zones WHERE name = ?"
-	args := []interface{}{name}
-	if expectedVersion != "" {
-		query += " AND version = ?"
-		args = append(args, expectedVersion)
-	}
-
-	result, err := t.tx.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("delete zone: %w", err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	}
-	if rows > 0 {
-		return nil
-	}
-
-	var exists bool
-	if err := t.tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = ?)", name).Scan(&exists); err != nil {
-		return fmt.Errorf("check zone existence: %w", err)
-	}
-	if exists {
-		return model.ErrConflict
-	}
-	return model.ErrZoneNotFound
+	return deleteSQLiteZoneWithVersionTx(ctx, t.tx, name, expectedVersion)
 }
 
 func (t *sqliteTx) Close() error                       { return nil }

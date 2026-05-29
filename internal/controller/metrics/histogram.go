@@ -3,6 +3,8 @@ package metrics
 import (
 	"fmt"
 	"sort"
+
+	"github.com/akam1o/arca-dns/pkg/metrics/promtext"
 )
 
 // Histogram is a minimal Prometheus-compatible histogram implementation.
@@ -55,15 +57,11 @@ func (h *Histogram) RenderPrometheus(name string, labelSet string) string {
 	// <name>_count{...} <count>
 	var out string
 	var cumulative uint64
-	prefix := ""
-	if labelSet != "" {
-		prefix = labelSet + ","
-	}
 	for i, upper := range h.buckets {
 		cumulative += h.counts[i]
-		out += fmt.Sprintf("%s_bucket{%sle=%q} %d\n", name, prefix, fmt.Sprintf("%g", upper), cumulative)
+		out += fmt.Sprintf("%s_bucket{%s} %d\n", name, promtext.AppendLabels(labelSet, promtext.Label{Name: "le", Value: fmt.Sprintf("%g", upper)}), cumulative)
 	}
-	out += fmt.Sprintf("%s_bucket{%sle=%q} %d\n", name, prefix, "+Inf", h.count)
+	out += fmt.Sprintf("%s_bucket{%s} %d\n", name, promtext.AppendLabels(labelSet, promtext.Label{Name: "le", Value: "+Inf"}), h.count)
 	out += fmt.Sprintf("%s_sum{%s} %g\n", name, labelSet, h.sum)
 	out += fmt.Sprintf("%s_count{%s} %d\n", name, labelSet, h.count)
 	return out

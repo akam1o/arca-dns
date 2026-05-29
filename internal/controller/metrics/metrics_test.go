@@ -53,8 +53,48 @@ func TestControllerMetricsRenderConcurrentSigningObserve(t *testing.T) {
 	wg.Wait()
 }
 
+func TestControllerMetricsRenderEscapesPrometheusLabels(t *testing.T) {
+	metrics := NewControllerMetrics()
+	metrics.apiRequests[apiKey{Method: `GET"`, Path: "/bad\npath\\tail", Status: 418}] = 2
+
+	h := NewHistogram([]float64{1})
+	h.Observe(0.5)
+	metrics.apiLatency[apiDurKey{Method: `GET"`, Path: "/bad\npath\\tail"}] = h
+	metrics.IncBackendOperation(`sync"op`, "bad\nstatus\\tail")
+	metrics.ObserveSigningDuration("signed\nok", 0.2)
+	metrics.IncResign(`resign"bad\tail`)
+
+	rendered := metrics.Render(1)
+
+	require.Contains(t, rendered, `api_requests_total{method="GET\"",path="/bad\npath\\tail",status="418"} 2`)
+	require.Contains(t, rendered, `api_request_duration_seconds_bucket{method="GET\"",path="/bad\npath\\tail",le="1"} 1`)
+	require.Contains(t, rendered, `backend_operations_total{operation="sync\"op",status="bad\nstatus\\tail"} 1`)
+	require.Contains(t, rendered, `dnssec_signing_duration_seconds_bucket{status="signed\nok",le="+Inf"} 1`)
+	require.Contains(t, rendered, `dnssec_scheduler_resign_total{result="resign\"bad\\tail"} 1`)
+}
+
+func TestControllerMetricsRenderBackendErrorClassesAndLatency(t *testing.T) {
+	metrics := NewControllerMetrics()
+	metrics.ObserveBackendOperation("get_zone", nil, 0.004)
+	metrics.ObserveBackendOperation("get_zone", model.ErrZoneNotFound, 0.02)
+	metrics.ObserveBackendOperation("update_zone", model.ErrConflict, 0.2)
+	metrics.ObserveBackendOperation("health_check", context.DeadlineExceeded, 0.5)
+
+	rendered := metrics.Render(0)
+
+	require.Contains(t, rendered, `backend_operations_total{operation="get_zone",status="success"} 1`)
+	require.Contains(t, rendered, `backend_operations_total{operation="get_zone",status="error"} 1`)
+	require.Contains(t, rendered, `backend_operation_errors_total{operation="get_zone",error_class="not_found"} 1`)
+	require.Contains(t, rendered, `backend_operation_errors_total{operation="update_zone",error_class="conflict"} 1`)
+	require.Contains(t, rendered, `backend_operation_errors_total{operation="health_check",error_class="timeout"} 1`)
+	require.Contains(t, rendered, `backend_operation_duration_seconds_count{operation="get_zone",status="success",error_class="none"} 1`)
+	require.Contains(t, rendered, `backend_operation_duration_seconds_count{operation="get_zone",status="error",error_class="not_found"} 1`)
+	require.Contains(t, rendered, `backend_operation_duration_seconds_count{operation="update_zone",status="error",error_class="conflict"} 1`)
+}
+
 type summaryOnlyStore struct {
 	total          int
+	summaryCalls   int
 	listZonesCalls int
 }
 
@@ -68,6 +108,7 @@ func (s *summaryOnlyStore) ListZones(ctx context.Context, opts backend.ListOptio
 }
 
 func (s *summaryOnlyStore) ListZoneSummaries(ctx context.Context, opts backend.ListOptions) ([]*backend.ZoneSummary, error) {
+	s.summaryCalls++
 	if opts.Offset >= s.total {
 		return []*backend.ZoneSummary{}, nil
 	}
@@ -101,11 +142,39 @@ func (s *summaryOnlyStore) Close() error {
 	return nil
 }
 
+type countOnlyStore struct {
+	summaryOnlyStore
+	count      int
+	countCalls int
+}
+
+func (s *countOnlyStore) CountZones(ctx context.Context) (int, error) {
+	s.countCalls++
+	return s.count, nil
+}
+
+func (s *countOnlyStore) ListZoneSummaries(ctx context.Context, opts backend.ListOptions) ([]*backend.ZoneSummary, error) {
+	s.summaryCalls++
+	return nil, fmt.Errorf("ListZoneSummaries should not be used for CountZones")
+}
+
 func TestCountZonesUsesSummaries(t *testing.T) {
 	store := &summaryOnlyStore{total: 2501}
 
 	count, err := CountZones(context.Background(), store)
 	require.NoError(t, err)
 	require.Equal(t, 2501, count)
+	require.Zero(t, store.listZonesCalls)
+	require.Equal(t, 3, store.summaryCalls)
+}
+
+func TestCountZonesUsesBackendCount(t *testing.T) {
+	store := &countOnlyStore{count: 2501}
+
+	count, err := CountZones(context.Background(), store)
+	require.NoError(t, err)
+	require.Equal(t, 2501, count)
+	require.Equal(t, 1, store.countCalls)
+	require.Zero(t, store.summaryCalls)
 	require.Zero(t, store.listZonesCalls)
 }

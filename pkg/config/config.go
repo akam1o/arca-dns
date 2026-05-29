@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +13,7 @@ import (
 const DefaultDNSTapSocketMode = os.FileMode(0o660)
 const DefaultDNSTapSocketModeString = "0660"
 const DefaultControllerClientMaxResponseBytes int64 = 64 * 1024 * 1024
+const DefaultAgentSyncMinFreeBytes int64 = 100 * 1024 * 1024
 
 // ControllerConfig is the configuration for the arca-dns-controller.
 type ControllerConfig struct {
@@ -34,7 +37,8 @@ type ControllerConfig struct {
 }
 
 // DNSSECKeyDirectory returns the effective directory used for DNSSEC key
-// material. storage.key_directory is kept as a compatibility alias.
+// material. dnssec.key_directory is canonical; storage.key_directory is kept as
+// a compatibility alias.
 func (c *ControllerConfig) DNSSECKeyDirectory() string {
 	if keyDirectory := strings.TrimSpace(c.DNSSEC.KeyDirectory); keyDirectory != "" {
 		return keyDirectory
@@ -82,8 +86,11 @@ type APIConfig struct {
 	Listen string `mapstructure:"listen"`
 
 	// ArtifactSignatureKey signs signed-zone artifact responses with HMAC-SHA256.
-	// Agents use sync.controller_signature_key with the same shared secret to verify.
+	// Agents use sync.controller_signature_key or sync.controller_signature_keys to verify.
 	ArtifactSignatureKey string `mapstructure:"artifact_signature_key"`
+
+	// ArtifactSignatureKeyID identifies ArtifactSignatureKey in signed artifact responses.
+	ArtifactSignatureKeyID string `mapstructure:"artifact_signature_key_id"`
 
 	// Authentication configuration
 	Auth AuthConfig `mapstructure:"auth"`
@@ -96,10 +103,13 @@ type APIConfig struct {
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
 }
 
-// ObservabilityConfig configures the controller's unauthenticated operational endpoints.
+// ObservabilityConfig configures the controller's operational endpoints.
 type ObservabilityConfig struct {
 	// Listen address for health, readiness, status, and Prometheus metrics.
 	Listen string `mapstructure:"listen"`
+
+	// AuthToken protects controller observability metrics when set.
+	AuthToken string `mapstructure:"auth_token"`
 }
 
 // TLSConfig configures TLS for agent -> controller communication (typically terminated by a reverse proxy).
@@ -129,8 +139,11 @@ type AuthConfig struct {
 	APIKeys map[string]string `mapstructure:"api_keys"`
 
 	// APIKeyRoles maps API key names to roles. Supported roles: admin, agent.
-	// Keys without an explicit role default to admin for backward compatibility.
 	APIKeyRoles map[string]string `mapstructure:"api_key_roles"`
+
+	// AllowImplicitAdminRoles preserves the legacy behavior where API keys
+	// without an explicit role are treated as admin. Prefer explicit roles.
+	AllowImplicitAdminRoles bool `mapstructure:"allow_implicit_admin_roles"`
 }
 
 // RateLimitConfig configures rate limiting.
@@ -169,7 +182,8 @@ type BackendConfig struct {
 // SQLiteBackendConfig configures the SQLite backend.
 type SQLiteBackendConfig struct {
 	// DSN is the SQLite data source name.
-	// Examples: "file:arca-dns.db", "file::memory:?cache=shared", ":memory:"
+	// Runtime controller configuration must use a file-backed DSN.
+	// Example: "file:arca-dns.db"
 	DSN string `mapstructure:"dsn"`
 }
 
@@ -260,7 +274,7 @@ type DNSSECConfig struct {
 	// Algorithm is the DNSSEC algorithm (8=RSA-SHA256, 13=ECDSA-P256)
 	Algorithm uint8 `mapstructure:"algorithm"`
 
-	// KeyDirectory is the directory where keys are stored
+	// KeyDirectory is the canonical directory where DNSSEC keys are stored
 	KeyDirectory string `mapstructure:"key_directory"`
 
 	// KSKKeySize is the KSK key size in bits (for RSA)
@@ -309,12 +323,12 @@ type DNSSECConfig struct {
 	MasterKeyAutoGenerate bool `mapstructure:"master_key_auto_generate"`
 }
 
-// StorageConfig configures artifact and key storage.
+// StorageConfig configures artifact storage.
 type StorageConfig struct {
 	// ArtifactDirectory is where signed zone files are stored
 	ArtifactDirectory string `mapstructure:"artifact_directory"`
 
-	// KeyDirectory is where DNSSEC keys are stored
+	// KeyDirectory is a deprecated compatibility alias for dnssec.key_directory.
 	KeyDirectory string `mapstructure:"key_directory"`
 
 	// MaxVersionsPerZone is the maximum number of versions to keep
@@ -328,6 +342,10 @@ type ControllerClientConfig struct {
 
 	// APIKey is the authentication API key
 	APIKey string `mapstructure:"api_key"`
+
+	// AllowPlaintextAPIKey permits sending API keys to non-loopback HTTP URLs.
+	// Prefer HTTPS; enable only for intentionally trusted transports.
+	AllowPlaintextAPIKey bool `mapstructure:"allow_plaintext_api_key"`
 
 	// TLS configuration
 	TLS TLSConfig `mapstructure:"tls"`
@@ -370,6 +388,34 @@ type NSDConfig struct {
 	ReloadTimeout time.Duration `mapstructure:"reload_timeout"`
 }
 
+// ValidateNSDRenderedConfigPath validates paths before they are rendered into
+// generated NSD configuration.
+func ValidateNSDRenderedConfigPath(field string, path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("invalid %s: empty", field)
+	}
+	if trimmed != path {
+		return fmt.Errorf("invalid %s: must not contain surrounding whitespace", field)
+	}
+	if strings.ContainsFunc(path, unsafeNSDRenderedConfigPathChar) {
+		return fmt.Errorf("invalid %s: contains unsafe characters", field)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("invalid %s: must be an absolute path", field)
+	}
+	return nil
+}
+
+func unsafeNSDRenderedConfigPathChar(r rune) bool {
+	switch r {
+	case '"', '\\':
+		return true
+	default:
+		return r < ' ' || r == 0x7f
+	}
+}
+
 // UnboundConfig configures Unbound integration.
 type UnboundConfig struct {
 	// Enabled enables Unbound management
@@ -401,6 +447,66 @@ type StubZoneConfig struct {
 
 	// NSDPort is the port of the local NSD instance
 	NSDPort int `mapstructure:"nsd_port"`
+}
+
+// Validate validates the Unbound stub-zone target rendered into generated
+// configuration snippets.
+func (c StubZoneConfig) Validate() error {
+	address := strings.TrimSpace(c.NSDAddress)
+	if address == "" {
+		return fmt.Errorf("invalid unbound.stub_zone.nsd_address: empty")
+	}
+	if address != c.NSDAddress {
+		return fmt.Errorf("invalid unbound.stub_zone.nsd_address: must not contain surrounding whitespace")
+	}
+	if strings.ContainsFunc(address, unsafeStubZoneAddressChar) {
+		return fmt.Errorf("invalid unbound.stub_zone.nsd_address: contains unsafe characters")
+	}
+	if !isValidStubZoneAddress(address) {
+		return fmt.Errorf("invalid unbound.stub_zone.nsd_address: must be an IP address or DNS hostname")
+	}
+	if c.NSDPort <= 0 || c.NSDPort > 65535 {
+		return fmt.Errorf("invalid unbound.stub_zone.nsd_port: must be between 1 and 65535")
+	}
+	return nil
+}
+
+func unsafeStubZoneAddressChar(r rune) bool {
+	switch r {
+	case '"', '\'', '`', '\\', '#', ';', '@':
+		return true
+	default:
+		return r <= ' ' || r == 0x7f
+	}
+}
+
+func isValidStubZoneAddress(address string) bool {
+	if net.ParseIP(address) != nil {
+		return true
+	}
+	if strings.Contains(address, ":") || len(address) > 253 {
+		return false
+	}
+	labels := strings.Split(strings.TrimSuffix(address, "."), ".")
+	for _, label := range labels {
+		if !isValidStubZoneAddressLabel(label) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidStubZoneAddressLabel(label string) bool {
+	if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+		return false
+	}
+	for _, r := range label {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // BIRDConfig configures BIRD BGP integration.
@@ -557,6 +663,9 @@ type MetricsConfig struct {
 
 	// Path is the HTTP path for metrics (default: /metrics)
 	Path string `mapstructure:"path"`
+
+	// AuthToken protects /status and the metrics endpoint when set.
+	AuthToken string `mapstructure:"auth_token"`
 }
 
 // HealthConfig configures health checking.
@@ -608,6 +717,10 @@ type SyncConfig struct {
 	// BackupVersions is the number of old zone versions to keep
 	BackupVersions int `mapstructure:"backup_versions"`
 
+	// MinFreeBytes is the minimum free disk space required before writing zone files.
+	// Set to 0 to disable the free-space guard.
+	MinFreeBytes int64 `mapstructure:"min_free_bytes"`
+
 	// VerifyChecksums enables SHA256 checksum verification
 	VerifyChecksums bool `mapstructure:"verify_checksums"`
 
@@ -616,6 +729,9 @@ type SyncConfig struct {
 
 	// ControllerSignatureKey is the shared HMAC key used to verify controller artifact signatures.
 	ControllerSignatureKey string `mapstructure:"controller_signature_key"`
+
+	// ControllerSignatureKeys maps signature key IDs to shared HMAC keys for rotation.
+	ControllerSignatureKeys map[string]string `mapstructure:"controller_signature_keys"`
 
 	// ControllerPublicKey is a deprecated alias for ControllerSignatureKey.
 	ControllerPublicKey string `mapstructure:"controller_public_key"`
@@ -678,7 +794,6 @@ func DefaultControllerConfig() *ControllerConfig {
 		},
 		Storage: StorageConfig{
 			ArtifactDirectory:  "/var/lib/arca-dns/artifacts",
-			KeyDirectory:       "/var/lib/arca-dns/keys",
 			MaxVersionsPerZone: 10,
 		},
 		Logging: LoggingConfig{
@@ -694,6 +809,29 @@ func DefaultControllerConfig() *ControllerConfig {
 // SocketFileMode parses the configured DNSTap socket permission mode.
 func (c DNSTapConfig) SocketFileMode() (os.FileMode, error) {
 	return ParseDNSTapSocketMode(c.SocketMode)
+}
+
+// ValidateDNSTapSocketPath validates a DNSTap Unix socket path before it is
+// rendered into DNS server configuration snippets.
+func ValidateDNSTapSocketPath(path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("empty")
+	}
+	if trimmed != path {
+		return fmt.Errorf("must not contain surrounding whitespace")
+	}
+	if strings.ContainsFunc(path, unsafeDNSTapSocketPathChar) {
+		return fmt.Errorf("contains control characters")
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("must be an absolute path")
+	}
+	return nil
+}
+
+func unsafeDNSTapSocketPathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
 }
 
 // ParseDNSTapSocketMode parses a DNSTap Unix socket permission mode from an
@@ -808,6 +946,7 @@ func DefaultAgentConfig() *AgentConfig {
 			Jitter:           5 * time.Second,
 			MaxStaleness:     5 * time.Minute,
 			BackupVersions:   3,
+			MinFreeBytes:     DefaultAgentSyncMinFreeBytes,
 			VerifyChecksums:  true,
 			VerifySignatures: true,
 		},

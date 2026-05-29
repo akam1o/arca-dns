@@ -243,7 +243,7 @@ func TestConvertRecordToRR_InvalidMX(t *testing.T) {
 
 	_, err := convertRecordToRR("example.com.", record)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid MX value format")
+	assert.Contains(t, err.Error(), "MX value must be")
 }
 
 func TestConvertRecordToRR_SplitsLongTXT(t *testing.T) {
@@ -276,7 +276,7 @@ func TestConvertRecordToRR_InvalidSRV(t *testing.T) {
 
 	_, err := convertRecordToRR("example.com.", record)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid SRV value format")
+	assert.Contains(t, err.Error(), "SRV value must be")
 }
 
 func TestConvertRecordToRR_InvalidCAA(t *testing.T) {
@@ -289,7 +289,25 @@ func TestConvertRecordToRR_InvalidCAA(t *testing.T) {
 
 	_, err := convertRecordToRR("example.com.", record)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid CAA value format")
+	assert.Contains(t, err.Error(), "CAA value must be")
+}
+
+func TestConvertRecordToRR_CAAUsesParsedValue(t *testing.T) {
+	record := &model.Record{
+		Name:  "@",
+		Type:  "CAA",
+		TTL:   3600,
+		Value: "128 issue \"ca.example.com\"",
+	}
+
+	rr, err := convertRecordToRR("example.com.", record)
+	require.NoError(t, err)
+
+	caa, ok := rr.(*dns.CAA)
+	require.True(t, ok)
+	assert.Equal(t, uint8(128), caa.Flag)
+	assert.Equal(t, "issue", caa.Tag)
+	assert.Equal(t, "ca.example.com", caa.Value)
 }
 
 func TestConvertRecordToRR_UnsupportedType(t *testing.T) {

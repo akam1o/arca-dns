@@ -34,6 +34,8 @@ func TestBackendInfoCapabilitiesMatchImplementedInterfaces(t *testing.T) {
 			assertCapability(t, capabilities, CapabilityZoneStore, hasZoneStore)
 			_, hasSummary := tt.store.(ZoneSummaryStore)
 			assertCapability(t, capabilities, CapabilityZoneSummaryStore, hasSummary)
+			_, hasCount := tt.store.(ZoneCountStore)
+			assertCapability(t, capabilities, CapabilityZoneCountStore, hasCount)
 			_, hasHealth := tt.store.(HealthStore)
 			assertCapability(t, capabilities, CapabilityHealthStore, hasHealth)
 			_, hasDNSSECMetadata := tt.store.(DNSSECMetadataStore)
@@ -68,6 +70,7 @@ func knownCapabilities() map[string]struct{} {
 	return map[string]struct{}{
 		CapabilityZoneStore:              {},
 		CapabilityZoneSummaryStore:       {},
+		CapabilityZoneCountStore:         {},
 		CapabilityHealthStore:            {},
 		CapabilityDNSSECMetadataStore:    {},
 		CapabilityConditionalDeleteStore: {},

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,7 +31,6 @@ func setupSigningFailureTest(t *testing.T) (*httptest.Server, *backend.MemoryBac
 	store := backend.NewMemoryBackend()
 	tmpDir := t.TempDir()
 	keyPath := filepath.Join(tmpDir, "keys")
-	require.NoError(t, os.WriteFile(keyPath, []byte("not a directory"), 0600))
 
 	masterKey, err := dnssec.GenerateMasterKey()
 	require.NoError(t, err)
@@ -43,6 +41,7 @@ func setupSigningFailureTest(t *testing.T) (*httptest.Server, *backend.MemoryBac
 		Algorithm:    13,
 	})
 	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(keyPath, []byte("not a directory"), 0600))
 
 	signingService := service.NewSigningService(store, keyManager, filepath.Join(tmpDir, "artifacts"), nil, logger)
 	handler := NewHandler(store, signingService, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
@@ -144,8 +143,7 @@ func TestDeleteZone_CleansDNSSECArtifactsAndKeys(t *testing.T) {
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -177,6 +175,52 @@ func TestDeleteZone_CleansDNSSECArtifactsAndKeys(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "expected key directory to be removed, got %v", err)
 }
 
+func TestDeleteZone_IgnoresDNSSECCleanupFailureAfterBackendDelete(t *testing.T) {
+	logger := zap.NewNop()
+	store := backend.NewMemoryBackend()
+	tmpDir := t.TempDir()
+	artifactPath := filepath.Join(tmpDir, "artifacts")
+	require.NoError(t, os.WriteFile(artifactPath, []byte("not a directory"), 0600))
+
+	signingService := service.NewSigningService(store, nil, artifactPath, nil, logger)
+	handler := NewHandler(store, signingService, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+
+	apiCfg := config.DefaultControllerConfig().API
+	apiCfg.Auth.Enabled = false
+	apiCfg.RateLimit.Enabled = false
+	router := SetupRouter(handler, &apiCfg, logger)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("tcp listen not permitted in this environment: %v", err)
+	}
+	server := httptest.NewUnstartedServer(router)
+	server.Listener = ln
+	server.Start()
+	defer server.Close()
+
+	zoneName := "cleanup-fails.example.com."
+	zone := &model.Zone{
+		Name:    zoneName,
+		SOA:     model.DefaultSOA("ns1."+zoneName, "admin."+zoneName),
+		Records: []model.Record{apiTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(context.Background(), zone))
+	current, err := store.GetZone(context.Background(), zoneName)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/"+zoneName, nil)
+	require.NoError(t, err)
+	req.Header.Set("If-Match", current.Version)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	_, err = store.GetZone(context.Background(), zoneName)
+	require.ErrorIs(t, err, model.ErrZoneNotFound)
+}
+
 func TestDeleteZone_InvalidZoneNameReturnsBadRequestBeforeDNSSECCleanup(t *testing.T) {
 	server, _ := setupSigningFailureTest(t)
 	defer server.Close()
@@ -190,13 +234,6 @@ func TestDeleteZone_InvalidZoneNameReturnsBadRequestBeforeDNSSECCleanup(t *testi
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-}
-
-type mutateAfterFirstGetStore struct {
-	inner   *backend.MemoryBackend
-	target  string
-	mu      sync.Mutex
-	mutated bool
 }
 
 type postCreateReadFailureStore struct {
@@ -228,66 +265,9 @@ func (s *postCreateReadFailureStore) GetZone(ctx context.Context, name string) (
 	return s.MemoryBackend.GetZone(ctx, name)
 }
 
-func (s *mutateAfterFirstGetStore) GetZone(ctx context.Context, name string) (*model.Zone, error) {
-	zone, err := s.inner.GetZone(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-
-	if model.NormalizeZoneName(name) != s.target {
-		return zone, nil
-	}
-
-	s.mu.Lock()
-	shouldMutate := !s.mutated
-	if shouldMutate {
-		s.mutated = true
-	}
-	s.mu.Unlock()
-
-	if shouldMutate {
-		updated := *zone
-		updated.Records = append(append([]model.Record(nil), zone.Records...), model.Record{
-			Name:  "new",
-			Type:  model.RecordTypeA,
-			TTL:   300,
-			Value: "192.0.2.55",
-		})
-		if err := s.inner.UpdateZone(ctx, &updated, zone.Version); err != nil {
-			return nil, err
-		}
-	}
-
-	return zone, nil
-}
-
-func (s *mutateAfterFirstGetStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
-	return s.inner.ListZones(ctx, opts)
-}
-
-func (s *mutateAfterFirstGetStore) CreateZone(ctx context.Context, zone *model.Zone) error {
-	return s.inner.CreateZone(ctx, zone)
-}
-
-func (s *mutateAfterFirstGetStore) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
-	return s.inner.UpdateZone(ctx, zone, expectedVersion)
-}
-
-func (s *mutateAfterFirstGetStore) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssecConfig *model.DNSSECConfig) error {
-	return s.inner.UpdateDNSSECMetadata(ctx, zoneName, dnssecConfig)
-}
-
-func (s *mutateAfterFirstGetStore) DeleteZone(ctx context.Context, name string) error {
-	return s.inner.DeleteZone(ctx, name)
-}
-
-func (s *mutateAfterFirstGetStore) Close() error {
-	return s.inner.Close()
-}
-
-func TestGetSignedZone_UsesArtifactMetadataAfterSigningRefetch(t *testing.T) {
+func TestGetSignedZone_DoesNotSignOnReadWhenArtifactMissing(t *testing.T) {
 	logger := zap.NewNop()
-	inner := backend.NewMemoryBackend()
+	store := backend.NewMemoryBackend()
 	zone := &model.Zone{
 		Name: "example.com.",
 		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
@@ -297,15 +277,10 @@ func TestGetSignedZone_UsesArtifactMetadataAfterSigningRefetch(t *testing.T) {
 		},
 	}
 	zone.SOA.Serial = 2024010101
-	require.NoError(t, inner.CreateZone(context.Background(), zone))
+	require.NoError(t, store.CreateZone(context.Background(), zone))
 
-	initial, err := inner.GetZone(context.Background(), zone.Name)
+	initial, err := store.GetZone(context.Background(), zone.Name)
 	require.NoError(t, err)
-
-	store := &mutateAfterFirstGetStore{
-		inner:  inner,
-		target: model.NormalizeZoneName(zone.Name),
-	}
 
 	tmpDir := t.TempDir()
 	masterKey, err := dnssec.GenerateMasterKey()
@@ -338,15 +313,13 @@ func TestGetSignedZone_UsesArtifactMetadataAfterSigningRefetch(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 
-	updated, err := inner.GetZone(context.Background(), zone.Name)
+	updated, err := store.GetZone(context.Background(), zone.Name)
 	require.NoError(t, err)
-	require.NotEqual(t, initial.SOA.Serial, updated.SOA.Serial)
-	assert.Contains(t, string(body), "192.0.2.55")
-	assert.Equal(t, fmt.Sprintf("%d", updated.SOA.Serial), resp.Header.Get("X-Zone-Serial"))
+	assert.Equal(t, initial.Version, updated.Version)
+	assert.Equal(t, initial.SOA.Serial, updated.SOA.Serial)
+	assert.Nil(t, updated.DNSSEC)
 }
 
 func TestCreateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
@@ -362,8 +335,7 @@ func TestCreateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -389,8 +361,7 @@ func TestCreateZone_DoesNotPersistWhenSignedArtifactStoreFails(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -447,8 +418,7 @@ func TestCreateZone_KeepsSignedArtifactWhenPostCreateReadFails(t *testing.T) {
 			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
 		},
 	}
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -507,8 +477,7 @@ func TestUpdateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 
 	update := *current
 	update.SOA.Refresh = 7200
-	body, err := json.Marshal(&update)
-	require.NoError(t, err)
+	body := marshalUpdateZoneRequest(t, &update)
 
 	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/signing-fails.com.", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -523,6 +492,47 @@ func TestUpdateZone_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 	assert.Empty(t, resp.Header.Get("ETag"))
 
 	unchanged, err := store.GetZone(context.Background(), "signing-fails.com.")
+	require.NoError(t, err)
+	assert.Equal(t, current.Version, unchanged.Version)
+	assert.Equal(t, current.SOA.Serial, unchanged.SOA.Serial)
+	assert.Equal(t, current.SOA.Refresh, unchanged.SOA.Refresh)
+	assert.Equal(t, current.Records, unchanged.Records)
+}
+
+func TestUpdateZone_DoesNotPersistWhenSignedArtifactStoreFails(t *testing.T) {
+	server, store := setupArtifactStoreFailureTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "artifact-store-fails.com.",
+		SOA:  model.DefaultSOA("ns1.artifact-store-fails.com.", "admin.artifact-store-fails.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.Background(), zone))
+
+	current, err := store.GetZone(context.Background(), "artifact-store-fails.com.")
+	require.NoError(t, err)
+
+	update := *current
+	update.SOA.Refresh = 7200
+	body := marshalUpdateZoneRequest(t, &update)
+
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/artifact-store-fails.com.", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get("ETag"))
+
+	unchanged, err := store.GetZone(context.Background(), "artifact-store-fails.com.")
 	require.NoError(t, err)
 	assert.Equal(t, current.Version, unchanged.Version)
 	assert.Equal(t, current.SOA.Serial, unchanged.SOA.Serial)
@@ -564,6 +574,46 @@ func TestCreateRecord_DoesNotPersistWhenAutoSigningFails(t *testing.T) {
 	assert.Empty(t, resp.Header.Get("ETag"))
 
 	unchanged, err := store.GetZone(context.Background(), "signing-fails.com.")
+	require.NoError(t, err)
+	assert.Equal(t, current.Version, unchanged.Version)
+	assert.Equal(t, current.SOA.Serial, unchanged.SOA.Serial)
+	assert.Equal(t, current.Records, unchanged.Records)
+}
+
+func TestCreateRecord_DoesNotPersistWhenSignedArtifactStoreFails(t *testing.T) {
+	server, store := setupArtifactStoreFailureTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "artifact-store-fails.com.",
+		SOA:  model.DefaultSOA("ns1.artifact-store-fails.com.", "admin.artifact-store-fails.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.Background(), zone))
+
+	current, err := store.GetZone(context.Background(), "artifact-store-fails.com.")
+	require.NoError(t, err)
+
+	record := model.Record{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"}
+	body, err := json.Marshal(&record)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/artifact-store-fails.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get("ETag"))
+
+	unchanged, err := store.GetZone(context.Background(), "artifact-store-fails.com.")
 	require.NoError(t, err)
 	assert.Equal(t, current.Version, unchanged.Version)
 	assert.Equal(t, current.SOA.Serial, unchanged.SOA.Serial)

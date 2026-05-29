@@ -145,9 +145,11 @@ api:
   listen: "0.0.0.0:8080"
   # Generate with: openssl rand -base64 32
   artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  artifact_signature_key_id: "primary"
   # TLS is typically terminated by a reverse proxy / ingress.
   auth:
     enabled: true
+    allow_implicit_admin_roles: false
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
       agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
@@ -157,7 +159,7 @@ api:
 
 observability:
   # Prometheus /metrics endpoint. /health, /ready, and /status are on the API listener.
-  # Bind to 0.0.0.0 only behind network controls or an authenticated proxy.
+  # Bind to 0.0.0.0 only with observability.auth_token and network controls.
   listen: "127.0.0.1:9053"
 
 backend:
@@ -173,8 +175,8 @@ dnssec:
 
 ```yaml
 controller:
-  # Prefer https:// unless this is an intentionally trusted local/private transport.
-  # Using http:// with api_key logs a warning.
+  # Prefer https:// for non-loopback controllers.
+  # Non-loopback http:// with api_key requires allow_plaintext_api_key: true.
   url: "http://localhost:8080"
   api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
   max_response_bytes: 67108864
@@ -182,8 +184,8 @@ controller:
 sync:
   sync_interval: "30s"
   verify_signatures: true
-  # Shared HMAC secret; must match api.artifact_signature_key.
-  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  controller_signature_keys:
+    primary: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 nsd:
   enabled: true

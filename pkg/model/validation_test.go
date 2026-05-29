@@ -137,6 +137,17 @@ func TestValidateMXValue(t *testing.T) {
 	}
 }
 
+func TestParseMXValue(t *testing.T) {
+	rdata, err := ParseMXValue("10 mail.example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, uint16(10), rdata.Priority)
+	assert.Equal(t, "mail.example.com.", rdata.Target)
+
+	_, err = ParseMXValue("65536 mail.example.com.")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid MX priority")
+}
+
 func TestValidateTXTValue(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -148,6 +159,8 @@ func TestValidateTXTValue(t *testing.T) {
 		{"valid long chunked value", strings.Repeat("a", MaxTXTValueLength), false},
 		{"empty", "", false}, // TXT records can be empty
 		{"too long", strings.Repeat("a", MaxTXTValueLength+1), true},
+		{"control character", "line\nbreak", true},
+		{"invalid utf8", string([]byte{0xff}), true},
 	}
 
 	for _, tt := range tests {
@@ -169,6 +182,18 @@ func TestSplitTXTValue(t *testing.T) {
 	assert.Len(t, chunks, 2)
 	assert.Len(t, chunks[0], MaxTXTCharacterStringLength)
 	assert.Len(t, chunks[1], 45)
+	assert.Equal(t, value, strings.Join(chunks, ""))
+}
+
+func TestSplitTXTValue_PreservesUTF8Boundaries(t *testing.T) {
+	value := strings.Repeat("あ", 86)
+	chunks := SplitTXTValue(value)
+
+	assert.Len(t, chunks, 2)
+	for _, chunk := range chunks {
+		assert.LessOrEqual(t, len(chunk), MaxTXTCharacterStringLength)
+		assert.NoError(t, ValidateTXTValue(chunk))
+	}
 	assert.Equal(t, value, strings.Join(chunks, ""))
 }
 
@@ -199,6 +224,19 @@ func TestValidateSRVValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseSRVValue(t *testing.T) {
+	rdata, err := ParseSRVValue("10 60 5060 sip.example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, uint16(10), rdata.Priority)
+	assert.Equal(t, uint16(60), rdata.Weight)
+	assert.Equal(t, uint16(5060), rdata.Port)
+	assert.Equal(t, "sip.example.com.", rdata.Target)
+
+	_, err = ParseSRVValue("10 60 65536 sip.example.com.")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid SRV port")
 }
 
 func TestNormalizeRecordDerivedFields_DerivesPriority(t *testing.T) {
@@ -301,10 +339,13 @@ func TestValidateCAAValue(t *testing.T) {
 		{"valid issue", "0 issue \"letsencrypt.org\"", false},
 		{"valid issuewild", "0 issuewild \"ca.example.com\"", false},
 		{"valid iodef", "0 iodef \"mailto:security@example.com\"", false},
+		{"valid empty quoted value", "0 issue \"\"", false},
 		{"missing fields", "0 issue", true},
 		{"invalid flags", "abc issue \"letsencrypt.org\"", true},
 		{"flags too high", "256 issue \"letsencrypt.org\"", true},
 		{"invalid tag", "0 issue! \"letsencrypt.org\"", true},
+		{"unbalanced quote", "0 issue \"letsencrypt.org", true},
+		{"control character", "0 issue \"line\nbreak\"", true},
 	}
 
 	for _, tt := range tests {

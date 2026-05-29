@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
@@ -36,6 +38,7 @@ var (
 const (
 	defaultMigrateBackend    = "sqlite"
 	supportedMigrateBackends = "sqlite, postgres, mysql, git, etcd"
+	maxMigrationFileSize     = config.DefaultControllerClientMaxResponseBytes
 )
 
 var errOverwriteConditionalDeleteUnsupported = errors.New("backend does not support atomic conditional delete")
@@ -286,7 +289,7 @@ func exportFromStore(ctx context.Context, store backend.ZoneStore, outputDir str
 	}
 
 	// Create output directory
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := ensureMigrationDirectory(outputDir, "output directory"); err != nil {
 		return 0, fmt.Errorf("create output directory: %w", err)
 	}
 
@@ -300,7 +303,7 @@ func exportFromStore(ctx context.Context, store backend.ZoneStore, outputDir str
 			return 0, fmt.Errorf("marshal zone %s: %w", zone.Name, err)
 		}
 
-		if err := os.WriteFile(filename, data, 0644); err != nil {
+		if err := writeMigrationFileAtomicSynced(filename, data, 0644); err != nil {
 			return 0, fmt.Errorf("write zone %s: %w", zone.Name, err)
 		}
 
@@ -312,7 +315,117 @@ func exportFromStore(ctx context.Context, store backend.ZoneStore, outputDir str
 	return exported, nil
 }
 
+func writeMigrationFileAtomicSynced(path string, data []byte, perm os.FileMode) error {
+	dirPath := filepath.Dir(path)
+	if err := validateExistingMigrationDirectory(dirPath, "output directory"); err != nil {
+		return fmt.Errorf("stat output directory: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+
+	tmpPath := tmp.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if n, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	} else if n != len(data) {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", io.ErrShortWrite)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename temp file: %w", err)
+	}
+	cleanupTmp = false
+
+	if err := syncMigrationDir(dirPath); err != nil {
+		return fmt.Errorf("sync output directory: %w", err)
+	}
+
+	return nil
+}
+
+func ensureMigrationDirectory(path string, label string) error {
+	existed := true
+	if err := validateExistingMigrationDirectory(path, label); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %s: %w", label, err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", label, err)
+	}
+	if err := validateExistingMigrationDirectory(path, label); err != nil {
+		return fmt.Errorf("stat %s: %w", label, err)
+	}
+	if !existed {
+		if err := syncMigrationDir(filepath.Dir(path)); err != nil {
+			return fmt.Errorf("sync %s parent: %w", label, err)
+		}
+	}
+
+	return nil
+}
+
+func validateExistingMigrationDirectory(path string, label string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s must be a directory: %s", label, path)
+	}
+	return nil
+}
+
+func syncMigrationDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
+			syncErr = nil
+		}
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
 func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string, dryRun bool, overwrite bool) (int, error) {
+	if err := validateExistingMigrationDirectory(inputDir, "input directory"); err != nil {
+		return 0, fmt.Errorf("stat input directory: %w", err)
+	}
+
 	// Read zone files
 	files, err := filepath.Glob(filepath.Join(inputDir, "*.json"))
 	if err != nil {
@@ -328,7 +441,7 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 	// Parse and validate zones
 	zones := make([]*model.Zone, 0, len(files))
 	for _, file := range files {
-		data, err := os.ReadFile(file)
+		data, err := readRegularMigrationFile(file)
 		if err != nil {
 			return 0, fmt.Errorf("read file %s: %w", file, err)
 		}
@@ -388,6 +501,51 @@ func importToStore(ctx context.Context, store backend.ZoneStore, inputDir string
 		fmt.Printf("\nImport complete: %d zones imported\n", imported)
 	}
 	return imported, nil
+}
+
+func readRegularMigrationFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("migration file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("migration file must be a regular file: %s", path)
+	}
+	if info.Size() > maxMigrationFileSize {
+		return nil, fmt.Errorf("migration file exceeds maximum size of %d bytes: %s", maxMigrationFileSize, path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("migration file changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("migration file must be a regular file: %s", path)
+	}
+	if openedInfo.Size() > maxMigrationFileSize {
+		return nil, fmt.Errorf("migration file exceeds maximum size of %d bytes: %s", maxMigrationFileSize, path)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxMigrationFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxMigrationFileSize {
+		return nil, fmt.Errorf("migration file exceeds maximum size of %d bytes: %s", maxMigrationFileSize, path)
+	}
+	return data, nil
 }
 
 func overwriteZone(ctx context.Context, store backend.ZoneStore, zone *model.Zone) error {

@@ -4,10 +4,16 @@ import (
 	"bytes"
 	"fmt"
 	"text/template"
+
+	"github.com/akam1o/arca-dns/pkg/config"
 )
 
 // NSDDNSTapConfig generates NSD configuration for DNSTap logging.
 func NSDDNSTapConfig(socketPath string) (string, error) {
+	if err := config.ValidateDNSTapSocketPath(socketPath); err != nil {
+		return "", fmt.Errorf("invalid dnstap socket path: %w", err)
+	}
+
 	tmpl := `
 # DNSTap configuration for arca-dns agent
 server:
@@ -38,6 +44,10 @@ server:
 
 // UnboundDNSTapConfig generates Unbound configuration for DNSTap logging.
 func UnboundDNSTapConfig(socketPath string) (string, error) {
+	if err := config.ValidateDNSTapSocketPath(socketPath); err != nil {
+		return "", fmt.Errorf("invalid dnstap socket path: %w", err)
+	}
+
 	tmpl := `
 # DNSTap configuration for arca-dns agent
 server:

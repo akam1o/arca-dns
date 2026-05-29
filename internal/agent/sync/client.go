@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +26,9 @@ import (
 const (
 	listZonesPageLimit       = 1000
 	maxErrorResponseBodySize = 4 * 1024
+	maxTLSFileSize           = 4 * 1024 * 1024
+	zoneSignatureHeader      = "X-Zone-Signature"
+	zoneSignatureKeyIDHeader = "X-Zone-Signature-Key-ID"
 )
 
 // Client is an HTTP client for communicating with the arca-dns controller.
@@ -36,6 +41,7 @@ type Client struct {
 	verifyChecksums  bool
 	verifySignatures bool
 	signatureKey     string
+	signatureKeys    map[string]string
 }
 
 // ZoneInfo contains information about a zone from the controller.
@@ -82,17 +88,18 @@ func normalizeIfNoneMatch(etag string) string {
 	if etag == "" {
 		return ""
 	}
-	if etag == "*" {
-		return "*"
-	}
 	etag = strings.TrimPrefix(etag, "W/")
 	etag = strings.TrimSpace(etag)
 	etag = strings.Trim(etag, "\"")
-	if etag == "" {
+	if etag == "" || etag == "*" || strings.ContainsAny(etag, `",\`) || strings.ContainsFunc(etag, isInvalidETagChar) {
 		return ""
 	}
 	// Use a quoted strong ETag to match typical HTTP semantics and controller responses.
 	return `"` + etag + `"`
+}
+
+func isInvalidETagChar(r rune) bool {
+	return r < 0x20 || r == 0x7f
 }
 
 // NewClient creates a new controller client with retry logic and connection pooling.
@@ -114,7 +121,7 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 
 		// Load CA certificate if provided
 		if caFile != "" {
-			caCert, err := os.ReadFile(caFile)
+			caCert, err := readRegularTLSFile(caFile, "CA certificate file")
 			if err != nil {
 				return nil, fmt.Errorf("failed to read CA certificate: %w", err)
 			}
@@ -128,7 +135,7 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 
 		// Load client certificate if mutual TLS is enabled
 		if cfg.TLS.ClientAuth {
-			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+			cert, err := loadRegularClientCertificate(certFile, keyFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to load client certificate: %w", err)
 			}
@@ -139,6 +146,12 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 	// Create HTTP client with connection pooling and timeout
 	httpClient := &http.Client{
 		Timeout: cfg.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) == 0 || sameOrigin(req.URL, via[0].URL) {
+				return nil
+			}
+			return http.ErrUseLastResponse
+		},
 		Transport: &http.Transport{
 			TLSClientConfig:     tlsConfig,
 			MaxIdleConns:        10,
@@ -162,7 +175,99 @@ func NewClient(cfg config.ControllerClientConfig) (*Client, error) {
 	}, nil
 }
 
+func loadRegularClientCertificate(certFile string, keyFile string) (tls.Certificate, error) {
+	certPEMBlock, err := readRegularTLSFile(certFile, "client certificate file")
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("read client certificate file: %w", err)
+	}
+	keyPEMBlock, err := readRegularTLSPrivateKeyFile(keyFile)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("read client key file: %w", err)
+	}
+
+	return tls.X509KeyPair(certPEMBlock, keyPEMBlock)
+}
+
+func readRegularTLSFile(path string, label string) ([]byte, error) {
+	return readRegularTLSFileValidated(path, label, nil)
+}
+
+func readRegularTLSPrivateKeyFile(path string) ([]byte, error) {
+	return readRegularTLSFileValidated(path, "client key file", func(info os.FileInfo) error {
+		if info.Mode().Perm()&0o007 != 0 {
+			return fmt.Errorf("client key file permissions must not allow other access: %s (mode %04o)", path, info.Mode().Perm())
+		}
+		return nil
+	})
+}
+
+func readRegularTLSFileValidated(path string, label string, validate func(os.FileInfo) error) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+	if info.Size() > maxTLSFileSize {
+		return nil, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxTLSFileSize, path)
+	}
+	if validate != nil {
+		if err := validate(info); err != nil {
+			return nil, err
+		}
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("%s changed while opening: %s", label, path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+	if openedInfo.Size() > maxTLSFileSize {
+		return nil, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxTLSFileSize, path)
+	}
+	if validate != nil {
+		if err := validate(openedInfo); err != nil {
+			return nil, err
+		}
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxTLSFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxTLSFileSize {
+		return nil, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxTLSFileSize, path)
+	}
+	return data, nil
+}
+
+func sameOrigin(a *url.URL, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
 func validateTLSConfig(cfg config.ControllerClientConfig) error {
+	if err := validateAPIKeyTransport(cfg); err != nil {
+		return err
+	}
+
 	caFile := strings.TrimSpace(cfg.TLS.CAFile)
 	certFile := strings.TrimSpace(cfg.TLS.CertFile)
 	keyFile := strings.TrimSpace(cfg.TLS.KeyFile)
@@ -199,7 +304,70 @@ func validateTLSConfig(cfg config.ControllerClientConfig) error {
 			return fmt.Errorf("invalid TLS configuration: TLS requires an https controller URL")
 		}
 	}
+	if caFile != "" {
+		if err := validateTLSFilePath("ca_file", cfg.TLS.CAFile); err != nil {
+			return err
+		}
+	}
+	if certFile != "" {
+		if err := validateTLSFilePath("cert_file", cfg.TLS.CertFile); err != nil {
+			return err
+		}
+	}
+	if keyFile != "" {
+		if err := validateTLSFilePath("key_file", cfg.TLS.KeyFile); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func validateTLSFilePath(field string, path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("invalid TLS configuration: %s is empty", field)
+	}
+	if trimmed != path {
+		return fmt.Errorf("invalid TLS configuration: %s must not contain surrounding whitespace", field)
+	}
+	if strings.ContainsFunc(path, unsafeTLSFilePathChar) {
+		return fmt.Errorf("invalid TLS configuration: %s contains control characters", field)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("invalid TLS configuration: %s must be an absolute path", field)
+	}
+	return nil
+}
+
+func unsafeTLSFilePathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
+}
+
+func validateAPIKeyTransport(cfg config.ControllerClientConfig) error {
+	if strings.TrimSpace(cfg.APIKey) == "" || cfg.AllowPlaintextAPIKey {
+		return nil
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(cfg.URL))
+	if err != nil {
+		return fmt.Errorf("invalid controller URL: %w", err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") {
+		return nil
+	}
+	if isLoopbackURLHost(parsed.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("invalid controller API key transport: plaintext HTTP is only allowed for loopback hosts; use https or set allow_plaintext_api_key=true for an intentionally trusted transport")
+}
+
+func isLoopbackURLHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // SetVerifyChecksums controls whether signed zone downloads must include and
@@ -211,8 +379,15 @@ func (c *Client) SetVerifyChecksums(enabled bool) {
 // SetSignatureVerification controls whether signed zone downloads must include
 // a valid X-Zone-Signature header. The signature is base64(HMAC-SHA256(body, key)).
 func (c *Client) SetSignatureVerification(enabled bool, key string) {
+	c.SetSignatureVerificationKeys(enabled, key, nil)
+}
+
+// SetSignatureVerificationKeys controls signature verification with an optional
+// key ring keyed by X-Zone-Signature-Key-ID.
+func (c *Client) SetSignatureVerificationKeys(enabled bool, key string, keys map[string]string) {
 	c.verifySignatures = enabled
-	c.signatureKey = key
+	c.signatureKey = strings.TrimSpace(key)
+	c.signatureKeys = normalizeSignatureKeyRing(keys)
 }
 
 func (c *Client) readResponseBody(body io.Reader) ([]byte, error) {
@@ -276,15 +451,12 @@ func (c *Client) ListZones(ctx context.Context) ([]ZoneInfo, error) {
 			return zones, nil
 		}
 
-		count := result.Pagination.Count
-		if count == 0 {
-			count = len(result.Zones)
+		if err := validateListZonesPagination(result, offset, listZonesPageLimit); err != nil {
+			return nil, err
 		}
 
+		count := result.Pagination.Count
 		limit := result.Pagination.Limit
-		if limit <= 0 {
-			limit = listZonesPageLimit
-		}
 
 		if count == 0 || count < limit {
 			break
@@ -294,6 +466,25 @@ func (c *Client) ListZones(ctx context.Context) ([]ZoneInfo, error) {
 	}
 
 	return zones, nil
+}
+
+func validateListZonesPagination(result *listZonesResponse, expectedOffset, expectedLimit int) error {
+	if result.Pagination.Offset != expectedOffset {
+		return fmt.Errorf("invalid zones pagination offset: got %d, want %d", result.Pagination.Offset, expectedOffset)
+	}
+	if result.Pagination.Limit != expectedLimit {
+		return fmt.Errorf("invalid zones pagination limit: got %d, want %d", result.Pagination.Limit, expectedLimit)
+	}
+	if result.Pagination.Count < 0 {
+		return fmt.Errorf("invalid zones pagination count: must be non-negative")
+	}
+	if result.Pagination.Count != len(result.Zones) {
+		return fmt.Errorf("invalid zones pagination count: got %d, decoded %d zones", result.Pagination.Count, len(result.Zones))
+	}
+	if result.Pagination.Count > result.Pagination.Limit {
+		return fmt.Errorf("invalid zones pagination count: got %d, exceeds limit %d", result.Pagination.Count, result.Pagination.Limit)
+	}
+	return nil
 }
 
 func (c *Client) listZonesPage(ctx context.Context, offset, limit int) (*listZonesResponse, error) {
@@ -380,9 +571,9 @@ func (c *Client) fetchSignedZoneArtifact(ctx context.Context, zoneName string, c
 		ctx = context.Background()
 	}
 
-	url := fmt.Sprintf("%s/api/v1/zones/%s/signed", c.baseURL, zoneName)
+	endpoint := fmt.Sprintf("%s/api/v1/zones/%s/signed", c.baseURL, url.PathEscape(zoneName))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -437,7 +628,7 @@ func (c *Client) fetchSignedZoneArtifact(ctx context.Context, zoneName string, c
 		}
 
 		if c.verifySignatures {
-			if err := verifyArtifactSignature([]byte(currentBody), resp.Header.Get("X-Zone-Signature"), c.signatureKey); err != nil {
+			if err := verifyArtifactSignature([]byte(currentBody), resp.Header.Get(zoneSignatureHeader), resp.Header.Get(zoneSignatureKeyIDHeader), c.signatureKey, c.signatureKeys); err != nil {
 				return nil, fmt.Errorf("invalid signature header in 304 response: %w", err)
 			}
 		}
@@ -468,7 +659,8 @@ func (c *Client) fetchSignedZoneArtifact(ctx context.Context, zoneName string, c
 	zoneSerial := resp.Header.Get("X-Zone-Serial")
 	zoneHash := resp.Header.Get("X-Zone-Hash")
 	zoneHash8 := resp.Header.Get("X-Zone-Hash8")
-	zoneSignature := resp.Header.Get("X-Zone-Signature")
+	zoneSignature := resp.Header.Get(zoneSignatureHeader)
+	zoneSignatureKeyID := resp.Header.Get(zoneSignatureKeyIDHeader)
 
 	// Verify SHA256 checksum when enabled. A full checksum header is required
 	// because the agent otherwise cannot detect truncated or altered artifacts.
@@ -485,7 +677,7 @@ func (c *Client) fetchSignedZoneArtifact(ctx context.Context, zoneName string, c
 	}
 
 	if c.verifySignatures {
-		if err := verifyArtifactSignature(body, zoneSignature, c.signatureKey); err != nil {
+		if err := verifyArtifactSignature(body, zoneSignature, zoneSignatureKeyID, c.signatureKey, c.signatureKeys); err != nil {
 			return nil, err
 		}
 	}
@@ -572,10 +764,26 @@ func artifactSignature(body []byte, key string) string {
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func verifyArtifactSignature(body []byte, signatureHeader string, key string) error {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return fmt.Errorf("signature verification enabled but controller public key is empty")
+func normalizeSignatureKeyRing(keys map[string]string) map[string]string {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	normalized := make(map[string]string, len(keys))
+	for keyID, key := range keys {
+		keyID = strings.ToLower(strings.TrimSpace(keyID))
+		key = strings.TrimSpace(key)
+		if keyID != "" && key != "" {
+			normalized[keyID] = key
+		}
+	}
+	return normalized
+}
+
+func verifyArtifactSignature(body []byte, signatureHeader string, keyIDHeader string, legacyKey string, keyRing map[string]string) error {
+	key, err := artifactSignatureVerificationKey(keyIDHeader, legacyKey, keyRing)
+	if err != nil {
+		return err
 	}
 
 	signatureHeader = strings.TrimSpace(signatureHeader)
@@ -598,6 +806,37 @@ func verifyArtifactSignature(body []byte, signatureHeader string, key string) er
 	}
 
 	return nil
+}
+
+func artifactSignatureVerificationKey(keyIDHeader string, legacyKey string, keyRing map[string]string) (string, error) {
+	keyID := strings.ToLower(strings.TrimSpace(keyIDHeader))
+	if keyID != "" {
+		key := strings.TrimSpace(keyRing[keyID])
+		if key == "" {
+			legacyKey = strings.TrimSpace(legacyKey)
+			if legacyKey != "" && len(keyRing) == 0 {
+				return legacyKey, nil
+			}
+			return "", fmt.Errorf("unknown signature key id: %s", keyID)
+		}
+		return key, nil
+	}
+
+	legacyKey = strings.TrimSpace(legacyKey)
+	if legacyKey != "" {
+		return legacyKey, nil
+	}
+
+	switch len(keyRing) {
+	case 0:
+		return "", fmt.Errorf("signature verification enabled but controller signature key is empty")
+	case 1:
+		for _, key := range keyRing {
+			return strings.TrimSpace(key), nil
+		}
+	}
+
+	return "", fmt.Errorf("missing signature key id header in response")
 }
 
 // doWithRetry executes an HTTP request with retry logic.

@@ -132,20 +132,14 @@ func convertRecordToRR(origin string, record *model.Record) (dns.RR, error) {
 
 	case model.RecordTypeMX:
 		hdr.Rrtype = dns.TypeMX
-		// Parse MX value "priority target"
-		parts := strings.Fields(record.Value)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid MX value format: %s", record.Value)
-		}
-		var priority uint16
-		_, err := fmt.Sscanf(parts[0], "%d", &priority)
+		rdata, err := model.ParseMXValue(record.Value)
 		if err != nil {
-			return nil, fmt.Errorf("invalid MX priority: %s", parts[0])
+			return nil, err
 		}
 		return &dns.MX{
 			Hdr:        hdr,
-			Preference: priority,
-			Mx:         model.NormalizeDomainTargetName(parts[1], origin),
+			Preference: rdata.Priority,
+			Mx:         model.NormalizeDomainTargetName(rdata.Target, origin),
 		}, nil
 
 	case model.RecordTypeTXT:
@@ -164,53 +158,29 @@ func convertRecordToRR(origin string, record *model.Record) (dns.RR, error) {
 
 	case model.RecordTypeSRV:
 		hdr.Rrtype = dns.TypeSRV
-		// Parse SRV value "priority weight port target"
-		parts := strings.Fields(record.Value)
-		if len(parts) != 4 {
-			return nil, fmt.Errorf("invalid SRV value format: %s", record.Value)
-		}
-		var priority, weight, port uint16
-		_, err := fmt.Sscanf(parts[0], "%d", &priority)
+		rdata, err := model.ParseSRVValue(record.Value)
 		if err != nil {
-			return nil, fmt.Errorf("invalid SRV priority: %s", parts[0])
-		}
-		_, err = fmt.Sscanf(parts[1], "%d", &weight)
-		if err != nil {
-			return nil, fmt.Errorf("invalid SRV weight: %s", parts[1])
-		}
-		_, err = fmt.Sscanf(parts[2], "%d", &port)
-		if err != nil {
-			return nil, fmt.Errorf("invalid SRV port: %s", parts[2])
+			return nil, err
 		}
 		return &dns.SRV{
 			Hdr:      hdr,
-			Priority: priority,
-			Weight:   weight,
-			Port:     port,
-			Target:   model.NormalizeDomainTargetName(parts[3], origin),
+			Priority: rdata.Priority,
+			Weight:   rdata.Weight,
+			Port:     rdata.Port,
+			Target:   model.NormalizeDomainTargetName(rdata.Target, origin),
 		}, nil
 
 	case model.RecordTypeCAA:
 		hdr.Rrtype = dns.TypeCAA
-		// Parse CAA value "flags tag value"
-		parts := strings.Fields(record.Value)
-		if len(parts) < 3 {
-			return nil, fmt.Errorf("invalid CAA value format: %s", record.Value)
-		}
-		var flags uint8
-		_, err := fmt.Sscanf(parts[0], "%d", &flags)
+		rdata, err := model.ParseCAAValue(record.Value)
 		if err != nil {
-			return nil, fmt.Errorf("invalid CAA flags: %s", parts[0])
+			return nil, err
 		}
-		tag := parts[1]
-		value := strings.Join(parts[2:], " ")
-		// Remove quotes if present
-		value = strings.Trim(value, "\"")
 		return &dns.CAA{
 			Hdr:   hdr,
-			Flag:  flags,
-			Tag:   tag,
-			Value: value,
+			Flag:  rdata.Flags,
+			Tag:   rdata.Tag,
+			Value: rdata.Value,
 		}, nil
 
 	default:

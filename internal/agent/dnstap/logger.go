@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,7 +47,14 @@ type LogEntry struct {
 }
 
 // NewLogger creates a new DNSTap logger with rotation.
-func NewLogger(config LoggerConfig, sampler *Sampler, logger *zap.Logger) *Logger {
+func NewLogger(config LoggerConfig, sampler *Sampler, logger *zap.Logger) (*Logger, error) {
+	if config.LogFile == "" {
+		return nil, fmt.Errorf("dnstap log file is empty")
+	}
+	if err := ensureDNSTapLogFilePath(config.LogFile); err != nil {
+		return nil, err
+	}
+	logFile := filepath.Clean(config.LogFile)
 	if config.MaxSize <= 0 {
 		config.MaxSize = 100 // Default 100MB
 	}
@@ -57,7 +66,7 @@ func NewLogger(config LoggerConfig, sampler *Sampler, logger *zap.Logger) *Logge
 	}
 
 	rotatingWriter := &lumberjack.Logger{
-		Filename:   config.LogFile,
+		Filename:   logFile,
 		MaxSize:    config.MaxSize,
 		MaxBackups: config.MaxBackups,
 		MaxAge:     config.MaxAge,
@@ -69,7 +78,68 @@ func NewLogger(config LoggerConfig, sampler *Sampler, logger *zap.Logger) *Logge
 		logger:  logger,
 		sampler: sampler,
 		queue:   make(chan LogEntry, config.QueueSize),
+	}, nil
+}
+
+func ensureDNSTapLogFilePath(path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("dnstap log file is empty")
 	}
+	if trimmed != path {
+		return fmt.Errorf("dnstap log file must not contain surrounding whitespace: %s", path)
+	}
+	if strings.ContainsFunc(path, unsafeDNSTapLogPathChar) {
+		return fmt.Errorf("dnstap log file contains control characters: %s", path)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("dnstap log file must be an absolute path: %s", path)
+	}
+	path = filepath.Clean(path)
+
+	dir := filepath.Dir(path)
+	if err := validateExistingDNSTapLogDirectory(dir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat dnstap log directory: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create dnstap log directory: %w", err)
+	}
+	if err := validateExistingDNSTapLogDirectory(dir); err != nil {
+		return fmt.Errorf("stat dnstap log directory: %w", err)
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat dnstap log file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("dnstap log file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("dnstap log file must be a regular file: %s", path)
+	}
+	return nil
+}
+
+func unsafeDNSTapLogPathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
+}
+
+func validateExistingDNSTapLogDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("dnstap log directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("dnstap log directory must be a directory: %s", path)
+	}
+	return nil
 }
 
 // Run starts the async log writer.

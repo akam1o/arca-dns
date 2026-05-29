@@ -55,10 +55,10 @@ export ARCA_DNS_DNSSEC_MASTER_KEY_B64="Q0TV7fRu9QMZKg810KOiokVTJrJDSVPqgaOBxHKNX
 # config.yaml
 dnssec:
   enabled: true
-  key_directory: ./keys
+  key_directory: /tmp/arca-dns-keys
 ```
 
-マスターキーは `./keys/_masterkey` に 0600 権限で保存されます。
+マスターキーは `/tmp/arca-dns-keys/_masterkey` に 0600 権限で保存されます。
 
 **⚠️ 注意**: 自動生成は本番では推奨しません。
 

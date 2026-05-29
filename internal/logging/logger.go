@@ -31,9 +31,14 @@ func NewLogger(cfg config.LoggingConfig) (*zap.Logger, error) {
 		return nil, fmt.Errorf("invalid logging.format: %s (must be json or console)", cfg.Format)
 	}
 
-	output := strings.TrimSpace(cfg.Output)
-	if output == "" {
+	output := cfg.Output
+	trimmedOutput := strings.TrimSpace(output)
+	if trimmedOutput == "" {
 		output = "stdout"
+	} else if trimmedOutput != output {
+		return nil, fmt.Errorf("invalid logging.output: must not contain surrounding whitespace")
+	} else {
+		output = trimmedOutput
 	}
 	if err := ensureOutputPath(output); err != nil {
 		return nil, err
@@ -69,12 +74,65 @@ func ensureOutputPath(output string) error {
 		return nil
 	}
 
-	dir := filepath.Dir(output)
-	if dir == "." || dir == "" {
-		return nil
+	if err := ensureLogFilePath(output, "logging output file"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureLogFilePath(path string, label string) error {
+	if strings.ContainsFunc(path, unsafeLogPathChar) {
+		return fmt.Errorf("%s contains control characters: %s", label, path)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("%s must be an absolute path: %s", label, path)
+	}
+	path = filepath.Clean(path)
+
+	dir := filepath.Dir(path)
+	if err := validateExistingLogDirectory(dir, "logging output directory"); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat logging output directory: %w", err)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create logging output directory: %w", err)
+	}
+	if err := validateExistingLogDirectory(dir, "logging output directory"); err != nil {
+		return fmt.Errorf("stat logging output directory: %w", err)
+	}
+	return validateLogFilePathIfExists(path, label)
+}
+
+func unsafeLogPathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
+}
+
+func validateLogFilePathIfExists(path string, label string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", label, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+	return nil
+}
+
+func validateExistingLogDirectory(path string, label string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s must be a directory: %s", label, path)
 	}
 	return nil
 }

@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +46,37 @@ func setupTest(t *testing.T) (*Handler, *backend.MemoryBackend, *httptest.Server
 	server.Listener = ln
 	server.Start()
 	return handler, store, server
+}
+
+func marshalCreateZoneRequest(t *testing.T, zone *model.Zone) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(createZoneRequest{
+		Name:    zone.Name,
+		SOA:     zone.SOA,
+		Records: zone.Records,
+	})
+	require.NoError(t, err)
+	return body
+}
+
+func marshalUpdateZoneRequest(t *testing.T, zone *model.Zone) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(updateZoneRequest{
+		Name: zone.Name,
+		SOA:  zone.SOA,
+	})
+	require.NoError(t, err)
+	return body
+}
+
+func decodeAPIError(t *testing.T, body io.Reader) model.APIError {
+	t.Helper()
+
+	var apiErr model.APIError
+	require.NoError(t, json.NewDecoder(body).Decode(&apiErr))
+	return apiErr
 }
 
 type readinessFailingStore struct {
@@ -99,6 +133,18 @@ func (s *zoneStoreWithoutConditionalDelete) DeleteZone(ctx context.Context, name
 
 func (s *zoneStoreWithoutConditionalDelete) Close() error {
 	return s.inner.Close()
+}
+
+type wrappingErrorStore struct {
+	*backend.MemoryBackend
+}
+
+func (s *wrappingErrorStore) GetZone(ctx context.Context, name string) (*model.Zone, error) {
+	zone, err := s.MemoryBackend.GetZone(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("wrapped backend error: %w", err)
+	}
+	return zone, nil
 }
 
 type singleZoneStore struct {
@@ -202,8 +248,7 @@ func TestCreateZone(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -220,21 +265,58 @@ func TestCreateZone(t *testing.T) {
 	assert.NotZero(t, created.SOA.Serial)
 }
 
-func TestCreateZone_IgnoresClientManagedFields(t *testing.T) {
+func TestCreateZone_RejectsUnknownJSONFields(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
 
-	clientTime := time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)
 	body, err := json.Marshal(map[string]interface{}{
-		"name":       "managed.example.",
+		"name":       "unknown.example.",
 		"version":    "client-version",
-		"created_at": clientTime,
-		"updated_at": clientTime,
-		"dnssec": map[string]interface{}{
-			"enabled":   true,
-			"algorithm": 13,
-		},
-		"soa": model.DefaultSOA("ns1.managed.example.", "admin.managed.example."),
+		"soa":        model.DefaultSOA("ns1.unknown.example.", "admin.unknown.example."),
+		"records":    []model.Record{apiTestApexNSRecord()},
+		"unexpected": true,
+	})
+	require.NoError(t, err)
+
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Invalid request body", apiErr.Message)
+	assert.Equal(t, "invalid_request_body", apiErr.Details["reason"])
+	assert.Equal(t, "body", apiErr.Details["field"])
+	assert.Contains(t, apiErr.Details["error"], "unknown field")
+	_, err = store.GetZone(context.Background(), "unknown.example.")
+	assert.ErrorIs(t, err, model.ErrZoneNotFound)
+}
+
+func TestCreateZone_RejectsMalformedJSONWithSafeDetails(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", strings.NewReader(`{"name":`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Invalid request body", apiErr.Message)
+	assert.Equal(t, "invalid_request_body", apiErr.Details["reason"])
+	assert.Equal(t, "body", apiErr.Details["field"])
+	assert.NotEqual(t, "internal error", apiErr.Details["error"])
+}
+
+func TestCreateZone_IgnoresClientManagedRecordIDs(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	body, err := json.Marshal(map[string]interface{}{
+		"name": "managed.example.",
+		"soa":  model.DefaultSOA("ns1.managed.example.", "admin.managed.example."),
 		"records": []map[string]interface{}{
 			{
 				"name":  "@",
@@ -261,11 +343,8 @@ func TestCreateZone_IgnoresClientManagedFields(t *testing.T) {
 
 	var created model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
-	assert.NotEqual(t, "client-version", created.Version)
 	assert.False(t, created.CreatedAt.IsZero())
 	assert.False(t, created.UpdatedAt.IsZero())
-	assert.NotEqual(t, clientTime, created.CreatedAt)
-	assert.NotEqual(t, clientTime, created.UpdatedAt)
 	assert.Nil(t, created.DNSSEC)
 	require.Len(t, created.Records, 2)
 	createdA := apiRecordByNameType(created.Records, "@", model.RecordTypeA)
@@ -379,6 +458,7 @@ func TestHeadSignedZoneReturnsArtifactHeadersWithoutBody(t *testing.T) {
 	assert.NotEmpty(t, etag)
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash"))
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash8"))
+	assert.Equal(t, "attachment; filename=example.com.zone.signed", resp.Header.Get("Content-Disposition"))
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Empty(t, body)
@@ -404,8 +484,7 @@ func TestCreateZone_Duplicate(t *testing.T) {
 		Records: []model.Record{apiTestApexNSRecord()},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	// First create should succeed
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
@@ -414,8 +493,7 @@ func TestCreateZone_Duplicate(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	// Second create should fail with conflict
-	body, err = json.Marshal(zone)
-	require.NoError(t, err)
+	body = marshalCreateZoneRequest(t, zone)
 	resp, err = http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -436,13 +514,18 @@ func TestCreateZone_RejectsDuplicateRecords(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Zone validation failed", apiErr.Message)
+	assert.Equal(t, "validation_failed", apiErr.Details["reason"])
+	assert.Equal(t, "zone", apiErr.Details["field"])
+	assert.Contains(t, apiErr.Details["error"], "duplicate record")
 }
 
 func TestGetZone(t *testing.T) {
@@ -474,6 +557,17 @@ func TestGetZone(t *testing.T) {
 func TestGetZone_NotFound(t *testing.T) {
 	_, _, server := setupTest(t)
 	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/zones/nonexistent.com.")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestGetZone_WrappedNotFound(t *testing.T) {
+	store := &wrappingErrorStore{MemoryBackend: backend.NewMemoryBackend()}
+	_, server := setupTestWithStore(t, store)
 
 	resp, err := http.Get(server.URL + "/api/v1/zones/nonexistent.com.")
 	require.NoError(t, err)
@@ -518,6 +612,35 @@ func TestListZones(t *testing.T) {
 	assert.Equal(t, 3, result.Pagination.Count)
 }
 
+func TestListZones_FullFields(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+			{Name: "@", Type: "A", TTL: 300, Value: "192.0.2.1"},
+		},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+
+	resp, err := http.Get(server.URL + "/api/v1/zones?fields=full")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Zones []*model.Zone `json:"zones"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	require.Len(t, result.Zones, 1)
+	assert.Equal(t, "example.com.", result.Zones[0].Name)
+	assert.Len(t, result.Zones[0].Records, 2)
+}
+
 func TestListZones_SummaryFields(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
@@ -552,6 +675,26 @@ func TestListZones_SummaryFields(t *testing.T) {
 	assert.Equal(t, 1, result.Pagination.Count)
 }
 
+func TestListZones_InvalidFields(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	tests := []string{
+		"summary,records",
+		"records",
+	}
+
+	for _, fields := range tests {
+		t.Run(fields, func(t *testing.T) {
+			resp, err := http.Get(server.URL + "/api/v1/zones?fields=" + url.QueryEscape(fields))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
+}
+
 func TestListZones_Pagination(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
@@ -574,11 +717,59 @@ func TestListZones_Pagination(t *testing.T) {
 	var result struct {
 		Zones      []*model.Zone `json:"zones"`
 		Pagination struct {
-			Count int `json:"count"`
+			Offset     int  `json:"offset"`
+			Limit      int  `json:"limit"`
+			Count      int  `json:"count"`
+			NextOffset *int `json:"next_offset"`
 		} `json:"pagination"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
 	assert.Equal(t, 2, result.Pagination.Count)
+	assert.Equal(t, 0, result.Pagination.Offset)
+	assert.Equal(t, 2, result.Pagination.Limit)
+	require.NotNil(t, result.Pagination.NextOffset)
+	assert.Equal(t, 2, *result.Pagination.NextOffset)
+
+	resp, err = http.Get(server.URL + "/api/v1/zones?limit=2&offset=4")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	result = struct {
+		Zones      []*model.Zone `json:"zones"`
+		Pagination struct {
+			Offset     int  `json:"offset"`
+			Limit      int  `json:"limit"`
+			Count      int  `json:"count"`
+			NextOffset *int `json:"next_offset"`
+		} `json:"pagination"`
+	}{}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	assert.Equal(t, 1, result.Pagination.Count)
+	assert.Equal(t, 4, result.Pagination.Offset)
+	assert.Nil(t, result.Pagination.NextOffset)
+}
+
+func TestListZones_InvalidPagination(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	tests := []string{
+		"offset=-1",
+		"offset=abc",
+		"limit=0",
+		"limit=1001",
+		"limit=abc",
+	}
+
+	for _, query := range tests {
+		t.Run(query, func(t *testing.T) {
+			resp, err := http.Get(server.URL + "/api/v1/zones?" + query)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
 }
 
 func TestUpdateZone(t *testing.T) {
@@ -601,17 +792,9 @@ func TestUpdateZone(t *testing.T) {
 	require.NoError(t, err)
 	originalVersion := retrieved.Version
 
-	// Update the zone. Records in a zone update request are ignored; record
-	// mutations belong to record-specific workflows.
 	retrieved.SOA.Refresh = 7200
-	retrieved.Records = append(retrieved.Records, model.Record{
-		Name:  "www",
-		Type:  "A",
-		TTL:   300,
-		Value: "192.0.2.2",
-	})
 
-	body, _ := json.Marshal(retrieved)
+	body := marshalUpdateZoneRequest(t, retrieved)
 	req, _ := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", originalVersion)
@@ -647,8 +830,7 @@ func TestUpdateZone_RejectsWeakIfMatch(t *testing.T) {
 	require.NoError(t, err)
 	retrieved.SOA.Refresh = 7200
 
-	body, err := json.Marshal(retrieved)
-	require.NoError(t, err)
+	body := marshalUpdateZoneRequest(t, retrieved)
 	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -790,7 +972,7 @@ func TestUpdateZone_RepairsStoredDerivedPriority(t *testing.T) {
 	assert.Equal(t, uint16(10), *storedMX.Priority)
 }
 
-func TestUpdateZone_EmptyRecordsPreservesExistingRecords(t *testing.T) {
+func TestUpdateZone_RejectsUnknownJSONFields(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
 
@@ -821,10 +1003,10 @@ func TestUpdateZone_EmptyRecordsPreservesExistingRecords(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var updated model.Zone
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
-	userRecords := apiRecordsExceptType(updated.Records, model.RecordTypeNS)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	userRecords := apiRecordsExceptType(unchanged.Records, model.RecordTypeNS)
 	assert.Len(t, userRecords, 1)
 	assert.Equal(t, "192.0.2.1", userRecords[0].Value)
 }
@@ -916,6 +1098,48 @@ func TestCreateRecord(t *testing.T) {
 	createdRecord := apiRecordByNameType(updated.Records, "www", model.RecordTypeA)
 	require.NotNil(t, createdRecord)
 	assert.Equal(t, "192.0.2.2", createdRecord.Value)
+}
+
+func TestCreateRecord_RejectsUnknownJSONFields(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	body, err := json.Marshal(map[string]interface{}{
+		"name":       "www",
+		"type":       model.RecordTypeA,
+		"ttl":        300,
+		"value":      "192.0.2.2",
+		"unexpected": true,
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Invalid request body", apiErr.Message)
+	assert.Equal(t, "invalid_request_body", apiErr.Details["reason"])
+	assert.Equal(t, "body", apiErr.Details["field"])
+	assert.Contains(t, apiErr.Details["error"], "unknown field")
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Len(t, unchanged.Records, 1)
 }
 
 func TestCreateRecord_RejectsExpandedRelativeNamesTooLong(t *testing.T) {
@@ -1047,6 +1271,12 @@ func TestCreateRecord_RejectsPriorityMismatch(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Record validation failed", apiErr.Message)
+	assert.Equal(t, "validation_failed", apiErr.Details["reason"])
+	assert.Equal(t, "record", apiErr.Details["field"])
+	assert.Contains(t, apiErr.Details["error"], "priority 20 does not match value priority 10")
 
 	unchanged, err := store.GetZone(context.TODO(), "example.com.")
 	require.NoError(t, err)
@@ -1431,6 +1661,51 @@ func TestBulkRecords_RejectsEmptyOperationSet(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+func TestBulkRecords_RejectsTooManyOperations(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zone := &model.Zone{
+		Name:    "example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{apiTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+
+	records := make([]model.Record, maxBulkRecordOperations+1)
+	for i := range records {
+		records[i] = model.Record{Name: "bulk-" + strconv.Itoa(i), Type: "A", TTL: 300, Value: "192.0.2.1"}
+	}
+	body, err := json.Marshal(map[string]interface{}{
+		"create": records,
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/zones/example.com./records/batch", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", current.Version)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var apiErr model.APIError
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&apiErr))
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "Bulk request includes too many operations", apiErr.Message)
+	assert.Equal(t, float64(maxBulkRecordOperations+1), apiErr.Details["operations"])
+	assert.Equal(t, float64(maxBulkRecordOperations), apiErr.Details["max_operations"])
+
+	unchanged, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
+	assert.Equal(t, current.Version, unchanged.Version)
+	assert.Len(t, unchanged.Records, 1)
+}
+
 func TestCreateRecord_RequiresIfMatch(t *testing.T) {
 	_, store, server := setupTest(t)
 	defer server.Close()
@@ -1494,6 +1769,8 @@ func TestCreateRecord_RejectsStaleIfMatch(t *testing.T) {
 		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
 
 	record := model.Record{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"}
 	body, err := json.Marshal(record)
@@ -1508,6 +1785,10 @@ func TestCreateRecord_RejectsStaleIfMatch(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeConflict, apiErr.Code)
+	assert.Equal(t, "stale-version", apiErr.Details["provided_etag"])
+	assert.Equal(t, current.Version, apiErr.Details["current_version"])
 }
 
 func TestUpdateZone_PreservesDNSSECMetadata(t *testing.T) {
@@ -1573,9 +1854,11 @@ func TestUpdateZone_Conflict(t *testing.T) {
 		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
 
 	// Try to update with wrong version
-	body, _ := json.Marshal(zone)
+	body := marshalUpdateZoneRequest(t, zone)
 	req, _ := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", "wrong-version")
@@ -1586,6 +1869,10 @@ func TestUpdateZone_Conflict(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeConflict, apiErr.Code)
+	assert.Equal(t, "wrong-version", apiErr.Details["provided_etag"])
+	assert.Equal(t, current.Version, apiErr.Details["current_version"])
 }
 
 func TestDeleteZone(t *testing.T) {
@@ -1686,6 +1973,8 @@ func TestDeleteZone_RejectsStaleIfMatch(t *testing.T) {
 		Records: []model.Record{apiTestApexNSRecord()},
 	}
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
+	current, err := store.GetZone(context.TODO(), "example.com.")
+	require.NoError(t, err)
 
 	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/zones/example.com.", nil)
 	req.Header.Set("If-Match", "stale-version")
@@ -1695,6 +1984,10 @@ func TestDeleteZone_RejectsStaleIfMatch(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeConflict, apiErr.Code)
+	assert.Equal(t, "stale-version", apiErr.Details["provided_etag"])
+	assert.Equal(t, current.Version, apiErr.Details["current_version"])
 	_, err = store.GetZone(context.TODO(), "example.com.")
 	assert.NoError(t, err)
 }
@@ -1751,6 +2044,7 @@ func TestGetSignedZone(t *testing.T) {
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Serial"))
 	assert.NotEmpty(t, resp.Header.Get("X-Zone-Hash"))
 	assert.Equal(t, "text/plain; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "attachment; filename=example.com.zone.signed", resp.Header.Get("Content-Disposition"))
 
 	// Verify zone file content
 	body, _ := io.ReadAll(resp.Body)
@@ -1760,10 +2054,20 @@ func TestGetSignedZone(t *testing.T) {
 	assert.Contains(t, zoneFile, "ns1.example.com.")
 }
 
+func TestSignedZoneContentDispositionUsesSafeFilename(t *testing.T) {
+	header := signedZoneContentDisposition("../Bad Zone\r\nX-Injected: yes.")
+
+	assert.Equal(t, "attachment; filename=__bad_zone__x-injected__yes.zone.signed", header)
+	assert.NotContains(t, header, "\r")
+	assert.NotContains(t, header, "\n")
+	assert.NotContains(t, header, "/")
+}
+
 func TestGetSignedZone_WithArtifactSignature(t *testing.T) {
 	handler, store, server := setupTest(t)
 	defer server.Close()
 	handler.SetArtifactSignatureKey("test-signature-key")
+	handler.SetArtifactSignatureKeyID("primary")
 
 	zone := &model.Zone{
 		Name: "example.com.",
@@ -1783,12 +2087,14 @@ func TestGetSignedZone_WithArtifactSignature(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Equal(t, signArtifact(string(body), "test-signature-key"), resp.Header.Get("X-Zone-Signature"))
+	assert.Equal(t, "primary", resp.Header.Get("X-Zone-Signature-Key-ID"))
 }
 
 func TestGetSignedZone_AgentClientVerifiesArtifactSignature(t *testing.T) {
 	handler, store, server := setupTest(t)
 	defer server.Close()
 	handler.SetArtifactSignatureKey("test-signature-key")
+	handler.SetArtifactSignatureKeyID("primary")
 
 	zone := &model.Zone{
 		Name: "example.com.",
@@ -1808,7 +2114,7 @@ func TestGetSignedZone_AgentClientVerifiesArtifactSignature(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer client.Close()
-	client.SetSignatureVerification(true, "test-signature-key")
+	client.SetSignatureVerificationKeys(true, "", map[string]string{"primary": "test-signature-key"})
 
 	zoneFile, _, notModified, err := client.FetchSignedZone(context.Background(), "example.com.", "")
 	require.NoError(t, err)
@@ -1878,7 +2184,7 @@ func TestUpdateZone_MissingIfMatch(t *testing.T) {
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	// Try to update without If-Match header
-	body, _ := json.Marshal(zone)
+	body := marshalUpdateZoneRequest(t, zone)
 	req, _ := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	// No If-Match header
@@ -1903,8 +2209,7 @@ func TestUpdateZone_RejectsWildcardIfMatch(t *testing.T) {
 	require.NoError(t, store.CreateZone(context.TODO(), zone))
 
 	zone.SOA.Refresh = 7200
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalUpdateZoneRequest(t, zone)
 	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")

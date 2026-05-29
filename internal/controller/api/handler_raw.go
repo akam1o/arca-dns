@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+const (
+	rawZoneMultipartOverheadBytes int64 = 1 << 20
+	rawZoneMaxRequestBodySize           = parser.DefaultMaxZoneFileSize + rawZoneMultipartOverheadBytes
+)
+
+var errRawZoneTooLarge = errors.New("zone file exceeds maximum size")
 
 // CreateZoneRaw handles POST /api/v1/zones/raw
 // Accepts BIND zone files in multipart/form-data or text/plain format
@@ -23,25 +31,35 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 
 	// Handle different content types
 	if strings.HasPrefix(contentType, "multipart/form-data") {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, rawZoneMaxRequestBodySize)
+
 		// Parse multipart form
 		file, header, err := c.Request.FormFile("zonefile")
 		if err != nil {
+			if rawZoneReadTooLarge(err) {
+				writeRawZoneTooLarge(c)
+				return
+			}
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"missing zonefile in form data",
-				map[string]interface{}{"error": "internal error"},
+				rawZoneErrorDetails("missing_form_file", "zonefile", ""),
 			))
 			return
 		}
 		defer file.Close()
 
 		// Read file content
-		content, err := io.ReadAll(file)
+		content, err := readRawZoneContent(file)
 		if err != nil {
+			if rawZoneReadTooLarge(err) {
+				writeRawZoneTooLarge(c)
+				return
+			}
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"failed to read zonefile",
-				map[string]interface{}{"error": "internal error"},
+				rawZoneErrorDetails("read_failed", "zonefile", ""),
 			))
 			return
 		}
@@ -59,12 +77,16 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 
 	} else if strings.HasPrefix(contentType, "text/plain") || contentType == "" {
 		// Read raw body
-		body, err := io.ReadAll(c.Request.Body)
+		body, err := readRawZoneContent(c.Request.Body)
 		if err != nil {
+			if rawZoneReadTooLarge(err) {
+				writeRawZoneTooLarge(c)
+				return
+			}
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"failed to read request body",
-				map[string]interface{}{"error": "internal error"},
+				rawZoneErrorDetails("read_failed", "body", ""),
 			))
 			return
 		}
@@ -87,20 +109,21 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"zone file content is empty",
-			map[string]interface{}{"error": "internal error"},
+			rawZoneErrorDetails("empty_body", "zonefile", ""),
 		))
 		return
 	}
 
 	// Parse BIND zone file to model
 	var modelZone *model.Zone
+	var normalizeMetadata parser.NormalizeMetadata
 
 	if origin != "" {
 		// Use provided origin
-		modelZone, err = parser.BindToModel(rawZone, origin)
+		modelZone, normalizeMetadata, err = parser.BindToModelWithMetadata(rawZone, origin)
 	} else {
 		// Try to extract origin from zone file
-		modelZone, err = parser.BindToModelWithDefaults(rawZone)
+		modelZone, normalizeMetadata, err = parser.BindToModelWithDefaultsMetadata(rawZone)
 	}
 
 	if err != nil {
@@ -110,7 +133,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"zone file uses unsupported $GENERATE directive",
-				map[string]interface{}{"error": "internal error"},
+				rawZoneDirectiveErrorDetails("$GENERATE"),
 			))
 			return
 		}
@@ -118,33 +141,36 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
 				"zone file contains $INCLUDE directive (not supported via API for security)",
-				map[string]interface{}{"error": "internal error"},
+				rawZoneDirectiveErrorDetails("$INCLUDE"),
 			))
 			return
 		}
 		if strings.Contains(errStr, "validation failed") {
+			reason := sanitizeRawZoneError(extractValidationError(errStr))
 			c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 				model.ErrorCodeInvalidInput,
-				fmt.Sprintf("zone validation failed: %s", extractValidationError(errStr)),
-				map[string]interface{}{"error": "internal error"},
+				fmt.Sprintf("zone validation failed: %s", reason),
+				rawZoneErrorDetails("validation_failed", "zone", reason),
 			))
 			return
 		}
 
 		// Generic parse error
+		reason := sanitizeRawZoneError(errStr)
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
-			fmt.Sprintf("failed to parse zone file: %s", sanitizeError(errStr)),
-			map[string]interface{}{"error": "internal error"},
+			fmt.Sprintf("failed to parse zone file: %s", reason),
+			rawZoneErrorDetails("parse_failed", "zonefile", reason),
 		))
 		return
 	}
 
 	if err := model.NormalizeZoneDerivedFields(modelZone); err != nil {
+		reason := sanitizeRawZoneError(err.Error())
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"zone validation failed",
-			map[string]interface{}{"error": "internal error"},
+			rawZoneErrorDetails("validation_failed", "zone", reason),
 		))
 		return
 	}
@@ -173,7 +199,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 
 	// Create zone in backend (same pattern as CreateZone)
 	if err := h.store.CreateZone(c.Request.Context(), modelZone); err != nil {
-		if err == model.ErrZoneAlreadyExists {
+		if errors.Is(err, model.ErrZoneAlreadyExists) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeAlreadyExists,
 				fmt.Sprintf("zone %s already exists", modelZone.Name),
@@ -218,7 +244,7 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 	h.logger.Info("Zone created from raw BIND format", zap.String("zone", createdZone.Name), zap.String("version", createdZone.Version))
 
 	// Return created zone summary
-	c.JSON(http.StatusCreated, gin.H{
+	response := gin.H{
 		"name":    createdZone.Name,
 		"version": createdZone.Version,
 		"soa": gin.H{
@@ -232,7 +258,66 @@ func (h *Handler) CreateZoneRaw(c *gin.Context) {
 		},
 		"records_count": len(createdZone.Records),
 		"message":       "zone successfully parsed and created from BIND format",
-	})
+	}
+	if warnings := rawZoneImportWarnings(normalizeMetadata); len(warnings) > 0 {
+		response["warnings"] = warnings
+	}
+	c.JSON(http.StatusCreated, response)
+}
+
+func rawZoneImportWarnings(metadata parser.NormalizeMetadata) []gin.H {
+	warnings := make([]gin.H, 0, 1)
+	if metadata.DuplicateRecords > 0 {
+		warnings = append(warnings, gin.H{
+			"code":    "duplicate_records_deduplicated",
+			"message": "duplicate records were deduplicated during import",
+			"count":   metadata.DuplicateRecords,
+		})
+	}
+	return warnings
+}
+
+func readRawZoneContent(reader io.Reader) ([]byte, error) {
+	content, err := io.ReadAll(io.LimitReader(reader, parser.DefaultMaxZoneFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > parser.DefaultMaxZoneFileSize {
+		return nil, errRawZoneTooLarge
+	}
+	return content, nil
+}
+
+func rawZoneReadTooLarge(err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	return errors.Is(err, errRawZoneTooLarge) || errors.As(err, &maxBytesErr)
+}
+
+func writeRawZoneTooLarge(c *gin.Context) {
+	c.JSON(http.StatusRequestEntityTooLarge, model.NewAPIErrorWithDetails(
+		model.ErrorCodeInvalidInput,
+		fmt.Sprintf("zone file exceeds maximum size of %d bytes", parser.DefaultMaxZoneFileSize),
+		map[string]interface{}{"max_bytes": parser.DefaultMaxZoneFileSize},
+	))
+}
+
+func rawZoneDirectiveErrorDetails(directive string) map[string]interface{} {
+	return map[string]interface{}{
+		"reason":    "unsupported_directive",
+		"field":     "zonefile",
+		"directive": directive,
+	}
+}
+
+func rawZoneErrorDetails(reason, field, safeError string) map[string]interface{} {
+	details := map[string]interface{}{"reason": reason}
+	if field != "" {
+		details["field"] = field
+	}
+	if safeError != "" {
+		details["error"] = safeError
+	}
+	return details
 }
 
 // extractValidationError extracts the validation error message from a wrapped error
@@ -245,11 +330,25 @@ func extractValidationError(errStr string) string {
 	return errStr
 }
 
-// sanitizeError removes sensitive internal details from error messages
-func sanitizeError(errStr string) string {
-	// Remove file paths
-	if idx := strings.Index(errStr, ":"); idx != -1 {
-		return strings.TrimSpace(errStr[idx+1:])
+func sanitizeRawZoneError(errStr string) string {
+	const maxRawZoneErrorLength = 512
+
+	sanitized := strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			return ' '
+		case r < 0x20 || r == 0x7f:
+			return -1
+		default:
+			return r
+		}
+	}, strings.TrimSpace(errStr))
+	sanitized = strings.Join(strings.Fields(sanitized), " ")
+	if sanitized == "" {
+		return "unknown error"
 	}
-	return errStr
+	if len(sanitized) > maxRawZoneErrorLength {
+		return sanitized[:maxRawZoneErrorLength] + "..."
+	}
+	return sanitized
 }

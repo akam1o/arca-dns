@@ -32,8 +32,8 @@ The agent container image contains only `arca-dns-agent` and defaults to sync-on
 ### Controller
 
 - Choose one backend: `sqlite` (default), `postgres`, `mysql`, `git`, or `etcd`
-- Use SQLite with `:memory:` only for disposable local validation
-- Ensure `storage.artifact_directory` and `storage.key_directory` are writable
+- Controller configuration must use file-backed SQLite; `:memory:` is only for disposable local validation through test or migration helpers
+- Ensure `storage.artifact_directory` and `dnssec.key_directory` are writable
 - If DNSSEC is enabled, ensure `dnssec.key_directory` is writable and a DNSSEC master key is configured
 - If API auth is enabled, configure at least one API key hash
 
@@ -62,8 +62,8 @@ The agent container image contains only `arca-dns-agent` and defaults to sync-on
 
 ### API Key
 
-The controller default is `api.auth.enabled: true`. When auth is enabled, `api.auth.api_keys` must contain at least one `sha256:<64 hex>` hash.
-The controller observability listener is unauthenticated and binds to `127.0.0.1:9053` by default. Bind it to a remote address only behind network controls or an authenticated proxy.
+The controller default is `api.auth.enabled: true`. When auth is enabled, `api.auth.api_keys` must contain at least one `sha256:<64 hex>` hash and every key must have an explicit `api.auth.api_key_roles` entry.
+The controller observability listener binds to `127.0.0.1:9053` by default. Health/readiness/status aliases are unauthenticated. Metrics use `observability.auth_token` when configured, and non-loopback observability listeners require that token during config validation.
 
 ```bash
 ADMIN_API_KEY="$(openssl rand -hex 32)"
@@ -84,8 +84,10 @@ Set the hash on the controller:
 api:
   # Generate with: openssl rand -base64 32
   artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  artifact_signature_key_id: "primary"
   auth:
     enabled: true
+    allow_implicit_admin_roles: false
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
       agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
@@ -103,8 +105,8 @@ controller:
 
 sync:
   verify_signatures: true
-  # Shared HMAC secret; must match api.artifact_signature_key.
-  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  controller_signature_keys:
+    primary: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 
 For env-only controller deployments, API keys can be supplied as:
@@ -136,7 +138,7 @@ openssl rand -base64 32 | sudo tee /etc/arca-dns/master.key >/dev/null
 sudo chmod 600 /etc/arca-dns/master.key
 ```
 
-When both `storage.key_directory` and `dnssec.key_directory` are set, they must point to the same path, such as `/var/lib/arca-dns/keys`. `storage.key_directory` remains available as a compatibility alias for the DNSSEC key directory.
+Use `dnssec.key_directory` as the canonical DNSSEC key directory. `storage.key_directory` remains available as a deprecated compatibility alias; when both are set, they must point to the same path, such as `/var/lib/arca-dns/keys`.
 
 ## Backend Preparation
 
@@ -275,7 +277,7 @@ Minimum production checks:
 - replace the `api.auth.api_keys` placeholder with a real `sha256:<64 hex>` value
 - choose `backend.type` and configure the selected backend
 - if DNSSEC is enabled, configure `/etc/arca-dns/master.key` or `ARCA_DNS_DNSSEC_MASTER_KEY_B64`
-- verify `storage.*` and `dnssec.key_directory` are writable by the service
+- verify `storage.artifact_directory` and `dnssec.key_directory` are writable by the service
 
 The packaged controller runs as the `arca-dns` service user. The agent keeps root for NSD/Unbound/BIRD control, but its systemd unit is sandboxed and only the configured DNS, BIRD, state, log, and runtime paths are writable. If you customize those paths, add matching permissions or a systemd drop-in.
 
@@ -287,6 +289,7 @@ Set at least:
 
 - `controller.url`: controller URL
 - `controller.api_key`: raw API key
+- `controller.allow_plaintext_api_key`: set `true` only when intentionally using a trusted non-loopback HTTP transport with an API key
 - `nsd.enabled`, `nsd.zone_directory`, `nsd.control_path`
 - `unbound.enabled`, `unbound.control_path`
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
@@ -452,6 +455,12 @@ curl http://localhost:8080/ready
 
 Ingress example: `deployments/kubernetes/controller/examples/ingress.yaml`. Terminate TLS at the ingress controller or external load balancer.
 
+### 6. Add Ingress Rate Limiting
+
+`api.rate_limit` is process-local inside each controller process. When you run more than one controller replica, keep the controller limit enabled as defense in depth, but enforce the external API quota at the ingress controller, load balancer, or another shared reverse proxy in front of all replicas.
+
+The NGINX ingress example includes rate-limit annotations that return HTTP `429` before requests are sent to the controller service. Tune `nginx.ingress.kubernetes.io/limit-rps` and `nginx.ingress.kubernetes.io/limit-burst-multiplier` for your expected API traffic and automation clients.
+
 ## Agent Deployment Details
 
 The agent uses these controller APIs:
@@ -459,7 +468,7 @@ The agent uses these controller APIs:
 - `GET /api/v1/zones?fields=summary`
 - `GET /api/v1/zones/:name/signed`
 
-When controller API auth is enabled, the agent sends `controller.api_key` in the `X-API-Key` header. Use an API key with the `agent` role; it is limited to zone summary listing and signed artifact reads.
+When controller API auth is enabled, the agent sends `controller.api_key` in the `X-API-Key` header. Use an API key with the `agent` role; it is limited to zone summary listing and signed artifact reads. Non-loopback `http://` controller URLs are rejected when `controller.api_key` is set unless `controller.allow_plaintext_api_key` is explicitly enabled; prefer HTTPS for remote controllers.
 
 Zone sync does the following:
 
@@ -485,7 +494,8 @@ Controller health/readiness/status endpoints listen on the API address
 listen on the separate `observability.listen` address. The built-in default is
 `127.0.0.1:9053`; the Kubernetes examples keep this loopback-only and do not
 publish the observability port through the base Service. If you expose it for
-Service scraping, protect it with cluster network controls.
+Service scraping, configure `observability.auth_token` and protect it with
+cluster network controls.
 
 By default the agent status server listens on `127.0.0.1:9090`. Set
 `metrics.listen` to a remote address only when the endpoint is protected by
@@ -536,7 +546,7 @@ birdc show route
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| controller fails on `api.auth.api_keys` | placeholder hash or no API key configured | set a real `sha256:<64 hex>` value |
+| controller fails on `api.auth.api_keys` or `api.auth.api_key_roles` | placeholder hash, no API key configured, or missing explicit role | set a real `sha256:<64 hex>` value and `api_key_roles.<name>` |
 | controller fails on master key | DNSSEC enabled but no master key | set `ARCA_DNS_DNSSEC_MASTER_KEY_B64` or `/etc/arca-dns/master.key` |
 | MySQL/PostgreSQL reports missing tables | SQL schema was not applied | apply the backend schema under `migrations/<backend>/`, including required `*.up.sql` files in numeric order |
 | container cannot write `/var/lib/arca-dns` | distroless nonroot UID cannot write the volume | make the volume writable by UID/GID `65532`; Kubernetes base already sets `fsGroup: 65532` |

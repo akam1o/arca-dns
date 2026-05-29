@@ -2,6 +2,8 @@ package dnstap
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -28,7 +30,8 @@ func TestProcessor_ProcessFrame(t *testing.T) {
 		PrometheusEnabled: true,
 	}
 
-	processor := NewProcessor(config, logger)
+	processor, err := NewProcessor(config, logger)
+	require.NoError(t, err)
 
 	// Create a test DNSTap message
 	dnsQuery := new(dns.Msg)
@@ -109,7 +112,8 @@ func TestProcessor_ClientQueryDoesNotRecordResponseMetrics(t *testing.T) {
 		PrometheusEnabled: true,
 	}
 
-	processor := NewProcessor(config, logger)
+	processor, err := NewProcessor(config, logger)
+	require.NoError(t, err)
 
 	dnsQuery := new(dns.Msg)
 	dnsQuery.SetQuestion("example.com.", dns.TypeA)
@@ -169,7 +173,8 @@ func TestProcessor_GetPrometheusMetrics(t *testing.T) {
 		PrometheusEnabled: true,
 	}
 
-	processor := NewProcessor(config, logger)
+	processor, err := NewProcessor(config, logger)
+	require.NoError(t, err)
 
 	// Record some test queries
 	processor.metrics.RecordQuery("A", "NOERROR", false, 5*time.Millisecond)
@@ -200,7 +205,8 @@ func TestProcessor_InvalidFrame(t *testing.T) {
 		PrometheusEnabled: false,
 	}
 
-	processor := NewProcessor(config, logger)
+	processor, err := NewProcessor(config, logger)
+	require.NoError(t, err)
 
 	// Process invalid frame
 	frame := Frame{
@@ -237,7 +243,8 @@ func TestProcessor_NonClientMessage(t *testing.T) {
 		PrometheusEnabled: false,
 	}
 
-	processor := NewProcessor(config, logger)
+	processor, err := NewProcessor(config, logger)
+	require.NoError(t, err)
 
 	// Create a RESOLVER_QUERY message (not CLIENT_*)
 	msgType := dnstap.Message_RESOLVER_QUERY
@@ -270,4 +277,33 @@ func TestProcessor_NonClientMessage(t *testing.T) {
 		}
 	}
 	assert.Equal(t, int64(0), totalQueries)
+}
+
+func TestNewProcessorRejectsSymlinkedDNSTapLogFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	realPath := filepath.Join(tmpDir, "real.log")
+	linkPath := filepath.Join(tmpDir, "dnstap.log")
+	require.NoError(t, os.WriteFile(realPath, []byte("unchanged"), 0644))
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	config := ProcessorConfig{
+		ReceiverConfig: ReceiverConfig{
+			SocketPath: filepath.Join(tmpDir, "dnstap.sock"),
+			BufferSize: 10,
+		},
+		LoggerConfig: LoggerConfig{
+			LogFile: linkPath,
+		},
+		SamplerConfig: SamplerConfig{
+			SampleRate: 1.0,
+		},
+	}
+
+	processor, err := NewProcessor(config, zaptest.NewLogger(t))
+	require.Error(t, err)
+	assert.Nil(t, processor)
+	assert.Contains(t, err.Error(), "dnstap logger")
+	assert.Contains(t, err.Error(), "symlink")
 }

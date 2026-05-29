@@ -3,6 +3,8 @@ package dnssec
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -46,6 +48,71 @@ func TestNewKeyManager_EmptyDirectory(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, km)
 	assert.Contains(t, err.Error(), "key directory cannot be empty")
+}
+
+func TestNewKeyManager_RejectsUnsafeKeyDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name         string
+		keyDirectory string
+		want         string
+	}{
+		{
+			name:         "relative",
+			keyDirectory: "keys",
+			want:         "absolute path",
+		},
+		{
+			name:         "surrounding whitespace",
+			keyDirectory: " " + tmpDir + " ",
+			want:         "surrounding whitespace",
+		},
+		{
+			name:         "newline",
+			keyDirectory: tmpDir + "\nextra",
+			want:         "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			km, err := NewKeyManager(KeyManagerOptions{
+				KeyDirectory: tc.keyDirectory,
+				MasterKey:    masterKey,
+				Algorithm:    13,
+			})
+			require.Error(t, err)
+			require.Nil(t, km)
+			require.Contains(t, err.Error(), "key directory")
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestNewKeyManager_RejectsSymlinkedKeyDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyDir := filepath.Join(tmpDir, "keys")
+	targetDir := filepath.Join(tmpDir, "target")
+	require.NoError(t, os.Mkdir(targetDir, 0700))
+	if err := os.Symlink(targetDir, keyDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: keyDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.Error(t, err)
+	require.Nil(t, km)
+	require.Contains(t, err.Error(), "key directory")
+	require.Contains(t, err.Error(), "symlink")
 }
 
 func TestNewKeyManager_InvalidMasterKey(t *testing.T) {
@@ -215,6 +282,145 @@ func TestLoadZSK(t *testing.T) {
 	assert.Equal(t, zsk1.ID.KeyTag, zsk2.ID.KeyTag)
 	assert.Equal(t, zsk1.ID.Algorithm, zsk2.ID.Algorithm)
 	assert.Equal(t, zsk1.Role, zsk2.Role)
+}
+
+func TestLoadKSKRejectsSymlinkedActiveFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	_, err = km.GenerateKSK("example.com")
+	require.NoError(t, err)
+
+	activePath := filepath.Join(tmpDir, "example.com", "active.json")
+	realActivePath := activePath + ".real"
+	require.NoError(t, os.Rename(activePath, realActivePath))
+	if err := os.Symlink(realActivePath, activePath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	ksk, err := km.LoadKSK("example.com")
+	require.Error(t, err)
+	assert.Nil(t, ksk)
+	assert.Contains(t, err.Error(), "read active.json")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestLoadKSKRejectsOversizedActiveFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	_, err = km.GenerateKSK("example.com")
+	require.NoError(t, err)
+
+	activePath := filepath.Join(tmpDir, "example.com", "active.json")
+	file, err := os.OpenFile(activePath, os.O_WRONLY|os.O_TRUNC, 0600)
+	require.NoError(t, err)
+	require.NoError(t, file.Truncate(maxDNSSECKeyFileSize+1))
+	require.NoError(t, file.Close())
+
+	ksk, err := km.LoadKSK("example.com")
+	require.Error(t, err)
+	assert.Nil(t, ksk)
+	assert.Contains(t, err.Error(), "read active.json")
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
+func TestLoadKSKRejectsSymlinkedPublicKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	ksk, err := km.GenerateKSK("example.com")
+	require.NoError(t, err)
+
+	pubFile, _, err := MakeKeyFilenames("example.com", 13, ksk.ID.KeyTag)
+	require.NoError(t, err)
+	pubPath := filepath.Join(tmpDir, "example.com", pubFile)
+	realPubPath := pubPath + ".real"
+	require.NoError(t, os.Rename(pubPath, realPubPath))
+	if err := os.Symlink(realPubPath, pubPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	loaded, err := km.LoadKSK("example.com")
+	require.Error(t, err)
+	assert.Nil(t, loaded)
+	assert.Contains(t, err.Error(), "read public key")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestLoadKSKRejectsSymlinkedZoneKeyDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	targetDir := t.TempDir()
+	if err := os.Symlink(targetDir, filepath.Join(tmpDir, "example.com")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	ksk, err := km.LoadKSK("example.com")
+	require.Error(t, err)
+	assert.Nil(t, ksk)
+	assert.Contains(t, err.Error(), "zone key directory")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestGenerateKSKRejectsSymlinkedKeyDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyDir := filepath.Join(tmpDir, "keys")
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: keyDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	targetDir := filepath.Join(tmpDir, "target")
+	require.NoError(t, os.Mkdir(targetDir, 0700))
+	if err := os.Symlink(targetDir, keyDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	ksk, err := km.GenerateKSK("example.com")
+	require.Error(t, err)
+	assert.Nil(t, ksk)
+	assert.Contains(t, err.Error(), "key directory")
+	assert.Contains(t, err.Error(), "symlink")
+	assert.NoDirExists(t, filepath.Join(targetDir, "example.com"))
 }
 
 func TestLoadKey_NotFound(t *testing.T) {
@@ -580,6 +786,64 @@ func TestKeyManager_RemoveZoneKeys(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "expected zone key directory to be removed, got %v", err)
 
 	require.NoError(t, km.RemoveZoneKeys("example.com."))
+}
+
+func TestRemoveOldKeysRejectsSymlinkedActiveFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	km, err := NewKeyManager(KeyManagerOptions{
+		KeyDirectory: tmpDir,
+		MasterKey:    masterKey,
+		Algorithm:    13,
+	})
+	require.NoError(t, err)
+
+	_, _, err = km.GenerateZoneKeys("example.com.", false)
+	require.NoError(t, err)
+
+	zoneName, err := ZoneNameForFile("example.com.")
+	require.NoError(t, err)
+	activePath := filepath.Join(tmpDir, zoneName, "active.json")
+	realActivePath := activePath + ".real"
+	require.NoError(t, os.Rename(activePath, realActivePath))
+	if err := os.Symlink(realActivePath, activePath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	removed, err := km.RemoveOldKeys("example.com.")
+	require.Error(t, err)
+	assert.Zero(t, removed)
+	assert.Contains(t, err.Error(), "read active.json")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	return len(p) - 1, nil
+}
+
+func TestWriteAllRejectsShortWrite(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "zone key material", data: []byte("dnssec-key-material")},
+		{name: "master key material", data: []byte("base64-encoded-master-key")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := writeAll(shortWriter{}, tt.data)
+			require.Error(t, err)
+			require.True(t, errors.Is(err, io.ErrShortWrite), "expected ErrShortWrite, got %v", err)
+		})
+	}
 }
 
 func readTestActiveKeys(t *testing.T, keyDir, zone string) activeKeys {

@@ -55,11 +55,18 @@ func (p *PostgresBackend) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// InitSchema creates tables if they don't exist (for simple deployments).
-func (p *PostgresBackend) InitSchema() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS zones (
-		id SERIAL PRIMARY KEY,
+// CountZones returns the number of zones without loading zone records.
+func (p *PostgresBackend) CountZones(ctx context.Context) (int, error) {
+	var count int
+	if err := p.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM zones").Scan(&count); err != nil {
+		return 0, fmt.Errorf("count zones: %w", err)
+	}
+	return count, nil
+}
+
+const postgresSchemaSQL = `
+		CREATE TABLE IF NOT EXISTS zones (
+			id SERIAL PRIMARY KEY,
 		name VARCHAR(255) UNIQUE NOT NULL,
 		version VARCHAR(64) NOT NULL,
 		soa_mname VARCHAR(255) NOT NULL,
@@ -98,7 +105,10 @@ func (p *PostgresBackend) InitSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_records_name_type ON records(zone_id, name, type);
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_records_unique ON records(zone_id, name, type, ttl, value_hash);
 	`
-	_, err := p.db.Exec(schema)
+
+// InitSchema creates tables if they don't exist (for simple deployments).
+func (p *PostgresBackend) InitSchema() error {
+	_, err := p.db.Exec(postgresSchemaSQL)
 	return err
 }
 
@@ -159,12 +169,8 @@ func (p *PostgresBackend) ListZones(ctx context.Context, opts ListOptions) ([]*m
 		return nil, fmt.Errorf("iterate zones: %w", err)
 	}
 
-	for _, zone := range zones {
-		records, err := p.loadRecordsPG(ctx, p.db, zone.Name)
-		if err != nil {
-			return nil, err
-		}
-		zone.Records = records
+	if err := p.loadRecordsForZonesPG(ctx, p.db, zones); err != nil {
+		return nil, err
 	}
 	return zones, nil
 }
@@ -399,14 +405,35 @@ func (p *PostgresBackend) DeleteZone(ctx context.Context, name string) error {
 func (p *PostgresBackend) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	name = normalizeZoneName(name)
 
-	query := "DELETE FROM zones WHERE name = $1"
-	args := []interface{}{name}
-	if expectedVersion != "" {
-		query += " AND version = $2"
-		args = append(args, expectedVersion)
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete zone transaction: %w", err)
 	}
 
-	result, err := p.db.ExecContext(ctx, query, args...)
+	if err := deletePostgresZoneWithVersionTx(ctx, tx, name, expectedVersion); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete zone transaction: %w", err)
+	}
+	return nil
+}
+
+func deletePostgresZoneWithVersionTx(ctx context.Context, tx *sql.Tx, name string, expectedVersion string) error {
+	var currentVersion string
+	if err := tx.QueryRowContext(ctx, "SELECT version FROM zones WHERE name = $1 FOR UPDATE", name).Scan(&currentVersion); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ErrZoneNotFound
+		}
+		return fmt.Errorf("check zone version: %w", err)
+	}
+
+	if expectedVersion != "" && currentVersion != expectedVersion {
+		return model.ErrConflict
+	}
+
+	result, err := tx.ExecContext(ctx, "DELETE FROM zones WHERE name = $1", name)
 	if err != nil {
 		return fmt.Errorf("delete zone: %w", err)
 	}
@@ -414,18 +441,10 @@ func (p *PostgresBackend) DeleteZoneWithVersion(ctx context.Context, name string
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}
-	if rows > 0 {
-		return nil
-	}
-
-	var exists bool
-	if err := p.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = $1)", name).Scan(&exists); err != nil {
-		return fmt.Errorf("check zone existence: %w", err)
-	}
-	if exists {
+	if rows == 0 {
 		return model.ErrConflict
 	}
-	return model.ErrZoneNotFound
+	return nil
 }
 
 // Close releases resources.
@@ -438,6 +457,7 @@ func (p *PostgresBackend) Info() BackendInfo {
 		Capabilities: []string{
 			CapabilityZoneStore,
 			CapabilityZoneSummaryStore,
+			CapabilityZoneCountStore,
 			CapabilityHealthStore,
 			CapabilityTransactionalStore,
 			CapabilityDNSSECMetadataStore,
@@ -590,6 +610,55 @@ func (p *PostgresBackend) loadRecordsPG(ctx context.Context, q pgQuerier, zoneNa
 		records = append(records, rec)
 	}
 	return records, rows.Err()
+}
+
+func (p *PostgresBackend) loadRecordsForZonesPG(ctx context.Context, q pgQuerier, zones []*model.Zone) error {
+	if len(zones) == 0 {
+		return nil
+	}
+
+	recordsByZone := make(map[string][]model.Record, len(zones))
+	for start := 0; start < len(zones); {
+		end := sqlBatchEnd(start, len(zones))
+		query := fmt.Sprintf(`
+			SELECT z.name, r.id, r.name, r.type, r.ttl, r.value, r.priority
+			FROM records r
+			JOIN zones z ON r.zone_id = z.id
+			WHERE z.name IN (%s)
+			ORDER BY z.name, r.name, r.type, r.id
+		`, sqlNumberedPlaceholders(1, end-start))
+
+		rows, err := q.QueryContext(ctx, query, sqlZoneNameArgs(zones, start, end)...)
+		if err != nil {
+			return fmt.Errorf("query records for zones: %w", err)
+		}
+
+		for rows.Next() {
+			var zoneName string
+			var rec model.Record
+			var id int64
+			var priority sql.NullInt64
+			if err := rows.Scan(&zoneName, &id, &rec.Name, &rec.Type, &rec.TTL, &rec.Value, &priority); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan record: %w", err)
+			}
+			rec.ID = formatSQLRecordID(id)
+			if priority.Valid {
+				p := uint16(priority.Int64)
+				rec.Priority = &p
+			}
+			recordsByZone[zoneName] = append(recordsByZone[zoneName], rec)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("iterate records for zones: %w", err)
+		}
+		rows.Close()
+		start = end
+	}
+
+	assignZoneRecords(zones, recordsByZone)
+	return nil
 }
 
 func (p *PostgresBackend) insertZonePGTx(ctx context.Context, tx *sql.Tx, zone *model.Zone) (int64, error) {
@@ -745,12 +814,8 @@ func (t *pgTx) ListZones(ctx context.Context, opts ListOptions) ([]*model.Zone, 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate zones: %w", err)
 	}
-	for _, zone := range zones {
-		records, err := t.backend.loadRecordsPG(ctx, t.tx, zone.Name)
-		if err != nil {
-			return nil, err
-		}
-		zone.Records = records
+	if err := t.backend.loadRecordsForZonesPG(ctx, t.tx, zones); err != nil {
+		return nil, err
 	}
 	return zones, nil
 }
@@ -918,34 +983,7 @@ func (t *pgTx) DeleteZone(ctx context.Context, name string) error {
 
 func (t *pgTx) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	name = normalizeZoneName(name)
-
-	query := "DELETE FROM zones WHERE name = $1"
-	args := []interface{}{name}
-	if expectedVersion != "" {
-		query += " AND version = $2"
-		args = append(args, expectedVersion)
-	}
-
-	result, err := t.tx.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("delete zone: %w", err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	}
-	if rows > 0 {
-		return nil
-	}
-
-	var exists bool
-	if err := t.tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM zones WHERE name = $1)", name).Scan(&exists); err != nil {
-		return fmt.Errorf("check zone existence: %w", err)
-	}
-	if exists {
-		return model.ErrConflict
-	}
-	return model.ErrZoneNotFound
+	return deletePostgresZoneWithVersionTx(ctx, t.tx, name, expectedVersion)
 }
 
 func (t *pgTx) Close() error                       { return nil }

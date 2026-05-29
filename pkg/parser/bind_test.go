@@ -196,4 +196,62 @@ func TestDefaultParseOptions(t *testing.T) {
 	if opts.DefaultTTL != 3600 {
 		t.Errorf("expected DefaultTTL to be 3600, got %d", opts.DefaultTTL)
 	}
+
+	if opts.MaxBytes != DefaultMaxZoneFileSize {
+		t.Errorf("expected MaxBytes to be %d, got %d", DefaultMaxZoneFileSize, opts.MaxBytes)
+	}
+}
+
+func TestParseBINDZone_RejectsOversizedZoneFile(t *testing.T) {
+	input := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. (
+    2024010101 3600 1800 604800 86400
+)
+example.com. 3600 IN NS ns1.example.com.
+`
+	opts := DefaultParseOptions()
+	opts.MaxBytes = int64(len(input) - 1)
+
+	_, err := ParseBINDZone(strings.NewReader(input), "example.com.", opts)
+	if err == nil {
+		t.Fatal("expected oversized zone file error")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("expected maximum size error, got %v", err)
+	}
+}
+
+func TestParseBINDZone_AllowsLongDirectiveScanLine(t *testing.T) {
+	input := ";" + strings.Repeat("a", 70*1024) + `
+example.com. 3600 IN SOA ns1.example.com. admin.example.com. (
+    2024010101 3600 1800 604800 86400
+)
+example.com. 3600 IN NS ns1.example.com.
+`
+	opts := DefaultParseOptions()
+
+	parsed, err := ParseBINDZone(strings.NewReader(input), "example.com.", opts)
+	if err != nil {
+		t.Fatalf("unexpected error for long comment line: %v", err)
+	}
+	if parsed == nil {
+		t.Fatal("parsed zone is nil")
+	}
+}
+
+func TestParseBINDZone_AllowsExplicitUnlimitedSize(t *testing.T) {
+	input := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. (
+    2024010101 3600 1800 604800 86400
+)
+example.com. 3600 IN NS ns1.example.com.
+`
+	opts := DefaultParseOptions()
+	opts.MaxBytes = -1
+
+	parsed, err := ParseBINDZone(strings.NewReader(input), "example.com.", opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if parsed == nil {
+		t.Fatal("parsed zone is nil")
+	}
 }

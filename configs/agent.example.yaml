@@ -1,10 +1,11 @@
 # Example configuration for arca-dns-agent
 
 controller:
-  # Prefer https:// when the controller is not reached over an intentionally
-  # trusted local/private transport. Using http:// with api_key logs a warning.
-  url: "http://controller:8080"
+  # Prefer https:// when the controller is not reached over loopback.
+  # Enable allow_plaintext_api_key only for intentionally trusted local/private HTTP transports.
+  url: "https://controller.example.com"
   api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
+  allow_plaintext_api_key: false
   timeout: "5s"
   retry_attempts: 3
   retry_delay: "200ms"
@@ -18,10 +19,11 @@ sync:
   backup_versions: 3
   verify_checksums: true
   verify_signatures: true
-  # Required when verify_signatures is true. This is a shared HMAC secret and
-  # must match controller api.artifact_signature_key.
+  # Required when verify_signatures is true. Keys must include the controller
+  # api.artifact_signature_key_id and matching shared HMAC secret.
   # Generate with: openssl rand -base64 32
-  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  controller_signature_keys:
+    primary: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 
 health:
   check_interval: "10s"
@@ -125,8 +127,12 @@ dnstap:
 metrics:
   enabled: true
   # /status includes zone and BGP state, so expose it remotely only behind
-  # firewalling, a tunnel, or another authenticated control plane.
+  # firewalling, a tunnel, or another authenticated control plane. If listen is
+  # not loopback, metrics.auth_token is required.
   listen: "127.0.0.1:9090"
+  # Optional bearer token for /status and /metrics.
+  # Generate with: openssl rand -base64 32
+  auth_token: ""
 
 logging:
   level: "info"

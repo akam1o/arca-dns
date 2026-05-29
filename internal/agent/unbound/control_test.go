@@ -3,6 +3,7 @@ package unbound
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,6 +75,94 @@ func TestController_Disabled(t *testing.T) {
 	}
 }
 
+func TestController_RejectsUnsafeCommandPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	validConfig := func() config.UnboundConfig {
+		return config.UnboundConfig{
+			Enabled:       true,
+			ConfigPath:    filepath.Join(tmpDir, "unbound.conf"),
+			ControlPath:   filepath.Join(tmpDir, "unbound-control"),
+			CheckconfPath: filepath.Join(tmpDir, "unbound-checkconf"),
+			ReloadTimeout: time.Second,
+		}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*config.UnboundConfig)
+		call   func(*Controller) error
+		want   string
+	}{
+		{
+			name: "reload rejects relative control path",
+			mutate: func(cfg *config.UnboundConfig) {
+				cfg.ControlPath = "unbound-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.Reload()
+			},
+			want: "invalid unbound.control_path: must be an absolute path",
+		},
+		{
+			name: "status rejects relative control path",
+			mutate: func(cfg *config.UnboundConfig) {
+				cfg.ControlPath = "unbound-control"
+			},
+			call: func(ctrl *Controller) error {
+				_, err := ctrl.Status()
+				return err
+			},
+			want: "invalid unbound.control_path: must be an absolute path",
+		},
+		{
+			name: "flush zone rejects relative control path",
+			mutate: func(cfg *config.UnboundConfig) {
+				cfg.ControlPath = "unbound-control"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.FlushZone("example.com.")
+			},
+			want: "invalid unbound.control_path: must be an absolute path",
+		},
+		{
+			name: "check config rejects relative checkconf path",
+			mutate: func(cfg *config.UnboundConfig) {
+				cfg.CheckconfPath = "unbound-checkconf"
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.CheckConfig()
+			},
+			want: "invalid unbound.checkconf_path: must be an absolute path",
+		},
+		{
+			name: "check config rejects control characters in checkconf path",
+			mutate: func(cfg *config.UnboundConfig) {
+				cfg.CheckconfPath = filepath.Join(tmpDir, "unbound\ncheckconf")
+			},
+			call: func(ctrl *Controller) error {
+				return ctrl.CheckConfig()
+			},
+			want: "invalid unbound.checkconf_path: contains control characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.mutate(&cfg)
+			ctrl := NewController(cfg, zap.NewNop())
+
+			err := tt.call(ctrl)
+			if err == nil {
+				t.Fatal("controller command should reject unsafe command path")
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("unexpected error: got %q want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestController_GenerateStubZoneConfig(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cfg := config.UnboundConfig{
@@ -113,6 +202,90 @@ func TestController_GenerateStubZoneConfig(t *testing.T) {
 	}
 }
 
+func TestController_RejectsInvalidStubZoneName(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: filepath.Join(tmpDir, "unbound.conf"),
+		StubZoneConfig: config.StubZoneConfig{
+			NSDAddress: "127.0.0.1",
+			NSDPort:    5353,
+		},
+	}, zap.NewNop())
+
+	invalidZoneName := "bad.com\"\ninclude: \"/tmp/pwn\""
+	if _, err := ctrl.GenerateStubZoneConfig(invalidZoneName); err == nil {
+		t.Fatal("GenerateStubZoneConfig should reject invalid zone names")
+	} else if !strings.Contains(err.Error(), "invalid zone name") {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if err := ctrl.UpdateStubZoneConfig(invalidZoneName); err == nil {
+		t.Fatal("UpdateStubZoneConfig should reject invalid zone names")
+	} else if !strings.Contains(err.Error(), "invalid zone name") {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+func TestController_RejectsUnsafeStubZoneTarget(t *testing.T) {
+	tests := []struct {
+		name       string
+		nsdAddress string
+		nsdPort    int
+	}{
+		{
+			name:       "empty address",
+			nsdAddress: "",
+			nsdPort:    5353,
+		},
+		{
+			name:       "newline address",
+			nsdAddress: "127.0.0.1\nserver:",
+			nsdPort:    5353,
+		},
+		{
+			name:       "address with embedded port",
+			nsdAddress: "127.0.0.1@5353",
+			nsdPort:    5353,
+		},
+		{
+			name:       "malformed address",
+			nsdAddress: "server:",
+			nsdPort:    5353,
+		},
+		{
+			name:       "zero port",
+			nsdAddress: "127.0.0.1",
+			nsdPort:    0,
+		},
+		{
+			name:       "port too high",
+			nsdAddress: "127.0.0.1",
+			nsdPort:    65536,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := NewController(config.UnboundConfig{
+				Enabled: true,
+				StubZoneConfig: config.StubZoneConfig{
+					NSDAddress: tt.nsdAddress,
+					NSDPort:    tt.nsdPort,
+				},
+			}, zap.NewNop())
+
+			_, err := ctrl.GenerateStubZoneConfig("example.com.")
+			if err == nil {
+				t.Fatal("GenerateStubZoneConfig should reject unsafe stub-zone targets")
+			}
+			if !strings.Contains(err.Error(), "unbound.stub_zone") {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestController_DeleteStubZoneConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger, _ := zap.NewDevelopment()
@@ -144,6 +317,169 @@ func TestController_DeleteStubZoneConfig(t *testing.T) {
 
 	if err := ctrl.DeleteStubZoneConfig("example.com."); err != nil {
 		t.Fatalf("DeleteStubZoneConfig should be idempotent: %v", err)
+	}
+}
+
+func TestController_UpdateStubZoneConfigCreatesConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "missing", "unbound.conf")
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: configPath,
+		StubZoneConfig: config.StubZoneConfig{
+			NSDAddress: "127.0.0.1",
+			NSDPort:    5353,
+		},
+	}, zap.NewNop())
+
+	if err := ctrl.UpdateStubZoneConfig("example.com."); err != nil {
+		t.Fatalf("UpdateStubZoneConfig failed: %v", err)
+	}
+
+	stubPath := filepath.Join(filepath.Dir(configPath), "stub-zone-example.com.conf")
+	if _, err := os.Stat(stubPath); err != nil {
+		t.Fatalf("expected stub-zone file to exist: %v", err)
+	}
+	if _, err := os.Stat(stubPath + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("expected temp stub-zone file to be absent, got err=%v", err)
+	}
+}
+
+func TestController_UpdateStubZoneConfigRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "unbound.d")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: filepath.Join(configDir, "unbound.conf"),
+		StubZoneConfig: config.StubZoneConfig{
+			NSDAddress: "127.0.0.1",
+			NSDPort:    5353,
+		},
+	}, zap.NewNop())
+
+	err := ctrl.UpdateStubZoneConfig("example.com.")
+	if err == nil {
+		t.Fatal("UpdateStubZoneConfig should reject symlinked config directory")
+	}
+	if !strings.Contains(err.Error(), "config directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("UpdateStubZoneConfig error=%v, want symlinked config directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "stub-zone-example.com.conf")); !os.IsNotExist(statErr) {
+		t.Fatalf("stub-zone config should not be written through symlink, stat err=%v", statErr)
+	}
+}
+
+func TestController_UpdateStubZoneConfigDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: filepath.Join(tmpDir, "unbound.conf"),
+		StubZoneConfig: config.StubZoneConfig{
+			NSDAddress: "127.0.0.1",
+			NSDPort:    5353,
+		},
+	}, zap.NewNop())
+
+	stubPath := filepath.Join(tmpDir, "stub-zone-example.com.conf")
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0600); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, stubPath+".tmp"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := ctrl.UpdateStubZoneConfig("example.com."); err != nil {
+		t.Fatalf("UpdateStubZoneConfig failed: %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("failed to read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(stubPath + ".tmp")
+	if err != nil {
+		t.Fatalf("expected predictable temp symlink to remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+}
+
+func TestController_DeleteStubZoneConfigRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "unbound.d")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "stub-zone-example.com.conf"), []byte("keep"), 0644); err != nil {
+		t.Fatalf("failed to write target stub-zone config: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: filepath.Join(configDir, "unbound.conf"),
+	}, zap.NewNop())
+
+	err := ctrl.DeleteStubZoneConfig("example.com.")
+	if err == nil {
+		t.Fatal("DeleteStubZoneConfig should reject symlinked config directory")
+	}
+	if !strings.Contains(err.Error(), "config directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("DeleteStubZoneConfig error=%v, want symlinked config directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "stub-zone-example.com.conf")); statErr != nil {
+		t.Fatalf("stub-zone config should not be deleted through symlink, stat err=%v", statErr)
+	}
+}
+
+func TestController_UpdateStubZoneConfigCleansTempFileWhenRenameFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctrl := NewController(config.UnboundConfig{
+		Enabled:    true,
+		ConfigPath: filepath.Join(tmpDir, "unbound.conf"),
+		StubZoneConfig: config.StubZoneConfig{
+			NSDAddress: "127.0.0.1",
+			NSDPort:    5353,
+		},
+	}, zap.NewNop())
+
+	stubPath := filepath.Join(tmpDir, "stub-zone-example.com.conf")
+	if err := os.Mkdir(stubPath, 0755); err != nil {
+		t.Fatalf("failed to create rename-blocking directory: %v", err)
+	}
+
+	err := ctrl.UpdateStubZoneConfig("example.com.")
+	if err == nil {
+		t.Fatal("UpdateStubZoneConfig should fail when target path is a directory")
+	}
+	if _, statErr := os.Stat(stubPath + ".tmp"); !os.IsNotExist(statErr) {
+		t.Fatalf("expected temp stub-zone file to be removed, got err=%v", statErr)
+	}
+	tempPattern := filepath.Join(tmpDir, "."+filepath.Base(stubPath)+".*.tmp")
+	matches, globErr := filepath.Glob(tempPattern)
+	if globErr != nil {
+		t.Fatalf("temp stub-zone glob failed: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected temp stub-zone files to be removed, got %v", matches)
 	}
 }
 

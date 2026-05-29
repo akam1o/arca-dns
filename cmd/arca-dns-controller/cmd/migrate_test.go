@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
@@ -57,6 +58,31 @@ func (s *failingRecreateStore) CreateZone(ctx context.Context, zone *model.Zone)
 
 type migrateZoneStoreWithoutConditionalDelete struct {
 	backend.ZoneStore
+}
+
+func TestNewMigrateCmdWiresSubcommands(t *testing.T) {
+	cmd := NewMigrateCmd()
+
+	require.Equal(t, "migrate", cmd.Use)
+
+	names := make(map[string]struct{})
+	for _, subcommand := range cmd.Commands() {
+		names[subcommand.Name()] = struct{}{}
+	}
+	require.Contains(t, names, "export")
+	require.Contains(t, names, "import")
+	require.Contains(t, names, "copy")
+}
+
+func TestMigrateCopyCommandRequiresBackends(t *testing.T) {
+	cmd := newCopyCmd()
+	cmd.SetArgs(nil)
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "required flag")
+	require.Contains(t, err.Error(), "from-backend")
+	require.Contains(t, err.Error(), "to-backend")
 }
 
 // TestMigrateExportMemory tests exporting zones from memory backend to JSON files.
@@ -145,6 +171,73 @@ func TestMigrateExport_LongZoneNameUsesSafeFilename(t *testing.T) {
 	require.FileExists(t, filename)
 }
 
+func TestMigrateExportDoesNotFollowOutputSymlink(t *testing.T) {
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	ctx := context.Background()
+	zone := &model.Zone{
+		Name:    "symlink.example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{migrateTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(ctx, zone))
+
+	tmpDir := t.TempDir()
+	filename := filepath.Join(tmpDir, sanitizeFilename(zone.Name)+".json")
+	sentinel := filepath.Join(tmpDir, "sentinel")
+	require.NoError(t, os.WriteFile(sentinel, []byte("unchanged"), 0644))
+	if err := os.Symlink(sentinel, filename); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := exportFromStore(ctx, store, tmpDir, false)
+	require.NoError(t, err)
+
+	sentinelData, err := os.ReadFile(sentinel)
+	require.NoError(t, err)
+	assert.Equal(t, "unchanged", string(sentinelData))
+
+	info, err := os.Lstat(filename)
+	require.NoError(t, err)
+	assert.False(t, info.Mode()&os.ModeSymlink != 0)
+
+	data, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	var exported model.Zone
+	require.NoError(t, json.Unmarshal(data, &exported))
+	assert.Equal(t, zone.Name, exported.Name)
+}
+
+func TestMigrateExportRejectsSymlinkedOutputDirectory(t *testing.T) {
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	ctx := context.Background()
+	zone := &model.Zone{
+		Name:    "symlink-dir.example.com.",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{migrateTestApexNSRecord()},
+	}
+	require.NoError(t, store.CreateZone(ctx, zone))
+
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	outputDir := filepath.Join(tmpDir, "output")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	if err := os.Symlink(targetDir, outputDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := exportFromStore(ctx, store, outputDir, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "output directory")
+	assert.Contains(t, err.Error(), "symlink")
+
+	_, statErr := os.Stat(filepath.Join(targetDir, sanitizeFilename(zone.Name)+".json"))
+	assert.True(t, os.IsNotExist(statErr), "export should not write through symlinked output directory")
+}
+
 // TestMigrateImport tests importing zones from JSON files to memory backend.
 func TestMigrateImport(t *testing.T) {
 	// Create temporary input directory with test zone files
@@ -183,6 +276,94 @@ func TestMigrateImport(t *testing.T) {
 	assert.Equal(t, testZone.Name, imported.Name)
 	assert.NotEqual(t, testZone.Version, imported.Version, "Version should be recomputed")
 	assert.NotEmpty(t, imported.Version)
+}
+
+func TestMigrateImportRejectsSymlinkedInputDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	inputDir := filepath.Join(tmpDir, "input")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+
+	testZone := &model.Zone{
+		Name:    "symlink-input.example.com.",
+		Version: "v2024010101-abc12345",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			migrateTestApexNSRecord(),
+		},
+	}
+	data, err := json.MarshalIndent(testZone, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(targetDir, "zone.json"), data, 0644))
+	if err := os.Symlink(targetDir, inputDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	_, err = importToStore(context.Background(), store, inputDir, false, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "input directory")
+	assert.Contains(t, err.Error(), "symlink")
+
+	_, getErr := store.GetZone(context.Background(), testZone.Name)
+	assert.ErrorIs(t, getErr, model.ErrZoneNotFound)
+}
+
+func TestMigrateImportRejectsSymlinkedInputFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	realDir := filepath.Join(tmpDir, "real")
+	require.NoError(t, os.Mkdir(realDir, 0755))
+
+	testZone := &model.Zone{
+		Name:    "symlink-file.example.com.",
+		Version: "v2024010101-abc12345",
+		SOA:     model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			migrateTestApexNSRecord(),
+		},
+	}
+	data, err := json.MarshalIndent(testZone, "", "  ")
+	require.NoError(t, err)
+
+	realFile := filepath.Join(realDir, "zone.json")
+	linkFile := filepath.Join(tmpDir, "zone.json")
+	require.NoError(t, os.WriteFile(realFile, data, 0644))
+	if err := os.Symlink(realFile, linkFile); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	_, err = importToStore(context.Background(), store, tmpDir, false, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "migration file")
+	assert.Contains(t, err.Error(), "symlink")
+
+	_, getErr := store.GetZone(context.Background(), testZone.Name)
+	assert.ErrorIs(t, getErr, model.ErrZoneNotFound)
+}
+
+func TestMigrateImportRejectsOversizedInputFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputPath := filepath.Join(tmpDir, "oversized.json")
+	file, err := os.OpenFile(inputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	require.NoError(t, err)
+	if err := file.Truncate(maxMigrationFileSize + 1); err != nil {
+		_ = file.Close()
+		require.NoError(t, err)
+	}
+	require.NoError(t, file.Close())
+
+	store := backend.NewMemoryBackend()
+	defer store.Close()
+
+	_, err = importToStore(context.Background(), store, tmpDir, false, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "migration file")
+	assert.Contains(t, err.Error(), "exceeds maximum size")
 }
 
 func TestMigrateImportOverwritePreservesSourceSerial(t *testing.T) {
@@ -456,6 +637,99 @@ func TestMigrateCopy(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunCopyDryRunSkipsDestinationBackendCreation(t *testing.T) {
+	oldConfigFile := migrateConfigFile
+	oldFromBackend := migrateFromBackend
+	oldFromDSN := migrateFromDSN
+	oldFromPath := migrateFromPath
+	oldToBackend := migrateToBackend
+	oldToDSN := migrateToDSN
+	oldToPath := migrateToPath
+	oldDryRun := migrateDryRun
+	oldOverwrite := migrateOverwrite
+	t.Cleanup(func() {
+		migrateConfigFile = oldConfigFile
+		migrateFromBackend = oldFromBackend
+		migrateFromDSN = oldFromDSN
+		migrateFromPath = oldFromPath
+		migrateToBackend = oldToBackend
+		migrateToDSN = oldToDSN
+		migrateToPath = oldToPath
+		migrateDryRun = oldDryRun
+		migrateOverwrite = oldOverwrite
+	})
+
+	tmpDir := t.TempDir()
+	sourceDSN := "file:" + filepath.Join(tmpDir, "source.db")
+	sourceStore, err := createBackendForCopy("sqlite", sourceDSN, "", nil)
+	require.NoError(t, err)
+	require.NoError(t, sourceStore.CreateZone(context.Background(), &model.Zone{
+		Name: "dryrun-copy.example.com.",
+		SOA:  model.DefaultSOA("ns1.dryrun-copy.example.com.", "admin.dryrun-copy.example.com."),
+		Records: []model.Record{
+			migrateTestApexNSRecord(),
+			{Name: "www", Type: model.RecordTypeA, TTL: 300, Value: "192.0.2.50"},
+		},
+	}))
+	require.NoError(t, sourceStore.Close())
+
+	migrateConfigFile = ""
+	migrateFromBackend = "sqlite"
+	migrateFromDSN = sourceDSN
+	migrateFromPath = ""
+	migrateToBackend = "postgres"
+	migrateToDSN = ""
+	migrateToPath = ""
+	migrateDryRun = true
+	migrateOverwrite = false
+
+	require.NoError(t, runCopy(nil, nil), "dry-run should not require creating the destination backend")
+}
+
+func TestSameDNSSECConfig(t *testing.T) {
+	expiration := time.Unix(1700000000, 0).UTC()
+	laterExpiration := expiration.Add(time.Hour)
+
+	base := &model.DNSSECConfig{
+		Enabled:             true,
+		Algorithm:           13,
+		KSKKeyTag:           1001,
+		ZSKKeyTag:           1002,
+		NSEC3Enabled:        true,
+		NSEC3Iterations:     10,
+		NSEC3Salt:           "abcd",
+		SignatureExpiration: &expiration,
+	}
+	same := *base
+	differentAlgorithm := *base
+	differentAlgorithm.Algorithm = 8
+	missingExpiration := *base
+	missingExpiration.SignatureExpiration = nil
+	differentExpiration := *base
+	differentExpiration.SignatureExpiration = &laterExpiration
+
+	tests := []struct {
+		name string
+		a    *model.DNSSECConfig
+		b    *model.DNSSECConfig
+		want bool
+	}{
+		{name: "both nil", want: true},
+		{name: "left nil", b: base},
+		{name: "right nil", a: base},
+		{name: "same values", a: base, b: &same, want: true},
+		{name: "different algorithm", a: base, b: &differentAlgorithm},
+		{name: "missing expiration", a: base, b: &missingExpiration},
+		{name: "different expiration", a: base, b: &differentExpiration},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sameDNSSECConfig(tt.a, tt.b))
+		})
+	}
+}
+
 func TestCreateBackendDefaultsToSQLite(t *testing.T) {
 	oldDSN := migrateBackendDSN
 	t.Cleanup(func() {
@@ -497,6 +771,30 @@ func TestCreateBackendForCopySupportsSQLite(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
+}
+
+func TestCreateBackendForCopyRequiresBackendSpecificConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		backendType string
+		wantErr     string
+	}{
+		{name: "postgres", backendType: "postgres", wantErr: "PostgreSQL backend requires"},
+		{name: "mysql", backendType: "mysql", wantErr: "MySQL backend requires"},
+		{name: "git", backendType: "git", wantErr: "Git backend requires"},
+		{name: "unsupported", backendType: "memory", wantErr: "unsupported backend type"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := createBackendForCopy(tt.backendType, "", "", nil)
+			if store != nil {
+				require.NoError(t, store.Close())
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 func TestCreateBackendPostgresRequiresDSN(t *testing.T) {

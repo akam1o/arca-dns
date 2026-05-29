@@ -4,6 +4,12 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      publish_latest:
+        description: "Also publish mutable latest Docker tags"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -17,6 +23,7 @@ jobs:
       GOPATH: ${{ github.workspace }}/.cache/gopath
       GOMODCACHE: ${{ github.workspace }}/.cache/gomod
       TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+      PUBLISH_LATEST: ${{ (github.event_name == 'release' && !github.event.release.prerelease) || (github.event_name == 'workflow_dispatch' && inputs.publish_latest) }}
       GHCR_OWNER: ${{ github.repository_owner }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -40,7 +47,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: latest
+          version: v2.15.4
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -75,14 +82,22 @@ jobs:
           ghcr_agent="ghcr.io/${GHCR_OWNER}/arca-dns-agent"
           build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-          tags_controller="--tag ${ghcr_controller}:${TAG} --tag ${ghcr_controller}:latest"
-          tags_agent="--tag ${ghcr_agent}:${TAG} --tag ${ghcr_agent}:latest"
+          tags_controller="--tag ${ghcr_controller}:${TAG}"
+          tags_agent="--tag ${ghcr_agent}:${TAG}"
+          if [ "${PUBLISH_LATEST:-false}" = "true" ]; then
+            tags_controller="${tags_controller} --tag ${ghcr_controller}:latest"
+            tags_agent="${tags_agent} --tag ${ghcr_agent}:latest"
+          fi
 
           if [ -n "${DOCKERHUB_NAMESPACE:-}" ]; then
             hub_controller="docker.io/${DOCKERHUB_NAMESPACE}/arca-dns-controller"
             hub_agent="docker.io/${DOCKERHUB_NAMESPACE}/arca-dns-agent"
-            tags_controller="${tags_controller} --tag ${hub_controller}:${TAG} --tag ${hub_controller}:latest"
-            tags_agent="${tags_agent} --tag ${hub_agent}:${TAG} --tag ${hub_agent}:latest"
+            tags_controller="${tags_controller} --tag ${hub_controller}:${TAG}"
+            tags_agent="${tags_agent} --tag ${hub_agent}:${TAG}"
+            if [ "${PUBLISH_LATEST:-false}" = "true" ]; then
+              tags_controller="${tags_controller} --tag ${hub_controller}:latest"
+              tags_agent="${tags_agent} --tag ${hub_agent}:latest"
+            fi
           fi
 
           docker buildx build \
@@ -119,6 +134,7 @@ jobs:
 
           {
             echo "tag=${TAG}"
+            echo "publish_latest=${PUBLISH_LATEST}"
             echo "ghcr_controller=${ghcr_controller}"
             echo "ghcr_agent=${ghcr_agent}"
             if [ -n "${DOCKERHUB_NAMESPACE:-}" ]; then

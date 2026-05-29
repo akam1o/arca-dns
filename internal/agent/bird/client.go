@@ -3,7 +3,9 @@ package bird
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -96,6 +98,10 @@ func (c *client) reconnect() error {
 // Exec executes a command and returns the response.
 // This method is thread-safe (uses mutex for serialization).
 func (c *client) Exec(ctx context.Context, cmd string) (*Response, error) {
+	if err := validateCommand(cmd); err != nil {
+		return nil, err
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -119,7 +125,7 @@ func (c *client) Exec(ctx context.Context, cmd string) (*Response, error) {
 
 	// Send command (must end with newline)
 	cmdLine := cmd + "\n"
-	if _, err := c.conn.Write([]byte(cmdLine)); err != nil {
+	if err := writeFull(c.conn, []byte(cmdLine)); err != nil {
 		c.connected = false
 		return nil, fmt.Errorf("write command: %w", err)
 	}
@@ -140,6 +146,13 @@ func (c *client) Exec(ctx context.Context, cmd string) (*Response, error) {
 	return resp, nil
 }
 
+func validateCommand(cmd string) error {
+	if strings.ContainsAny(cmd, "\r\n") {
+		return fmt.Errorf("invalid BIRD command: contains line break")
+	}
+	return nil
+}
+
 // Close closes the connection.
 func (c *client) Close() error {
 	c.mu.Lock()
@@ -148,6 +161,20 @@ func (c *client) Close() error {
 	if c.conn != nil {
 		c.connected = false
 		return c.conn.Close()
+	}
+	return nil
+}
+
+func writeFull(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
 	}
 	return nil
 }

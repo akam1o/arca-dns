@@ -17,6 +17,8 @@ api:
     burst: 200
 
 observability:
+  # Bound to all container interfaces so Docker's localhost port mapping works.
+  # ARCA_DNS_OBSERVABILITY_AUTH_TOKEN is required by docker-compose.
   listen: "0.0.0.0:9053"
 
 backend:
@@ -26,7 +28,6 @@ backend:
 
 storage:
   artifact_directory: "/var/lib/arca-dns/artifacts"
-  key_directory: "/var/lib/arca-dns/keys"
   max_versions_per_zone: 10
 
 dnssec:

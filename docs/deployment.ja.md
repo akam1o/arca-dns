@@ -32,8 +32,8 @@ agent container image には `arca-dns-agent` のみが含まれ、既定では�
 ### Controller
 
 - backend を 1 つ選ぶ: `sqlite`（既定）、`postgres`, `mysql`, `git`, `etcd`
-- 使い捨てのローカル検証だけ SQLite の `:memory:` を使う
-- `storage.artifact_directory` と `storage.key_directory` が書き込み可能であること
+- controller 設定では file-backed SQLite を使う。`:memory:` はテストや migrate helper による使い捨てのローカル検証だけに限定する
+- `storage.artifact_directory` と `dnssec.key_directory` が書き込み可能であること
 - DNSSEC 有効時は `dnssec.key_directory` が書き込み可能で、DNSSEC マスターキーを設定済みであること
 - API 認証を有効にする場合、少なくとも 1 つの API キーハッシュが必要
 
@@ -62,8 +62,8 @@ agent container image には `arca-dns-agent` のみが含まれ、既定では�
 
 ### API キー
 
-controller の既定は `api.auth.enabled: true` です。認証が有効な場合、`api.auth.api_keys` に `sha256:<64 hex>` 形式のハッシュが 1 つ以上必要です。
-controller の observability listener は認証なしで、既定では `127.0.0.1:9053` に bind します。リモートアドレスに bind する場合は network control または認証付き proxy の背後に置いてください。
+controller の既定は `api.auth.enabled: true` です。認証が有効な場合、`api.auth.api_keys` に `sha256:<64 hex>` 形式のハッシュが 1 つ以上必要で、各 key には明示的な `api.auth.api_key_roles` entry が必要です。
+controller の observability listener は既定で `127.0.0.1:9053` に bind します。health/readiness/status alias は認証不要です。metrics は `observability.auth_token` を設定している場合に token を使い、loopback 以外の observability listener では config validation でこの token が必須です。
 
 ```bash
 ADMIN_API_KEY="$(openssl rand -hex 32)"
@@ -84,8 +84,10 @@ controller にはハッシュを設定します。
 api:
   # 生成例: openssl rand -base64 32
   artifact_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  artifact_signature_key_id: "primary"
   auth:
     enabled: true
+    allow_implicit_admin_roles: false
     api_keys:
       admin: "sha256:REPLACE_WITH_SHA256_HEX"
       agent: "sha256:REPLACE_WITH_AGENT_SHA256_HEX"
@@ -103,8 +105,8 @@ controller:
 
 sync:
   verify_signatures: true
-  # 共有 HMAC secret です。api.artifact_signature_key と同じ値にしてください。
-  controller_signature_key: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
+  controller_signature_keys:
+    primary: "REPLACE_WITH_SHARED_SIGNATURE_KEY"
 ```
 
 環境変数だけで controller の API キーを渡す場合は、次の形式を使えます。suffix は小文字化され、principal 名になります。
@@ -134,7 +136,7 @@ openssl rand -base64 32 | sudo tee /etc/arca-dns/master.key >/dev/null
 sudo chmod 600 /etc/arca-dns/master.key
 ```
 
-`storage.key_directory` と `dnssec.key_directory` の両方を設定する場合は、同じディレクトリ（例: `/var/lib/arca-dns/keys`）を指定してください。`storage.key_directory` は DNSSEC key directory の互換 alias として残しています。
+`dnssec.key_directory` を DNSSEC key directory の canonical な設定として使用してください。`storage.key_directory` は非推奨の互換 alias として残しています。両方を設定する場合は、同じディレクトリ（例: `/var/lib/arca-dns/keys`）を指定してください。
 
 ## Backend の準備
 
@@ -273,7 +275,7 @@ sudo dnf install bird nsd unbound arca-dns
 - `api.auth.api_keys` の placeholder を実際の `sha256:<64 hex>` に置き換える
 - `backend.type` と backend 固有設定を決める
 - DNSSEC 有効時は `/etc/arca-dns/master.key` または `ARCA_DNS_DNSSEC_MASTER_KEY_B64` を設定する
-- `storage.*` と `dnssec.key_directory` が service から書き込み可能であることを確認する
+- `storage.artifact_directory` と `dnssec.key_directory` が service から書き込み可能であることを確認する
 
 パッケージ版 controller は `arca-dns` service user で起動します。agent は NSD/Unbound/BIRD の制御のため root を維持しますが、systemd unit で sandboxing され、設定済みの DNS、BIRD、state、log、runtime path のみを書き込み可能にしています。path を変更する場合は、権限または systemd drop-in も合わせて調整してください。
 
@@ -285,6 +287,7 @@ sudo dnf install bird nsd unbound arca-dns
 
 - `controller.url`: controller の URL
 - `controller.api_key`: 生の API キー
+- `controller.allow_plaintext_api_key`: 信頼済みの loopback 以外の HTTP transport で API キーを使う場合だけ `true`
 - `nsd.enabled`, `nsd.zone_directory`, `nsd.control_path`
 - `unbound.enabled`, `unbound.control_path`
 - `bird.enabled`, `bird.protocols`, `bird.socket_path`
@@ -451,6 +454,12 @@ curl http://localhost:8080/ready
 
 Ingress 例は `deployments/kubernetes/controller/examples/ingress.yaml` にあります。TLS は ingress controller または外部 LB で終端してください。
 
+### 6. Ingress rate limiting を追加する
+
+`api.rate_limit` は各 controller process 内の process-local な制限です。controller replica を複数動かす場合は、controller 側の制限を defense in depth として残しつつ、全 replica の手前にある ingress controller、load balancer、または共有 reverse proxy で外部 API quota を適用してください。
+
+NGINX ingress 例には、controller service に転送する前に HTTP `429` を返す rate-limit annotation を入れています。想定する API traffic と automation client に合わせて `nginx.ingress.kubernetes.io/limit-rps` と `nginx.ingress.kubernetes.io/limit-burst-multiplier` を調整してください。
+
 ## Agent のデプロイ詳細
 
 agent は controller から次の API を利用します。
@@ -458,7 +467,7 @@ agent は controller から次の API を利用します。
 - `GET /api/v1/zones?fields=summary`
 - `GET /api/v1/zones/:name/signed`
 
-controller の API 認証が有効な場合、agent は `X-API-Key` header に `controller.api_key` を付与します。`agent` role の API キーを使ってください。この role は zone summary 一覧と signed artifact 読み取りに制限されます。
+controller の API 認証が有効な場合、agent は `X-API-Key` header に `controller.api_key` を付与します。`agent` role の API キーを使ってください。この role は zone summary 一覧と signed artifact 読み取りに制限されます。loopback 以外の `http://` controller URL は、`controller.api_key` 設定時に `controller.allow_plaintext_api_key` を明示的に有効化しない限り拒否されます。remote controller では HTTPS を優先してください。
 
 zone 同期では次を行います。
 
@@ -484,7 +493,8 @@ controller の health/readiness/status endpoint は API address
 分離された `observability.listen` で listen します。組み込みの既定は
 `127.0.0.1:9053` です。Kubernetes 例も loopback 限定のままにし、
 base Service では observability port を公開しません。Service scraping 用に
-公開する場合は、cluster network control で保護してください。
+公開する場合は、`observability.auth_token` を設定し、cluster network control
+で保護してください。
 
 agent の status server はデフォルトで `127.0.0.1:9090` を listen します。
 `metrics.listen` をリモートアドレスに変更する場合は、network control
@@ -535,7 +545,7 @@ birdc show route
 
 | 症状 | 主な原因 | 対応 |
 | --- | --- | --- |
-| controller が `api.auth.api_keys` で起動しない | placeholder のまま、または API キー未設定 | `sha256:<64 hex>` を設定する |
+| controller が `api.auth.api_keys` または `api.auth.api_key_roles` で起動しない | placeholder のまま、API キー未設定、または明示 role がない | `sha256:<64 hex>` と `api_key_roles.<name>` を設定する |
 | controller が master key エラーで起動しない | DNSSEC 有効だが master key がない | `ARCA_DNS_DNSSEC_MASTER_KEY_B64` または `/etc/arca-dns/master.key` を設定する |
 | MySQL/PostgreSQL で table not found | SQL スキーマ未適用 | `migrations/<backend>/` 配下の backend schema を、必要な `*.up.sql` も含めて番号順に適用してから起動する |
 | container が `/var/lib/arca-dns` に書けない | distroless nonroot image の UID と volume 権限が合っていない | volume を UID/GID `65532` で書けるようにする。Kubernetes base は `fsGroup: 65532` を設定済み |

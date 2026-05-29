@@ -99,6 +99,283 @@ func TestApplyBIRDConfigOnStartMarksAppliedOnConfigureSuccess(t *testing.T) {
 	}
 }
 
+func TestApplyBIRDConfigOnStartRejectsUnsafeConfigPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "empty",
+			path: "",
+			want: "empty",
+		},
+		{
+			name: "relative",
+			path: "bird.d/arca-dns.conf",
+			want: "absolute path",
+		},
+		{
+			name: "surrounding whitespace",
+			path: " " + filepath.Join(tmpDir, "arca-dns.conf") + " ",
+			want: "surrounding whitespace",
+		},
+		{
+			name: "newline",
+			path: filepath.Join(tmpDir, "arca-dns.conf") + "\nextra",
+			want: "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeBIRDClient{}
+			result := applyBIRDConfigOnStart(testBIRDConfig(tc.path), client, zap.NewNop())
+
+			if result.Status.Status != birdConfigStatusUsingExisting {
+				t.Fatalf("status=%s, want %s", result.Status.Status, birdConfigStatusUsingExisting)
+			}
+			if !strings.Contains(result.Status.Error, "BIRD config path") || !strings.Contains(result.Status.Error, tc.want) {
+				t.Fatalf("status error=%q, want BIRD config path %q error", result.Status.Error, tc.want)
+			}
+			if len(client.commands) != 0 {
+				t.Fatalf("configure should not be called, commands=%v", client.commands)
+			}
+		})
+	}
+}
+
+func TestApplyBIRDConfigOnStartRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "bird.d")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	path := filepath.Join(configDir, "arca-dns.conf")
+	client := &fakeBIRDClient{}
+	result := applyBIRDConfigOnStart(testBIRDConfig(path), client, zap.NewNop())
+
+	if result.Status.Status != birdConfigStatusUsingExisting {
+		t.Fatalf("status=%s, want %s", result.Status.Status, birdConfigStatusUsingExisting)
+	}
+	if !strings.Contains(result.Status.Error, "config directory") || !strings.Contains(result.Status.Error, "symlink") {
+		t.Fatalf("status error=%q, want symlinked config directory error", result.Status.Error)
+	}
+	if len(client.commands) != 0 {
+		t.Fatalf("configure should not be called, commands=%v", client.commands)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "arca-dns.conf")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config should not be written through symlink, stat err=%v", err)
+	}
+}
+
+func TestApplyBIRDConfigOnStartRejectsSymlinkedConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "arca-dns.conf")
+	sentinelPath := filepath.Join(tmpDir, "sentinel.conf")
+	sentinel := []byte("keep\n")
+	if err := os.WriteFile(sentinelPath, sentinel, 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	if err := os.Symlink(sentinelPath, configPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	client := &fakeBIRDClient{}
+	result := applyBIRDConfigOnStart(testBIRDConfig(configPath), client, zap.NewNop())
+
+	if result.Status.Status != birdConfigStatusUsingExisting {
+		t.Fatalf("status=%s, want %s", result.Status.Status, birdConfigStatusUsingExisting)
+	}
+	if !strings.Contains(result.Status.Error, "BIRD config file") || !strings.Contains(result.Status.Error, "symlink") {
+		t.Fatalf("status error=%q, want symlinked BIRD config file error", result.Status.Error)
+	}
+	if len(client.commands) != 0 {
+		t.Fatalf("configure should not be called, commands=%v", client.commands)
+	}
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+	linkInfo, err := os.Lstat(configPath)
+	if err != nil {
+		t.Fatalf("config symlink should remain: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected config path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+}
+
+func TestApplyBIRDConfigOnStartRejectsOversizedConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "arca-dns.conf")
+	file, err := os.OpenFile(configPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatalf("create oversized config: %v", err)
+	}
+	if err := file.Truncate(maxBIRDConfigFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("size oversized config: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close oversized config: %v", err)
+	}
+
+	client := &fakeBIRDClient{}
+	result := applyBIRDConfigOnStart(testBIRDConfig(configPath), client, zap.NewNop())
+
+	if result.Status.Status != birdConfigStatusUsingExisting {
+		t.Fatalf("status=%s, want %s", result.Status.Status, birdConfigStatusUsingExisting)
+	}
+	if !strings.Contains(result.Status.Error, "BIRD config file") || !strings.Contains(result.Status.Error, "exceeds maximum size") {
+		t.Fatalf("status error=%q, want oversized BIRD config file error", result.Status.Error)
+	}
+	if len(client.commands) != 0 {
+		t.Fatalf("configure should not be called, commands=%v", client.commands)
+	}
+}
+
+func TestWriteFileAtomicCreatesConfigDirectoryAndCleansTemp(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "missing", "nested", "arca-dns.conf")
+
+	if err := writeFileAtomic(path, []byte("bird config\n"), 0o640); err != nil {
+		t.Fatalf("writeFileAtomic failed: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(got) != "bird config\n" {
+		t.Fatalf("config content = %q", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("mode=%v, want 0640", info.Mode().Perm())
+	}
+
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected temp files to be removed, got %v", matches)
+	}
+}
+
+func TestWriteFileAtomicRejectsUnsafeConfigPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "empty",
+			path: "",
+			want: "empty",
+		},
+		{
+			name: "relative",
+			path: "arca-dns.conf",
+			want: "absolute path",
+		},
+		{
+			name: "surrounding whitespace",
+			path: " " + filepath.Join(tmpDir, "arca-dns.conf") + " ",
+			want: "surrounding whitespace",
+		},
+		{
+			name: "newline",
+			path: filepath.Join(tmpDir, "arca-dns.conf") + "\nextra",
+			want: "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := writeFileAtomic(tc.path, []byte("bird config\n"), 0o644)
+			if err == nil {
+				t.Fatal("writeFileAtomic should reject unsafe config path")
+			}
+			if !strings.Contains(err.Error(), "BIRD config path") || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("writeFileAtomic error=%v, want BIRD config path %q error", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestWriteFileAtomicRejectsSymlinkedConfigDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	configDir := filepath.Join(tmpDir, "bird.d")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
+	}
+	if err := os.Symlink(targetDir, configDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	path := filepath.Join(configDir, "arca-dns.conf")
+	err := writeFileAtomic(path, []byte("bird config\n"), 0o644)
+	if err == nil {
+		t.Fatal("writeFileAtomic should reject symlinked config directory")
+	}
+	if !strings.Contains(err.Error(), "config directory") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("writeFileAtomic error=%v, want symlinked config directory error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "arca-dns.conf")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("config should not be written through symlink, stat err=%v", statErr)
+	}
+}
+
+func TestWriteFileAtomicDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "arca-dns.conf")
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	if err := os.WriteFile(sentinelPath, sentinel, 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	predictableTemp := filepath.Join(tmpDir, "."+filepath.Base(path)+".tmp-predictable")
+	if err := os.Symlink(sentinelPath, predictableTemp); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := writeFileAtomic(path, []byte("bird config\n"), 0o644); err != nil {
+		t.Fatalf("writeFileAtomic failed: %v", err)
+	}
+
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("read sentinel: %v", err)
+	}
+	if string(got) != string(sentinel) {
+		t.Fatalf("sentinel = %q, want %q", got, sentinel)
+	}
+
+	linkInfo, err := os.Lstat(predictableTemp)
+	if err != nil {
+		t.Fatalf("predictable temp symlink should remain untouched: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected predictable temp path to remain a symlink, mode=%v", linkInfo.Mode())
+	}
+}
+
 type fakeBIRDClient struct {
 	responses map[string][]*bird.Response
 	errs      map[string][]error

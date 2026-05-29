@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -35,8 +36,9 @@ type activeKeys struct {
 }
 
 const (
-	dnskeyKSKFlags = dns.SEP | dns.ZONE
-	dnskeyZSKFlags = dns.ZONE
+	dnskeyKSKFlags       = dns.SEP | dns.ZONE
+	dnskeyZSKFlags       = dns.ZONE
+	maxDNSSECKeyFileSize = 1 * 1024 * 1024
 )
 
 // KeyManagerOptions configures the key manager.
@@ -62,6 +64,13 @@ func NewKeyManager(opts KeyManagerOptions) (*KeyManager, error) {
 	if opts.KeyDirectory == "" {
 		return nil, fmt.Errorf("key directory cannot be empty")
 	}
+	if err := validateKeyStorageDirectoryPath("key directory", opts.KeyDirectory); err != nil {
+		return nil, err
+	}
+	keyDirectory := filepath.Clean(opts.KeyDirectory)
+	if err := validateKeyStorageDirectoryIfExists(keyDirectory, "key directory"); err != nil {
+		return nil, err
+	}
 
 	if len(opts.MasterKey) != MasterKeySize {
 		return nil, fmt.Errorf("%w: expected %d bytes, got %d", ErrInvalidMasterKey, MasterKeySize, len(opts.MasterKey))
@@ -86,7 +95,7 @@ func NewKeyManager(opts KeyManagerOptions) (*KeyManager, error) {
 	}
 
 	return &KeyManager{
-		keyDir:    opts.KeyDirectory,
+		keyDir:    keyDirectory,
 		masterKey: opts.MasterKey,
 		algorithm: opts.Algorithm,
 		kskBits:   opts.KSKBits,
@@ -225,7 +234,7 @@ func (km *KeyManager) loadKey(zone string, role KeyRole) (*KeyPair, error) {
 
 	// Read active.json to get the active key tag
 	activeFile := filepath.Join(zoneDir, "active.json")
-	activeData, err := os.ReadFile(activeFile)
+	activeData, err := readRegularKeyFile(activeFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, model.ErrZoneNotFound
@@ -264,7 +273,7 @@ func (km *KeyManager) loadKey(zone string, role KeyRole) (*KeyPair, error) {
 	privPath := filepath.Join(zoneDir, privFile)
 
 	// Read public key
-	pubData, err := os.ReadFile(pubPath)
+	pubData, err := readRegularKeyFile(pubPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, model.ErrZoneNotFound
@@ -284,7 +293,7 @@ func (km *KeyManager) loadKey(zone string, role KeyRole) (*KeyPair, error) {
 	}
 
 	// Read and decrypt private key
-	privEncData, err := os.ReadFile(privPath)
+	privEncData, err := readRegularKeyFile(privPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, model.ErrZoneNotFound
@@ -447,7 +456,7 @@ func (km *KeyManager) readActiveKeys(zone string) (activeKeys, error) {
 	activeFile := filepath.Join(zoneDir, "active.json")
 	active := activeKeys{Algorithm: km.algorithm}
 
-	if data, err := os.ReadFile(activeFile); err == nil {
+	if data, err := readRegularKeyFile(activeFile); err == nil {
 		if err := json.Unmarshal(data, &active); err != nil {
 			return activeKeys{}, fmt.Errorf("parse existing active.json: %w", err)
 		}
@@ -498,8 +507,32 @@ func (km *KeyManager) withZoneKeyLock(ctx context.Context, zone string, createDi
 	}
 	defer releaseZone()
 
+	keyDirExisted := true
+	if statErr := validateExistingKeyDirectory(km.keyDir); statErr != nil {
+		if !os.IsNotExist(statErr) {
+			return fmt.Errorf("stat key directory: %w", statErr)
+		}
+		if !createDir {
+			return model.ErrZoneNotFound
+		}
+		keyDirExisted = false
+	}
+	if createDir {
+		if err := os.MkdirAll(km.keyDir, 0700); err != nil {
+			return fmt.Errorf("create key directory: %w", err)
+		}
+		if err := validateExistingKeyDirectory(km.keyDir); err != nil {
+			return fmt.Errorf("stat key directory: %w", err)
+		}
+		if !keyDirExisted {
+			if err := syncDir(filepath.Dir(km.keyDir)); err != nil {
+				return fmt.Errorf("sync key directory parent: %w", err)
+			}
+		}
+	}
+
 	existed := true
-	if _, statErr := os.Stat(zoneDir); statErr != nil {
+	if statErr := validateExistingZoneKeyDir(zoneDir); statErr != nil {
 		if !os.IsNotExist(statErr) {
 			return fmt.Errorf("stat zone key directory: %w", statErr)
 		}
@@ -511,6 +544,9 @@ func (km *KeyManager) withZoneKeyLock(ctx context.Context, zone string, createDi
 	if createDir {
 		if err := os.MkdirAll(zoneDir, 0700); err != nil {
 			return fmt.Errorf("create zone directory: %w", err)
+		}
+		if err := validateExistingZoneKeyDir(zoneDir); err != nil {
+			return fmt.Errorf("stat zone key directory: %w", err)
 		}
 		if !existed {
 			if err := syncDir(filepath.Dir(zoneDir)); err != nil {
@@ -559,6 +595,108 @@ func (km *KeyManager) getZoneDir(zone string) (string, error) {
 	return filepath.Join(km.keyDir, zoneName), nil
 }
 
+func validateExistingKeyDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("key directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("key path must be a directory: %s", path)
+	}
+	return nil
+}
+
+func validateExistingZoneKeyDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("zone key directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("zone key path must be a directory: %s", path)
+	}
+	return nil
+}
+
+type regularKeyFileValidator func(os.FileInfo) error
+
+func readRegularKeyFile(path string) ([]byte, error) {
+	return readValidatedRegularKeyFile(path, nil)
+}
+
+func readRestrictedKeyFile(path string) ([]byte, error) {
+	return readValidatedRegularKeyFile(path, func(info os.FileInfo) error {
+		perm := info.Mode().Perm()
+		if perm&0o007 != 0 {
+			return fmt.Errorf("key file permissions must not allow other access: %s has %03o", path, perm)
+		}
+		if perm&0o030 != 0 {
+			return fmt.Errorf("key file permissions must not allow group write or execute: %s has %03o", path, perm)
+		}
+		return nil
+	})
+}
+
+func readValidatedRegularKeyFile(path string, validate regularKeyFileValidator) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("key file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("key file must be a regular file: %s", path)
+	}
+	if info.Size() > maxDNSSECKeyFileSize {
+		return nil, fmt.Errorf("key file exceeds maximum size of %d bytes: %s", maxDNSSECKeyFileSize, path)
+	}
+	if validate != nil {
+		if err := validate(info); err != nil {
+			return nil, err
+		}
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("key file changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("key file must be a regular file: %s", path)
+	}
+	if openedInfo.Size() > maxDNSSECKeyFileSize {
+		return nil, fmt.Errorf("key file exceeds maximum size of %d bytes: %s", maxDNSSECKeyFileSize, path)
+	}
+	if validate != nil {
+		if err := validate(openedInfo); err != nil {
+			return nil, err
+		}
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxDNSSECKeyFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxDNSSECKeyFileSize {
+		return nil, fmt.Errorf("key file exceeds maximum size of %d bytes: %s", maxDNSSECKeyFileSize, path)
+	}
+	return data, nil
+}
+
 func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
@@ -577,7 +715,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	if err := tmp.Chmod(perm); err != nil {
 		return fmt.Errorf("chmod temp file: %w", err)
 	}
-	if _, err := tmp.Write(data); err != nil {
+	if err := writeAll(tmp, data); err != nil {
 		return fmt.Errorf("write temp file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
@@ -591,6 +729,17 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	}
 	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("sync directory: %w", err)
+	}
+	return nil
+}
+
+func writeAll(w io.Writer, data []byte) error {
+	n, err := w.Write(data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
 	}
 	return nil
 }

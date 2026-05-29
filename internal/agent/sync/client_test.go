@@ -8,7 +8,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,6 +68,63 @@ func TestNewClient_NormalizesTrailingSlash(t *testing.T) {
 
 	if client.baseURL != "http://localhost:8080" {
 		t.Errorf("Expected normalized baseURL http://localhost:8080, got %s", client.baseURL)
+	}
+}
+
+func TestNewClient_APIKeyTransport(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     config.ControllerClientConfig
+		wantErr string
+	}{
+		{
+			name: "rejects remote http with api key",
+			cfg: config.ControllerClientConfig{
+				URL:    "http://controller.example.com",
+				APIKey: "secret",
+			},
+			wantErr: "plaintext HTTP",
+		},
+		{
+			name: "allows loopback http with api key",
+			cfg: config.ControllerClientConfig{
+				URL:    "http://localhost:8080",
+				APIKey: "secret",
+			},
+		},
+		{
+			name: "allows explicit plaintext opt in",
+			cfg: config.ControllerClientConfig{
+				URL:                  "http://controller.example.com",
+				APIKey:               "secret",
+				AllowPlaintextAPIKey: true,
+			},
+		},
+		{
+			name: "allows https with api key",
+			cfg: config.ControllerClientConfig{
+				URL:    "https://controller.example.com",
+				APIKey: "secret",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewClient(tc.cfg)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatal("Expected NewClient to fail")
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Expected error to contain %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewClient failed: %v", err)
+			}
+		})
 	}
 }
 
@@ -154,6 +214,260 @@ func TestNewClient_RejectsIncompleteClientAuthTLS(t *testing.T) {
 				t.Fatalf("Expected error to contain %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestNewClient_RejectsUnsafeTLSFilePaths(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.ControllerClientConfig
+		want string
+	}{
+		{
+			name: "relative ca file",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled: true,
+					CAFile:  "controller-ca.crt",
+				},
+			},
+			want: "ca_file",
+		},
+		{
+			name: "cert file with surrounding whitespace",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					ClientAuth: true,
+					CertFile:   " /tmp/client.crt ",
+					KeyFile:    "/tmp/client.key",
+				},
+			},
+			want: "cert_file",
+		},
+		{
+			name: "key file with newline",
+			cfg: config.ControllerClientConfig{
+				URL: "https://localhost:8080",
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					ClientAuth: true,
+					CertFile:   "/tmp/client.crt",
+					KeyFile:    "/tmp/client.key\nextra",
+				},
+			},
+			want: "key_file",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewClient(tc.cfg)
+			if err == nil {
+				t.Fatal("Expected NewClient to fail")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Expected error to contain %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestNewClient_RejectsSymlinkedTLSCAFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	realPath := filepath.Join(tmpDir, "ca.crt.real")
+	linkPath := filepath.Join(tmpDir, "ca.crt")
+	if err := os.WriteFile(realPath, []byte("not a certificate"), 0644); err != nil {
+		t.Fatalf("write real CA file: %v", err)
+	}
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := NewClient(config.ControllerClientConfig{
+		URL: "https://localhost:8080",
+		TLS: config.TLSConfig{
+			Enabled: true,
+			CAFile:  linkPath,
+		},
+	})
+	if err == nil {
+		t.Fatal("Expected NewClient to fail")
+	}
+	if !strings.Contains(err.Error(), "CA certificate") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Expected symlink CA certificate error, got %v", err)
+	}
+}
+
+func TestNewClient_RejectsSymlinkedTLSClientCertificateFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	realCertPath := filepath.Join(tmpDir, "client.crt.real")
+	certPath := filepath.Join(tmpDir, "client.crt")
+	keyPath := filepath.Join(tmpDir, "client.key")
+	if err := os.WriteFile(realCertPath, []byte("not a certificate"), 0644); err != nil {
+		t.Fatalf("write real cert file: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("not a key"), 0600); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+	if err := os.Symlink(realCertPath, certPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := NewClient(config.ControllerClientConfig{
+		URL: "https://localhost:8080",
+		TLS: config.TLSConfig{
+			Enabled:    true,
+			ClientAuth: true,
+			CertFile:   certPath,
+			KeyFile:    keyPath,
+		},
+	})
+	if err == nil {
+		t.Fatal("Expected NewClient to fail")
+	}
+	if !strings.Contains(err.Error(), "client certificate") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Expected symlink client certificate error, got %v", err)
+	}
+}
+
+func TestNewClient_RejectsSymlinkedTLSClientKeyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	certPath := filepath.Join(tmpDir, "client.crt")
+	realKeyPath := filepath.Join(tmpDir, "client.key.real")
+	keyPath := filepath.Join(tmpDir, "client.key")
+	if err := os.WriteFile(certPath, []byte("not a certificate"), 0644); err != nil {
+		t.Fatalf("write cert file: %v", err)
+	}
+	if err := os.WriteFile(realKeyPath, []byte("not a key"), 0600); err != nil {
+		t.Fatalf("write real key file: %v", err)
+	}
+	if err := os.Symlink(realKeyPath, keyPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := NewClient(config.ControllerClientConfig{
+		URL: "https://localhost:8080",
+		TLS: config.TLSConfig{
+			Enabled:    true,
+			ClientAuth: true,
+			CertFile:   certPath,
+			KeyFile:    keyPath,
+		},
+	})
+	if err == nil {
+		t.Fatal("Expected NewClient to fail")
+	}
+	if !strings.Contains(err.Error(), "client key") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Expected symlink client key error, got %v", err)
+	}
+}
+
+func TestReadRegularTLSFileRejectsOversizedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	caPath := filepath.Join(tmpDir, "ca.crt")
+	file, err := os.OpenFile(caPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		t.Fatalf("create oversized CA file: %v", err)
+	}
+	if err := file.Truncate(maxTLSFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("size oversized CA file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close oversized CA file: %v", err)
+	}
+
+	_, err = readRegularTLSFile(caPath, "CA certificate file")
+	if err == nil {
+		t.Fatal("Expected oversized CA certificate file to fail")
+	}
+	if !strings.Contains(err.Error(), "CA certificate") || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("Expected oversized CA certificate error, got %v", err)
+	}
+}
+
+func TestReadRegularTLSPrivateKeyFileRejectsOversizedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "client.key")
+	file, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		t.Fatalf("create oversized key file: %v", err)
+	}
+	if err := file.Truncate(maxTLSFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("size oversized key file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close oversized key file: %v", err)
+	}
+
+	_, err = readRegularTLSPrivateKeyFile(keyPath)
+	if err == nil {
+		t.Fatal("Expected oversized client key file to fail")
+	}
+	if !strings.Contains(err.Error(), "client key") || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("Expected oversized client key error, got %v", err)
+	}
+}
+
+func TestNewClient_RejectsWorldReadableTLSClientKeyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	certPath := filepath.Join(tmpDir, "client.crt")
+	keyPath := filepath.Join(tmpDir, "client.key")
+	if err := os.WriteFile(certPath, []byte("not a certificate"), 0644); err != nil {
+		t.Fatalf("write cert file: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("not a key"), 0644); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+
+	_, err := NewClient(config.ControllerClientConfig{
+		URL: "https://localhost:8080",
+		TLS: config.TLSConfig{
+			Enabled:    true,
+			ClientAuth: true,
+			CertFile:   certPath,
+			KeyFile:    keyPath,
+		},
+	})
+	if err == nil {
+		t.Fatal("Expected NewClient to fail")
+	}
+	if !strings.Contains(err.Error(), "client key") ||
+		!strings.Contains(err.Error(), "permissions") ||
+		!strings.Contains(err.Error(), "other access") {
+		t.Fatalf("Expected client key permission error, got %v", err)
+	}
+}
+
+func TestNewClient_AllowsGroupReadableTLSClientKeyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	certPath := filepath.Join(tmpDir, "client.crt")
+	keyPath := filepath.Join(tmpDir, "client.key")
+	if err := os.WriteFile(certPath, []byte("not a certificate"), 0644); err != nil {
+		t.Fatalf("write cert file: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("not a key"), 0640); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+
+	_, err := NewClient(config.ControllerClientConfig{
+		URL: "https://localhost:8080",
+		TLS: config.TLSConfig{
+			Enabled:    true,
+			ClientAuth: true,
+			CertFile:   certPath,
+			KeyFile:    keyPath,
+		},
+	})
+	if err == nil {
+		t.Fatal("Expected NewClient to fail while parsing placeholder certificate")
+	}
+	if strings.Contains(err.Error(), "permissions") || strings.Contains(err.Error(), "other access") {
+		t.Fatalf("Expected key permissions to pass before certificate parse error, got %v", err)
 	}
 }
 
@@ -304,6 +618,71 @@ func TestListZones_Paginates(t *testing.T) {
 	}
 }
 
+func TestListZonesRejectsInvalidPagination(t *testing.T) {
+	requireTCPListener(t)
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "offset mismatch",
+			body: `{"zones":[],"pagination":{"offset":1,"limit":1000,"count":0}}`,
+			want: "pagination offset",
+		},
+		{
+			name: "limit mismatch",
+			body: `{"zones":[],"pagination":{"offset":0,"limit":999,"count":0}}`,
+			want: "pagination limit",
+		},
+		{
+			name: "negative count",
+			body: `{"zones":[],"pagination":{"offset":0,"limit":1000,"count":-1}}`,
+			want: "pagination count",
+		},
+		{
+			name: "count mismatch",
+			body: `{"zones":[],"pagination":{"offset":0,"limit":1000,"count":1000}}`,
+			want: "pagination count",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&requests, 1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+
+			client, err := NewClient(config.ControllerClientConfig{
+				URL:           server.URL,
+				Timeout:       5 * time.Second,
+				RetryAttempts: 0,
+			})
+			if err != nil {
+				t.Fatalf("NewClient failed: %v", err)
+			}
+			defer client.Close()
+
+			_, err = client.ListZones(context.Background())
+			if err == nil {
+				t.Fatal("expected ListZones to reject invalid pagination")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+			if got := atomic.LoadInt32(&requests); got != 1 {
+				t.Fatalf("expected invalid pagination to stop after one request, got %d", got)
+			}
+		})
+	}
+}
+
 func TestListZones_NormalizesTrailingSlash(t *testing.T) {
 	requireTCPListener(t)
 
@@ -331,6 +710,84 @@ func TestListZones_NormalizesTrailingSlash(t *testing.T) {
 
 	if _, err := client.ListZones(context.Background()); err != nil {
 		t.Fatalf("ListZones failed: %v", err)
+	}
+}
+
+func TestListZones_FollowsSameOriginRedirectWithAPIKey(t *testing.T) {
+	requireTCPListener(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/zones":
+			http.Redirect(w, r, "/redirected-zones", http.StatusFound)
+		case "/redirected-zones":
+			if got := r.Header.Get("X-API-Key"); got != "secret-api-key" {
+				t.Fatalf("X-API-Key=%q, want secret-api-key", got)
+			}
+			writeListZonesPage(w, 0, 0)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		APIKey:        "secret-api-key",
+		Timeout:       5 * time.Second,
+		RetryAttempts: 0,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.ListZones(context.Background()); err != nil {
+		t.Fatalf("ListZones failed: %v", err)
+	}
+}
+
+func TestListZones_DoesNotFollowCrossOriginRedirectWithAPIKey(t *testing.T) {
+	requireTCPListener(t)
+
+	redirectTargetCalled := false
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectTargetCalled = true
+		if got := r.Header.Get("X-API-Key"); got != "" {
+			t.Fatalf("X-API-Key leaked to redirect target: %q", got)
+		}
+		writeListZonesPage(w, 0, 0)
+	}))
+	defer redirectTarget.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/zones" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		http.Redirect(w, r, redirectTarget.URL+"/leak", http.StatusFound)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		APIKey:        "secret-api-key",
+		Timeout:       5 * time.Second,
+		RetryAttempts: 0,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.ListZones(context.Background())
+	if err == nil {
+		t.Fatal("expected ListZones to fail on cross-origin redirect")
+	}
+	if !strings.Contains(err.Error(), "unexpected status code: 302") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if redirectTargetCalled {
+		t.Fatal("cross-origin redirect target was called")
 	}
 }
 
@@ -408,6 +865,41 @@ www.example.com. 300 IN A 192.0.2.1
 
 	if content != zoneContent {
 		t.Errorf("Zone content mismatch")
+	}
+}
+
+func TestFetchSignedZone_EscapesZoneNamePathSegment(t *testing.T) {
+	requireTCPListener(t)
+
+	var requestURI string
+	var rawQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestURI = r.RequestURI
+		rawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 0,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com?admin=true", "")
+	if err == nil {
+		t.Fatal("Expected fetch to fail with mock error status")
+	}
+	if rawQuery != "" {
+		t.Fatalf("Expected zone name query delimiter to be escaped, raw query = %q", rawQuery)
+	}
+	if !strings.Contains(requestURI, "/api/v1/zones/example.com%3Fadmin=true/signed") {
+		t.Fatalf("RequestURI = %q, want escaped zone name path segment", requestURI)
 	}
 }
 
@@ -526,6 +1018,66 @@ func TestFetchSignedZone_NotModified(t *testing.T) {
 
 	if etag != currentETag {
 		t.Errorf("Expected ETag %s, got %s", currentETag, etag)
+	}
+}
+
+func TestFetchSignedZone_DoesNotSendUnsafeConditionalETag(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	tests := []string{
+		"*",
+		`"*"`,
+		"etag,other",
+		`bad\etag`,
+		`bad"etag`,
+		"bad\x7fetag",
+	}
+
+	for _, currentETag := range tests {
+		t.Run(currentETag, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("If-None-Match"); got != "" {
+					t.Errorf("Expected unsafe ETag %q not to be sent, got If-None-Match %q", currentETag, got)
+				}
+
+				w.Header().Set("ETag", `"`+hashHex+`"`)
+				w.Header().Set("X-Zone-Serial", "2024122801")
+				w.Header().Set("X-Zone-Hash", hashHex)
+				w.Header().Set("X-Zone-Hash8", hashHex[:8])
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, zoneContent)
+			}))
+			defer server.Close()
+
+			client, err := NewClient(config.ControllerClientConfig{
+				URL:           server.URL,
+				Timeout:       5 * time.Second,
+				RetryAttempts: 1,
+				RetryDelay:    100 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("NewClient failed: %v", err)
+			}
+			defer client.Close()
+
+			content, etag, notModified, err := client.FetchSignedZone(context.Background(), "example.com.", currentETag)
+			if err != nil {
+				t.Fatalf("FetchSignedZone failed: %v", err)
+			}
+			if notModified {
+				t.Fatal("Expected unsafe conditional ETag to force a full fetch")
+			}
+			if content != zoneContent {
+				t.Errorf("Expected zone content %q, got %q", zoneContent, content)
+			}
+			if etag != `"`+hashHex+`"` {
+				t.Errorf("Expected ETag %q, got %q", `"`+hashHex+`"`, etag)
+			}
+		})
 	}
 }
 
@@ -840,6 +1392,135 @@ func TestFetchSignedZone_SignatureVerification(t *testing.T) {
 	}
 }
 
+func TestFetchSignedZone_SignatureVerificationUsesLegacyKeyWithKeyID(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	signatureKey := "test-signature-key"
+
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+		w.Header().Set("X-Zone-Serial", "2024122801")
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Hash8", hashHex[:8])
+		w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), signatureKey))
+		w.Header().Set("X-Zone-Signature-Key-ID", "primary")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetSignatureVerification(true, signatureKey)
+
+	content, _, _, err := client.FetchSignedZone(context.Background(), "example.com.", "")
+	if err != nil {
+		t.Fatalf("FetchSignedZone failed with legacy signature key and key id: %v", err)
+	}
+	if content != zoneContent {
+		t.Errorf("Zone content mismatch")
+	}
+}
+
+func TestFetchSignedZone_SignatureVerificationUsesKeyIDRing(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	previousKey := "previous-signature-key"
+
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+		w.Header().Set("X-Zone-Serial", "2024122801")
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Hash8", hashHex[:8])
+		w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), previousKey))
+		w.Header().Set("X-Zone-Signature-Key-ID", "previous")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetSignatureVerificationKeys(true, "", map[string]string{
+		"current":  "current-signature-key",
+		"previous": previousKey,
+	})
+
+	content, _, _, err := client.FetchSignedZone(context.Background(), "example.com.", "")
+	if err != nil {
+		t.Fatalf("FetchSignedZone failed with key ring signature: %v", err)
+	}
+	if content != zoneContent {
+		t.Errorf("Zone content mismatch")
+	}
+}
+
+func TestFetchSignedZone_UnknownSignatureKeyIDRejected(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	signatureKey := "test-signature-key"
+
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+		w.Header().Set("X-Zone-Serial", "2024122801")
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Hash8", hashHex[:8])
+		w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), signatureKey))
+		w.Header().Set("X-Zone-Signature-Key-ID", "unknown")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetSignatureVerificationKeys(true, "", map[string]string{"primary": signatureKey})
+
+	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "")
+	if err == nil {
+		t.Fatal("Expected unknown signature key id to fail")
+	}
+	if err.Error() != "unknown signature key id: unknown" {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+}
+
 func TestFetchSignedZone_SignatureVerificationForcesFullFetch(t *testing.T) {
 	requireTCPListener(t)
 	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
@@ -1027,6 +1708,7 @@ func TestFetchSignedZone_InvalidSignatureRejected(t *testing.T) {
 		w.Header().Set("X-Zone-Hash", hashHex)
 		w.Header().Set("X-Zone-Hash8", hashHex[:8])
 		w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), "wrong-signature-key"))
+		w.Header().Set("X-Zone-Signature-Key-ID", "primary")
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, zoneContent)
@@ -1043,7 +1725,7 @@ func TestFetchSignedZone_InvalidSignatureRejected(t *testing.T) {
 		t.Fatalf("NewClient failed: %v", err)
 	}
 	defer client.Close()
-	client.SetSignatureVerification(true, "test-signature-key")
+	client.SetSignatureVerificationKeys(true, "", map[string]string{"primary": "test-signature-key"})
 
 	_, _, _, err = client.FetchSignedZone(context.Background(), "example.com.", "")
 	if err == nil {

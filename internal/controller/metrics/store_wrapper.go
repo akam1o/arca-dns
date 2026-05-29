@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"time"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -22,14 +23,47 @@ func WrapZoneStore(inner backend.ZoneStore, metrics *ControllerMetrics) backend.
 	_, hasDNSSECMetadata := inner.(backend.DNSSECMetadataStore)
 	_, hasRevisions := inner.(backend.RevisionStore)
 	_, hasConditionalDelete := inner.(backend.ConditionalDeleteStore)
+	_, hasWatchable := inner.(backend.WatchableStore)
+	_, hasTransactional := inner.(backend.TransactionalStore)
+	_, hasBackendInfo := inner.(backend.Backend)
 
 	switch {
+	case hasDNSSECMetadata && hasRevisions && hasConditionalDelete && hasWatchable && hasBackendInfo:
+		revisionConditional := &instrumentedMetadataRevisionConditionalDeleteStore{
+			instrumentedMetadataRevisionStore: &instrumentedMetadataRevisionStore{InstrumentedZoneStore: base},
+		}
+		return &instrumentedMetadataRevisionConditionalDeleteWatchableBackendStore{
+			instrumentedMetadataRevisionConditionalDeleteBackendStore: &instrumentedMetadataRevisionConditionalDeleteBackendStore{
+				instrumentedMetadataRevisionConditionalDeleteStore: revisionConditional,
+			},
+		}
+	case hasDNSSECMetadata && hasRevisions && hasConditionalDelete && hasBackendInfo:
+		return &instrumentedMetadataRevisionConditionalDeleteBackendStore{
+			instrumentedMetadataRevisionConditionalDeleteStore: &instrumentedMetadataRevisionConditionalDeleteStore{
+				instrumentedMetadataRevisionStore: &instrumentedMetadataRevisionStore{InstrumentedZoneStore: base},
+			},
+		}
 	case hasDNSSECMetadata && hasRevisions && hasConditionalDelete:
 		return &instrumentedMetadataRevisionConditionalDeleteStore{
 			instrumentedMetadataRevisionStore: &instrumentedMetadataRevisionStore{InstrumentedZoneStore: base},
 		}
 	case hasDNSSECMetadata && hasRevisions:
 		return &instrumentedMetadataRevisionStore{InstrumentedZoneStore: base}
+	case hasDNSSECMetadata && hasConditionalDelete && hasTransactional && hasBackendInfo:
+		metadataConditional := &instrumentedMetadataConditionalDeleteStore{
+			instrumentedMetadataStore: &instrumentedMetadataStore{InstrumentedZoneStore: base},
+		}
+		return &instrumentedMetadataConditionalDeleteTransactionalBackendStore{
+			instrumentedMetadataConditionalDeleteBackendStore: &instrumentedMetadataConditionalDeleteBackendStore{
+				instrumentedMetadataConditionalDeleteStore: metadataConditional,
+			},
+		}
+	case hasDNSSECMetadata && hasConditionalDelete && hasBackendInfo:
+		return &instrumentedMetadataConditionalDeleteBackendStore{
+			instrumentedMetadataConditionalDeleteStore: &instrumentedMetadataConditionalDeleteStore{
+				instrumentedMetadataStore: &instrumentedMetadataStore{InstrumentedZoneStore: base},
+			},
+		}
 	case hasDNSSECMetadata && hasConditionalDelete:
 		return &instrumentedMetadataConditionalDeleteStore{
 			instrumentedMetadataStore: &instrumentedMetadataStore{InstrumentedZoneStore: base},
@@ -50,65 +84,74 @@ func WrapZoneStore(inner backend.ZoneStore, metrics *ControllerMetrics) backend.
 }
 
 func (s *InstrumentedZoneStore) GetZone(ctx context.Context, name string) (*model.Zone, error) {
+	start := time.Now()
 	zone, err := s.inner.GetZone(ctx, name)
-	s.metrics.IncBackendOperation("get_zone", statusLabel(err))
+	s.metrics.ObserveBackendOperation("get_zone", err, time.Since(start).Seconds())
 	return zone, err
 }
 
 func (s *InstrumentedZoneStore) ListZones(ctx context.Context, opts backend.ListOptions) ([]*model.Zone, error) {
+	start := time.Now()
 	zones, err := s.inner.ListZones(ctx, opts)
-	s.metrics.IncBackendOperation("list_zones", statusLabel(err))
+	s.metrics.ObserveBackendOperation("list_zones", err, time.Since(start).Seconds())
 	return zones, err
 }
 
 func (s *InstrumentedZoneStore) ListZoneSummaries(ctx context.Context, opts backend.ListOptions) ([]*backend.ZoneSummary, error) {
+	start := time.Now()
 	summaries, err := backend.ListZoneSummaries(ctx, s.inner, opts)
-	s.metrics.IncBackendOperation("list_zone_summaries", statusLabel(err))
+	s.metrics.ObserveBackendOperation("list_zone_summaries", err, time.Since(start).Seconds())
 	return summaries, err
 }
 
+func (s *InstrumentedZoneStore) CountZones(ctx context.Context) (int, error) {
+	start := time.Now()
+	count, err := backend.CountZones(ctx, s.inner)
+	s.metrics.ObserveBackendOperation("count_zones", err, time.Since(start).Seconds())
+	return count, err
+}
+
 func (s *InstrumentedZoneStore) HealthCheck(ctx context.Context) error {
+	start := time.Now()
 	err := backend.CheckHealth(ctx, s.inner)
-	s.metrics.IncBackendOperation("health_check", statusLabel(err))
+	s.metrics.ObserveBackendOperation("health_check", err, time.Since(start).Seconds())
 	return err
 }
 
 func (s *InstrumentedZoneStore) CreateZone(ctx context.Context, zone *model.Zone) error {
+	start := time.Now()
 	err := s.inner.CreateZone(ctx, zone)
-	s.metrics.IncBackendOperation("create_zone", statusLabel(err))
+	s.metrics.ObserveBackendOperation("create_zone", err, time.Since(start).Seconds())
 	return err
 }
 
 func (s *InstrumentedZoneStore) UpdateZone(ctx context.Context, zone *model.Zone, expectedVersion string) error {
+	start := time.Now()
 	err := s.inner.UpdateZone(ctx, zone, expectedVersion)
-	s.metrics.IncBackendOperation("update_zone", statusLabel(err))
+	s.metrics.ObserveBackendOperation("update_zone", err, time.Since(start).Seconds())
 	return err
 }
 
 func (s *InstrumentedZoneStore) DeleteZone(ctx context.Context, name string) error {
+	start := time.Now()
 	err := s.inner.DeleteZone(ctx, name)
-	s.metrics.IncBackendOperation("delete_zone", statusLabel(err))
+	s.metrics.ObserveBackendOperation("delete_zone", err, time.Since(start).Seconds())
 	return err
 }
 
 func (s *InstrumentedZoneStore) Close() error {
+	start := time.Now()
 	err := s.inner.Close()
-	s.metrics.IncBackendOperation("close", statusLabel(err))
+	s.metrics.ObserveBackendOperation("close", err, time.Since(start).Seconds())
 	return err
 }
 
 func recordConditionalDelete(ctx context.Context, store backend.ZoneStore, metrics *ControllerMetrics, name string, expectedVersion string) error {
+	start := time.Now()
 	conditionalStore := store.(backend.ConditionalDeleteStore)
 	err := conditionalStore.DeleteZoneWithVersion(ctx, name, expectedVersion)
-	metrics.IncBackendOperation("delete_zone", statusLabel(err))
+	metrics.ObserveBackendOperation("delete_zone", err, time.Since(start).Seconds())
 	return err
-}
-
-func statusLabel(err error) string {
-	if err == nil {
-		return "success"
-	}
-	return "error"
 }
 
 type instrumentedMetadataStore struct {
@@ -116,9 +159,10 @@ type instrumentedMetadataStore struct {
 }
 
 func (s *instrumentedMetadataStore) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	start := time.Now()
 	metadataStore := s.inner.(backend.DNSSECMetadataStore)
 	err := metadataStore.UpdateDNSSECMetadata(ctx, zoneName, dnssec)
-	s.metrics.IncBackendOperation("update_dnssec_metadata", statusLabel(err))
+	s.metrics.ObserveBackendOperation("update_dnssec_metadata", err, time.Since(start).Seconds())
 	return err
 }
 
@@ -127,23 +171,26 @@ type instrumentedRevisionStore struct {
 }
 
 func (s *instrumentedRevisionStore) GetRevision(ctx context.Context, zoneName, version string) (*model.Zone, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	zone, err := revisionStore.GetRevision(ctx, zoneName, version)
-	s.metrics.IncBackendOperation("get_revision", statusLabel(err))
+	s.metrics.ObserveBackendOperation("get_revision", err, time.Since(start).Seconds())
 	return zone, err
 }
 
 func (s *instrumentedRevisionStore) ListRevisions(ctx context.Context, zoneName string, opts backend.ListOptions) ([]*model.ZoneVersion, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	versions, err := revisionStore.ListRevisions(ctx, zoneName, opts)
-	s.metrics.IncBackendOperation("list_revisions", statusLabel(err))
+	s.metrics.ObserveBackendOperation("list_revisions", err, time.Since(start).Seconds())
 	return versions, err
 }
 
 func (s *instrumentedRevisionStore) GetCurrentVersion(ctx context.Context, zoneName string) (string, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	version, err := revisionStore.GetCurrentVersion(ctx, zoneName)
-	s.metrics.IncBackendOperation("get_current_version", statusLabel(err))
+	s.metrics.ObserveBackendOperation("get_current_version", err, time.Since(start).Seconds())
 	return version, err
 }
 
@@ -152,30 +199,34 @@ type instrumentedMetadataRevisionStore struct {
 }
 
 func (s *instrumentedMetadataRevisionStore) UpdateDNSSECMetadata(ctx context.Context, zoneName string, dnssec *model.DNSSECConfig) error {
+	start := time.Now()
 	metadataStore := s.inner.(backend.DNSSECMetadataStore)
 	err := metadataStore.UpdateDNSSECMetadata(ctx, zoneName, dnssec)
-	s.metrics.IncBackendOperation("update_dnssec_metadata", statusLabel(err))
+	s.metrics.ObserveBackendOperation("update_dnssec_metadata", err, time.Since(start).Seconds())
 	return err
 }
 
 func (s *instrumentedMetadataRevisionStore) GetRevision(ctx context.Context, zoneName, version string) (*model.Zone, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	zone, err := revisionStore.GetRevision(ctx, zoneName, version)
-	s.metrics.IncBackendOperation("get_revision", statusLabel(err))
+	s.metrics.ObserveBackendOperation("get_revision", err, time.Since(start).Seconds())
 	return zone, err
 }
 
 func (s *instrumentedMetadataRevisionStore) ListRevisions(ctx context.Context, zoneName string, opts backend.ListOptions) ([]*model.ZoneVersion, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	versions, err := revisionStore.ListRevisions(ctx, zoneName, opts)
-	s.metrics.IncBackendOperation("list_revisions", statusLabel(err))
+	s.metrics.ObserveBackendOperation("list_revisions", err, time.Since(start).Seconds())
 	return versions, err
 }
 
 func (s *instrumentedMetadataRevisionStore) GetCurrentVersion(ctx context.Context, zoneName string) (string, error) {
+	start := time.Now()
 	revisionStore := s.inner.(backend.RevisionStore)
 	version, err := revisionStore.GetCurrentVersion(ctx, zoneName)
-	s.metrics.IncBackendOperation("get_current_version", statusLabel(err))
+	s.metrics.ObserveBackendOperation("get_current_version", err, time.Since(start).Seconds())
 	return version, err
 }
 
@@ -195,6 +246,25 @@ func (s *instrumentedMetadataConditionalDeleteStore) DeleteZoneWithVersion(ctx c
 	return recordConditionalDelete(ctx, s.inner, s.metrics, name, expectedVersion)
 }
 
+type instrumentedMetadataConditionalDeleteBackendStore struct {
+	*instrumentedMetadataConditionalDeleteStore
+}
+
+func (s *instrumentedMetadataConditionalDeleteBackendStore) Info() backend.BackendInfo {
+	return s.inner.(backend.Backend).Info()
+}
+
+type instrumentedMetadataConditionalDeleteTransactionalBackendStore struct {
+	*instrumentedMetadataConditionalDeleteBackendStore
+}
+
+func (s *instrumentedMetadataConditionalDeleteTransactionalBackendStore) BeginTx(ctx context.Context) (backend.Tx, error) {
+	start := time.Now()
+	tx, err := s.inner.(backend.TransactionalStore).BeginTx(ctx)
+	s.metrics.ObserveBackendOperation("begin_tx", err, time.Since(start).Seconds())
+	return tx, err
+}
+
 type instrumentedRevisionConditionalDeleteStore struct {
 	*instrumentedRevisionStore
 }
@@ -209,4 +279,23 @@ type instrumentedMetadataRevisionConditionalDeleteStore struct {
 
 func (s *instrumentedMetadataRevisionConditionalDeleteStore) DeleteZoneWithVersion(ctx context.Context, name string, expectedVersion string) error {
 	return recordConditionalDelete(ctx, s.inner, s.metrics, name, expectedVersion)
+}
+
+type instrumentedMetadataRevisionConditionalDeleteBackendStore struct {
+	*instrumentedMetadataRevisionConditionalDeleteStore
+}
+
+func (s *instrumentedMetadataRevisionConditionalDeleteBackendStore) Info() backend.BackendInfo {
+	return s.inner.(backend.Backend).Info()
+}
+
+type instrumentedMetadataRevisionConditionalDeleteWatchableBackendStore struct {
+	*instrumentedMetadataRevisionConditionalDeleteBackendStore
+}
+
+func (s *instrumentedMetadataRevisionConditionalDeleteWatchableBackendStore) Watch(ctx context.Context, zoneName string) (<-chan backend.ZoneEvent, error) {
+	start := time.Now()
+	ch, err := s.inner.(backend.WatchableStore).Watch(ctx, zoneName)
+	s.metrics.ObserveBackendOperation("watch", err, time.Since(start).Seconds())
+	return ch, err
 }

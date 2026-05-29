@@ -41,6 +41,20 @@ func (m *MemoryBackend) HealthCheck(ctx context.Context) error {
 	}
 }
 
+// CountZones returns the number of zones without copying zone data.
+func (m *MemoryBackend) CountZones(ctx context.Context) (int, error) {
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	default:
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return len(m.zones), nil
+}
+
 // GetZone retrieves a zone by name.
 func (m *MemoryBackend) GetZone(ctx context.Context, name string) (*model.Zone, error) {
 	m.mu.RLock()
@@ -258,6 +272,7 @@ func (m *MemoryBackend) Info() BackendInfo {
 		Capabilities: []string{
 			CapabilityZoneStore,
 			CapabilityZoneSummaryStore,
+			CapabilityZoneCountStore,
 			CapabilityHealthStore,
 			CapabilityDNSSECMetadataStore,
 			CapabilityConditionalDeleteStore,

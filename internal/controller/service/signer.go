@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	ctrlmetrics "github.com/akam1o/arca-dns/internal/controller/metrics"
@@ -18,6 +21,20 @@ import (
 	"github.com/akam1o/arca-dns/pkg/util"
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
+)
+
+var (
+	// ErrSignedArtifactUnavailable indicates that a signed artifact has not
+	// been published for the current zone version.
+	ErrSignedArtifactUnavailable = errors.New("signed zone artifact unavailable")
+	// ErrSignedArtifactExpired indicates that the published signed artifact can
+	// no longer be served safely because its earliest RRSIG has expired.
+	ErrSignedArtifactExpired = errors.New("signed zone artifact expired")
+)
+
+const (
+	maxArtifactVersionFilenameLength = 200
+	maxSignedArtifactFileSize        = 64 * 1024 * 1024
 )
 
 // SigningService handles DNSSEC signing operations and signed zone storage.
@@ -416,6 +433,14 @@ func (s *SigningService) cachedArtifactFresh(artifact *SignedZoneArtifact) bool 
 	return expiration.After(time.Now().Add(threshold))
 }
 
+func (s *SigningService) cachedArtifactUsable(artifact *SignedZoneArtifact) bool {
+	if artifact == nil || artifact.Metadata.Expiration == 0 {
+		return false
+	}
+	expiration := time.Unix(int64(artifact.Metadata.Expiration), 0)
+	return expiration.After(time.Now())
+}
+
 func signingMetadataFromRRs(rrs []dns.RR, dnssecConfig *model.DNSSECConfig) SigningMetadata {
 	var metadata SigningMetadata
 
@@ -567,6 +592,9 @@ func (s *SigningService) removeSignedZoneArtifact(artifact *SignedZoneArtifact) 
 	if artifact == nil || s.artifactDir == "" {
 		return nil
 	}
+	if _, err := s.validateArtifactZoneDirectoryIfExists(artifact.ZoneName); err != nil {
+		return err
+	}
 	err := os.Remove(s.artifactPath(artifact.ZoneName, artifact.Version))
 	if err == nil || os.IsNotExist(err) {
 		return nil
@@ -579,17 +607,22 @@ func (s *SigningService) CleanupZone(ctx context.Context, zoneName string) error
 	if s == nil {
 		return nil
 	}
-	lock, err := s.acquireZoneLock(ctx, model.NormalizeZoneName(zoneName))
+	normalizedZoneName := model.NormalizeZoneName(zoneName)
+	if err := model.ValidateZoneName(normalizedZoneName); err != nil {
+		return fmt.Errorf("invalid zone name: %w", err)
+	}
+
+	lock, err := s.acquireZoneLock(ctx, normalizedZoneName)
 	if err != nil {
 		return fmt.Errorf("lock zone cleanup: %w", err)
 	}
 	defer lock.Unlock()
 
-	if err := s.removeZoneArtifacts(zoneName); err != nil {
+	if err := s.removeZoneArtifacts(normalizedZoneName); err != nil {
 		return fmt.Errorf("remove signed artifacts: %w", err)
 	}
 	if s.keyManager != nil {
-		if err := s.keyManager.RemoveZoneKeysContext(ctx, zoneName); err != nil {
+		if err := s.keyManager.RemoveZoneKeysContext(ctx, normalizedZoneName); err != nil {
 			return fmt.Errorf("remove DNSSEC keys: %w", err)
 		}
 	}
@@ -600,7 +633,14 @@ func (s *SigningService) removeZoneArtifacts(zoneName string) error {
 	if s.artifactDir == "" {
 		return nil
 	}
-	zoneDir := filepath.Join(s.artifactDir, util.SafeZoneFilename(zoneName))
+	normalizedZoneName := model.NormalizeZoneName(zoneName)
+	if err := model.ValidateZoneName(normalizedZoneName); err != nil {
+		return fmt.Errorf("invalid zone name: %w", err)
+	}
+	zoneDir, err := s.validateArtifactZoneDirectoryIfExists(normalizedZoneName)
+	if err != nil {
+		return err
+	}
 	if err := os.RemoveAll(zoneDir); err != nil {
 		return fmt.Errorf("remove artifact directory: %w", err)
 	}
@@ -777,6 +817,46 @@ func (s *SigningService) GetSignedZone(ctx context.Context, zoneName string) (*S
 	return s.getSignedZoneLocked(ctx, zone)
 }
 
+// GetPublishedSignedZone retrieves the already-published signed artifact for a
+// zone without signing or mutating backend state. It is intended for safe HTTP
+// read paths; refreshes should be performed by explicit write paths or the
+// DNSSEC scheduler.
+func (s *SigningService) GetPublishedSignedZone(ctx context.Context, zoneName string) (*SignedZoneArtifact, error) {
+	zone, err := s.store.GetZone(ctx, zoneName)
+	if err != nil {
+		return nil, err
+	}
+
+	lock, err := s.acquireZoneLock(ctx, zone.Name)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Unlock()
+
+	// Re-read under the zone signing lock so GET/HEAD waits for an in-flight
+	// write path and uses the same zone version as the published artifact.
+	zone, err = s.store.GetZone(ctx, zoneName)
+	if err != nil {
+		return nil, err
+	}
+
+	artifact, err := s.loadCachedSignedZoneArtifact(zone)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSignedArtifactUnavailable, err)
+	}
+	if !s.cachedArtifactUsable(artifact) {
+		return nil, fmt.Errorf("%w: zone=%s version=%s expiration=%d", ErrSignedArtifactExpired, artifact.ZoneName, artifact.Version, artifact.Metadata.Expiration)
+	}
+	if !s.cachedArtifactFresh(artifact) {
+		s.logger.Warn("Serving signed artifact that is due for re-signing",
+			zap.String("zone", artifact.ZoneName),
+			zap.String("version", artifact.Version),
+			zap.Uint32("expiration", artifact.Metadata.Expiration))
+	}
+
+	return artifact, nil
+}
+
 func (s *SigningService) getSignedZoneLocked(ctx context.Context, zone *model.Zone) (*SignedZoneArtifact, error) {
 	// Check if zone has been signed (M4.5 fix: null-safety check)
 	if zone.DNSSEC == nil || !zone.DNSSEC.Enabled {
@@ -847,10 +927,6 @@ func (s *SigningService) GetEarliestExpiration(ctx context.Context, zoneName str
 		return artifact.Metadata.Expiration, nil
 	}
 
-	if persistedExpiration != 0 {
-		return persistedExpiration, nil
-	}
-
 	return 0, fmt.Errorf("%w for zone %s: %v", dnssec.ErrSignatureExpirationUnavailable, zoneName, err)
 }
 
@@ -893,8 +969,46 @@ func (s *SigningService) getZoneLock(zoneName string) *zoneSigningLock {
 }
 
 func (s *SigningService) artifactPath(zoneName, version string) string {
-	zoneDir := filepath.Join(s.artifactDir, util.SafeZoneFilename(zoneName))
-	return filepath.Join(zoneDir, fmt.Sprintf("%s.zone.signed", version))
+	zoneDir := s.artifactZoneDir(zoneName)
+	return filepath.Join(zoneDir, fmt.Sprintf("%s.zone.signed", safeArtifactVersionFilename(version)))
+}
+
+func (s *SigningService) artifactZoneDir(zoneName string) string {
+	return filepath.Join(s.artifactDir, util.SafeZoneFilename(zoneName))
+}
+
+func safeArtifactVersionFilename(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return "unknown"
+	}
+
+	var b strings.Builder
+	b.Grow(len(version))
+	for _, r := range version {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+
+	safe := strings.ReplaceAll(b.String(), "..", "_")
+	safe = strings.Trim(safe, ".")
+	if safe == "" {
+		safe = "unknown"
+	}
+	if len(safe) > maxArtifactVersionFilenameLength {
+		safe = safe[:maxArtifactVersionFilenameLength]
+	}
+	return safe
 }
 
 func (s *SigningService) storeArtifact(zoneName, version string, contents []byte) error {
@@ -903,19 +1017,134 @@ func (s *SigningService) storeArtifact(zoneName, version string, contents []byte
 	}
 
 	path := s.artifactPath(zoneName, version)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("mkdir artifact dir: %w", err)
+	dirPath, err := s.ensureArtifactZoneDirectory(zoneName)
+	if err != nil {
+		return err
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, contents, 0o644); err != nil {
-		return fmt.Errorf("write temp artifact: %w", err)
+	tmp, err := os.CreateTemp(dirPath, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp artifact: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	tmpPath := tmp.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp artifact: %w", err)
+	}
+	if n, err := tmp.Write(contents); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp artifact: %w", err)
+	} else if n != len(contents) {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp artifact: %w", io.ErrShortWrite)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp artifact: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp artifact: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("rename artifact: %w", err)
 	}
+	cleanupTmp = false
+	if err := syncDir(dirPath); err != nil {
+		return fmt.Errorf("sync artifact dir: %w", err)
+	}
 	return nil
+}
+
+func (s *SigningService) ensureArtifactZoneDirectory(zoneName string) (string, error) {
+	zoneDir := s.artifactZoneDir(zoneName)
+	if err := ensureArtifactDirectory(s.artifactDir, "artifact cache directory"); err != nil {
+		return "", err
+	}
+	if err := ensureArtifactDirectory(zoneDir, "artifact zone directory"); err != nil {
+		return "", err
+	}
+	return zoneDir, nil
+}
+
+func ensureArtifactDirectory(path, label string) error {
+	existed := true
+	if err := validateExistingArtifactDirectory(path, label); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %s: %w", label, err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", label, err)
+	}
+	if err := validateExistingArtifactDirectory(path, label); err != nil {
+		return fmt.Errorf("stat %s: %w", label, err)
+	}
+	if !existed {
+		if err := syncDir(filepath.Dir(path)); err != nil {
+			return fmt.Errorf("sync %s parent: %w", label, err)
+		}
+	}
+
+	return nil
+}
+
+func (s *SigningService) validateArtifactZoneDirectoryIfExists(zoneName string) (string, error) {
+	zoneDir := s.artifactZoneDir(zoneName)
+	if err := validateExistingArtifactDirectory(s.artifactDir, "artifact cache directory"); err != nil {
+		if os.IsNotExist(err) {
+			return zoneDir, nil
+		}
+		return "", fmt.Errorf("stat artifact cache directory: %w", err)
+	}
+	if err := validateExistingArtifactDirectory(zoneDir, "artifact zone directory"); err != nil {
+		if os.IsNotExist(err) {
+			return zoneDir, nil
+		}
+		return "", fmt.Errorf("stat artifact zone directory: %w", err)
+	}
+	return zoneDir, nil
+}
+
+func validateExistingArtifactDirectory(path, label string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s must be a directory: %s", label, path)
+	}
+	return nil
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
+			syncErr = nil
+		}
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 func (s *SigningService) pruneArtifacts(zoneName string) error {
@@ -923,7 +1152,10 @@ func (s *SigningService) pruneArtifacts(zoneName string) error {
 		return nil
 	}
 
-	zoneDir := filepath.Join(s.artifactDir, util.SafeZoneFilename(zoneName))
+	zoneDir, err := s.validateArtifactZoneDirectoryIfExists(zoneName)
+	if err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(zoneDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -979,9 +1211,57 @@ func (s *SigningService) loadArtifact(zoneName, version string) ([]byte, error) 
 		return nil, fmt.Errorf("artifact cache disabled")
 	}
 	path := s.artifactPath(zoneName, version)
-	data, err := os.ReadFile(path)
+	if _, err := s.validateArtifactZoneDirectoryIfExists(zoneName); err != nil {
+		return nil, err
+	}
+	data, err := readRegularArtifactFile(path)
 	if err != nil {
 		return nil, err
+	}
+	return data, nil
+}
+
+func readRegularArtifactFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("artifact file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("artifact file must be a regular file: %s", path)
+	}
+	if info.Size() > maxSignedArtifactFileSize {
+		return nil, fmt.Errorf("artifact file exceeds maximum size of %d bytes: %s", maxSignedArtifactFileSize, path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("artifact file changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("artifact file must be a regular file: %s", path)
+	}
+	if openedInfo.Size() > maxSignedArtifactFileSize {
+		return nil, fmt.Errorf("artifact file exceeds maximum size of %d bytes: %s", maxSignedArtifactFileSize, path)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxSignedArtifactFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxSignedArtifactFileSize {
+		return nil, fmt.Errorf("artifact file exceeds maximum size of %d bytes: %s", maxSignedArtifactFileSize, path)
 	}
 	return data, nil
 }

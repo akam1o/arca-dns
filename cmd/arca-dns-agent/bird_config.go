@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/akam1o/arca-dns/internal/agent/bird"
@@ -17,6 +20,7 @@ const (
 	birdConfigStatusDisabled      = "disabled"
 	birdConfigStatusApplied       = "applied"
 	birdConfigStatusUsingExisting = "using_existing"
+	maxBIRDConfigFileSize         = 4 * 1024 * 1024
 )
 
 type birdConfigRuntimeStatus struct {
@@ -74,8 +78,16 @@ func applyBIRDConfigOnStart(cfg config.BIRDConfig, client bird.Client, logger *z
 	}
 	result.ProtocolNames = protocolNames
 
-	path := cfg.ConfigureOnStart.Path
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	path, err := cleanBIRDConfigPath(cfg.ConfigureOnStart.Path)
+	if err != nil {
+		result.Status.Error = err.Error()
+		logger.Warn("Invalid BIRD config path; continuing with existing BIRD runtime config",
+			zap.String("path", cfg.ConfigureOnStart.Path),
+			zap.Error(err))
+		return result
+	}
+	result.Status.Path = path
+	if err := ensureConfigDirectoryForPath(path); err != nil {
 		result.Status.Error = err.Error()
 		logger.Warn("Failed to create BIRD config directory; continuing with existing BIRD runtime config",
 			zap.String("path", path),
@@ -125,7 +137,15 @@ func applyBIRDConfigOnStart(cfg config.BIRDConfig, client bird.Client, logger *z
 }
 
 func readPreviousBIRDConfig(path string) ([]byte, bool, error) {
-	data, err := os.ReadFile(path)
+	cleanPath, err := cleanBIRDConfigPath(path)
+	if err != nil {
+		return nil, false, err
+	}
+	path = cleanPath
+	if err := validateConfigDirectoryIfExistsForPath(path); err != nil {
+		return nil, false, err
+	}
+	data, err := readRegularBIRDConfigFile(path)
 	if err == nil {
 		return data, true, nil
 	}
@@ -135,18 +155,84 @@ func readPreviousBIRDConfig(path string) ([]byte, bool, error) {
 	return nil, false, err
 }
 
+func readRegularBIRDConfigFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("BIRD config file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("BIRD config file must be a regular file: %s", path)
+	}
+	if info.Size() > maxBIRDConfigFileSize {
+		return nil, fmt.Errorf("BIRD config file exceeds maximum size of %d bytes: %s", maxBIRDConfigFileSize, path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("BIRD config file changed while opening: %s", path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("BIRD config file must be a regular file: %s", path)
+	}
+	if openedInfo.Size() > maxBIRDConfigFileSize {
+		return nil, fmt.Errorf("BIRD config file exceeds maximum size of %d bytes: %s", maxBIRDConfigFileSize, path)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxBIRDConfigFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxBIRDConfigFileSize {
+		return nil, fmt.Errorf("BIRD config file exceeds maximum size of %d bytes: %s", maxBIRDConfigFileSize, path)
+	}
+	return data, nil
+}
+
 func restoreBIRDConfig(path string, previousConfig []byte, hadPreviousConfig bool) error {
+	cleanPath, err := cleanBIRDConfigPath(path)
+	if err != nil {
+		return err
+	}
+	path = cleanPath
+	if err := validateConfigDirectoryIfExistsForPath(path); err != nil {
+		return err
+	}
 	if hadPreviousConfig {
 		return writeFileAtomic(path, previousConfig, 0o644)
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(path); err == nil {
+		if err := syncDir(filepath.Dir(path)); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	cleanPath, err := cleanBIRDConfigPath(path)
+	if err != nil {
+		return err
+	}
+	path = cleanPath
 	dir := filepath.Dir(path)
+	if err := ensureConfigDirectoryForPath(path); err != nil {
+		return err
+	}
+
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
@@ -159,11 +245,18 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		}
 	}()
 
-	if _, err := tmp.Write(data); err != nil {
+	if n, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	} else if n != len(data) {
+		_ = tmp.Close()
+		return io.ErrShortWrite
+	}
+	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(perm); err != nil {
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -174,7 +267,116 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	removeTemp = false
+	if err := syncDir(dir); err != nil {
+		return err
+	}
 	return nil
+}
+
+func cleanBIRDConfigPath(path string) (string, error) {
+	if err := validateBIRDConfigPath(path); err != nil {
+		return "", err
+	}
+	return filepath.Clean(path), nil
+}
+
+func validateBIRDConfigPath(path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("BIRD config path is empty")
+	}
+	if trimmed != path {
+		return fmt.Errorf("BIRD config path must not contain surrounding whitespace: %s", path)
+	}
+	if strings.ContainsFunc(path, unsafeBIRDConfigPathChar) {
+		return fmt.Errorf("BIRD config path contains control characters: %s", path)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("BIRD config path must be an absolute path: %s", path)
+	}
+	return nil
+}
+
+func unsafeBIRDConfigPathChar(r rune) bool {
+	return r < ' ' || r == 0x7f
+}
+
+func ensureConfigDirectoryForPath(path string) error {
+	cleanPath, err := cleanBIRDConfigPath(path)
+	if err != nil {
+		return err
+	}
+	path = cleanPath
+	dir := filepath.Dir(path)
+	existed := true
+	if err := validateExistingConfigDirectory(dir); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat config directory: %w", err)
+		}
+		existed = false
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := validateExistingConfigDirectory(dir); err != nil {
+		return fmt.Errorf("stat config directory: %w", err)
+	}
+	if !existed {
+		if err := syncDir(filepath.Dir(dir)); err != nil {
+			return fmt.Errorf("sync config directory parent: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func validateConfigDirectoryIfExistsForPath(path string) error {
+	cleanPath, err := cleanBIRDConfigPath(path)
+	if err != nil {
+		return err
+	}
+	path = cleanPath
+	dir := filepath.Dir(path)
+	if err := validateExistingConfigDirectory(dir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat config directory: %w", err)
+	}
+	return nil
+}
+
+func validateExistingConfigDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("config directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("config path must be a directory: %s", path)
+	}
+	return nil
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
+			syncErr = nil
+		}
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 func configureBIRD(client bird.Client, timeout time.Duration) error {

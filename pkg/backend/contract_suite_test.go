@@ -21,7 +21,7 @@ import (
 //   - CreateZone, CreateZone_AlreadyExists
 //   - GetZone, GetZone_NotFound, GetZone_CaseInsensitive
 //   - UpdateZone, UpdateZone_OptimisticLocking, UpdateZone_OptionalVersionCheck, UpdateZone_NotFound
-//   - DeleteZone, DeleteZone_NotFound, DeleteZoneWithVersion_OptimisticLocking
+//   - DeleteZone, DeleteZone_NotFound, DeleteZoneWithVersion_NotFound, DeleteZoneWithVersion_OptimisticLocking
 //   - ListZones_Multiple, ListZones_Pagination
 //
 // Contract Invariants Tested:
@@ -293,6 +293,16 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 		assert.ErrorIs(t, err, model.ErrZoneNotFound)
 	})
 
+	t.Run("DeleteZoneWithVersion_NotFound", func(t *testing.T) {
+		conditionalStore, ok := store.(ConditionalDeleteStore)
+		if !ok {
+			t.Skip("store does not implement ConditionalDeleteStore")
+		}
+
+		err := conditionalStore.DeleteZoneWithVersion(ctx, "conditional-delete-missing.example.com.", "v-missing")
+		assert.ErrorIs(t, err, model.ErrZoneNotFound)
+	})
+
 	t.Run("DeleteZoneWithVersion_OptimisticLocking", func(t *testing.T) {
 		conditionalStore, ok := store.(ConditionalDeleteStore)
 		if !ok {
@@ -359,6 +369,89 @@ func RunZoneStoreCRUDSuite(t *testing.T, store ZoneStore) {
 			assert.Equal(t, zones[i].Name, zones2[i].Name,
 				"ListZones must have deterministic ordering (contract invariant)")
 		}
+	})
+
+	t.Run("ListZones_LoadsRecordsForEachZone", func(t *testing.T) {
+		prefix := fmt.Sprintf("list-records-%d", time.Now().UnixNano())
+		expected := map[string]string{
+			fmt.Sprintf("%s-alpha.example.com.", prefix): "192.0.2.10",
+			fmt.Sprintf("%s-beta.example.com.", prefix):  "192.0.2.11",
+		}
+
+		for name, value := range expected {
+			zone := createTestZone(name)
+			zone.Records = testZoneRecords(name, model.Record{
+				Name:  "www",
+				Type:  model.RecordTypeA,
+				TTL:   300,
+				Value: value,
+			})
+			require.NoError(t, store.CreateZone(ctx, zone))
+		}
+
+		zones, err := store.ListZones(ctx, ListOptions{Limit: 0})
+		require.NoError(t, err)
+
+		listed := make(map[string]*model.Zone, len(zones))
+		for _, zone := range zones {
+			listed[zone.Name] = zone
+		}
+		for name, value := range expected {
+			zone, ok := listed[name]
+			require.True(t, ok, "expected listed zone %s", name)
+			require.Len(t, zone.Records, 2, "expected apex NS and www A records for %s", name)
+
+			foundA := false
+			for _, record := range zone.Records {
+				if record.Name == "www" && record.Type == model.RecordTypeA && record.Value == value {
+					foundA = true
+				}
+			}
+			assert.True(t, foundA, "expected listed records for %s to include A %s", name, value)
+		}
+	})
+
+	t.Run("ListZones_LoadsRecordsForLargePage", func(t *testing.T) {
+		prefix := fmt.Sprintf("list-large-%d", time.Now().UnixNano())
+		const zoneCount = 30
+
+		expected := make(map[string]string, zoneCount)
+		for i := 0; i < zoneCount; i++ {
+			name := fmt.Sprintf("%s-%02d.example.com.", prefix, i)
+			value := fmt.Sprintf("large record content %02d", i)
+			expected[name] = value
+
+			zone := createTestZone(name)
+			zone.Records = testZoneRecords(name, model.Record{
+				Name:  "txt",
+				Type:  model.RecordTypeTXT,
+				TTL:   300,
+				Value: value,
+			})
+			require.NoError(t, store.CreateZone(ctx, zone))
+		}
+
+		zones, err := store.ListZones(ctx, ListOptions{Limit: 0})
+		require.NoError(t, err)
+
+		found := 0
+		for _, zone := range zones {
+			value, ok := expected[zone.Name]
+			if !ok {
+				continue
+			}
+			found++
+			require.Len(t, zone.Records, 2, "expected apex NS and TXT records for %s", zone.Name)
+
+			hasTXT := false
+			for _, record := range zone.Records {
+				if record.Name == "txt" && record.Type == model.RecordTypeTXT && record.Value == value {
+					hasTXT = true
+				}
+			}
+			assert.True(t, hasTXT, "expected listed records for %s to include TXT %q", zone.Name, value)
+		}
+		assert.Equal(t, zoneCount, found, "expected the full large page to be returned with records")
 	})
 
 	t.Run("ListZones_Pagination", func(t *testing.T) {

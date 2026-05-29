@@ -66,8 +66,9 @@ arca-dns は、BGP Anycast とコントロール/データプレーン分離ア�
 3. **Backend Storage**（`pkg/backend/`）
    - 差し替え可能なストレージ: SQLite（既定）/ PostgreSQL / MySQL / Git / etcd
    - capability ベースのインターフェイス（ZoneStore, TransactionalStore, RevisionStore, WatchableStore）
+   - controller runtime では、より厳しい `ControllerStore` 契約（`ZoneStore` + optimistic conditional delete）を必須とする
    - トランザクション（SQLite, PostgreSQL, MySQL）、バージョニング（Git）、watch（etcd）
-   - 使い捨てのローカルテストには SQLite の `:memory:` を使用
+   - runtime controller 設定では file-backed SQLite を使い、`:memory:` は使い捨てのローカルテストや migrate helper に限定する
 
 **データフロー**:
 ```

@@ -155,7 +155,7 @@ api:
 
 observability:
   # Prometheus /metrics endpoint です。/health, /ready, /status は API listener で提供されます。
-  # 0.0.0.0 に bind する場合は network control または認証付き proxy の背後に置いてください。
+  # 0.0.0.0 に bind する場合は observability.auth_token と network control を使ってください。
   listen: "127.0.0.1:9053"
 
 backend:
@@ -171,8 +171,8 @@ dnssec:
 
 ```yaml
 controller:
-  # 意図して信頼したローカル/プライベート transport でない限り https:// を推奨します。
-  # api_key と http:// を併用すると警告ログを出します。
+  # loopback 以外の controller では https:// を推奨します。
+  # loopback 以外の http:// で api_key を使う場合は allow_plaintext_api_key: true が必要です。
   url: "http://localhost:8080"
   api_key: "REPLACE_WITH_RAW_AGENT_API_KEY"
   max_response_bytes: 67108864

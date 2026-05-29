@@ -2,10 +2,12 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/akam1o/arca-dns/pkg/backend"
@@ -53,8 +55,7 @@ func TestZoneVersions_NotSupportedBackend(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -84,8 +85,7 @@ func TestZoneVersions_GitBackend(t *testing.T) {
 		},
 	}
 
-	body, err := json.Marshal(zone)
-	require.NoError(t, err)
+	body := marshalCreateZoneRequest(t, zone)
 
 	resp, err := http.Post(server.URL+"/api/v1/zones", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -101,9 +101,8 @@ func TestZoneVersions_GitBackend(t *testing.T) {
 	require.NotEmpty(t, etag)
 	require.NoError(t, resp.Body.Close())
 
-	current.Records = append(current.Records, model.Record{Name: "www", Type: "A", TTL: 300, Value: "192.0.2.2"})
-	body, err = json.Marshal(&current)
-	require.NoError(t, err)
+	current.SOA.Refresh = 7200
+	body = marshalUpdateZoneRequest(t, &current)
 	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/zones/example.com.", bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -152,4 +151,62 @@ func TestZoneVersions_GitBackend(t *testing.T) {
 	var rev model.Zone
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&rev))
 	assert.Equal(t, oldest, rev.Version)
+}
+
+func TestGetZoneRevision_InvalidVersion(t *testing.T) {
+	store := backend.NewMemoryBackend()
+	_, server := setupTestWithStore(t, store)
+
+	tests := []string{
+		"not-a-valid-version",
+		"v01ARZ3NDEKTSV4RRFFQ69G5FAV-extra",
+		"v2024122801-zzzzzzzz",
+		"v2024122801-123456789",
+	}
+
+	for _, version := range tests {
+		t.Run(version, func(t *testing.T) {
+			resp, err := http.Get(server.URL + "/api/v1/zones/example.com./versions/" + url.PathEscape(version))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
+}
+
+func TestZoneVersions_InvalidPagination(t *testing.T) {
+	repoDir := t.TempDir()
+	store, err := backend.NewGitBackend(repoDir, "main", "tester", "tester@example.com", false)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	zone := &model.Zone{
+		Name: "example.com.",
+		SOA:  model.DefaultSOA("ns1.example.com.", "admin.example.com."),
+		Records: []model.Record{
+			apiTestApexNSRecord(),
+		},
+	}
+	require.NoError(t, store.CreateZone(context.Background(), zone))
+
+	_, server := setupTestWithStore(t, store)
+
+	tests := []string{
+		"offset=-1",
+		"offset=abc",
+		"limit=0",
+		"limit=1001",
+		"limit=abc",
+	}
+
+	for _, query := range tests {
+		t.Run(query, func(t *testing.T) {
+			resp, err := http.Get(server.URL + "/api/v1/zones/example.com./versions?" + query)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
 }

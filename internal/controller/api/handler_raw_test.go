@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -15,6 +16,9 @@ import (
 	"github.com/akam1o/arca-dns/pkg/backend"
 	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/dnssec"
+	"github.com/akam1o/arca-dns/pkg/middleware"
+	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/akam1o/arca-dns/pkg/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -54,6 +58,34 @@ func setupRawTestWithSigning(t *testing.T) (*backend.MemoryBackend, *httptest.Se
 	server.Start()
 
 	return store, server
+}
+
+func padZoneFileForTest(t *testing.T, zoneFile string, size int64) []byte {
+	t.Helper()
+
+	require.LessOrEqual(t, int64(len(zoneFile)), size)
+
+	var padded bytes.Buffer
+	_, err := padded.WriteString(zoneFile)
+	require.NoError(t, err)
+
+	paddingLine := []byte("; " + strings.Repeat("x", 1021) + "\n")
+	for int64(padded.Len()) < size {
+		remaining := int(size) - padded.Len()
+		if remaining >= len(paddingLine) {
+			_, err = padded.Write(paddingLine)
+			require.NoError(t, err)
+			continue
+		}
+
+		require.NoError(t, padded.WriteByte(';'))
+		if remaining > 1 {
+			_, err = padded.Write(bytes.Repeat([]byte("x"), remaining-1))
+			require.NoError(t, err)
+		}
+	}
+
+	return padded.Bytes()
 }
 
 func TestCreateZoneRaw_TextPlain(t *testing.T) {
@@ -240,6 +272,50 @@ func TestCreateZoneRaw_Duplicate(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, resp2.StatusCode)
 }
 
+func TestCreateZoneRaw_ReturnsDeduplicationWarning(t *testing.T) {
+	_, store, server := setupTest(t)
+	defer server.Close()
+
+	zoneFile := strings.Join([]string{
+		"$TTL 3600",
+		"dedup.com. IN SOA ns1.dedup.com. admin.dedup.com. (",
+		"    2024010101 3600 1800 604800 86400",
+		")",
+		"dedup.com. IN NS ns1.dedup.com.",
+		"www.dedup.com. IN A 192.0.2.1",
+		"www.dedup.com. IN A 192.0.2.1",
+		"",
+	}, "\n")
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=dedup.com.", strings.NewReader(zoneFile))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var body struct {
+		RecordsCount int `json:"records_count"`
+		Warnings     []struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Count   int    `json:"count"`
+		} `json:"warnings"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, 2, body.RecordsCount)
+	require.Len(t, body.Warnings, 1)
+	assert.Equal(t, "duplicate_records_deduplicated", body.Warnings[0].Code)
+	assert.Equal(t, 1, body.Warnings[0].Count)
+	assert.NotEmpty(t, body.Warnings[0].Message)
+
+	created, err := store.GetZone(context.Background(), "dedup.com.")
+	require.NoError(t, err)
+	require.Len(t, created.Records, 2)
+}
+
 func TestCreateZoneRaw_InvalidZone_NoSOA(t *testing.T) {
 	_, _, server := setupTest(t)
 	defer server.Close()
@@ -259,6 +335,12 @@ invalid.com. IN A 192.0.2.1
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "parse_failed", apiErr.Details["reason"])
+	assert.Equal(t, "zonefile", apiErr.Details["field"])
+	assert.Contains(t, apiErr.Details["error"], "SOA")
+	assert.NotEqual(t, "internal error", apiErr.Details["error"])
 }
 
 func TestCreateZoneRaw_EmptyContent(t *testing.T) {
@@ -275,6 +357,92 @@ func TestCreateZoneRaw_EmptyContent(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "empty_body", apiErr.Details["reason"])
+	assert.Equal(t, "zonefile", apiErr.Details["field"])
+	assert.NotContains(t, apiErr.Details, "error")
+}
+
+func TestCreateZoneRaw_TextPlainRejectsOversizedBody(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	body := strings.Repeat("A", int(parser.DefaultMaxZoneFileSize)+1)
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=oversized.com.",
+		strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+}
+
+func TestCreateZoneRaw_MultipartRejectsOversizedZoneFile(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("zonefile", "oversized.com.zone")
+	require.NoError(t, err)
+	_, err = part.Write(bytes.Repeat([]byte("A"), int(parser.DefaultMaxZoneFileSize)+1))
+	require.NoError(t, err)
+	require.NoError(t, writer.WriteField("origin", "oversized.com."))
+	require.NoError(t, writer.Close())
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw", &body)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+}
+
+func TestCreateZoneRaw_MultipartAllowsMaxZoneFileWithFormOverhead(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	zoneFile := `$TTL 3600
+maxsize.com. IN SOA ns1.maxsize.com. admin.maxsize.com. (
+    2024010101 ; serial
+    3600       ; refresh
+    1800       ; retry
+    604800     ; expire
+    86400      ; minimum
+)
+maxsize.com. IN NS ns1.maxsize.com.
+ns1.maxsize.com. IN A 192.0.2.1
+`
+	paddedZoneFile := padZoneFileForTest(t, zoneFile, parser.DefaultMaxZoneFileSize)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("zonefile", "maxsize.com.zone")
+	require.NoError(t, err)
+	_, err = part.Write(paddedZoneFile)
+	require.NoError(t, err)
+	require.NoError(t, writer.WriteField("origin", "maxsize.com."))
+	require.NoError(t, writer.Close())
+
+	require.Greater(t, int64(body.Len()), int64(middleware.MaxRequestBodySize))
+	require.LessOrEqual(t, int64(body.Len()), int64(rawZoneMaxRequestBodySize))
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw", &body)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 }
 
 func TestCreateZoneRaw_UnsupportedContentType(t *testing.T) {
@@ -313,6 +481,41 @@ func TestCreateZoneRaw_NoOrigin(t *testing.T) {
 
 	// Should fail because @ symbol requires $ORIGIN
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "parse_failed", apiErr.Details["reason"])
+	assert.Equal(t, "zonefile", apiErr.Details["field"])
+	assert.NotEqual(t, "internal error", apiErr.Details["error"])
+}
+
+func TestCreateZoneRaw_UnsupportedDirectiveDetails(t *testing.T) {
+	_, _, server := setupTest(t)
+	defer server.Close()
+
+	zoneFile := `$TTL 3600
+generate.com. IN SOA ns1.generate.com. admin.generate.com. (
+    2024010101 3600 1800 604800 86400
+)
+generate.com. IN NS ns1.generate.com.
+$GENERATE 1-2 host$.generate.com. A 192.0.2.$
+`
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/zones/raw?origin=generate.com.",
+		strings.NewReader(zoneFile))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	apiErr := decodeAPIError(t, resp.Body)
+	assert.Equal(t, model.ErrorCodeInvalidInput, apiErr.Code)
+	assert.Equal(t, "unsupported_directive", apiErr.Details["reason"])
+	assert.Equal(t, "zonefile", apiErr.Details["field"])
+	assert.Equal(t, "$GENERATE", apiErr.Details["directive"])
+	assert.NotContains(t, apiErr.Details, "error")
 }
 
 func TestCreateZoneRaw_AllRecordTypes(t *testing.T) {

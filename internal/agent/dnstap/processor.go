@@ -2,6 +2,7 @@ package dnstap
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -29,7 +30,7 @@ type ProcessorConfig struct {
 }
 
 // NewProcessor creates a new DNSTap processor.
-func NewProcessor(config ProcessorConfig, logger *zap.Logger) *Processor {
+func NewProcessor(config ProcessorConfig, logger *zap.Logger) (*Processor, error) {
 	receiver := NewReceiver(config.ReceiverConfig, logger)
 	decoder := NewDecoder()
 	metrics := NewMetricsAggregator(logger)
@@ -37,7 +38,11 @@ func NewProcessor(config ProcessorConfig, logger *zap.Logger) *Processor {
 
 	var logWriter *Logger
 	if config.LoggerConfig.LogFile != "" {
-		logWriter = NewLogger(config.LoggerConfig, sampler, logger)
+		var err error
+		logWriter, err = NewLogger(config.LoggerConfig, sampler, logger)
+		if err != nil {
+			return nil, fmt.Errorf("create dnstap logger: %w", err)
+		}
 	}
 
 	var prometheus *PrometheusExporter
@@ -53,7 +58,7 @@ func NewProcessor(config ProcessorConfig, logger *zap.Logger) *Processor {
 		sampler:    sampler,
 		prometheus: prometheus,
 		zapLogger:  logger,
-	}
+	}, nil
 }
 
 // Run starts the DNSTap processing pipeline.

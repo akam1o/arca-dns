@@ -106,6 +106,85 @@ func TestSaveMasterKey_CreatesDirectory(t *testing.T) {
 	assert.DirExists(t, filepath.Dir(keyPath))
 }
 
+func TestSaveMasterKey_RejectsUnsafePath(t *testing.T) {
+	tmpDir := t.TempDir()
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "relative",
+			path: "_masterkey",
+			want: "absolute path",
+		},
+		{
+			name: "surrounding whitespace",
+			path: " " + filepath.Join(tmpDir, "_masterkey") + " ",
+			want: "surrounding whitespace",
+		},
+		{
+			name: "newline",
+			path: filepath.Join(tmpDir, "_masterkey") + "\nextra",
+			want: "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := SaveMasterKey(tc.path, key)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "master key file")
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestSaveMasterKey_RejectsSymlinkedDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyDir := filepath.Join(tmpDir, "keys")
+	targetDir := filepath.Join(tmpDir, "target")
+	require.NoError(t, os.Mkdir(targetDir, 0700))
+	if err := os.Symlink(targetDir, keyDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	err = SaveMasterKey(filepath.Join(keyDir, "_masterkey"), key)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key directory")
+	assert.Contains(t, err.Error(), "symlink")
+	assert.NoFileExists(t, filepath.Join(targetDir, "_masterkey"))
+}
+
+func TestSaveMasterKey_DoesNotFollowPredictableTempSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "_masterkey")
+	sentinelPath := filepath.Join(tmpDir, "sentinel")
+	sentinel := []byte("keep")
+	require.NoError(t, os.WriteFile(sentinelPath, sentinel, 0600))
+	require.NoError(t, os.Symlink(sentinelPath, keyPath+".tmp"))
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	err = SaveMasterKey(keyPath, key)
+	require.NoError(t, err)
+
+	contents, err := os.ReadFile(sentinelPath)
+	require.NoError(t, err)
+	assert.Equal(t, sentinel, contents)
+
+	linkInfo, err := os.Lstat(keyPath + ".tmp")
+	require.NoError(t, err)
+	assert.NotZero(t, linkInfo.Mode()&os.ModeSymlink)
+}
+
 func TestLoadMasterKey_FromEnv(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -147,6 +226,214 @@ func TestLoadMasterKey_FromFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, MasterKeySourceFile, src)
 	assert.Equal(t, key, loadedKey)
+}
+
+func TestLoadMasterKey_RejectsSymlinkedFile(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "_masterkey")
+	realKeyPath := filepath.Join(tmpDir, "_masterkey.real")
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+	encoded := base64.StdEncoding.EncodeToString(key)
+	require.NoError(t, os.WriteFile(realKeyPath, []byte(encoded), 0600))
+	if err := os.Symlink(realKeyPath, keyPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	loadedKey, src, err := LoadMasterKey(MasterKeyOptions{
+		KeyDirectory:      tmpDir,
+		AllowAutoGenerate: false,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, loadedKey)
+	assert.Empty(t, src)
+	assert.Contains(t, err.Error(), "read master key file")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestLoadMasterKey_RejectsWorldReadableFile(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "_masterkey")
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+	encoded := base64.StdEncoding.EncodeToString(key)
+	require.NoError(t, os.WriteFile(keyPath, []byte(encoded), 0600))
+	require.NoError(t, os.Chmod(keyPath, 0644))
+
+	loadedKey, src, err := LoadMasterKey(MasterKeyOptions{
+		KeyDirectory:      tmpDir,
+		AllowAutoGenerate: false,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, loadedKey)
+	assert.Empty(t, src)
+	assert.Contains(t, err.Error(), "read master key file")
+	assert.Contains(t, err.Error(), "permissions")
+	assert.Contains(t, err.Error(), "other access")
+}
+
+func TestLoadMasterKey_RejectsOversizedFile(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "_masterkey")
+
+	file, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	require.NoError(t, err)
+	require.NoError(t, file.Truncate(maxDNSSECKeyFileSize+1))
+	require.NoError(t, file.Close())
+
+	loadedKey, src, err := LoadMasterKey(MasterKeyOptions{
+		KeyDirectory:      tmpDir,
+		AllowAutoGenerate: false,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, loadedKey)
+	assert.Empty(t, src)
+	assert.Contains(t, err.Error(), "read master key file")
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
+func TestLoadMasterKey_AllowsGroupReadableFile(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "_masterkey")
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+	encoded := base64.StdEncoding.EncodeToString(key)
+	require.NoError(t, os.WriteFile(keyPath, []byte(encoded), 0600))
+	require.NoError(t, os.Chmod(keyPath, 0640))
+
+	loadedKey, src, err := LoadMasterKey(MasterKeyOptions{
+		KeyDirectory:      tmpDir,
+		AllowAutoGenerate: false,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, MasterKeySourceFile, src)
+	assert.Equal(t, key, loadedKey)
+}
+
+func TestLoadMasterKey_RejectsSymlinkedDirectory(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+	keyDir := filepath.Join(tmpDir, "keys")
+	targetDir := filepath.Join(tmpDir, "target")
+	require.NoError(t, os.Mkdir(targetDir, 0700))
+	if err := os.Symlink(targetDir, keyDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	key, err := GenerateMasterKey()
+	require.NoError(t, err)
+	encoded := base64.StdEncoding.EncodeToString(key)
+	require.NoError(t, os.WriteFile(filepath.Join(targetDir, "_masterkey"), []byte(encoded), 0600))
+
+	loadedKey, src, err := LoadMasterKey(MasterKeyOptions{
+		KeyDirectory:      keyDir,
+		AllowAutoGenerate: false,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, loadedKey)
+	assert.Empty(t, src)
+	assert.Contains(t, err.Error(), "master key directory")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestLoadMasterKey_RejectsUnsafeKeyDirectory(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name         string
+		keyDirectory string
+		want         string
+	}{
+		{
+			name:         "relative",
+			keyDirectory: "keys",
+			want:         "absolute path",
+		},
+		{
+			name:         "surrounding whitespace",
+			keyDirectory: " " + tmpDir + " ",
+			want:         "surrounding whitespace",
+		},
+		{
+			name:         "newline",
+			keyDirectory: tmpDir + "\nextra",
+			want:         "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key, src, err := LoadMasterKey(MasterKeyOptions{
+				KeyDirectory:      tc.keyDirectory,
+				AllowAutoGenerate: false,
+			})
+			require.Error(t, err)
+			require.Nil(t, key)
+			require.Empty(t, src)
+			require.Contains(t, err.Error(), "master key directory")
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestLoadMasterKey_RejectsUnsafeFileName(t *testing.T) {
+	t.Setenv(MasterKeyEnvVar, "")
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name     string
+		fileName string
+		want     string
+	}{
+		{
+			name:     "parent traversal",
+			fileName: "../_masterkey",
+			want:     "not a path",
+		},
+		{
+			name:     "absolute",
+			fileName: filepath.Join(tmpDir, "_masterkey"),
+			want:     "not a path",
+		},
+		{
+			name:     "surrounding whitespace",
+			fileName: " _masterkey ",
+			want:     "surrounding whitespace",
+		},
+		{
+			name:     "newline",
+			fileName: "_masterkey\nextra",
+			want:     "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key, src, err := LoadMasterKey(MasterKeyOptions{
+				KeyDirectory:      tmpDir,
+				FileName:          tc.fileName,
+				AllowAutoGenerate: false,
+			})
+			require.Error(t, err)
+			require.Nil(t, key)
+			require.Empty(t, src)
+			require.Contains(t, err.Error(), "master key filename")
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
 }
 
 func TestLoadMasterKey_AutoGenerate(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/akam1o/arca-dns/pkg/model"
@@ -20,6 +21,9 @@ type AuthConfig struct {
 	APIKeyRoles map[string]string
 	// HeaderName is the HTTP header to check for the API key
 	HeaderName string
+	// AllowImplicitAdminRoles preserves legacy behavior where keys without an
+	// explicit role are granted admin. Prefer explicit roles.
+	AllowImplicitAdminRoles bool
 }
 
 const (
@@ -29,9 +33,33 @@ const (
 	AuthRoleAgent = "agent"
 )
 
+const (
+	// AuthPermissionManageZones permits controller zone management operations.
+	AuthPermissionManageZones = "zones:manage"
+	// AuthPermissionReadSyncArtifacts permits reading synchronization artifacts.
+	AuthPermissionReadSyncArtifacts = "sync_artifacts:read"
+)
+
+var rolePermissionPolicy = map[string]map[string]struct{}{
+	AuthRoleAdmin: {
+		AuthPermissionManageZones:       {},
+		AuthPermissionReadSyncArtifacts: {},
+	},
+	AuthRoleAgent: {
+		AuthPermissionReadSyncArtifacts: {},
+	},
+}
+
 // Authenticator provides API key authentication middleware.
 type Authenticator struct {
-	config AuthConfig
+	config      AuthConfig
+	credentials []apiKeyCredential
+}
+
+type apiKeyCredential struct {
+	name string
+	role string
+	hash [sha256.Size]byte
 }
 
 // NewAuthenticator creates a new API key authenticator.
@@ -40,9 +68,10 @@ func NewAuthenticator(config AuthConfig) *Authenticator {
 		config.HeaderName = "X-API-Key"
 	}
 	config.APIKeys = normalizeConfiguredAPIKeys(config.APIKeys)
-	config.APIKeyRoles = normalizeConfiguredAPIKeyRoles(config.APIKeys, config.APIKeyRoles)
+	config.APIKeyRoles = normalizeConfiguredAPIKeyRoles(config.APIKeys, config.APIKeyRoles, config.AllowImplicitAdminRoles)
 	return &Authenticator{
-		config: config,
+		config:      config,
+		credentials: buildAPIKeyCredentials(config.APIKeys, config.APIKeyRoles),
 	}
 }
 
@@ -58,53 +87,74 @@ func normalizeConfiguredAPIKeys(apiKeys map[string]string) map[string]string {
 	return normalized
 }
 
-func normalizeConfiguredAPIKeyRoles(apiKeys, apiKeyRoles map[string]string) map[string]string {
+func normalizeConfiguredAPIKeyRoles(apiKeys, apiKeyRoles map[string]string, allowImplicitAdminRoles bool) map[string]string {
 	if len(apiKeys) == 0 {
 		return apiKeyRoles
 	}
 
 	normalized := make(map[string]string, len(apiKeys))
-	for name := range apiKeys {
-		normalized[name] = AuthRoleAdmin
-	}
 	for name, role := range apiKeyRoles {
 		normalized[name] = strings.ToLower(strings.TrimSpace(role))
 	}
+	if allowImplicitAdminRoles {
+		for name := range apiKeys {
+			if strings.TrimSpace(normalized[name]) == "" {
+				normalized[name] = AuthRoleAdmin
+			}
+		}
+	}
 	return normalized
+}
+
+func buildAPIKeyCredentials(apiKeys, apiKeyRoles map[string]string) []apiKeyCredential {
+	names := make([]string, 0, len(apiKeys))
+	for name := range apiKeys {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	credentials := make([]apiKeyCredential, 0, len(names))
+	for _, name := range names {
+		hash, ok := parseSHA256APIKeyHash(apiKeys[name])
+		if !ok {
+			continue
+		}
+		role := strings.TrimSpace(apiKeyRoles[name])
+		credentials = append(credentials, apiKeyCredential{
+			name: name,
+			role: role,
+			hash: hash,
+		})
+	}
+	return credentials
+}
+
+func parseSHA256APIKeyHash(value string) ([sha256.Size]byte, bool) {
+	var hash [sha256.Size]byte
+	const prefix = "sha256:"
+
+	hexPart, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(value)), prefix)
+	if !ok || len(hexPart) != sha256.Size*2 {
+		return hash, false
+	}
+	decoded, err := hex.DecodeString(hexPart)
+	if err != nil || len(decoded) != sha256.Size {
+		return hash, false
+	}
+	copy(hash[:], decoded)
+	return hash, true
 }
 
 // Middleware returns a Gin middleware that enforces API key authentication.
 func (a *Authenticator) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get API key from header
-		apiKey := c.GetHeader(a.config.HeaderName)
-		if apiKey == "" {
-			c.JSON(http.StatusUnauthorized, model.NewAPIError(model.ErrorCodeUnauthorized, "API key required"))
-			c.Abort()
-			return
-		}
-
-		// Hash the provided key
-		hash := sha256.Sum256([]byte(apiKey))
-		providedHash := "sha256:" + hex.EncodeToString(hash[:])
-
-		// Check against configured keys (constant-time comparison)
-		authenticated := false
-		var principal string
-		role := AuthRoleAdmin
-		for name, expectedHash := range a.config.APIKeys {
-			if subtle.ConstantTimeCompare([]byte(providedHash), []byte(expectedHash)) == 1 {
-				authenticated = true
-				principal = name
-				if configuredRole := strings.TrimSpace(a.config.APIKeyRoles[name]); configuredRole != "" {
-					role = configuredRole
-				}
-				break
-			}
-		}
-
+		principal, role, authenticated := a.authenticateAPIKey(c.GetHeader(a.config.HeaderName))
 		if !authenticated {
-			c.JSON(http.StatusUnauthorized, model.NewAPIError(model.ErrorCodeUnauthorized, "Invalid API key"))
+			if c.GetHeader(a.config.HeaderName) == "" {
+				c.JSON(http.StatusUnauthorized, model.NewAPIError(model.ErrorCodeUnauthorized, "API key required"))
+			} else {
+				c.JSON(http.StatusUnauthorized, model.NewAPIError(model.ErrorCodeUnauthorized, "Invalid API key"))
+			}
 			c.Abort()
 			return
 		}
@@ -114,6 +164,54 @@ func (a *Authenticator) Middleware() gin.HandlerFunc {
 		c.Set("auth_role", role)
 		c.Next()
 	}
+}
+
+// FailureRateLimitMiddleware applies an IP-based rate limit only to requests
+// that do not carry a configured API key. Successful requests should still use
+// the regular rate limiter after authentication so principal-based limits apply.
+func (a *Authenticator) FailureRateLimitMiddleware(rateLimiter *RateLimiter) gin.HandlerFunc {
+	if rateLimiter == nil {
+		return func(c *gin.Context) {
+			c.Next()
+		}
+	}
+
+	rateLimitMiddleware := rateLimiter.Middleware()
+	return func(c *gin.Context) {
+		_, _, authenticated := a.authenticateAPIKey(c.GetHeader(a.config.HeaderName))
+		if authenticated {
+			c.Next()
+			return
+		}
+
+		rateLimitMiddleware(c)
+	}
+}
+
+func (a *Authenticator) authenticateAPIKey(apiKey string) (string, string, bool) {
+	if apiKey == "" {
+		return "", "", false
+	}
+
+	// Hash the provided key
+	hash := sha256.Sum256([]byte(apiKey))
+
+	// Check every configured key so successful authentication does not
+	// change the number of hash comparisons performed.
+	authenticated := false
+	var principal string
+	var role string
+	for _, credential := range a.credentials {
+		if subtle.ConstantTimeCompare(hash[:], credential.hash[:]) == 1 {
+			if !authenticated {
+				principal = credential.name
+				role = credential.role
+			}
+			authenticated = true
+		}
+	}
+
+	return principal, role, authenticated
 }
 
 // RequireRole returns a Gin middleware that authorizes authenticated requests by role.
@@ -138,4 +236,38 @@ func RequireRole(allowedRoles ...string) gin.HandlerFunc {
 		c.JSON(http.StatusForbidden, model.NewAPIError(model.ErrorCodeForbidden, "API key role is not allowed for this endpoint"))
 		c.Abort()
 	}
+}
+
+// RequirePermission returns a Gin middleware that authorizes authenticated
+// requests by permissions granted through the configured role policy.
+func RequirePermission(requiredPermissions ...string) gin.HandlerFunc {
+	required := make([]string, 0, len(requiredPermissions))
+	for _, permission := range requiredPermissions {
+		permission = strings.ToLower(strings.TrimSpace(permission))
+		if permission != "" {
+			required = append(required, permission)
+		}
+	}
+
+	return func(c *gin.Context) {
+		role := strings.ToLower(strings.TrimSpace(c.GetString("auth_role")))
+		for _, permission := range required {
+			if !roleHasPermission(role, permission) {
+				c.JSON(http.StatusForbidden, model.NewAPIError(model.ErrorCodeForbidden, "API key role is not allowed for this endpoint"))
+				c.Abort()
+				return
+			}
+		}
+
+		c.Next()
+	}
+}
+
+func roleHasPermission(role string, permission string) bool {
+	permissions, ok := rolePermissionPolicy[role]
+	if !ok {
+		return false
+	}
+	_, ok = permissions[permission]
+	return ok
 }

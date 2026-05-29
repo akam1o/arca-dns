@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,7 +13,9 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-dns/pkg/model"
+	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,6 +38,169 @@ func setupGitBackend(t *testing.T) (*GitBackend, func()) {
 	}
 
 	return backend, cleanup
+}
+
+func TestNewGitBackendRejectsUnsafeRepositoryPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "empty",
+			path: "",
+			want: "empty",
+		},
+		{
+			name: "relative",
+			path: "git-repo",
+			want: "absolute path",
+		},
+		{
+			name: "surrounding whitespace",
+			path: " /tmp/git-repo ",
+			want: "surrounding whitespace",
+		},
+		{
+			name: "newline",
+			path: "/tmp/git-repo\nextra",
+			want: "control characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backend, err := NewGitBackend(tc.path, "main", "test-author", "test@example.com", false)
+			require.Error(t, err)
+			require.Nil(t, backend)
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestNewGitBackendWithOptionsRejectsInvalidOptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*GitBackendOptions)
+		want   string
+	}{
+		{
+			name: "invalid branch",
+			mutate: func(options *GitBackendOptions) {
+				options.Branch = "feature branch"
+			},
+			want: "branch",
+		},
+		{
+			name: "author control character",
+			mutate: func(options *GitBackendOptions) {
+				options.AuthorName = "test\nauthor"
+			},
+			want: "author",
+		},
+		{
+			name: "author angle bracket",
+			mutate: func(options *GitBackendOptions) {
+				options.AuthorName = "test <author>"
+			},
+			want: "author",
+		},
+		{
+			name: "email whitespace",
+			mutate: func(options *GitBackendOptions) {
+				options.AuthorEmail = "test user@example.com"
+			},
+			want: "email",
+		},
+		{
+			name: "email angle bracket",
+			mutate: func(options *GitBackendOptions) {
+				options.AuthorEmail = "<test@example.com>"
+			},
+			want: "email",
+		},
+		{
+			name: "remote url control character",
+			mutate: func(options *GitBackendOptions) {
+				options.RemoteURL = "https://example.com/arca-dns.git\nextra"
+			},
+			want: "remote_url",
+		},
+		{
+			name: "remote url surrounding whitespace",
+			mutate: func(options *GitBackendOptions) {
+				options.RemoteURL = " https://example.com/arca-dns.git "
+			},
+			want: "remote_url",
+		},
+		{
+			name: "negative pull interval",
+			mutate: func(options *GitBackendOptions) {
+				options.PullInterval = -time.Second
+			},
+			want: "pull_interval",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			options := GitBackendOptions{
+				Branch:      "main",
+				AuthorName:  "test-author",
+				AuthorEmail: "test@example.com",
+			}
+			tc.mutate(&options)
+
+			backend, err := NewGitBackendWithOptions(t.TempDir(), options)
+			require.Error(t, err)
+			require.Nil(t, backend)
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestNewGitBackendRejectsSymlinkedRepositoryPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	repoPath := filepath.Join(tmpDir, "repo")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	if err := os.Symlink(targetDir, repoPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	backend, err := NewGitBackendWithOptions(repoPath, GitBackendOptions{
+		Branch:      "main",
+		AuthorName:  "test-author",
+		AuthorEmail: "test@example.com",
+	})
+	require.Error(t, err)
+	require.Nil(t, backend)
+	require.Contains(t, err.Error(), "repository directory")
+	require.Contains(t, err.Error(), "symlink")
+}
+
+func TestGitBackendHealthCheckRejectsSymlinkedRepositoryPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoPath := filepath.Join(tmpDir, "repo")
+
+	backend, err := NewGitBackendWithOptions(repoPath, GitBackendOptions{
+		Branch:      "main",
+		AuthorName:  "test-author",
+		AuthorEmail: "test@example.com",
+	})
+	require.NoError(t, err)
+	defer backend.Close()
+
+	targetDir := filepath.Join(tmpDir, "repo-real")
+	require.NoError(t, os.Rename(repoPath, targetDir))
+	if err := os.Symlink(targetDir, repoPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err = backend.HealthCheck(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "repository directory")
+	require.Contains(t, err.Error(), "symlink")
 }
 
 func testGitZone(name string) *model.Zone {
@@ -114,6 +280,27 @@ func TestGitBackend_FreshRepoUsesConfiguredBranch(t *testing.T) {
 	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
 }
 
+func TestNewGitBackendRejectsSymlinkedZonesDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoPath := filepath.Join(tmpDir, "repo")
+	targetDir := filepath.Join(tmpDir, "target")
+	require.NoError(t, os.MkdirAll(repoPath, 0755))
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	if err := os.Symlink(targetDir, filepath.Join(repoPath, "zones")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	backend, err := NewGitBackendWithOptions(repoPath, GitBackendOptions{
+		Branch:      "main",
+		AuthorName:  "test-author",
+		AuthorEmail: "test@example.com",
+	})
+	require.Error(t, err)
+	assert.Nil(t, backend)
+	assert.Contains(t, err.Error(), "zones directory")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
 func runGitCommand(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -171,6 +358,208 @@ func TestGitBackend_CreateZone(t *testing.T) {
 	assert.Equal(t, filepath.Join(backend.repoPath, "zones", "example.com.json"), zonePath)
 	_, err = os.Stat(zonePath)
 	assert.NoError(t, err, "Zone file should exist")
+}
+
+func TestGitBackend_WriteZoneRejectsNonRegularZonePath(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	zonePath := gitZonePath(t, backend, zone.Name)
+	require.NoError(t, os.MkdirAll(zonePath, 0755))
+
+	err := backend.writeZone(zone.Name, zone)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "regular file")
+
+	_, statErr := os.Stat(zonePath + ".tmp")
+	assert.True(t, os.IsNotExist(statErr), "temporary zone file should not be created for non-regular target")
+	matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(zonePath), "."+filepath.Base(zonePath)+".*.tmp"))
+	require.NoError(t, globErr)
+	assert.Empty(t, matches, "temporary zone files should not be created for non-regular target")
+}
+
+func TestGitBackend_WriteZoneRejectsSymlinkedZonesDirectory(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	zonesDir := filepath.Join(backend.repoPath, "zones")
+	targetDir := filepath.Join(backend.repoPath, "target-zones")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	require.NoError(t, os.RemoveAll(zonesDir))
+	if err := os.Symlink(targetDir, zonesDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := backend.writeZone(zone.Name, zone)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zones directory")
+	assert.Contains(t, err.Error(), "symlink")
+	_, statErr := os.Stat(filepath.Join(targetDir, "example.com.json"))
+	assert.True(t, os.IsNotExist(statErr), "zone file should not be written through symlink")
+}
+
+func TestGitBackend_WriteZoneDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	zonePath := gitZonePath(t, backend, zone.Name)
+	sentinelPath := filepath.Join(filepath.Dir(zonePath), "sentinel")
+	sentinel := []byte("keep")
+	require.NoError(t, os.WriteFile(sentinelPath, sentinel, 0600))
+	if err := os.Symlink(sentinelPath, zonePath+".tmp"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := backend.writeZone(zone.Name, zone)
+	require.NoError(t, err)
+
+	got, err := os.ReadFile(sentinelPath)
+	require.NoError(t, err)
+	assert.Equal(t, sentinel, got)
+
+	linkInfo, err := os.Lstat(zonePath + ".tmp")
+	require.NoError(t, err)
+	assert.NotZero(t, linkInfo.Mode()&os.ModeSymlink, "predictable temp path should remain a symlink")
+
+	written, err := os.ReadFile(zonePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(written), `"name": "example.com."`)
+}
+
+func TestGitBackend_RestoreZoneFileDoesNotFollowSymlink(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	relPath, err := backend.zoneFilePath("example.com.")
+	require.NoError(t, err)
+	zonePath := filepath.Join(backend.repoPath, relPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(zonePath), 0755))
+
+	sentinelPath := filepath.Join(backend.repoPath, "sentinel")
+	sentinel := []byte("keep")
+	require.NoError(t, os.WriteFile(sentinelPath, sentinel, 0600))
+	if err := os.Symlink(sentinelPath, zonePath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	restored := []byte(`{"name":"example.com."}`)
+	point := &gitRollbackPoint{
+		files: []gitRollbackFile{
+			{
+				relPath:    relPath,
+				absPath:    zonePath,
+				fileExists: true,
+				fileMode:   0600,
+				fileData:   restored,
+			},
+		},
+	}
+
+	require.NoError(t, backend.restoreZoneFile(point))
+
+	got, err := os.ReadFile(sentinelPath)
+	require.NoError(t, err)
+	assert.Equal(t, sentinel, got)
+
+	info, err := os.Lstat(zonePath)
+	require.NoError(t, err)
+	assert.Zero(t, info.Mode()&os.ModeSymlink, "restored zone path should not remain a symlink")
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
+
+	written, err := os.ReadFile(zonePath)
+	require.NoError(t, err)
+	assert.Equal(t, restored, written)
+}
+
+func TestGitBackend_ReadZoneRejectsSymlink(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	relPath, err := backend.zoneFilePath(zone.Name)
+	require.NoError(t, err)
+	zonePath := filepath.Join(backend.repoPath, relPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(zonePath), 0755))
+
+	outsidePath := filepath.Join(backend.repoPath, "outside-zone.json")
+	outsideData, err := json.Marshal(zone)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(outsidePath, outsideData, 0600))
+	if err := os.Symlink(outsidePath, zonePath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err = backend.GetZone(context.Background(), zone.Name)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestGitBackend_ReadZoneRejectsSymlinkedZonesDirectory(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	zonesDir := filepath.Join(backend.repoPath, "zones")
+	targetDir := filepath.Join(backend.repoPath, "target-zones")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	data, err := json.Marshal(zone)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(targetDir, "example.com.json"), data, 0600))
+	require.NoError(t, os.RemoveAll(zonesDir))
+	if err := os.Symlink(targetDir, zonesDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err = backend.GetZone(context.Background(), zone.Name)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zones directory")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestGitBackend_ListZonesRejectsSymlinkedZonesDirectory(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zonesDir := filepath.Join(backend.repoPath, "zones")
+	targetDir := filepath.Join(backend.repoPath, "target-zones")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(targetDir, "example.com.json"), []byte(`{"name":"example.com."}`), 0600))
+	require.NoError(t, os.RemoveAll(zonesDir))
+	if err := os.Symlink(targetDir, zonesDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err := backend.ListZones(context.Background(), ListOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zones directory")
+	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestGitBackend_DeleteZoneRejectsSymlinkedZonesDirectory(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	zone := testGitZone("example.com.")
+	zonesDir := filepath.Join(backend.repoPath, "zones")
+	targetDir := filepath.Join(backend.repoPath, "target-zones")
+	targetPath := filepath.Join(targetDir, "example.com.json")
+	require.NoError(t, os.Mkdir(targetDir, 0755))
+	data, err := json.Marshal(zone)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(targetPath, data, 0600))
+	require.NoError(t, os.RemoveAll(zonesDir))
+	if err := os.Symlink(targetDir, zonesDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err = backend.DeleteZone(context.Background(), zone.Name)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zones directory")
+	assert.Contains(t, err.Error(), "symlink")
+	require.FileExists(t, targetPath)
 }
 
 func TestGitBackend_CreateZone_UsesSafeFilenameForLongZoneName(t *testing.T) {
@@ -721,6 +1110,44 @@ func TestGitBackend_ListZones_ReturnsErrorForMalformedZoneFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "bad.example.com.")
 }
 
+func TestGitBackendRejectsOversizedZoneFile(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zoneName := "oversized.example.com."
+	relPath, err := backend.zoneFilePath(zoneName)
+	require.NoError(t, err)
+
+	zonePath := filepath.Join(backend.repoPath, relPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(zonePath), 0755))
+	require.NoError(t, os.WriteFile(zonePath, bytes.Repeat([]byte("A"), maxGitZoneFileSize+1), 0644))
+
+	_, err = backend.worktree.Add(relPath)
+	require.NoError(t, err)
+	_, err = backend.worktree.Commit("add oversized zone\n\nVersion: oversized-version", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "test-author",
+			Email: "test@example.com",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = backend.GetZone(ctx, zoneName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+
+	zones, err := backend.ListZones(ctx, ListOptions{})
+	require.Error(t, err)
+	assert.Nil(t, zones)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+
+	_, err = backend.GetRevision(ctx, zoneName, "oversized-version")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
 func TestGitBackend_GetRevision(t *testing.T) {
 	backend, cleanup := setupGitBackend(t)
 	defer cleanup()
@@ -827,6 +1254,48 @@ func TestGitBackend_ListRevisions(t *testing.T) {
 		assert.NotZero(t, rev.Timestamp)
 		assert.NotZero(t, rev.Serial)
 	}
+}
+
+func TestGitBackend_ListRevisions_ReturnsErrorForMalformedHistoricalZone(t *testing.T) {
+	backend, cleanup := setupGitBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zoneName := "example.com."
+	zone := &model.Zone{
+		Name: zoneName,
+		SOA: model.SOARecord{
+			MName:   "ns1.example.com.",
+			RName:   "admin.example.com.",
+			Serial:  2024010101,
+			Refresh: 3600,
+			Retry:   1800,
+			Expire:  604800,
+			Minimum: 86400,
+		},
+		Records: testZoneRecords(zoneName),
+	}
+	require.NoError(t, backend.CreateZone(ctx, zone))
+
+	relPath, err := backend.zoneFilePath(zoneName)
+	require.NoError(t, err)
+	absPath := filepath.Join(backend.repoPath, relPath)
+	require.NoError(t, os.WriteFile(absPath, []byte("{"), 0644))
+	_, err = backend.worktree.Add(relPath)
+	require.NoError(t, err)
+	_, err = backend.worktree.Commit("add malformed revision\n\nVersion: malformed-version", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "test-author",
+			Email: "test@example.com",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
+	revisions, err := backend.ListRevisions(ctx, zoneName, ListOptions{Limit: 100})
+	require.Error(t, err)
+	assert.Nil(t, revisions)
+	assert.Contains(t, err.Error(), "failed to parse zone JSON for revision malformed-version")
 }
 
 func TestGitBackend_UpdateDNSSECMetadataDoesNotAddRevision(t *testing.T) {

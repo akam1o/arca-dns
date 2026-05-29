@@ -66,7 +66,7 @@ func (km *KeyManager) RemoveOldKeysContext(ctx context.Context, zone string) (re
 		}
 
 		activePath := filepath.Join(zoneDir, "active.json")
-		activeData, err := os.ReadFile(activePath)
+		activeData, err := readRegularKeyFile(activePath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return model.ErrZoneNotFound

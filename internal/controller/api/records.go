@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+const maxBulkRecordOperations = 1000
 
 type bulkRecordRequest struct {
 	Create []model.Record       `json:"create"`
@@ -38,7 +41,7 @@ func (h *Handler) ListRecords(c *gin.Context) {
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -66,16 +69,12 @@ func (h *Handler) CreateRecord(c *gin.Context) {
 	var record model.Record
 	if err := c.ShouldBindJSON(&record); err != nil {
 		h.logger.Warn("Invalid record request body", zap.Error(err))
-		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInvalidInput,
-			"Invalid request body",
-			map[string]interface{}{"error": "internal error"},
-		))
+		writeInvalidRequestBody(c, err)
 		return
 	}
 	record.ID = ""
 
-	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
+	zone, expectedVersion, providedETag, ok := h.loadZoneForRecordMutation(c, name)
 	if !ok {
 		return
 	}
@@ -92,7 +91,7 @@ func (h *Handler) CreateRecord(c *gin.Context) {
 	}
 
 	zone.Records = append(zone.Records, record)
-	updated, ok := h.commitRecordMutation(c, zone, expectedVersion)
+	updated, ok := h.commitRecordMutation(c, zone, expectedVersion, providedETag)
 	if !ok {
 		return
 	}
@@ -111,11 +110,7 @@ func (h *Handler) BulkRecords(c *gin.Context) {
 	var req bulkRecordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Invalid bulk record request body", zap.Error(err))
-		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInvalidInput,
-			"Invalid request body",
-			map[string]interface{}{"error": "internal error"},
-		))
+		writeInvalidRequestBody(c, err)
 		return
 	}
 	if len(req.Create) == 0 && len(req.Update) == 0 && len(req.Delete) == 0 {
@@ -127,8 +122,21 @@ func (h *Handler) BulkRecords(c *gin.Context) {
 		return
 	}
 
-	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
+	zone, expectedVersion, providedETag, ok := h.loadZoneForRecordMutation(c, name)
 	if !ok {
+		return
+	}
+
+	operationCount := len(req.Create) + len(req.Update) + len(req.Delete)
+	if operationCount > maxBulkRecordOperations {
+		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
+			model.ErrorCodeInvalidInput,
+			"Bulk request includes too many operations",
+			map[string]interface{}{
+				"operations":     operationCount,
+				"max_operations": maxBulkRecordOperations,
+			},
+		))
 		return
 	}
 
@@ -138,7 +146,7 @@ func (h *Handler) BulkRecords(c *gin.Context) {
 	}
 	zone.Records = records
 
-	updated, ok := h.commitRecordMutation(c, zone, expectedVersion)
+	updated, ok := h.commitRecordMutation(c, zone, expectedVersion, providedETag)
 	if !ok {
 		return
 	}
@@ -168,14 +176,10 @@ func (h *Handler) UpdateRecord(c *gin.Context) {
 	var record model.Record
 	if err := c.ShouldBindJSON(&record); err != nil {
 		h.logger.Warn("Invalid record request body", zap.Error(err))
-		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
-			model.ErrorCodeInvalidInput,
-			"Invalid request body",
-			map[string]interface{}{"error": "internal error"},
-		))
+		writeInvalidRequestBody(c, err)
 		return
 	}
-	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
+	zone, expectedVersion, providedETag, ok := h.loadZoneForRecordMutation(c, name)
 	if !ok {
 		return
 	}
@@ -203,7 +207,7 @@ func (h *Handler) UpdateRecord(c *gin.Context) {
 	}
 
 	zone.Records[idx] = record
-	updated, ok := h.commitRecordMutation(c, zone, expectedVersion)
+	updated, ok := h.commitRecordMutation(c, zone, expectedVersion, providedETag)
 	if !ok {
 		return
 	}
@@ -225,7 +229,7 @@ func (h *Handler) DeleteRecord(c *gin.Context) {
 		return
 	}
 
-	zone, expectedVersion, ok := h.loadZoneForRecordMutation(c, name)
+	zone, expectedVersion, providedETag, ok := h.loadZoneForRecordMutation(c, name)
 	if !ok {
 		return
 	}
@@ -241,7 +245,7 @@ func (h *Handler) DeleteRecord(c *gin.Context) {
 	}
 
 	zone.Records = append(zone.Records[:idx], zone.Records[idx+1:]...)
-	updated, ok := h.commitRecordMutation(c, zone, expectedVersion)
+	updated, ok := h.commitRecordMutation(c, zone, expectedVersion, providedETag)
 	if !ok {
 		return
 	}
@@ -364,7 +368,7 @@ func (h *Handler) recordBatchError(c *gin.Context, status int, message string, i
 	c.JSON(status, model.NewAPIErrorWithDetails(errorCode, message, details))
 }
 
-func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model.Zone, string, bool) {
+func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model.Zone, string, string, bool) {
 	ifMatch := c.GetHeader("If-Match")
 	if ifMatch == "" {
 		c.JSON(http.StatusPreconditionRequired, model.NewAPIErrorWithDetails(
@@ -372,21 +376,21 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 			"If-Match header is required for record updates",
 			map[string]interface{}{"header": "If-Match"},
 		))
-		return nil, "", false
+		return nil, "", "", false
 	}
 	if rejectWildcardIfMatch(c, "record updates") {
-		return nil, "", false
+		return nil, "", "", false
 	}
 
 	zone, err := h.store.GetZone(c.Request.Context(), name)
 	if err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
 				map[string]interface{}{"zone": name},
 			))
-			return nil, "", false
+			return nil, "", "", false
 		}
 		h.logger.Error("Failed to get zone for record mutation", zap.String("zone", name), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, model.NewAPIErrorWithDetails(
@@ -394,16 +398,16 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 			"Failed to update record",
 			map[string]interface{}{"error": "internal error"},
 		))
-		return nil, "", false
+		return nil, "", "", false
 	}
 
 	if !strongETagMatches(ifMatch, zone.Version) {
 		c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 			model.ErrorCodeConflict,
 			"Zone version mismatch (optimistic lock failure)",
-			map[string]interface{}{"expected_version": ifMatch},
+			etagMismatchDetails(ifMatch, zone.Version),
 		))
-		return nil, "", false
+		return nil, "", "", false
 	}
 
 	if err := model.RepairZoneDerivedFields(zone); err != nil {
@@ -411,12 +415,12 @@ func (h *Handler) loadZoneForRecordMutation(c *gin.Context, name string) (*model
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("zone.records", err),
 		))
-		return nil, "", false
+		return nil, "", "", false
 	}
 
-	return zone, zone.Version, true
+	return zone, zone.Version, ifMatch, true
 }
 
 func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record *model.Record) bool {
@@ -424,7 +428,7 @@ func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record 
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Record validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("record", err),
 		))
 		return false
 	}
@@ -432,7 +436,7 @@ func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record 
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Record validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("record", err),
 		))
 		return false
 	}
@@ -440,7 +444,7 @@ func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record 
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Record validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("record.name", err),
 		))
 		return false
 	}
@@ -448,20 +452,20 @@ func (h *Handler) validateRecordForZone(c *gin.Context, zoneName string, record 
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Record validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("record.value", err),
 		))
 		return false
 	}
 	return true
 }
 
-func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expectedVersion string) (*model.Zone, bool) {
+func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expectedVersion, providedETag string) (*model.Zone, bool) {
 	if err := model.ValidateZone(zone); err != nil {
 		h.logger.Warn("Zone validation failed after record mutation", zap.String("zone", zone.Name), zap.Error(err))
 		c.JSON(http.StatusBadRequest, model.NewAPIErrorWithDetails(
 			model.ErrorCodeInvalidInput,
 			"Zone validation failed",
-			map[string]interface{}{"error": err.Error()},
+			validationFailureDetails("zone", err),
 		))
 		return nil, false
 	}
@@ -497,7 +501,7 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 	}
 
 	if err := h.store.UpdateZone(c.Request.Context(), zone, expectedVersion); err != nil {
-		if err == model.ErrZoneNotFound {
+		if errors.Is(err, model.ErrZoneNotFound) {
 			c.JSON(http.StatusNotFound, model.NewAPIErrorWithDetails(
 				model.ErrorCodeNotFound,
 				"Zone not found",
@@ -505,11 +509,11 @@ func (h *Handler) commitRecordMutation(c *gin.Context, zone *model.Zone, expecte
 			))
 			return nil, false
 		}
-		if err == model.ErrConflict {
+		if errors.Is(err, model.ErrConflict) {
 			c.JSON(http.StatusConflict, model.NewAPIErrorWithDetails(
 				model.ErrorCodeConflict,
 				"Zone version mismatch (optimistic lock failure)",
-				map[string]interface{}{"expected_version": expectedVersion},
+				concurrentVersionConflictDetails(c.Request.Context(), h.store, zone.Name, providedETag, expectedVersion),
 			))
 			return nil, false
 		}

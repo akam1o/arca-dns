@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
-	"time"
 
+	"github.com/akam1o/arca-dns/pkg/config"
 	"github.com/akam1o/arca-dns/pkg/model"
 	"go.uber.org/zap"
 )
@@ -19,10 +20,14 @@ import (
 type FileManager struct {
 	zoneDir        string
 	backupVersions int
+	minFreeBytes   uint64
 	logger         *zap.Logger
 }
 
-const managedZonesIndexFile = ".arca-dns-managed-zones.json"
+const (
+	managedZonesIndexFile = ".arca-dns-managed-zones.json"
+	maxSyncFileSize       = config.DefaultControllerClientMaxResponseBytes
+)
 
 type managedZonesIndex struct {
 	Zones   []string           `json:"zones,omitempty"`
@@ -41,12 +46,22 @@ type managedZoneRef struct {
 
 // NewFileManager creates a new file manager.
 func NewFileManager(zoneDir string, backupVersions int, logger *zap.Logger) *FileManager {
+	return NewFileManagerWithMinFreeBytes(zoneDir, backupVersions, config.DefaultAgentSyncMinFreeBytes, logger)
+}
+
+// NewFileManagerWithMinFreeBytes creates a new file manager with a configured
+// free-space guard. A zero threshold disables the guard.
+func NewFileManagerWithMinFreeBytes(zoneDir string, backupVersions int, minFreeBytes int64, logger *zap.Logger) *FileManager {
 	if backupVersions < 0 {
 		backupVersions = 0
+	}
+	if minFreeBytes < 0 {
+		minFreeBytes = 0
 	}
 	return &FileManager{
 		zoneDir:        zoneDir,
 		backupVersions: backupVersions,
+		minFreeBytes:   uint64(minFreeBytes),
 		logger:         logger,
 	}
 }
@@ -76,12 +91,16 @@ func (fm *FileManager) WriteZoneFileValidated(zoneName string, content string, v
 // index entry. The rollback function is intended for service hook failures
 // after the filesystem commit has already succeeded.
 func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, content string, validate func(zonePath string) error) (func() error, error) {
-	targetPath := fm.GetZonePath(zoneName) // Use safe path with GetZonePath
-	tmpPath := targetPath + ".tmp"
+	if err := fm.ensureZoneDirectory(); err != nil {
+		return nil, err
+	}
 
-	// Check disk space (require at least 100MB free)
-	if err := fm.checkDiskSpace(100 * 1024 * 1024); err != nil {
-		return nil, fmt.Errorf("insufficient disk space: %w", err)
+	targetPath := fm.GetZonePath(zoneName) // Use safe path with GetZonePath
+
+	if fm.minFreeBytes > 0 {
+		if err := fm.checkDiskSpace(fm.minFreeBytes); err != nil {
+			return nil, fmt.Errorf("insufficient disk space: %w", err)
+		}
 	}
 
 	snapshot, err := snapshotZoneFile(targetPath)
@@ -90,14 +109,19 @@ func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, conte
 	}
 
 	// Write to temporary file and sync it before publishing.
-	if err := fm.writeFileSync(tmpPath, []byte(content), 0644); err != nil {
-		_ = os.Remove(tmpPath)
+	tmpPath, err := writeTempFileSync(filepath.Dir(targetPath), "."+filepath.Base(targetPath)+".*.tmp", []byte(content), 0644)
+	if err != nil {
 		return nil, fmt.Errorf("failed to write temporary file: %w", err)
 	}
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	if validate != nil {
 		if err := validate(tmpPath); err != nil {
-			os.Remove(tmpPath)
 			return nil, fmt.Errorf("zone validation failed: %w", err)
 		}
 	}
@@ -107,16 +131,15 @@ func (fm *FileManager) WriteZoneFileValidatedWithRollback(zoneName string, conte
 	if _, err := os.Stat(targetPath); err == nil {
 		backupPath, err = fm.backupFile(targetPath)
 		if err != nil {
-			os.Remove(tmpPath)
 			return nil, fmt.Errorf("failed to backup old version: %w", err)
 		}
 	}
 
 	// Atomic rename (this is the commit point)
 	if err := os.Rename(tmpPath, targetPath); err != nil {
-		_ = os.Remove(tmpPath)
 		return nil, fmt.Errorf("failed to rename temporary file: %w", err)
 	}
+	cleanupTmp = false
 	if err := fm.fsyncDir(filepath.Dir(targetPath)); err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("fsync zone directory: %w", err),
@@ -196,15 +219,21 @@ func (fm *FileManager) GetZonePath(zoneName string) string {
 
 // ZoneExists checks if a zone file exists.
 func (fm *FileManager) ZoneExists(zoneName string) bool {
+	if err := fm.validateZoneDirectoryIfExists(); err != nil {
+		return false
+	}
 	path := fm.GetZonePath(zoneName)
-	_, err := os.Stat(path)
-	return err == nil
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // ReadZoneFile reads a zone file.
 func (fm *FileManager) ReadZoneFile(zoneName string) (string, error) {
+	if err := fm.validateZoneDirectoryIfExists(); err != nil {
+		return "", err
+	}
 	path := fm.GetZonePath(zoneName)
-	content, err := os.ReadFile(path)
+	content, _, err := readRegularSyncFile(path, "zone file")
 	if err != nil {
 		return "", fmt.Errorf("failed to read zone file: %w", err)
 	}
@@ -213,6 +242,9 @@ func (fm *FileManager) ReadZoneFile(zoneName string) (string, error) {
 
 // DeleteZoneFile deletes a zone file and its backups.
 func (fm *FileManager) DeleteZoneFile(zoneName string) error {
+	if err := fm.validateZoneDirectoryIfExists(); err != nil {
+		return err
+	}
 	targetPath := fm.GetZonePath(zoneName)
 
 	if err := fm.deleteZoneFiles(zoneName); err != nil {
@@ -275,19 +307,16 @@ func (fm *FileManager) deleteZoneFiles(zoneName string) error {
 }
 
 // backupFile creates a backup of the given file.
-// Backups are named: {filename}.backup.{nanoseconds}
+// Backups are named: {filename}.backup.{random}
 func (fm *FileManager) backupFile(path string) (string, error) {
-	// Use nanoseconds for unique timestamp
-	backupPath := fmt.Sprintf("%s.backup.%d", path, time.Now().UnixNano())
-
 	// Copy file
-	content, err := os.ReadFile(path)
+	content, _, err := readRegularSyncFile(path, "zone file")
 	if err != nil {
 		return "", fmt.Errorf("failed to read file for backup: %w", err)
 	}
 
-	if err := fm.writeFileSync(backupPath, content, 0644); err != nil {
-		_ = os.Remove(backupPath)
+	backupPath, err := writeTempFileSync(filepath.Dir(path), filepath.Base(path)+".backup.*", content, 0644)
+	if err != nil {
 		return "", fmt.Errorf("failed to write backup file: %w", err)
 	}
 	if err := fm.fsyncDir(filepath.Dir(backupPath)); err != nil {
@@ -305,21 +334,16 @@ type zoneFileSnapshot struct {
 }
 
 func snapshotZoneFile(path string) (zoneFileSnapshot, error) {
-	info, err := os.Stat(path)
+	data, mode, err := readRegularSyncFile(path, "active zone file")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return zoneFileSnapshot{}, nil
 		}
-		return zoneFileSnapshot{}, fmt.Errorf("stat active zone file: %w", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
 		return zoneFileSnapshot{}, fmt.Errorf("read active zone file: %w", err)
 	}
 	return zoneFileSnapshot{
 		exists: true,
-		mode:   info.Mode().Perm(),
+		mode:   mode,
 		data:   data,
 	}, nil
 }
@@ -340,23 +364,9 @@ func restoreZoneFileSnapshot(path string, snapshot zoneFileSnapshot) error {
 		return fmt.Errorf("create zone directory for rollback: %w", err)
 	}
 
-	tmpPath := path + ".rollback"
-	if err := os.WriteFile(tmpPath, snapshot.data, snapshot.mode); err != nil {
-		return fmt.Errorf("write rollback zone file: %w", err)
-	}
-	file, err := os.OpenFile(tmpPath, os.O_RDWR, 0)
+	tmpPath, err := writeTempFileSync(filepath.Dir(path), "."+filepath.Base(path)+".*.rollback", snapshot.data, snapshot.mode)
 	if err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("open rollback zone file: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("fsync rollback zone file: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close rollback zone file: %w", err)
+		return fmt.Errorf("write rollback zone file: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
@@ -428,8 +438,12 @@ func (fm *FileManager) managedZonesIndexPath() string {
 }
 
 func (fm *FileManager) readManagedZones() (map[string]string, error) {
+	if err := fm.validateZoneDirectoryIfExists(); err != nil {
+		return nil, err
+	}
+
 	path := fm.managedZonesIndexPath()
-	data, err := os.ReadFile(path)
+	data, _, err := readRegularSyncFile(path, "managed zone index")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return map[string]string{}, nil
@@ -474,6 +488,51 @@ func (fm *FileManager) readManagedZones() (map[string]string, error) {
 	return zones, nil
 }
 
+func readRegularSyncFile(path string, label string) ([]byte, os.FileMode, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, 0, fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+	if info.Size() > maxSyncFileSize {
+		return nil, 0, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxSyncFileSize, path)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, 0, fmt.Errorf("%s changed while opening: %s", label, path)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+	if openedInfo.Size() > maxSyncFileSize {
+		return nil, 0, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxSyncFileSize, path)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxSyncFileSize+1))
+	if err != nil {
+		return nil, 0, err
+	}
+	if int64(len(data)) > maxSyncFileSize {
+		return nil, 0, fmt.Errorf("%s exceeds maximum size of %d bytes: %s", label, maxSyncFileSize, path)
+	}
+	return data, openedInfo.Mode().Perm(), nil
+}
+
 func (fm *FileManager) writeManagedZones(zones map[string]string) error {
 	entries := make([]managedZoneEntry, 0, len(zones))
 	for safeName, zoneName := range zones {
@@ -492,14 +551,13 @@ func (fm *FileManager) writeManagedZones(zones map[string]string) error {
 	}
 	data = append(data, '\n')
 
-	if err := os.MkdirAll(fm.zoneDir, 0755); err != nil {
-		return fmt.Errorf("create zone directory: %w", err)
+	if err := fm.ensureZoneDirectory(); err != nil {
+		return err
 	}
 
 	path := fm.managedZonesIndexPath()
-	tmpPath := path + ".tmp"
-	if err := fm.writeFileSync(tmpPath, data, 0644); err != nil {
-		_ = os.Remove(tmpPath)
+	tmpPath, err := writeTempFileSync(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp", data, 0644)
+	if err != nil {
 		return fmt.Errorf("write managed zone index tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
@@ -586,26 +644,41 @@ func (fm *FileManager) listManagedZoneFiles() ([]string, error) {
 	return zoneNames, nil
 }
 
-func (fm *FileManager) writeFileSync(path string, data []byte, perm os.FileMode) error {
-	if err := os.WriteFile(path, data, perm); err != nil {
-		return err
-	}
-	return fm.fsyncFile(path)
-}
-
-// fsyncFile performs fsync on a file to ensure it's written to disk.
-func (fm *FileManager) fsyncFile(path string) error {
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
+func writeTempFileSync(dir string, pattern string, data []byte, perm os.FileMode) (string, error) {
+	tmp, err := os.CreateTemp(dir, pattern)
 	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	if err := file.Sync(); err != nil {
-		return err
+		return "", err
 	}
 
-	return nil
+	tmpPath := tmp.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if n, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return "", err
+	} else if n != len(data) {
+		_ = tmp.Close()
+		return "", io.ErrShortWrite
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+
+	cleanupTmp = false
+	return tmpPath, nil
 }
 
 func (fm *FileManager) fsyncDir(path string) error {
@@ -647,16 +720,69 @@ func (fm *FileManager) checkDiskSpace(requiredBytes uint64) error {
 
 // EnsureDirectory ensures that the zone directory exists and has correct permissions.
 func (fm *FileManager) EnsureDirectory() error {
+	if err := fm.ensureZoneDirectory(); err != nil {
+		return err
+	}
+
+	// Check write permissions with an unpredictable temp file to avoid following symlinks.
+	testFile, err := writeTempFileSync(fm.zoneDir, ".write_test-*", []byte("test"), 0644)
+	if err != nil {
+		return fmt.Errorf("zone directory is not writable: %w", err)
+	}
+	if err := os.Remove(testFile); err != nil {
+		return fmt.Errorf("failed to remove zone directory write test file: %w", err)
+	}
+	if err := fm.fsyncDir(fm.zoneDir); err != nil {
+		return fmt.Errorf("fsync zone directory after write test cleanup: %w", err)
+	}
+
+	return nil
+}
+
+func (fm *FileManager) ensureZoneDirectory() error {
+	existed := true
+	if err := validateExistingZoneDirectory(fm.zoneDir); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat zone directory: %w", err)
+		}
+		existed = false
+	}
+
 	if err := os.MkdirAll(fm.zoneDir, 0755); err != nil {
 		return fmt.Errorf("failed to create zone directory: %w", err)
 	}
-
-	// Check write permissions
-	testFile := filepath.Join(fm.zoneDir, ".write_test")
-	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-		return fmt.Errorf("zone directory is not writable: %w", err)
+	if err := validateExistingZoneDirectory(fm.zoneDir); err != nil {
+		return fmt.Errorf("stat zone directory: %w", err)
 	}
-	os.Remove(testFile)
+	if !existed {
+		if err := syncDir(filepath.Dir(fm.zoneDir)); err != nil {
+			return fmt.Errorf("fsync zone directory parent: %w", err)
+		}
+	}
 
+	return nil
+}
+
+func (fm *FileManager) validateZoneDirectoryIfExists() error {
+	if err := validateExistingZoneDirectory(fm.zoneDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat zone directory: %w", err)
+	}
+	return nil
+}
+
+func validateExistingZoneDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("zone directory must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("zone path must be a directory: %s", path)
+	}
 	return nil
 }
