@@ -45,7 +45,10 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 	requestValidator := middleware.NewRequestValidator()
 
 	var authMiddleware gin.HandlerFunc
+	var authFailureRateLimitMiddleware gin.HandlerFunc
 	var rateLimitMiddleware gin.HandlerFunc
+	var authenticator *middleware.Authenticator
+	var rateLimiter *middleware.RateLimiter
 	if cfg != nil && cfg.Auth.Enabled {
 		authConfig := middleware.AuthConfig{
 			APIKeys:                 cfg.Auth.APIKeys,
@@ -53,7 +56,7 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 			HeaderName:              "X-API-Key",
 			AllowImplicitAdminRoles: cfg.Auth.AllowImplicitAdminRoles,
 		}
-		authenticator := middleware.NewAuthenticator(authConfig)
+		authenticator = middleware.NewAuthenticator(authConfig)
 		authMiddleware = authenticator.Middleware()
 	}
 	if cfg != nil && cfg.RateLimit.Enabled {
@@ -62,11 +65,17 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 		rateLimiterConfig.WriteRPS = writeRPSFromReadRPS(cfg.RateLimit.RequestsPerSecond)
 		rateLimiterConfig.Burst = cfg.RateLimit.Burst
 
-		rateLimiter := middleware.NewRateLimiter(rateLimiterConfig)
+		rateLimiter = middleware.NewRateLimiter(rateLimiterConfig)
 		rateLimitMiddleware = rateLimiter.Middleware()
+	}
+	if authenticator != nil && rateLimiter != nil {
+		authFailureRateLimitMiddleware = authenticator.FailureRateLimitMiddleware(rateLimiter)
 	}
 
 	statusProtected := router.Group("")
+	if authFailureRateLimitMiddleware != nil {
+		statusProtected.Use(authFailureRateLimitMiddleware)
+	}
 	if authMiddleware != nil {
 		statusProtected.Use(authMiddleware)
 	}
@@ -76,6 +85,9 @@ func SetupAPIRouter(handler *Handler, cfg *config.APIConfig, logger *zap.Logger)
 	statusProtected.GET("/status", requestValidator.Middleware(), handler.Status)
 
 	protected := v1.Group("")
+	if authFailureRateLimitMiddleware != nil {
+		protected.Use(authFailureRateLimitMiddleware)
+	}
 	if authMiddleware != nil {
 		protected.Use(authMiddleware)
 	}

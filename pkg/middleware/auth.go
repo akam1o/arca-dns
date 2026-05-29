@@ -148,34 +148,13 @@ func parseSHA256APIKeyHash(value string) ([sha256.Size]byte, bool) {
 // Middleware returns a Gin middleware that enforces API key authentication.
 func (a *Authenticator) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get API key from header
-		apiKey := c.GetHeader(a.config.HeaderName)
-		if apiKey == "" {
-			c.JSON(http.StatusUnauthorized, model.NewAPIError(model.ErrorCodeUnauthorized, "API key required"))
-			c.Abort()
-			return
-		}
-
-		// Hash the provided key
-		hash := sha256.Sum256([]byte(apiKey))
-
-		// Check every configured key so successful authentication does not
-		// change the number of hash comparisons performed.
-		authenticated := false
-		var principal string
-		var role string
-		for _, credential := range a.credentials {
-			if subtle.ConstantTimeCompare(hash[:], credential.hash[:]) == 1 {
-				if !authenticated {
-					principal = credential.name
-					role = credential.role
-				}
-				authenticated = true
-			}
-		}
-
+		principal, role, authenticated := a.authenticateAPIKey(c.GetHeader(a.config.HeaderName))
 		if !authenticated {
-			c.JSON(http.StatusUnauthorized, model.NewAPIError(model.ErrorCodeUnauthorized, "Invalid API key"))
+			if c.GetHeader(a.config.HeaderName) == "" {
+				c.JSON(http.StatusUnauthorized, model.NewAPIError(model.ErrorCodeUnauthorized, "API key required"))
+			} else {
+				c.JSON(http.StatusUnauthorized, model.NewAPIError(model.ErrorCodeUnauthorized, "Invalid API key"))
+			}
 			c.Abort()
 			return
 		}
@@ -185,6 +164,54 @@ func (a *Authenticator) Middleware() gin.HandlerFunc {
 		c.Set("auth_role", role)
 		c.Next()
 	}
+}
+
+// FailureRateLimitMiddleware applies an IP-based rate limit only to requests
+// that do not carry a configured API key. Successful requests should still use
+// the regular rate limiter after authentication so principal-based limits apply.
+func (a *Authenticator) FailureRateLimitMiddleware(rateLimiter *RateLimiter) gin.HandlerFunc {
+	if rateLimiter == nil {
+		return func(c *gin.Context) {
+			c.Next()
+		}
+	}
+
+	rateLimitMiddleware := rateLimiter.Middleware()
+	return func(c *gin.Context) {
+		_, _, authenticated := a.authenticateAPIKey(c.GetHeader(a.config.HeaderName))
+		if authenticated {
+			c.Next()
+			return
+		}
+
+		rateLimitMiddleware(c)
+	}
+}
+
+func (a *Authenticator) authenticateAPIKey(apiKey string) (string, string, bool) {
+	if apiKey == "" {
+		return "", "", false
+	}
+
+	// Hash the provided key
+	hash := sha256.Sum256([]byte(apiKey))
+
+	// Check every configured key so successful authentication does not
+	// change the number of hash comparisons performed.
+	authenticated := false
+	var principal string
+	var role string
+	for _, credential := range a.credentials {
+		if subtle.ConstantTimeCompare(hash[:], credential.hash[:]) == 1 {
+			if !authenticated {
+				principal = credential.name
+				role = credential.role
+			}
+			authenticated = true
+		}
+	}
+
+	return principal, role, authenticated
 }
 
 // RequireRole returns a Gin middleware that authorizes authenticated requests by role.

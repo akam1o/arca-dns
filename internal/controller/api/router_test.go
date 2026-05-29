@@ -205,6 +205,46 @@ func TestSetupRouter_RateLimitUsesAuthenticatedPrincipal(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, perform(adminKey))
 }
 
+func TestSetupRouter_RateLimitAppliesToAuthFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "missing api key"},
+		{name: "invalid api key", key: "wrong-key"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const adminKey = "admin-key"
+			logger := zap.NewNop()
+			handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
+			apiCfg := config.DefaultControllerConfig().API
+			apiCfg.Auth.Enabled = true
+			apiCfg.Auth.APIKeys = map[string]string{"admin": routerTestAPIKeyHash(adminKey)}
+			apiCfg.Auth.APIKeyRoles = map[string]string{"admin": middleware.AuthRoleAdmin}
+			apiCfg.RateLimit.Enabled = true
+			apiCfg.RateLimit.RequestsPerSecond = 1
+			apiCfg.RateLimit.Burst = 1
+
+			router := SetupRouter(handler, &apiCfg, logger)
+
+			perform := func() int {
+				req := httptest.NewRequest(http.MethodGet, "/api/v1/zones", nil)
+				if tt.key != "" {
+					req.Header.Set("X-API-Key", tt.key)
+				}
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				return w.Code
+			}
+
+			require.Equal(t, http.StatusUnauthorized, perform())
+			require.Equal(t, http.StatusTooManyRequests, perform())
+		})
+	}
+}
+
 func TestSetupObservabilityRouter_RoutesBypassAuth(t *testing.T) {
 	logger := zap.NewNop()
 	handler := NewHandler(backend.NewMemoryBackend(), nil, nil, BuildInfo{Version: "test", Commit: "test", Date: "test"}, logger)
