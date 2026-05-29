@@ -1392,6 +1392,48 @@ func TestFetchSignedZone_SignatureVerification(t *testing.T) {
 	}
 }
 
+func TestFetchSignedZone_SignatureVerificationUsesLegacyKeyWithKeyID(t *testing.T) {
+	requireTCPListener(t)
+	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`
+	signatureKey := "test-signature-key"
+
+	hash := sha256.Sum256([]byte(zoneContent))
+	hashHex := hex.EncodeToString(hash[:])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", "v01ARZ3NDEKTSV4RRFFQ69G5FAV")
+		w.Header().Set("X-Zone-Serial", "2024122801")
+		w.Header().Set("X-Zone-Hash", hashHex)
+		w.Header().Set("X-Zone-Hash8", hashHex[:8])
+		w.Header().Set("X-Zone-Signature", artifactSignature([]byte(zoneContent), signatureKey))
+		w.Header().Set("X-Zone-Signature-Key-ID", "primary")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, zoneContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.ControllerClientConfig{
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		RetryAttempts: 1,
+		RetryDelay:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+	client.SetSignatureVerification(true, signatureKey)
+
+	content, _, _, err := client.FetchSignedZone(context.Background(), "example.com.", "")
+	if err != nil {
+		t.Fatalf("FetchSignedZone failed with legacy signature key and key id: %v", err)
+	}
+	if content != zoneContent {
+		t.Errorf("Zone content mismatch")
+	}
+}
+
 func TestFetchSignedZone_SignatureVerificationUsesKeyIDRing(t *testing.T) {
 	requireTCPListener(t)
 	zoneContent := `example.com. 3600 IN SOA ns1.example.com. admin.example.com. 2024122801 3600 1800 604800 86400`

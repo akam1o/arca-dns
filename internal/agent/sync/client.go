@@ -813,6 +813,10 @@ func artifactSignatureVerificationKey(keyIDHeader string, legacyKey string, keyR
 	if keyID != "" {
 		key := strings.TrimSpace(keyRing[keyID])
 		if key == "" {
+			legacyKey = strings.TrimSpace(legacyKey)
+			if legacyKey != "" && len(keyRing) == 0 {
+				return legacyKey, nil
+			}
 			return "", fmt.Errorf("unknown signature key id: %s", keyID)
 		}
 		return key, nil
