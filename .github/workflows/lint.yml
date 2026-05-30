@@ -20,7 +20,7 @@ jobs:
       GOMODCACHE: ${{ github.workspace }}/.cache/gomod
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.cache/golangci-lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - id: setup-go
         uses: actions/setup-go@v5
