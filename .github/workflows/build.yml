@@ -19,7 +19,7 @@ jobs:
       GOPATH: ${{ github.workspace }}/.cache/gopath
       GOMODCACHE: ${{ github.workspace }}/.cache/gomod
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - id: setup-go
         uses: actions/setup-go@v6
