@@ -1,6 +1,6 @@
 module github.com/akam1o/arca-dns
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/dnstap/golang-dnstap v0.4.0
