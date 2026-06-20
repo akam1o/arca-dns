@@ -19,7 +19,7 @@ jobs:
       GOPATH: ${{ github.workspace }}/.cache/gopath
       GOMODCACHE: ${{ github.workspace }}/.cache/gomod
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - id: setup-go
         uses: actions/setup-go@v6
@@ -40,7 +40,7 @@ jobs:
       GOPATH: ${{ github.workspace }}/.cache/gopath
       GOMODCACHE: ${{ github.workspace }}/.cache/gomod
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - id: setup-go
         uses: actions/setup-go@v6
@@ -89,7 +89,7 @@ jobs:
       GOMODCACHE: ${{ github.workspace }}/.cache/gomod
       MYSQL_DSN: "root:testpass@tcp(127.0.0.1:3306)/arca_dns_test?parseTime=true&multiStatements=true"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - id: setup-go
         uses: actions/setup-go@v6
